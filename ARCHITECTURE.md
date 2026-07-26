@@ -393,8 +393,10 @@ DMEx.Consumer.subscribe(producer_url,
   handler: MyApp.OrderHandler,
   start: :beginning,       # :beginning (default) | :latest | <id>; first run only
   on_failure: :crash,      # :crash | :skip | :dead_message
-  batch_window: 200,       # ms; minimum time between frames
-  max_batch_size: 500      # rows; maximum messages per frame
+  batch_window: 200,       # ms; preferred minimum time between frames
+  max_batch_size: 500,     # rows; preferred maximum messages per frame
+  queue_limit: 2_000,      # rows; bound on the internal queue
+  adaptive: true           # re-negotiate the two above from measured drain rate
 )
 ```
 
@@ -405,9 +407,17 @@ DMEx.Consumer.subscribe(producer_url,
   owns that bookkeeping and sends it as `Last-Event-ID`, see
   [Transport](#transport-sse-over-http)), passing `topic` so the producer only
   streams matching messages (omitting `topic` subscribes to everything on that
-  app's log), and passing `batch_window`/`max_batch_size` to control delivery
-  pacing (see
+  app's log), and sending `batch_window`/`max_batch_size` as request headers to
+  control delivery pacing (see
   [Batching & framing](#batching--framing-batch_window-max_batch_size)).
+- **`batch_window` and `max_batch_size` are a preference, not a setting.**
+  They are what the consumer asks for on the *first* connect and what it
+  converges back toward when it is keeping up; the producer may clamp them to
+  its own bounds, and DMEx's own client will ask for different values on a
+  later reconnect if it measures that it cannot drain what it requested (see
+  [Backpressure & adaptive batching](#backpressure--adaptive-batching)).
+  `adaptive: false` pins them, for a consumer that would rather have
+  predictable framing than an automatically-fitted one.
 - **`start:` only applies on a first run.** It is the answer to "where does
   this handler begin when it has no cursor yet": `:beginning` (the default,
   the whole log), `:latest` (from the tip, skipping history), or an explicit
@@ -436,15 +446,20 @@ DMEx.Consumer.subscribe(producer_url,
     refactor with a decidedly non-routine consequence, so a rename wants a
     deliberate migration of the row (see
     [Open Questions](#open-questions) on the consumer-side schema).
-- **Reads the SSE socket in `active: :once` (or passive) mode**, pulling the
-  next chunk only once the previous frame's messages are fully processed and
-  committed. This is a hard requirement, not a tuning choice: it is what
-  makes the TCP receive window close when the handler falls behind, which is
-  the entire backpressure mechanism of the system (see
-  [Producer side](#producer-side)). A client that reads eagerly into its own
-  mailbox does not remove the backpressure problem, it relocates it — the
-  producer sees a fast-draining socket and streams at full rate into a
-  consumer quietly accumulating unbounded chunks in memory.
+- **Reads the SSE socket in `active: :once` (or passive) mode, re-armed only
+  while its internal queue has headroom.** This is a hard requirement, not a
+  tuning choice: it is what makes the TCP receive window close when the
+  handler falls behind, which is the structural backpressure mechanism of the
+  system (see [Producer side](#producer-side)). A client that reads eagerly
+  into its own mailbox does not remove the backpressure problem, it relocates
+  it — the producer sees a fast-draining socket and streams at full rate into
+  a consumer quietly accumulating unbounded chunks in memory. The queue
+  (`queue_limit`, see
+  [Backpressure & adaptive batching](#backpressure--adaptive-batching)) does
+  not weaken that: it is bounded, so the re-arm still stops, just after
+  `queue_limit` rows of slack rather than one frame's worth. What the slack
+  buys is a *measurement* — how fast the handler actually drains — that a
+  consumer holding exactly one frame has no way to take.
 - De-batches the frame's already-decoded `data.messages` list
   (`DMEx.Message` does that one level of JSON decoding, see
   [Message Envelope](#message-envelope)) and, for each row: looks up
@@ -495,17 +510,64 @@ DMEx.Consumer.subscribe(producer_url,
 
 ## Transport: SSE over HTTP
 
-- A consumer opens
-  `GET /stream?topic=<topic>&batch_window=<ms>&max_batch_size=<n>` via
-  Phoenix, sending its resume position in the **`Last-Event-ID` request
-  header**. The route is singular and carries no application segment: a
-  producer application owns exactly one log (see
-  [Message log](#message-log)), so there is nothing for a path parameter to
-  select between, and the app's own hostname already identifies it. `topic`
-  is optional (omitting it means "everything," including untagged messages);
-  `batch_window`/`max_batch_size` are optional with
+- A consumer opens `GET /stream?topic=<topic>` via Phoenix, sending its resume
+  position in the **`Last-Event-ID` request header** and its delivery pacing
+  in the **`DMEx-Batch-Window` and `DMEx-Max-Batch-Size` request headers**. The
+  route is singular and carries no application segment: a producer application
+  owns exactly one log (see [Message log](#message-log)), so there is nothing
+  for a path parameter to select between, and the app's own hostname already
+  identifies it. `topic` is optional (omitting it means "everything,"
+  including untagged messages); so are both pacing headers, which fall back to
   DMEx-supplied defaults (see
   [Batching & framing](#batching--framing-batch_window-max_batch_size)).
+- **The URL says what the subscription *is*; headers say how it is *paced*.**
+  That is the line the two mechanisms fall on, and it is why `batch_window`
+  and `max_batch_size` are headers rather than query parameters. `topic` (and
+  its absence) selects which messages exist for this subscription at all —
+  change it and you have a different stream. The pacing values change nothing
+  about *which* rows arrive or in what order, only how they are cut into
+  frames; two connections differing only in `batch_window` deliver the same
+  messages in the same order, grouped differently. Keeping them out of the URL
+  means one stable URL per
+  subscription across every reconnect, which matters more now than it did
+  before: an adaptive consumer re-negotiates its pacing repeatedly over its
+  lifetime (see
+  [Backpressure & adaptive batching](#backpressure--adaptive-batching)), and if
+  those values lived in the query string, every re-negotiation would mint a new
+  URL and shatter that subscription's grouping in proxy logs, access logs, and
+  metrics. It also puts pacing on the same channel as `Last-Event-ID`, which is
+  already a header for the same reason.
+- **Header naming and validation.** `DMEx-Batch-Window` (integer ms) and
+  `DMEx-Max-Batch-Size` (integer rows), no `X-` prefix — that convention was
+  deprecated by [RFC 6648](https://www.rfc-editor.org/rfc/rfc6648), and a
+  vendor-named header is the current idiom. HTTP header names are
+  case-insensitive, so Phoenix sees them downcased; nothing should ever compare
+  them any other way. A header present but not a base-10 integer is a `400`,
+  the same standard `Last-Event-ID` is held to: a client sending garbage has a bug
+  worth hearing about. A well-formed value outside the producer's bounds is
+  **clamped, not rejected** — the producer's floor on `batch_window` and
+  ceiling on `max_batch_size` exist to protect the producer (see
+  [Open Questions](#open-questions)), and a consumer asking for more than it
+  may have should get a working stream at the permitted rate, not a `400` it
+  has no way to interpret.
+- **The producer echoes what it actually applied**, as `DMEx-Batch-Window` and
+  `DMEx-Max-Batch-Size` **response** headers on the `200`. Without this, a
+  clamped consumer cannot tell the difference between "the producer is honoring
+  my request and I still can't keep up" and "the producer capped me and my
+  request never took effect" — and those call for opposite reactions from a
+  consumer adapting its own parameters. Echoing effective values closes that
+  loop with no extra round trip, and gives the adaptive controller its actual
+  operating point rather than its hoped-for one. Note this cannot be inferred
+  from `retry:`, which carries `heartbeat_ms + batch_window` as a single sum
+  (see [Heartbeats](#heartbeats)).
+- **A browser `EventSource` cannot set these**, and that is an accepted
+  regression from having them in the query string. `EventSource` sets no
+  request headers of its own beyond `Last-Event-ID`, so a bare browser client
+  gets the producer's defaults and nothing else. This is the deliberate trade:
+  pacing is a tuning knob whose defaults must be sane anyway, resumption is a
+  correctness mechanism — and resumption is the one the spec gave a header to.
+  A generic client that does control its headers (any ordinary HTTP client
+  library) has full access to both.
 - **Resumption uses the spec's own channel, not a query parameter.**
   `Last-Event-ID` is what the SSE specification defines for exactly this, and
   using it means a bare browser `EventSource` — which sets the header itself on
@@ -565,7 +627,8 @@ distinction between a "catching up" and a "live tailing" connection.
 Catching up and live tailing are **the same SSE connection running the same
 loop** (see [Producer side](#producer-side)); they differ only in whether
 the loop finds rows waiting when it reads. Two parameters, supplied by the
-consumer on connect, tune it:
+consumer as request headers on connect (see
+[Transport](#transport-sse-over-http)), tune it:
 
 - `max_batch_size` — the `LIMIT` on each read, and therefore the most
   messages a single frame will ever contain.
@@ -607,6 +670,18 @@ for consumer telemetry and alerting. Note that it is **not** the mechanism
 that protects the producer: that is the loop's own structure (see
 [Producer side](#producer-side)), which holds regardless of whether any
 consumer is paying attention to `max_id`.
+
+Both parameters are **per-connection, and fixed for that connection's
+lifetime**. There is no in-band way to re-pace a live stream, and none is
+wanted: the loop reads them out of `state` on every iteration (see
+[Producer side](#producer-side)), so a mid-stream change would mean the
+producer accepting and applying consumer input on an already-open connection —
+a second inbound channel on a protocol that currently has none, on a request
+process whose whole job is to write. A consumer that wants different pacing
+reconnects with different headers, which costs it one `id > last_seen` read it
+was going to issue eventually anyway and costs the producer nothing it doesn't
+already handle (see
+[Backpressure & adaptive batching](#backpressure--adaptive-batching)).
 
 ### Heartbeats
 
@@ -722,6 +797,132 @@ because the request *is* the connection — see
     [Open Questions](#open-questions) for what's still unresolved about
     `dead_messages` (retention, replay tooling).
 
+#### Backpressure & adaptive batching
+
+The producer's loop makes overload unrepresentable *for the producer* (see
+[Producer side](#producer-side)). It does nothing for the consumer, and the
+mechanism that protects the producer is actively hostile to a consumer that
+cannot keep up: the consumer stops reading, its receive window closes, the
+producer's `chunk/2` blocks, and after `send_timeout` the producer **closes the
+connection** (see [Stalled connections](#stalled-connections)). The consumer
+reconnects, is handed frames at the same rate it just failed to drain, and
+stalls again. Nothing is lost — `last_seen` is durable and a drop is not a
+delivery event — but the subscription settles into a reconnect loop, and each
+reconnect costs the producer a fresh catch-up read against its own database.
+The slower the consumer, the more often it makes the producer work.
+
+The gap is that TCP backpressure is one bit. It can say *stop*; it cannot say
+*send me less at a time*. `batch_window` and `max_batch_size` are exactly that
+second message, and they are already per-connection consumer-supplied values —
+so the consumer needs a way to know what to ask for, and an occasion to ask.
+
+**The queue is the measurement.** `DMEx.Consumer.Stream` holds one bounded
+FIFO of rows — de-batched on arrival, since `DMEx.Message` has already parsed
+the frame — sitting between the socket and the
+handler/transaction/`last_seen` pipeline. It gates the socket re-arm: the next
+`active: :once` is requested only while the queue is below `queue_limit`, so
+the receive window still closes and structural backpressure still holds (see
+[Consuming API](#consuming-api)). The queue is not there to absorb overload —
+`queue_limit` rows of slack absorb nothing at a sustained mismatch. It is there
+so the process can observe two things a consumer holding exactly one frame
+cannot:
+
+- **depth** — how close the socket is to being held off, i.e. whether there is
+  pressure right now;
+- **drain rate** — an EWMA of messages committed per second, which is this
+  handler's actual capacity, measured rather than configured.
+
+The queue itself is not durable and does not need to be. Everything in it sits
+above `last_seen` with no handler having run for it, so throwing it away is
+indistinguishable from never having received it: the producer still holds those
+rows, and the next connect re-reads them from the same cursor every reconnect in
+this design already resumes from.
+
+**The control law is AIMD**, over the connection rather than the packet. On
+sustained pressure — depth above a high-water mark for longer than one
+`batch_window`, so a single burst doesn't trip it — the consumer sizes its next
+request to what it has been measured to drain:
+
+```
+max_batch_size' = clamp(drain_rate × batch_window, floor, max_batch_size)
+```
+
+That is the whole target: ask for no more per window than the handler empties
+per window. If that computation hits the floor and pressure persists, the
+consumer widens `batch_window` instead (multiplicatively), which lowers frame
+*rate* once frame *size* has nowhere left to go. Recovery is the additive half:
+after several consecutive windows spent near-empty, the consumer steps back
+toward its configured `batch_window`/`max_batch_size` a notch at a time. Back
+off fast, recover slowly — the asymmetry is deliberate, and it is the same
+reason every other AIMD controller has it.
+
+**Re-parameterizing means reconnecting, and the order matters:**
+
+1. **Close the connection first.** This is the immediate relief and it is
+   instant: it stops the inflow and hands the producer back its request
+   process, rather than leaving a stalled socket for `send_timeout` to reap.
+2. **Drain the queue locally.** Every queued row goes through the ordinary
+   pipeline — its own transaction, its own `last_seen` advance — so nothing
+   already transferred is re-fetched, and the drain itself refines the
+   drain-rate estimate under no inbound load at all.
+3. **Reconnect from the post-drain `last_seen`** with the new headers, after a
+   jittered delay. The cursor is exactly current, so the new connection starts
+   with an empty queue and no overlap to suppress.
+4. **Read the echoed `DMEx-Batch-Window` / `DMEx-Max-Batch-Size` response
+   headers** (see [Transport](#transport-sse-over-http)) and adopt those as the
+   operating point. If the producer clamped the request, the controller's next
+   decision must be made against what it was actually granted — otherwise it
+   adapts against a number that never took effect and concludes its own
+   arithmetic is broken. Re-read `retry:` at the same time: effective heartbeat
+   is `heartbeat_ms + batch_window` (see [Heartbeats](#heartbeats)), so a
+   consumer that just changed `batch_window` has invalidated its own
+   liveness deadline.
+
+Flapping is the obvious failure mode of any control loop whose actuator is a
+reconnect, and three things damp it: separate high- and low-water marks
+(hysteresis, so depth hovering at one threshold can't oscillate), a minimum
+interval between re-parameterizations that must comfortably exceed one
+close-drain-reconnect cycle, and the jittered delay in step 3 — for the same
+reason all reconnect backoff here is jittered (see
+[Transport](#transport-sse-over-http)), since a producer restart re-pacing
+every consumer at once is a synchronized storm with no admission control to
+absorb it.
+
+Three limits, stated plainly:
+
+- **Adaptation cannot make a handler faster.** If drain rate is below publish
+  rate, the consumer falls behind permanently, and no framing parameter
+  changes that. What it converts is the *symptom*: instead of a reconnect loop
+  driven by `send_timeout`, the subscription runs stably at its own speed and
+  falls visibly behind, which is what the `max_id` diff already reports (see
+  [Batching & framing](#batching--framing-batch_window-max_batch_size)).
+  Visible lag is a capacity problem an operator can see; a reconnect loop is a
+  capacity problem disguised as a network one.
+- **Learned values are in-memory and reset on restart.** A restarted stream
+  asks for its configured preference again and re-learns over a few windows.
+  Persisting them alongside `last_seen` was rejected: the right pacing is a
+  property of the current host, load, and handler, not of the subscription, and
+  a value pinned during one bad afternoon would quietly throttle that
+  subscription forever. Under `on_failure: :crash` the queue dies with the
+  process too, which is correct for the same reason — nothing in it was
+  committed.
+- **The producer never initiates any of this.** It holds no consumer state (see
+  [Consumer](#consumer)) and has no channel to push a rate hint down; the only
+  producer-side inputs are its clamp bounds and the echoed effective values.
+  Adaptation is entirely a consumer-side loop closed through reconnects, which
+  is what keeps it compatible with the "producer holds nothing" property rather
+  than eroding it.
+
+Finally, note who else this is for. A third-party SSE client reading eagerly
+has no TCP backpressure to fall back on — its socket always drains fast and the
+producer always streams at full rate (see
+[Open Questions](#open-questions)). A bounded queue plus a reconnect with
+smaller headers is a mechanism such a client can implement *without* control
+over its socket's active mode, in any language, because both parameters are
+now plain request headers. That is the flexibility argument for putting them
+there: structural backpressure requires a cooperative client library, while
+cooperative backpressure requires only an HTTP client that can set two headers.
+
 ### Producer side
 
 **The Phoenix request process *is* the stream.** There is no
@@ -739,8 +940,10 @@ naturally, the socket closes when the process dies, and the web server's own
 supervision covers it.
 
 The loop, per connection — note that `batch_window` and `max_batch_size` are
-per-connection values from the request's query string, carried in `state`,
-not compile-time constants:
+per-connection values read from the request's `DMEx-Batch-Window` /
+`DMEx-Max-Batch-Size` headers (clamped to the producer's bounds, then echoed
+back on the response — see [Transport](#transport-sse-over-http)) and carried
+in `state`, not compile-time constants:
 
 ```elixir
 def loop(conn, state) do
@@ -921,7 +1124,14 @@ of stall the socket layer cannot see: a loop wedged for a non-socket reason
 pathologically slow while still technically progressing, which no
 per-call timeout can ever fire on.
 
-Those are real, and none of them are addressed here. The bet is that they
+Those are real, and none of them are addressed *by the producer*. The last of
+them is at least approached from the other end — a DMEx consumer that keeps
+falling behind re-parameterizes down to a rate it can actually sustain (see
+[Backpressure & adaptive batching](#backpressure--adaptive-batching)) instead
+of living permanently at the edge of `send_timeout`. But that is voluntary and
+consumer-side: it is a well-behaved client being well-behaved, not the producer
+defending itself, and it does exactly nothing about a client that declines to
+implement it. The bet is that they
 matter only past a connection count where a producer app has bigger capacity
 questions anyway, and that the machinery is cheaper to add later — one
 sweeper process and a counter — than to carry unused. Revisit when
@@ -1158,11 +1368,42 @@ Things intentionally left open for the next round of discussion.
   payload bytes end-to-end — or does some future use case justify a
   side-by-side exact-bytes column?
 - **`batch_window`/`max_batch_size` defaults & bounds** — what are DMEx's
-  own defaults when a consumer doesn't specify them, and are there
+  own defaults when a consumer doesn't specify the
+  `DMEx-Batch-Window`/`DMEx-Max-Batch-Size` headers, and what are the
   producer-side sanity limits (a floor on `batch_window`, a ceiling on
-  `max_batch_size`) to stop a misconfigured or malicious consumer from
-  requesting pathological values? The floor matters especially, since
-  `batch_window` divides directly into per-connection query rate.
+  `max_batch_size`) that a request is clamped to? The floor matters especially,
+  since `batch_window` divides directly into per-connection query rate. This is
+  more load-bearing now that the values are negotiated rather than merely
+  configured: the defaults are what every browser `EventSource` gets
+  permanently, and the bounds are the range an adaptive consumer's control loop
+  operates inside (see
+  [Backpressure & adaptive batching](#backpressure--adaptive-batching)). A
+  floor set too high leaves a slow consumer nothing to ask for and puts it back
+  on the `send_timeout` path the adaptation exists to avoid.
+- **Adaptive control-law constants** — the shape is settled (AIMD over
+  reconnects, see
+  [Backpressure & adaptive batching](#backpressure--adaptive-batching)); the
+  numbers are not. What are the high- and low-water marks as fractions of
+  `queue_limit`, the EWMA window for drain rate, the multiplicative
+  back-off and additive recovery steps, the number of quiet windows before
+  recovery starts, and the minimum interval between re-parameterizations? And
+  what is a sensible default `queue_limit` — large enough that drain rate is
+  measurable over a batch or two, small enough that the memory is
+  uninteresting. Related: should the queue also be bounded in *bytes*, for the
+  same reason the producer wants a frame byte cap (see below)? A `queue_limit`
+  in rows says nothing about memory when payloads vary by three orders of
+  magnitude.
+- **Adaptation-induced reconnect churn** — every re-parameterization is a
+  reconnect, and a reconnect costs the producer a fresh `id > last_seen`
+  read. Hysteresis and a minimum re-parameterization interval bound this per
+  consumer, but there is no aggregate bound, and there is deliberately no
+  admission control to absorb one (see
+  [What this deliberately does not do](#what-this-deliberately-does-not-do)).
+  Open: is a correlated event — a producer deploy that briefly slows every
+  consumer, so all of them re-parameterize together — actually damped enough by
+  jitter alone, and should the adaptation be rate-limited over a longer window
+  (e.g. at most N re-parameterizations per hour before it gives up and just
+  runs behind)?
 - **Read amplification ceiling** — each connection issuing its own reads
   (see [Producer side](#producer-side)) trades bounded memory for query
   volume. [Topic-scoped wakeups](#topic-scoped-wakeups) cut this to
@@ -1218,13 +1459,22 @@ Things intentionally left open for the next round of discussion.
   concurrent writes but adds a non-obvious concept to every read path, or
   serving only rows older than *k* ms, which is simple, probabilistic, and
   not actually correct?
-- **Consumer-side socket mode enforcement** — every backpressure property
-  in this design depends on the consumer reading `active: :once`, so that
-  TCP pressure is real (see [Consuming API](#consuming-api)). DMEx's own
-  client does this, but the doc also advertises that any SSE-capable client
-  can consume a stream. Open: how much does a naive eager-reading third
-  party client degrade, and is that acceptable or does it need documenting
-  as a compatibility caveat?
+- **Consumer-side socket mode enforcement** — the *structural* backpressure
+  property depends on the consumer reading `active: :once` and re-arming only
+  with queue headroom, so that TCP pressure is real (see
+  [Consuming API](#consuming-api)). DMEx's own client does this, but the doc
+  also advertises that any SSE-capable client can consume a stream. Adaptive
+  batching (see
+  [Backpressure & adaptive batching](#backpressure--adaptive-batching)) gives
+  an eager third-party client a *cooperative* substitute that needs only two
+  request headers, which narrows the question but does not close it: a client
+  that implements neither still reads at full rate into unbounded memory of its
+  own, and the producer cannot tell the difference — the socket drains fast
+  either way. Open: is "your client must bound something, either its socket or
+  its queue" a documented compatibility caveat, or does the producer want a
+  detectable signal (a consumer that never slows down and never
+  re-parameterizes is indistinguishable from a genuinely fast one, which may
+  simply be fine)?
 - **`:crash` vs supervisor restart intensity** — `:crash` is specified to
   crash-loop on a poison message forever, but `DynamicSupervisor` defaults
   to `max_restarts: 3, max_seconds: 5`. A tight crash-loop blows that budget
