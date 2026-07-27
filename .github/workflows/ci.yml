@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+    branches: [main, trunk]
+  pull_request:
+
+env:
+  MIX_ENV: test
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: dmex_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: erlef/setup-beam@v1
+        with:
+          version-file: .tool-versions
+          version-type: strict
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+            priv/plts
+          key: ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}
+          restore-keys: ${{ runner.os }}-mix-
+
+      - run: mix deps.get
+      - run: mix format --check-formatted
+      - run: mix deps.unlock --check-unused
+      - run: mix compile --warnings-as-errors
+      - run: mix credo --strict
+
+      # Unit suite first (fast, sandboxed), then the integration suite, which
+      # needs a real non-sandboxed database: LISTEN/NOTIFY only fires at COMMIT
+      # and the append-ordering test needs genuinely concurrent transactions.
+      # DMEX_POSTGRES_INTEGRATION_URL is derived from this by config/test.exs,
+      # so the two can never drift onto different hosts.
+      - run: mix test
+        env:
+          DMEX_POSTGRES_URL: postgres://postgres:postgres@localhost:5432/dmex_test
+      - run: mix test.integration
+        env:
+          DMEX_POSTGRES_URL: postgres://postgres:postgres@localhost:5432/dmex_test
+
+  dialyzer:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          version-file: .tool-versions
+          version-type: strict
+      - uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+            priv/plts
+          key: ${{ runner.os }}-dialyzer-${{ hashFiles('**/mix.lock') }}
+          restore-keys: ${{ runner.os }}-dialyzer-
+      - run: mix deps.get
+      - run: mix dialyzer --format github

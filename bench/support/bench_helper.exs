@@ -1,0 +1,123 @@
+defmodule DMEx.BenchHelper do
+  @moduledoc """
+  Shared setup and fixtures for the benchmark suite.
+
+  Benchmarks here exist to answer questions `ARCHITECTURE.md` records as open —
+  what the append lock actually costs, where the consumer's per-row commit
+  starts to dominate, at what connection count read amplification bites. They
+  are decision tools, not regression tests, so nothing here runs in CI.
+  """
+
+  alias DMEx.Test.Storage, as: Stub
+
+  @doc "Starts the integration repo, for benchmarks that touch a real database."
+  def start_repo! do
+    Application.ensure_all_started(:ecto_sql)
+    Application.ensure_all_started(:postgrex)
+
+    case DMEx.Test.IntegrationRepo.start_link() do
+      {:ok, pid} -> pid
+      {:error, {:already_started, pid}} -> pid
+    end
+  end
+
+  @doc """
+  Starts the integration producer, tolerating one already running.
+
+  `mix bench.e2e` requires every file into one VM, so each has to be safe both
+  standalone and second in line.
+  """
+  def start_producer! do
+    case DMEx.Test.IntegrationProducer.start_link() do
+      {:ok, pid} -> pid
+      {:error, {:already_started, pid}} -> pid
+    end
+  end
+
+  @doc "Starts a named consumer, tolerating one already running."
+  def start_consumer!(name) do
+    case DMEx.Consumer.start_link(name: name, repo: DMEx.Test.IntegrationRepo) do
+      {:ok, pid} -> pid
+      {:error, {:already_started, pid}} -> pid
+    end
+  end
+
+  @doc "Starts Bandit on an ephemeral port and returns the base URL."
+  def start_server! do
+    Application.ensure_all_started(:bandit)
+
+    {:ok, server} =
+      Bandit.start_link(
+        plug: DMEx.Test.Server.Router,
+        scheme: :http,
+        ip: {127, 0, 0, 1},
+        port: 0,
+        startup_log: false
+      )
+
+    {:ok, {_ip, port}} = ThousandIsland.listener_info(server)
+
+    "http://127.0.0.1:#{port}"
+  end
+
+  @doc "Empties the log, so a run is not measuring the previous run's rows."
+  def reset_log! do
+    Ecto.Adapters.SQL.query!(
+      DMEx.Test.IntegrationRepo,
+      "TRUNCATE dmex_messages, dmex_cursors RESTART IDENTITY CASCADE",
+      []
+    )
+  end
+
+  @doc """
+  `count` log rows whose `data` is roughly `payload_bytes` of JSON.
+
+  Rows carry `data` and `metadata` as JSON *text*, exactly as a storage adapter
+  returns them, because that is what the encoder splices.
+  """
+  def rows(count, payload_bytes) do
+    note = String.duplicate("x", max(payload_bytes - 20, 1))
+
+    for id <- 1..count do
+      Stub.row(id, data: ~s({"order_id":#{id},"note":"#{note}"}))
+    end
+  end
+
+  @doc "A ready-made SSE frame of `count` rows at `payload_bytes` each."
+  def frame_bytes(count, payload_bytes) do
+    count
+    |> rows(payload_bytes)
+    |> DMEx.Frame.encode_batch(count)
+    |> IO.iodata_to_binary()
+  end
+
+  @doc "Splits a binary into fixed-size chunks, as a socket would deliver it."
+  def chunks(binary, size) do
+    binary
+    |> Stream.unfold(fn
+      "" -> nil
+      rest -> String.split_at(rest, min(size, byte_size(rest)))
+    end)
+    |> Enum.to_list()
+  end
+
+  @doc "Standard Benchee options, so every benchmark reports comparably."
+  def opts(extra \\ []) do
+    Keyword.merge(
+      [
+        time: 2,
+        warmup: 0.5,
+        memory_time: 0.5,
+        print: [fast_warning: false]
+      ],
+      extra
+    )
+  end
+
+  @doc "Prints a heading, so a combined run is readable."
+  def section(title) do
+    IO.puts("\n\n" <> String.duplicate("=", 72))
+    IO.puts(title)
+    IO.puts(String.duplicate("=", 72) <> "\n")
+  end
+end

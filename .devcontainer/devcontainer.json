@@ -1,8 +1,6 @@
 {
     "name": "Development Configuration",
     "dockerComposeFile": [
-        // In case you want to startup some infrastructure service
-        // "../docker-compose.yml",
         "docker-compose.yml"
     ],
     "service": "development",
