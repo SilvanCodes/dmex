@@ -2,8 +2,8 @@
 
 > Status: working draft. The core mechanics below are agreed on; see
 > [Open Questions](#open-questions) for what is still undecided, and
-> [Topics](#topics-deferred-to-post-v1) for the one mechanic deliberately
-> left out of v1.
+> [Event-Type Selection](#event-type-selection-post-v1) for the one mechanic
+> deliberately left out of v1.
 
 ## Overview
 
@@ -28,12 +28,14 @@ This buys three things:
 
 **Scope for v1.** A producer streams its whole log, and every subscription
 receives every message on it. There is no server-side selective delivery in
-v1: no topics, no filters, no per-subscription subsets. A consumer that cares
-about only some event types declares the modules it knows and ignores
-everything else locally (see [Consuming API](#consuming-api)). Server-side
-selection is a real requirement and it has a design — topics as evolvable sets
-of event types — but it is deliberately not in v1; see
-[Topics](#topics-deferred-to-post-v1).
+v1: no filters, no per-subscription subsets, and — here or later — no topics.
+A consumer that cares about only some event types declares the modules it
+knows and ignores everything else locally (see
+[Consuming API](#consuming-api)). Server-side selection is a real requirement
+and it has a design — the consumer's own `event_modules` list, sent as a query
+parameter and applied as a predicate on the producer's read — but it is
+deliberately not in v1; see
+[Event-Type Selection](#event-type-selection-post-v1).
 
 ### References
 
@@ -119,14 +121,15 @@ the log — welded into the *record of what happened*, and the two have
 different lifetimes.
 
 So the log records only what a message is (`event_type`), never who might want
-it. Selective delivery becomes a separate mechanic layered over the log and
-resolved at read time, which is what lets a topic denote an arbitrary,
-overlapping, revisable set of event types instead of a permanent per-row
-stamp. That mechanic is sketched but deliberately **not in v1** — see
-[Topics](#topics-deferred-to-post-v1). In v1 there is exactly one stream per
-producer, every subscription is that whole stream, and `id` is drawn from a
-single per-app sequence, so every consumer's `last_seen` is directly
-comparable with every other's.
+it. Selective delivery becomes a separate mechanic resolved at read time,
+where the interested party names the event types it wants and the log is not
+asked to have anticipated the grouping. That mechanic is sketched but
+deliberately **not in v1** — see
+[Event-Type Selection](#event-type-selection-post-v1), which also explains why
+it introduces no *replacement* for `topic` either, named or otherwise. In v1
+there is exactly one stream per producer, every subscription is that whole
+stream, and `id` is drawn from a single per-app sequence, so every consumer's
+`last_seen` is directly comparable with every other's.
 
 ### Producer
 
@@ -285,11 +288,11 @@ end
   `event_type` is the column that then travels inside each row of the
   `DMEx.Message` [data envelope](#message-envelope), never
   `DMEx.Message.event` itself, which stays transport-level (see above). In
-  particular there is no `topic:` option: an event module declares what the
-  event *is*, and nothing about who should receive it. Grouping event types
-  for delivery is a separate, producer-owned concern that does not live on the
-  event module and is not in v1 — see
-  [Topics](#topics-deferred-to-post-v1).
+  particular there is no `topic:` option, and no delivery-grouping option of
+  any other name: an event module declares what the event *is*, and nothing
+  about who should receive it. Who receives it is the *consumer's* statement to
+  make, and it already makes it — see
+  [Event-Type Selection](#event-type-selection-post-v1).
 - The struct fields are the event's full, versioned shape. Evolving an
   event's shape is scoped to editing that one module (see
   [Open Questions](#open-questions) on schema versioning).
@@ -301,7 +304,10 @@ end
   unbounded-atom-table risk, so the mapping is always consumer-declared, not
   inferred. In v1 that list does double duty: because a subscription is the
   producer's entire log, `event_modules` is also the consumer's *filter* (see
-  [Consuming API](#consuming-api)).
+  [Consuming API](#consuming-api)) — and it is the same list that would later
+  become the wire-level selector sent to the producer, which is why no
+  separate grouping concept is needed anywhere (see
+  [Event-Type Selection](#event-type-selection-post-v1)).
 
 ## Publishing API
 
@@ -413,8 +419,10 @@ DMEx.Consumer.subscribe(producer_url,
   `batch_window`/`max_batch_size` as request headers to control delivery
   pacing (see
   [Batching & framing](#batching--framing-batch_window-max_batch_size)).
-  **There is no `topic:` option and no filter of any kind**: a v1 subscription
-  is the producer's whole log (see [Topics](#topics-deferred-to-post-v1)).
+  **There is no filter option of any kind**: a v1 subscription is the
+  producer's whole log, and `event_modules` is what narrows it, locally (see
+  [Event-Type Selection](#event-type-selection-post-v1) for how that same list
+  later becomes a server-side selector, without gaining a new option here).
 - **`batch_window` and `max_batch_size` are a preference, not a setting.**
   They are what the consumer asks for on the *first* connect and what it
   converges back toward when it is keeping up; the producer may clamp them to
@@ -482,11 +490,12 @@ DMEx.Consumer.subscribe(producer_url,
   exactly as a handled one does — it must, or a consumer would wedge on the
   first event type it doesn't know — and invokes nothing. `event_modules` is
   therefore the subscription's filter, applied on the consumer after the bytes
-  have already crossed the wire; the deferred topic mechanic is what would
-  move that same selection to the producer so they never cross it (see
-  [Topics](#topics-deferred-to-post-v1)). Skips are worth a telemetry
-  event — a consumer silently discarding most of a stream and a consumer
-  silently discarding the one type it wanted look identical otherwise.
+  have already crossed the wire; the deferred selection mechanic moves that
+  same list to the producer so they never cross it (see
+  [Event-Type Selection](#event-type-selection-post-v1)). Skips are worth a
+  telemetry event — a consumer silently discarding most of a stream and a
+  consumer silently discarding the one type it wanted look identical
+  otherwise.
 - **Suppresses duplicates itself, by id.** Before running a handler, the
   stream drops any row whose `id` is `<= last_seen`. This needs no
   new state and no dedupe table: delivery within a subscription is strictly
@@ -539,11 +548,12 @@ DMEx.Consumer.subscribe(producer_url,
   That is the line the two mechanisms fall on, and it is why `batch_window`
   and `max_batch_size` are headers rather than query parameters. In v1 the
   left side of that line is empty — one producer, one log, one stream, so the
-  URL has nothing to carry — but the line is the one a future topic selector
-  would fall on, since a topic changes *which* messages exist for the
-  subscription at all and therefore belongs in the URL (see
-  [Topics](#topics-deferred-to-post-v1)). The pacing values change nothing
-  about *which* rows arrive or in what order, only how they are cut into
+  URL has nothing to carry — but the line is the one a future event-type
+  selector would fall on, since the set of types selected changes *which*
+  messages exist for the subscription at all and therefore belongs in the URL
+  (see [Event-Type Selection](#event-type-selection-post-v1)). The pacing
+  values change nothing about *which* rows arrive or in what order, only how
+  they are cut into
   frames; two connections differing only in `batch_window` deliver the same
   messages in the same order, grouped differently. Keeping them out of the URL
   means one stable URL per
@@ -1032,7 +1042,7 @@ Two properties of this query are worth being explicit about:
   sees a sparse subset of one id sequence and re-reading from the last *sent*
   id means scanning id space known to hold nothing for it — a cost an index on
   the selecting column answers, and a decision deferred with the rest of
-  [Topics](#topics-deferred-to-post-v1).
+  [Event-Type Selection](#event-type-selection-post-v1).
 - **`max_id` comes back on the same round trip**, as a correlated scalar
   subquery evaluated once per read. On the primary key that is a single
   descent to the rightmost entry. There is no separate latest-id
@@ -1054,10 +1064,11 @@ per second — reduced by [wakeup coalescing](#wakeup-coalescing) and by
 fast the log is being written. In v1 that is the whole of it: with no
 server-side selection, every publish is potentially relevant to every
 connection, so there is nothing to route wakeups by and `C × P` is the honest
-ceiling. Cutting it to per-topic interest is one of the concrete payoffs of
-[Topics](#topics-deferred-to-post-v1), and it is worth knowing that the lever
-exists before the ceiling is hit. In practice the binding
-constraint is **database connection-pool contention**, not raw query load.
+ceiling. Cutting it to per-event-type interest is one of the concrete payoffs
+of [Event-Type Selection](#event-type-selection-post-v1), and it is worth
+knowing that the lever exists before the ceiling is hit. In practice the
+binding constraint is **database connection-pool contention**, not raw query
+load.
 That is a real ceiling — but it degrades gradually and can be raised with
 hardware, traded against a failure mode where one unresponsive client
 exhausts the host application's memory. See
@@ -1206,8 +1217,9 @@ Every publish wakes every connection. With no server-side selection there is
 no routing key to scope a wakeup by, so `Dispatcher` broadcasts to all
 registered streams and each decides for itself — by reading — whether there is
 anything to send. This is the fan-out behind the `C × P` read ceiling in
-[Producer side](#producer-side), and routing wakeups by topic is the first
-thing [Topics](#topics-deferred-to-post-v1) would buy back.
+[Producer side](#producer-side), and routing wakeups by `event_type` is the
+first thing [Event-Type Selection](#event-type-selection-post-v1) would buy
+back.
 
 One detail this still has to get right, and it matters more without routing:
 
@@ -1286,8 +1298,8 @@ The schema is intentionally minimal so it maps cleanly onto both engines, and
 the read surface is deliberately narrower still: three shapes, all of them
 keyed on `id` alone. Selective reads — a range scan restricted to a set of
 event types — are the capability this behaviour would have to grow for
-[Topics](#topics-deferred-to-post-v1), and the one that would bring an index
-requirement with it.
+[Event-Type Selection](#event-type-selection-post-v1), and the one that would
+bring an index requirement with it.
 
 The same `DMEx.Storage` behaviour (and the same two adapters) is reused on
 the consumer side for its own local bookkeeping — a `last_seen` table keyed by
@@ -1342,7 +1354,7 @@ for any other data that application owns. Achieving HA for a given stream is
 the same problem as achieving HA for that application's database (e.g.
 Postgres replication/failover), and is out of scope for DMEx itself.
 
-## Topics (deferred to post-v1)
+## Event-Type Selection (post-v1)
 
 Server-side selective delivery — a consumer receiving part of a producer's log
 rather than all of it — is a real requirement, and this is the shape it is
@@ -1352,101 +1364,140 @@ section is a design direction, recorded so the v1 decisions above stay
 compatible with it and so the reasoning isn't rediscovered later. It is not a
 description of shipped behaviour.
 
-### What a topic is
+**There are no topics** — not as a column (see [Message log](#message-log)),
+and not as a separate named mechanic either. A topic is a name standing for a
+set of event types, and a name is a second vocabulary somebody has to define,
+publish, version, discover, and keep in sync with the types it names. Every
+one of those costs is paid to describe something the consumer has already
+said.
 
-A **topic is a named set of event types**, defined and owned by the producer
-application, and resolved at read time. It is configuration, not data:
-nothing about it is ever written into `dmex_messages`, and a row's membership
-in a topic is computed by matching its `event_type` against the topic's
-*current* definition at the moment a subscription reads it.
+Because it has. A subscription already declares `event_modules` — the list of
+event modules it can decode (see [Event Specifications](#event-specifications))
+— and that list is not optional: without it a consumer cannot turn an
+`event_type` back into a struct at all. **That list is the selection.** DMEx
+maps it through each module's `type/0` and sends the resulting `event_type`
+strings as a query parameter on `GET /stream`; the producer adds one predicate
+to its read and streams only matching rows. Nothing new is declared anywhere,
+by anyone.
 
-That is the whole difference from the `topic` column this replaces (see
-[Message log](#message-log)), and three properties follow that a column could
-not have offered:
+### What that buys
 
-- **Arbitrary subsets.** A topic is any set of event types the producer cares
-  to name. Sets may overlap freely, one event type may belong to many topics
-  at once, and a topic may name a single type or every type. A column holds
-  one value per row and so partitions the log; a set does not have to.
-- **Evolvable.** A topic's definition can change — types added, removed, the
-  topic itself renamed or retired — without touching a single row. The log
-  stays immutable while the views over it move, which is the right way round:
-  what happened is fixed, who wants to hear about it is not.
-- **Retroactive.** Because membership is computed at read time, adding an
-  event type to a topic makes every historical message of that type a member,
-  including messages published long before the topic existed. Replaying a
-  topic from id 0 replays it *as currently defined*, not as it was defined
-  when those messages were written.
+- **One list, two jobs, no drift.** A separately-defined grouping can always
+  disagree with reality — naming a type the consumer cannot decode, or
+  omitting one it can, either of which is a silent bug. A selection *derived
+  from* `event_modules` is exactly the set of types the handler is equipped
+  for, by construction, and cannot be otherwise.
+- **Arbitrary subsets, no coordination.** Any consumer selects any set of
+  types; sets overlap freely between consumers and nobody has to agree on
+  them. No producer-side curation, and no consumer blocked waiting for a
+  producer to define the grouping it happens to need.
+- **Evolvable, in the place it is read.** Changing what a subscription
+  receives is editing a list in the consumer's own code — the same edit that
+  makes it *able* to handle the new type in the first place. An ordinary code
+  change, an ordinary deploy, an ordinary reconnect; no remote definition
+  changing under a running consumer.
+- **The producer stays stateless about consumers.** The selection travels on
+  the request, per connection, and nothing about it is stored. The
+  ["producer holds nothing"](#consumer) property survives intact — a
+  producer-side registry of named groupings would have been the first thing to
+  chip at it.
 
-Retroactivity is a genuine trade rather than a free win, and the sharp edge is
-worth stating now: a topic is **not** a stable description of what a consumer
-has already seen. A subscription that has consumed `orders` up to id 900 and
-then sees `orders` gain an event type does not go back for that type's
-historical rows — its cursor is a single id and only ever moves forward, so it
-picks the new type up from id 901 on. Consumers that need the history have to
-reset a cursor deliberately. Whether DMEx should offer anything to make that
-less manual is open.
+One consequence to know before it bites: **adding a module to `event_modules`
+selects that type from the cursor forward, not from the beginning.** The
+cursor is a single id and only ever moves forward, so historical rows of the
+newly-selected type — everything below `last_seen`, published while the
+consumer wasn't asking for it — are not revisited. A consumer that needs that
+history has to reset its cursor deliberately. Whether DMEx should offer
+anything to make that less manual is open.
 
 ### What it would not change
 
 - **Not a partitioning of the log.** There is still exactly one
-  totally-ordered log per producer and one id sequence; a topic subscription
-  sees a sparse subset of that same id space, so every consumer's `last_seen`
-  stays directly comparable with every other's regardless of what it
-  subscribed to.
-- **Not visible at the publish call site.** `publish/3` keeps its current
-  signature and writes the same columns. A publisher does not know, and does
-  not need to know, which topics its event type currently belongs to.
-- **Not consumer state on the producer.** A topic definition is producer-side
-  configuration *about event types*, not about consumers — no registered
-  subscribers, no per-consumer offsets. The
-  ["producer holds nothing"](#consumer) property survives intact, which is the
-  main constraint any concrete design here has to clear.
+  totally-ordered log per producer and one id sequence; a selective
+  subscription sees a sparse subset of that same id space, so every consumer's
+  `last_seen` stays directly comparable with every other's regardless of what
+  it selected.
+- **Not visible at the publish call site.** `publish/3` keeps its signature
+  and writes the same columns, and event modules keep taking no options. A
+  publisher does not know, and does not need to know, who is selecting its
+  event types.
+- **Not a change to delivery semantics.** Selection changes which rows a
+  connection is sent, and nothing about ordering, duplicate suppression, or
+  the handler/transaction/`last_seen` pipeline.
 
 ### Where it would attach
 
 The seams are already in place, and naming them is most of what deferring the
 work is meant to protect:
 
-- **Subscribe** — a `topic:` option on `DMEx.Consumer.subscribe/2`, alongside
-  (not instead of) `event_modules`, which stays the decode registry.
-- **Transport** — a topic selector in the URL, by the rule already stated in
-  [Transport](#transport-sse-over-http): it changes which messages exist for
-  the subscription, so it is identity, not pacing.
+- **Subscribe** — no new option. `event_modules` gains a second role, and
+  `DMEx.Consumer.Stream` derives the wire values from it.
+- **Transport** — the selected types go in the URL, by the rule already stated
+  in [Transport](#transport-sse-over-http): they change which messages exist
+  for the subscription, so they are identity, not pacing. Absent means
+  everything, so a bare browser `EventSource` keeps working exactly as it does
+  in v1. Fixed for a connection's lifetime, for the same reason pacing is: a
+  consumer wanting a different set reconnects.
 - **Read path** — the loop's query grows one predicate
   (`WHERE event_type = ANY($1) AND id > $2`), which brings back both the
   composite-index requirement (`(event_type, id)`) and the sparse-cursor
   question retired in [Producer side](#producer-side).
-- **Wakeups** — a routing key derived from the published row's `event_type`
-  via the topics containing it, restoring the read-amplification lever
-  described in [Wakeup fan-out](#wakeup-fan-out).
-- **Consumer** — unknown event types stop arriving over the wire instead of
-  being dropped locally; the skip path in [Consuming API](#consuming-api)
-  becomes a fallback rather than the normal case.
+- **Wakeups** — the routing key is the published row's own `event_type`, and
+  connections register under the types they selected. That is *exact*: a
+  publish wakes precisely the connections that asked for that type, with no
+  intermediate grouping to be approximate about it. This is the
+  read-amplification lever described in [Wakeup fan-out](#wakeup-fan-out).
+- **Producer-side validation** — there is none, deliberately. A consumer may
+  legitimately name a type the producer has never published (a consumer
+  deployed ahead of the producer that will emit it), so the parameter is an
+  opaque set of strings compared against a text column: no checking against a
+  known-type list, and emphatically no atomizing of consumer-supplied strings,
+  which is the same unbounded-atom-table risk the consumer side already
+  refuses to take (see [Event Specifications](#event-specifications)). A name
+  that matches nothing simply matches nothing.
+- **Consumer** — the skip path in [Consuming API](#consuming-api) becomes a
+  defence rather than the normal case. A selective stream should only ever
+  carry decodable types, so an unknown one now indicates a real mismatch and
+  is worth surfacing rather than quietly dropping.
 
 ### Open, if and when it lands
 
-- **Where a definition lives** — application config, a table in the
-  producer's database, or declared by the event modules themselves. Config is
-  simplest; a table makes definitions changeable without a deploy, which is
-  half the point of making them evolvable at all.
-- **Membership by set or by pattern** — an explicit list of event types, or
-  patterns over type names (`MyApp.Events.Order*`), which is the old "topic
-  matching semantics" question relocated to a place where a redefinition is at
-  least cheap. Patterns make a topic's membership change when a *new event
-  type* is added, with nobody editing the topic.
-- **Whether definitions need versioning or announcement** — a topic that
-  changes silently and retroactively is a small ambush for a consumer that
-  cares. Is "retroactive and silent" the whole contract, or does a
-  redefinition need a version a consumer can observe?
-- **Whether consumers may name types directly** — subscribing to an explicit
-  set of event types rather than a producer-defined name, making the topic
-  pure shorthand. That keeps producers out of the business of anticipating
-  every consumer's slice, at the cost of consumers depending on type names.
-- **Discovery** — how a consumer learns which topics exist and what they
-  currently contain. This overlaps the schema-endpoint option in
-  [Open Questions](#open-questions) on sharing event modules; the two probably
-  want to be answered together.
+- **URL length is the hard one.** `event_type`s are fully-qualified module
+  names (`MyApp.Events.OrderPlaced` is 24 characters), so a consumer with
+  fifty of them builds a multi-kilobyte query string — against proxies and
+  servers that commonly cap request URLs well below what an HTTP client will
+  happily send. Note that the obvious escapes are mostly bad: a body on a
+  `GET` is not reliably proxied, a `POST`-then-`GET` handshake reintroduces
+  exactly the producer-side per-consumer state this design is careful not to
+  have, and hashing the set into a short token needs a registry to resolve it
+  again. Possible answers worth weighing: accept the cap and document it, fall
+  back to whole-log delivery plus consumer-side filtering above some size
+  (correct, just less efficient — and it is precisely v1's behaviour, which is
+  a comfortable fallback to have), or find a compression of the set that does
+  not require the producer to remember anything.
+- **Wire form and URL stability** — repeated `event_type=` parameters or one
+  delimited list, and whether the set is canonically sorted so a given
+  subscription produces a byte-identical URL on every reconnect. That matters
+  for the same reason pacing was kept out of the URL: one stable URL per
+  subscription groups cleanly in proxy logs, access logs, and metrics.
+- **Whether selection should be narrowable below `event_modules`** — a
+  consumer that can *decode* twenty types but only *wants* five would
+  otherwise have to receive fifteen it discards, or split into two handlers
+  and therefore two cursors. Does `subscribe/2` want an explicit override, or
+  is "your module list is your subscription" the whole rule? The rule is
+  simpler; the override is the escape hatch for a handler whose decode
+  vocabulary is genuinely wider than its interest.
+- **Second cursor, again** — with a sparse subset the last-*sent* id no longer
+  implies the rows in between were examined and rejected. Whether that needs a
+  second cursor or is answered entirely by the `(event_type, id)` index (an
+  index seek costing the same whether the next matching row is one id away or
+  ten million) has to be settled with the index, not before it.
+- **Non-Elixir consumers** — the selector is a list of Elixir module names, so
+  a consumer in another language must know those strings out-of-band. That is
+  the same coupling as
+  [sharing event modules across independent applications](#open-questions),
+  now showing up in the URL as well as in the decode step, and it strengthens
+  the case for the schema-endpoint option discussed there.
 
 ## Open Questions
 
@@ -1473,9 +1524,9 @@ Things intentionally left open for the next round of discussion.
   directly on the one write path that cannot be parallelized away. Open: ship
   without it and let operators add one, or include it because ad-hoc log
   inspection is a first-class use case? Note this stops being a judgement call
-  the moment [Topics](#topics-deferred-to-post-v1) lands — a topic read
-  filters on `event_type`, so `(event_type, id)` becomes a required index
-  rather than an operator convenience.
+  the moment [Event-Type Selection](#event-type-selection-post-v1) lands — a
+  selective read filters on `event_type`, so `(event_type, id)` becomes a
+  required index rather than an operator convenience.
 - **Payload byte fidelity** — `data` and `metadata` are `jsonb` (see
   [Message log](#message-log)), chosen for in-database querying of payloads,
   which is a first-class use case for a log people inspect by hand. The
@@ -1527,8 +1578,9 @@ Things intentionally left open for the next round of discussion.
 - **Read amplification ceiling** — each connection issuing its own reads
   (see [Producer side](#producer-side)) trades bounded memory for query
   volume. In v1 every connection sees every publish (see
-  [Wakeup fan-out](#wakeup-fan-out)) — routing wakeups by interest is
-  deferred with [Topics](#topics-deferred-to-post-v1) — so the ceiling is the
+  [Wakeup fan-out](#wakeup-fan-out)) — routing wakeups by interest is deferred
+  with [Event-Type Selection](#event-type-selection-post-v1) — so the ceiling
+  is the
   full `C × P`, and the practical limit is DB connection-pool contention.
   Open: what is the realistic connection ceiling per producer app, does the
   pool need partitioning so stream reads can't starve publish writes, and is a
@@ -1565,8 +1617,9 @@ Things intentionally left open for the next round of discussion.
   operator-facing controls exist for archiving or pruning old messages, and
   how does that interact with "arbitrarily replayable"?
 - **Server-side selective delivery** — deliberately out of scope for v1, with
-  its intended shape (topics as evolvable sets of event types) and its own
-  open questions written up in [Topics](#topics-deferred-to-post-v1). The
+  its intended shape (the consumer's `event_modules` list on the wire as an
+  `event_type` selector) and its own open questions written up in
+  [Event-Type Selection](#event-type-selection-post-v1). The
   question that belongs *here* is when to build it: shipping v1 without it
   means every consumer pays for every message its producer publishes, in
   bandwidth and in a decode-and-discard pass, and every producer pays `C × P`
