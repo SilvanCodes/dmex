@@ -1473,13 +1473,69 @@ work is meant to protect:
   again. Possible answers worth weighing: accept the cap and document it, fall
   back to whole-log delivery plus consumer-side filtering above some size
   (correct, just less efficient — and it is precisely v1's behaviour, which is
-  a comfortable fallback to have), or find a compression of the set that does
-  not require the producer to remember anything.
+  a comfortable fallback to have), or compress the set into something of fixed
+  size, which is the next entry.
+- **A fixed-size probabilistic filter is the most promising escape.** Rather
+  than enumerating the types, the consumer sends a **Bloom filter** built from
+  its `event_type` strings — a few hundred base64url bytes regardless of how
+  long the list is — and the producer tests each candidate row's type against
+  it. (For a set that never changes once built, which this one does not, a
+  static-set structure like a binary fuse or XOR filter is smaller still at
+  the same error rate.)
+
+  What makes it fit here is that the error is one-sided, and one-sided in the
+  survivable direction: **no false negatives, so every selected type is
+  guaranteed to be delivered**, and the entire cost of a false positive is
+  that an unwanted row crosses the wire and is dropped. That drop needs no new
+  machinery — it is the skip path v1 already specifies for an `event_type`
+  with no matching module (see [Consuming API](#consuming-api)), so the
+  degraded case of this scheme is exactly the *normal* case of v1, not a new
+  failure mode. It also collapses the whole design space onto one mechanism:
+  an explicit list is a filter with a 0% false-positive rate and unbounded
+  size, sending no selector at all is a filter with a 100% rate and zero size,
+  and a consumer picks its point on that line by sizing the filter — spending
+  URL bytes to buy bandwidth.
+
+  Four things it does not settle:
+  - **Whether the producer expands the filter or tests row by row.** A Bloom
+    filter cannot be pushed into a SQL index; membership is a computation, not
+    something an index can seek on. The producer can sidestep that by
+    expanding the filter *once at connect time* against the event types it
+    actually publishes — which it knows, they are its own event modules —
+    turning it straight back into the `event_type = ANY($1)` list the read
+    path wants. Testing per row instead leaves the read as v1's unfiltered
+    scan with filtering in the application: no index seek, but no regression
+    against v1 either.
+  - **Expansion goes stale, silently.** If the producer expands at connect
+    time and later begins publishing a *new* event type the filter would have
+    accepted, that connection's expanded list does not contain it, and the
+    guarantee quietly weakens to "no false negatives among the types that
+    existed when I connected." Connections here are long-lived, so this is not
+    a corner case. Re-expanding when the producer first publishes an unseen
+    type is the obvious fix and is cheap — but it has to be specified,
+    precisely because the failure is invisible.
+  - **Wakeup routing.** With expansion, routing works exactly as it does for
+    an explicit list. Without it, the `Dispatcher` must test every
+    connection's filter against each published type — a few hashes per
+    connection per publish, cheap in absolute terms but `O(C)` again, which is
+    the amplification the routing existed to remove.
+  - **Readability, and therefore whether it should be the only encoding.** An
+    explicit list says what a subscription is, in a proxy log, at a glance; a
+    base64 blob says nothing and cannot be reversed. That argues for keeping
+    both forms and reaching for the filter only above the size where the list
+    stops fitting.
+
+  One thing it does settle: filter size, hash count, and seed must agree
+  exactly on both sides, so they should be **fixed by DMEx rather than
+  negotiated**. A mismatch would reintroduce false *negatives* — the one error
+  this scheme is chosen for not having — and would do it silently.
 - **Wire form and URL stability** — repeated `event_type=` parameters or one
   delimited list, and whether the set is canonically sorted so a given
   subscription produces a byte-identical URL on every reconnect. That matters
   for the same reason pacing was kept out of the URL: one stable URL per
-  subscription groups cleanly in proxy logs, access logs, and metrics.
+  subscription groups cleanly in proxy logs, access logs, and metrics. A
+  filter encoding gets this property for free, being deterministic in the set
+  and the fixed parameters.
 - **Whether selection should be narrowable below `event_modules`** — a
   consumer that can *decode* twenty types but only *wants* five would
   otherwise have to receive fifteen it discards, or split into two handlers
