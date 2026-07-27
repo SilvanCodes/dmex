@@ -537,24 +537,24 @@ DMEx.Consumer.subscribe(producer_url,
 - A consumer opens `GET /stream` via Phoenix, sending its resume
   position in the **`Last-Event-ID` request header** and its delivery pacing
   in the **`DMEx-Batch-Window` and `DMEx-Max-Batch-Size` request headers**. The
-  route is singular and carries no application segment and no query string at
-  all: a producer application owns exactly one log (see
+  route is singular and carries no application segment, and in v1 no query
+  string either: a producer application owns exactly one log (see
   [Message log](#message-log)) and v1 streams all of it, so there is nothing
   for a path or query parameter to select between, and the app's own hostname
-  already identifies the app. Both pacing headers are optional and fall back
-  to DMEx-supplied defaults (see
+  already identifies the app. (The post-v1 `filter` parameter is the one thing
+  that will ever hang off this URL — see
+  [Event-Type Selection](#event-type-selection-post-v1).) Both pacing headers
+  are optional and fall back to DMEx-supplied defaults (see
   [Batching & framing](#batching--framing-batch_window-max_batch_size)).
-- **The URL carries what is stable and legible; everything a consumer
-  negotiates per connection goes in headers.** That is the line the two
-  mechanisms fall on, and it is why `batch_window` and `max_batch_size` are
-  headers rather than query parameters. In v1 the URL side of that line is
-  empty — one producer, one log, one stream, so there is nothing to name — and
-  it stays empty afterwards: the post-v1 event-type selector is a header too,
-  even though it is subscription *identity* rather than pacing, because it is
-  an opaque binary filter that would bloat every access log while being no
-  more readable in a URL than in a header (see
-  [Event-Type Selection](#event-type-selection-post-v1) for that argument in
-  full). The pacing values change nothing about *which* rows arrive or in what
+- **The URL says what the subscription *is*; headers say how it is *paced*.**
+  That is the line the two mechanisms fall on, and it is why `batch_window`
+  and `max_batch_size` are headers rather than query parameters. In v1 the URL
+  side of that line is empty — one producer, one log, one stream, so there is
+  nothing to select between — but it is where the post-v1 event-type selector
+  lands, since which types a subscription carries changes *which* messages
+  exist for it at all (see
+  [Event-Type Selection](#event-type-selection-post-v1)). The pacing values
+  change nothing about *which* rows arrive or in what
   order, only how they are cut into frames; two connections differing only in
   `batch_window` deliver the same messages in the same order, grouped
   differently. Keeping them out of the URL means one stable URL per
@@ -596,9 +596,10 @@ DMEx.Consumer.subscribe(producer_url,
   pacing is a tuning knob whose defaults must be sane anyway, resumption is a
   correctness mechanism — and resumption is the one the spec gave a header to.
   A generic client that does control its headers (any ordinary HTTP client
-  library) has full access to both. The same limitation extends to the
-  post-v1 selector, where it costs more and is still accepted — see
-  [Event-Type Selection](#event-type-selection-post-v1).
+  library) has full access to both. Note the limitation stops there: the
+  post-v1 event-type selector is a query parameter precisely so that a browser
+  client can still say what it wants to receive (see
+  [Event-Type Selection](#event-type-selection-post-v1)).
 - **Resumption uses the spec's own channel, not a query parameter.**
   `Last-Event-ID` is what the SSE specification defines for exactly this, and
   using it means a bare browser `EventSource` — which sets the header itself on
@@ -1413,10 +1414,10 @@ consumer wasn't asking for it — are not revisited. A consumer that needs that
 history has to reset its cursor deliberately. Whether DMEx should offer
 anything to make that less manual is open.
 
-### The wire form: an XOR filter in `DMEx-Message-Filter`
+### The wire form: an XOR filter in the query string
 
 Two decisions, settled: **the selection travels as an XOR filter**, and it
-travels in a **request header**, not the URL.
+travels in the **URL, as `?filter=<blob>`**.
 
 **Why a filter rather than the names.** `event_type`s are fully-qualified
 module names — `MyApp.Events.OrderPlaced` is 24 characters — so enumerating
@@ -1455,51 +1456,70 @@ the cost of going to 16-bit fingerprints is 1.23 extra bytes per selected type
 **xor16 is the sensible default** and the 8-bit variant an option for
 consumers that know their producer's traffic shape.
 
-**Why a header, reversing the rule in [Transport](#transport-sse-over-http).**
-That rule says identity belongs in the URL and only pacing belongs in headers,
-and a type selector is unambiguously identity — so the rule has to be amended
-rather than quietly broken. The amendment: **the URL carries what is stable
-and legible; opaque per-connection parameters go in headers regardless of
-which kind they are.** Three things drive it, and only the first is about
-size:
+**Why the query string, and why the rule in
+[Transport](#transport-sse-over-http) survives unamended.** That rule puts
+what a subscription *is* in the URL and how it is *paced* in headers. A type
+selector is identity, so it lands in the URL — and two things make that the
+right answer rather than merely the consistent one:
 
-- A multi-kilobyte base64 blob in a query string lands in every access-log
-  line of every intermediary, on a connection that is by design long-lived
-  and re-established often.
-- It is opaque either way. The URL's advantage was that identity is *readable*
-  there, and a filter is not readable anywhere — so putting it in the URL pays
-  the cost of the rule without collecting its benefit.
-- It keeps the URL stable across a change of selection. Under the old rule a
-  consumer editing `event_modules` would mint a new URL and shatter that
-  subscription's grouping in proxy logs and metrics — the exact outcome the
-  rule was introduced to prevent for pacing.
+- **A browser `EventSource` can select.** It sets no request headers beyond
+  `Last-Event-ID`, but the URL is entirely its own. Carrying the filter in a
+  header would have left every browser client receiving its producer's whole
+  log and discarding most of it; carrying it in the query string gives a bare
+  `EventSource` real server-side selection with no client library at all. This
+  is the deciding argument.
+- **Selection changes at deploy cadence, not connection cadence.** The
+  URL-stability half of the rule has force in proportion to how often a value
+  changes, and that is what separates the two cases: an adaptive consumer
+  re-negotiates `batch_window`/`max_batch_size` repeatedly *within* one
+  subscription's lifetime (see
+  [Backpressure & adaptive batching](#backpressure--adaptive-batching)), so
+  those in a URL would mint new URLs continuously, while `event_modules`
+  changes when somebody edits code and ships it. One URL per deployment is
+  precisely the stable grouping the rule is protecting.
 
-So: **`DMEx-Message-Filter`**, alongside `DMEx-Batch-Window` and
-`DMEx-Max-Batch-Size`, following the same conventions — no `X-` prefix
-([RFC 6648](https://www.rfc-editor.org/rfc/rfc6648)), matched case-insensitively,
-and a malformed value is a `400` exactly as a non-integer pacing header is.
-**Absent means the whole log**, which keeps v1's behaviour as the default and
-is what any client that cannot set headers receives.
+The cost, stated plainly: the blob lands in every access-log line of every
+intermediary, and the request-line limit (around 8 KB in both nginx and
+Apache by default) becomes the ceiling rather than a header limit. At xor16
+that is on the order of two thousand event types, and even a conservative 2 KB
+budget leaves several hundred. Note this is exactly **why the filter is
+load-bearing**: spelled-out module names at 25–40 bytes each would exhaust a
+2 KB request line at around sixty types, which is an entirely plausible
+`event_modules` list. The filter is what makes the URL viable, and the URL is
+what makes browser consumers viable.
 
-**The encoding must be pinned bit-for-bit.** The header carries the seed, the
-fingerprint array, and its length; DMEx fixes the fingerprint width, the hash
-construction, the byte layout, and the fact that the hashed key is the UTF-8
-`event_type` string. None of it may be negotiated. This is the one place in
-the protocol where producer and consumer must agree exactly, because
-disagreement does not produce a garbled filter — it produces **false
-negatives**, which is silent message loss and precisely the failure the whole
-scheme was chosen for not having. It also has to be written down as a spec
+**The parameter.** `?filter=<blob>`, where the blob is the filter's
+`{seed, fingerprints}` tuple — the 64-bit seed followed by the fingerprint
+array, big-endian — encoded as **unpadded base64url**
+([RFC 4648 §5](https://www.rfc-editor.org/rfc/rfc4648#section-5); standard
+base64's `+` and `/` would need percent-encoding and `=` padding is noise in a
+query string). No length field is needed: the array length falls out of the
+decoded byte count given the fixed fingerprint width, and the segment length
+the three hash positions are derived from falls out of that. **Absent means
+the whole log**, which keeps v1's behaviour as the default for any client that
+does not ask. A blob that is not valid base64url, or whose decoded length is
+not a seed plus a whole number of fingerprints, is a `400` — the same standard
+`Last-Event-ID` and the pacing headers are held to.
+
+**The encoding must be pinned bit-for-bit.** The blob carries only the seed
+and the array; everything else — the fingerprint width, the hash
+construction, the byte order, and the fact that the hashed key is the UTF-8
+`event_type` string — is fixed by DMEx and carried by neither side. None of it
+may be negotiated. This is the one place in the protocol where producer and
+consumer must agree exactly, because disagreement does not produce a garbled
+filter — it produces **false negatives**, which is silent message loss and
+precisely the failure the whole scheme was chosen for not having. It also has
+to be written down as a spec
 rather than left to the Elixir implementation, since a non-Elixir consumer has
 to reproduce it exactly.
 
-**Accepted regression: a browser `EventSource` cannot select.** It sets no
-request headers beyond `Last-Event-ID`, so it gets the whole log and filters
-client-side. This is a strictly larger loss than the same limitation on pacing
-(where the defaults are merely a tuning question), and it is the one thing the
-query-parameter form would have given for free. It is accepted because the
-fallback is *correct* — whole-log delivery plus consumer-side filtering is
-exactly v1, so a browser client degrades to the shipping behaviour rather than
-to a broken one.
+**What a browser still cannot do is pace itself.** `DMEx-Batch-Window` and
+`DMEx-Max-Batch-Size` remain headers, so an `EventSource` takes the producer's
+defaults (see [Transport](#transport-sse-over-http)). That asymmetry is the
+rule working rather than an inconsistency in it: pacing is a tuning knob whose
+defaults have to be sane anyway, while selection decides what crosses the wire
+at all, and a client with no way to express it pays for that on every message
+for as long as it stays connected.
 
 ### What it would not change
 
@@ -1523,10 +1543,9 @@ work is meant to protect:
 
 - **Subscribe** — no new option. `event_modules` gains a second role, and
   `DMEx.Consumer.Stream` derives the wire values from it.
-- **Transport** — the `DMEx-Message-Filter` request header, per the wire form
-  above, with the amended URL/header rule it rests on. Fixed for a
-  connection's lifetime, for the same reason pacing is: a consumer wanting a
-  different selection reconnects.
+- **Transport** — the `filter` query parameter, per the wire form above.
+  Fixed for a connection's lifetime, for the same reason pacing is: a consumer
+  wanting a different selection reconnects.
 - **Read path** — the loop's query grows one predicate
   (`WHERE event_type = ANY($1) AND id > $2`), which brings back both the
   composite-index requirement (`(event_type, id)`) and the sparse-cursor
@@ -1607,18 +1626,18 @@ work is meant to protect:
   debug affordance.
 - **The default fingerprint width, and whether consumers may choose it.**
   xor16 is the sensible default for the reason given in
-  [the wire form](#the-wire-form-an-xor-filter-in-dmex-message-filter), but a
+  [the wire form](#the-wire-form-an-xor-filter-in-the-query-string), but a
   consumer that knows its producer's traffic shape may rationally want xor8,
   and one reading a log with a single enormous type may want wider. If it is
   selectable it has to be carried in the header and validated, which is one
   more thing that must not be got wrong.
-- **Header size limits.** Header values are capped by the web server and by
-  intermediaries — Cowboy's default `max_header_value_length` is 4096 bytes,
-  nginx's `large_client_header_buffers` 8k — which at xor16 plus base64url
-  puts the practical ceiling somewhere above a thousand event types. That is
-  far beyond any plausible `event_modules` list, but the number should be
-  documented and the server configured deliberately rather than discovered
-  when someone crosses it. At least the failure is loud: a `431` at connect
+- **Request-line limits.** URLs are capped by the web server and by every
+  intermediary — nginx's `large_client_header_buffers` and Apache's
+  `LimitRequestLine` are both around 8 KB by default — which at xor16 plus
+  base64url puts the practical ceiling in the low thousands of event types.
+  That is far beyond any plausible `event_modules` list, but the number should
+  be documented and the limits configured deliberately rather than discovered
+  when someone crosses one. At least the failure is loud: a `414` at connect
   time, not a silently truncated selection.
 - **Filter construction failure.** XOR construction is randomized and can fail
   to peel, retrying with a fresh seed; it succeeds with high probability and
