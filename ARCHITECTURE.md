@@ -544,19 +544,20 @@ DMEx.Consumer.subscribe(producer_url,
   already identifies the app. Both pacing headers are optional and fall back
   to DMEx-supplied defaults (see
   [Batching & framing](#batching--framing-batch_window-max_batch_size)).
-- **The URL says what the subscription *is*; headers say how it is *paced*.**
-  That is the line the two mechanisms fall on, and it is why `batch_window`
-  and `max_batch_size` are headers rather than query parameters. In v1 the
-  left side of that line is empty — one producer, one log, one stream, so the
-  URL has nothing to carry — but the line is the one a future event-type
-  selector would fall on, since the set of types selected changes *which*
-  messages exist for the subscription at all and therefore belongs in the URL
-  (see [Event-Type Selection](#event-type-selection-post-v1)). The pacing
-  values change nothing about *which* rows arrive or in what order, only how
-  they are cut into
-  frames; two connections differing only in `batch_window` deliver the same
-  messages in the same order, grouped differently. Keeping them out of the URL
-  means one stable URL per
+- **The URL carries what is stable and legible; everything a consumer
+  negotiates per connection goes in headers.** That is the line the two
+  mechanisms fall on, and it is why `batch_window` and `max_batch_size` are
+  headers rather than query parameters. In v1 the URL side of that line is
+  empty — one producer, one log, one stream, so there is nothing to name — and
+  it stays empty afterwards: the post-v1 event-type selector is a header too,
+  even though it is subscription *identity* rather than pacing, because it is
+  an opaque binary filter that would bloat every access log while being no
+  more readable in a URL than in a header (see
+  [Event-Type Selection](#event-type-selection-post-v1) for that argument in
+  full). The pacing values change nothing about *which* rows arrive or in what
+  order, only how they are cut into frames; two connections differing only in
+  `batch_window` deliver the same messages in the same order, grouped
+  differently. Keeping them out of the URL means one stable URL per
   subscription across every reconnect, which matters more now than it did
   before: an adaptive consumer re-negotiates its pacing repeatedly over its
   lifetime (see
@@ -595,7 +596,9 @@ DMEx.Consumer.subscribe(producer_url,
   pacing is a tuning knob whose defaults must be sane anyway, resumption is a
   correctness mechanism — and resumption is the one the spec gave a header to.
   A generic client that does control its headers (any ordinary HTTP client
-  library) has full access to both.
+  library) has full access to both. The same limitation extends to the
+  post-v1 selector, where it costs more and is still accepted — see
+  [Event-Type Selection](#event-type-selection-post-v1).
 - **Resumption uses the spec's own channel, not a query parameter.**
   `Last-Event-ID` is what the SSE specification defines for exactly this, and
   using it means a bare browser `EventSource` — which sets the header itself on
@@ -1375,10 +1378,10 @@ Because it has. A subscription already declares `event_modules` — the list of
 event modules it can decode (see [Event Specifications](#event-specifications))
 — and that list is not optional: without it a consumer cannot turn an
 `event_type` back into a struct at all. **That list is the selection.** DMEx
-maps it through each module's `type/0` and sends the resulting `event_type`
-strings as a query parameter on `GET /stream`; the producer adds one predicate
-to its read and streams only matching rows. Nothing new is declared anywhere,
-by anyone.
+maps it through each module's `type/0`, encodes the resulting `event_type`
+strings into a compact filter, and sends it on the `GET /stream` request; the
+producer resolves that filter against its own event types and reads only
+matching rows. Nothing new is declared anywhere, by anyone.
 
 ### What that buys
 
@@ -1410,6 +1413,94 @@ consumer wasn't asking for it — are not revisited. A consumer that needs that
 history has to reset its cursor deliberately. Whether DMEx should offer
 anything to make that less manual is open.
 
+### The wire form: an XOR filter in `DMEx-Message-Filter`
+
+Two decisions, settled: **the selection travels as an XOR filter**, and it
+travels in a **request header**, not the URL.
+
+**Why a filter rather than the names.** `event_type`s are fully-qualified
+module names — `MyApp.Events.OrderPlaced` is 24 characters — so enumerating
+them costs roughly 25–40 bytes per type and a consumer with a few hundred
+modules overruns what proxies and servers will carry. An
+[XOR filter](https://arxiv.org/abs/1912.08258) (Graf & Lemire) encodes the
+same set at **≈1.23 bytes per type at 8-bit fingerprints, ≈2.46 at 16-bit**,
+before base64url. That is a ten- to thirty-fold reduction depending on
+fingerprint width — not a constant size, since the filter still grows with the
+set, but with a small enough constant that the size question stops being
+interesting: a thousand event types fit in a couple of kilobytes at xor16.
+
+XOR filters are the right family here rather than Bloom or cuckoo because the
+set is **static**: built once from `event_modules` and never added to for a
+connection's lifetime. That is exactly the constraint XOR filters trade
+mutability for, and they are ~15% smaller than a Bloom filter at equal error
+and faster to query (three lookups, no probing loop). Binary fuse filters are
+the closely-related successor and smaller still; XOR is chosen for having the
+wider set of implementations across languages, which matters for the
+non-Elixir consumers discussed below.
+
+The error direction is what makes any of this acceptable: **no false
+negatives**, so every type the consumer selected is delivered, and a false
+positive only costs an unwanted row crossing the wire to be dropped by the
+skip path v1 already specifies (see [Consuming API](#consuming-api)).
+
+**Sizing is not about bandwidth percentages, and this is the subtle part.**
+Membership is tested on the *type string*, not per row, so a false positive
+does not sprinkle 0.39% of extra rows across the stream — it admits **one
+entire event type, for the whole life of the connection**. At an 8-bit
+fingerprint (2⁻⁸ ≈ 0.39%), a producer with 100 types and a consumer selecting
+10 expects 90 × 0.0039 ≈ 0.35 spurious types; if the unlucky one is the
+highest-volume type in the system, that connection receives all of it. Since
+the cost of going to 16-bit fingerprints is 1.23 extra bytes per selected type
+— nothing, at these set sizes — and it cuts that probability by 256×,
+**xor16 is the sensible default** and the 8-bit variant an option for
+consumers that know their producer's traffic shape.
+
+**Why a header, reversing the rule in [Transport](#transport-sse-over-http).**
+That rule says identity belongs in the URL and only pacing belongs in headers,
+and a type selector is unambiguously identity — so the rule has to be amended
+rather than quietly broken. The amendment: **the URL carries what is stable
+and legible; opaque per-connection parameters go in headers regardless of
+which kind they are.** Three things drive it, and only the first is about
+size:
+
+- A multi-kilobyte base64 blob in a query string lands in every access-log
+  line of every intermediary, on a connection that is by design long-lived
+  and re-established often.
+- It is opaque either way. The URL's advantage was that identity is *readable*
+  there, and a filter is not readable anywhere — so putting it in the URL pays
+  the cost of the rule without collecting its benefit.
+- It keeps the URL stable across a change of selection. Under the old rule a
+  consumer editing `event_modules` would mint a new URL and shatter that
+  subscription's grouping in proxy logs and metrics — the exact outcome the
+  rule was introduced to prevent for pacing.
+
+So: **`DMEx-Message-Filter`**, alongside `DMEx-Batch-Window` and
+`DMEx-Max-Batch-Size`, following the same conventions — no `X-` prefix
+([RFC 6648](https://www.rfc-editor.org/rfc/rfc6648)), matched case-insensitively,
+and a malformed value is a `400` exactly as a non-integer pacing header is.
+**Absent means the whole log**, which keeps v1's behaviour as the default and
+is what any client that cannot set headers receives.
+
+**The encoding must be pinned bit-for-bit.** The header carries the seed, the
+fingerprint array, and its length; DMEx fixes the fingerprint width, the hash
+construction, the byte layout, and the fact that the hashed key is the UTF-8
+`event_type` string. None of it may be negotiated. This is the one place in
+the protocol where producer and consumer must agree exactly, because
+disagreement does not produce a garbled filter — it produces **false
+negatives**, which is silent message loss and precisely the failure the whole
+scheme was chosen for not having. It also has to be written down as a spec
+rather than left to the Elixir implementation, since a non-Elixir consumer has
+to reproduce it exactly.
+
+**Accepted regression: a browser `EventSource` cannot select.** It sets no
+request headers beyond `Last-Event-ID`, so it gets the whole log and filters
+client-side. This is a strictly larger loss than the same limitation on pacing
+(where the defaults are merely a tuning question), and it is the one thing the
+query-parameter form would have given for free. It is accepted because the
+fallback is *correct* — whole-log delivery plus consumer-side filtering is
+exactly v1, so a browser client degrades to the shipping behaviour rather than
+to a broken one.
+
 ### What it would not change
 
 - **Not a partitioning of the log.** There is still exactly one
@@ -1432,12 +1523,10 @@ work is meant to protect:
 
 - **Subscribe** — no new option. `event_modules` gains a second role, and
   `DMEx.Consumer.Stream` derives the wire values from it.
-- **Transport** — the selected types go in the URL, by the rule already stated
-  in [Transport](#transport-sse-over-http): they change which messages exist
-  for the subscription, so they are identity, not pacing. Absent means
-  everything, so a bare browser `EventSource` keeps working exactly as it does
-  in v1. Fixed for a connection's lifetime, for the same reason pacing is: a
-  consumer wanting a different set reconnects.
+- **Transport** — the `DMEx-Message-Filter` request header, per the wire form
+  above, with the amended URL/header rule it rests on. Fixed for a
+  connection's lifetime, for the same reason pacing is: a consumer wanting a
+  different selection reconnects.
 - **Read path** — the loop's query grows one predicate
   (`WHERE event_type = ANY($1) AND id > $2`), which brings back both the
   composite-index requirement (`(event_type, id)`) and the sparse-cursor
@@ -1449,9 +1538,10 @@ work is meant to protect:
   read-amplification lever described in [Wakeup fan-out](#wakeup-fan-out).
 - **Producer-side validation** — there is none, deliberately. A consumer may
   legitimately name a type the producer has never published (a consumer
-  deployed ahead of the producer that will emit it), so the parameter is an
-  opaque set of strings compared against a text column: no checking against a
-  known-type list, and emphatically no atomizing of consumer-supplied strings,
+  deployed ahead of the producer that will emit it), so the filter is resolved
+  against whatever the producer knows and never checked for plausibility: no
+  rejecting a filter that matches nothing, and emphatically no atomizing of
+  any consumer-supplied string,
   which is the same unbounded-atom-table risk the consumer side already
   refuses to take (see [Event Specifications](#event-specifications)). A name
   that matches nothing simply matches nothing.
@@ -1462,101 +1552,80 @@ work is meant to protect:
 
 ### Open, if and when it lands
 
-- **URL length is the hard one.** `event_type`s are fully-qualified module
-  names (`MyApp.Events.OrderPlaced` is 24 characters), so a consumer with
-  fifty of them builds a multi-kilobyte query string — against proxies and
-  servers that commonly cap request URLs well below what an HTTP client will
-  happily send. Note that the obvious escapes are mostly bad: a body on a
-  `GET` is not reliably proxied, a `POST`-then-`GET` handshake reintroduces
-  exactly the producer-side per-consumer state this design is careful not to
-  have, and hashing the set into a short token needs a registry to resolve it
-  again. Possible answers worth weighing: accept the cap and document it, fall
-  back to whole-log delivery plus consumer-side filtering above some size
-  (correct, just less efficient — and it is precisely v1's behaviour, which is
-  a comfortable fallback to have), or compress the set into something of fixed
-  size, which is the next entry.
-- **A fixed-size probabilistic filter is the most promising escape.** Rather
-  than enumerating the types, the consumer sends a **Bloom filter** built from
-  its `event_type` strings — a few hundred base64url bytes regardless of how
-  long the list is — and the producer tests each candidate row's type against
-  it. (For a set that never changes once built, which this one does not, a
-  static-set structure like a binary fuse or XOR filter is smaller still at
-  the same error rate.)
+- **Whether the producer expands the filter or tests row by row.** A filter
+  cannot be pushed into a SQL index; membership is a computation, not
+  something an index can seek on. The producer can sidestep that by expanding
+  the filter *once at connect time* against its own compiled event modules,
+  turning it into the `event_type = ANY($1)` list the read path wants. Testing
+  per row instead leaves the read as v1's unfiltered scan with filtering in
+  the application: no index seek, but no regression against v1 either — and no
+  expansion to keep current, which the next point is about.
+- **If it expands, it must expand over the producer's event modules, not over
+  its log contents.** The two sources look interchangeable and are not.
+  Expanding over the types the log has actually seen
+  (`SELECT DISTINCT event_type ...`) goes stale silently: a producer's code
+  can know a type it has not yet emitted, and the first emission of it
+  involves no restart and no reconnect, so an open connection keeps an
+  expansion missing a type its consumer genuinely selected. Expanding over the
+  producer's own compiled event modules has no such gap — that set changes
+  only when the producer deploys, and a deploy takes down the web server and
+  with it every SSE connection, since the request process *is* the stream (see
+  [Producer side](#producer-side)). Every affected consumer reconnects and
+  re-expands against the new set, so the repair is forced by the same property
+  that makes producer restarts uneventful, with no re-expansion machinery to
+  build or get wrong.
 
-  What makes it fit here is that the error is one-sided, and one-sided in the
-  survivable direction: **no false negatives, so every selected type is
-  guaranteed to be delivered**, and the entire cost of a false positive is
-  that an unwanted row crosses the wire and is dropped. That drop needs no new
-  machinery — it is the skip path v1 already specifies for an `event_type`
-  with no matching module (see [Consuming API](#consuming-api)), so the
-  degraded case of this scheme is exactly the *normal* case of v1, not a new
-  failure mode. It also collapses the whole design space onto one mechanism:
-  an explicit list is a filter with a 0% false-positive rate and unbounded
-  size, sending no selector at all is a filter with a 100% rate and zero size,
-  and a consumer picks its point on that line by sizing the filter — spending
-  URL bytes to buy bandwidth.
+  Worth recording the trap, since it is the intuitive reading: that a type the
+  producer has only just begun publishing must have been unknown to the
+  consumer too, and so could only ever be a false positive. It does not hold.
+  The two vocabularies are independent — a consumer deployed ahead of the
+  producer legitimately names types the producer has not yet emitted, which is
+  exactly why validation was dropped above — so such a type can be a true
+  positive, and dropping it would be a real false negative. What saves it is
+  the deploy boundary, not the definition.
 
-  Four things to pin down:
-  - **Whether the producer expands the filter or tests row by row.** A Bloom
-    filter cannot be pushed into a SQL index; membership is a computation, not
-    something an index can seek on. The producer can sidestep that by
-    expanding the filter *once at connect time* against its own compiled event
-    modules, turning it straight back into the `event_type = ANY($1)` list the
-    read path wants. Testing per row instead leaves the read as v1's
-    unfiltered scan with filtering in the application: no index seek, but no
-    regression against v1 either — and no expansion to keep current, which the
-    next point is about.
-  - **Expansion must be over the producer's event modules, not over its log
-    contents.** The two sources look interchangeable and are not. Expanding
-    over the types the log has actually seen
-    (`SELECT DISTINCT event_type ...`) goes stale silently: a producer's code
-    can know a type it has not yet emitted, and the first emission of it
-    involves no restart and no reconnect, so an open connection keeps an
-    expansion missing a type its consumer genuinely selected. Expanding over
-    the producer's own compiled event modules has no such gap — that set
-    changes only when the producer deploys, and a deploy takes down the web
-    server and with it every SSE connection, since the request process *is*
-    the stream (see [Producer side](#producer-side)). Every affected consumer
-    reconnects and re-expands against the new set, so the repair is forced by
-    the same property that makes producer restarts uneventful, with no
-    re-expansion machinery to build or get wrong.
-
-    Worth recording the trap, since it is the intuitive reading: that a type
-    the producer has only just begun publishing must have been unknown to the
-    consumer too, and so could only ever be a false positive. It does not
-    hold. The two vocabularies are independent — a consumer deployed ahead of
-    the producer legitimately names types the producer has not yet emitted,
-    which is exactly why validation was dropped above — so such a type can be
-    a true positive, and dropping it would be a real false negative. What
-    saves it is the deploy boundary, not the definition.
-
-    The one residue is a rolling multi-node deploy, where a connection pinned
-    to a node running old code outlives a node running new code that has begun
-    publishing the new type. That belongs to the existing cross-node
-    clustering question (see [Open Questions](#open-questions)), not to this
-    one.
-  - **Wakeup routing.** With expansion, routing works exactly as it does for
-    an explicit list. Without it, the `Dispatcher` must test every
-    connection's filter against each published type — a few hashes per
-    connection per publish, cheap in absolute terms but `O(C)` again, which is
-    the amplification the routing existed to remove.
-  - **Readability, and therefore whether it should be the only encoding.** An
-    explicit list says what a subscription is, in a proxy log, at a glance; a
-    base64 blob says nothing and cannot be reversed. That argues for keeping
-    both forms and reaching for the filter only above the size where the list
-    stops fitting.
-
-  One thing it does settle: filter size, hash count, and seed must agree
-  exactly on both sides, so they should be **fixed by DMEx rather than
-  negotiated**. A mismatch would reintroduce false *negatives* — the one error
-  this scheme is chosen for not having — and would do it silently.
-- **Wire form and URL stability** — repeated `event_type=` parameters or one
-  delimited list, and whether the set is canonically sorted so a given
-  subscription produces a byte-identical URL on every reconnect. That matters
-  for the same reason pacing was kept out of the URL: one stable URL per
-  subscription groups cleanly in proxy logs, access logs, and metrics. A
-  filter encoding gets this property for free, being deterministic in the set
-  and the fixed parameters.
+  The one residue is a rolling multi-node deploy, where a connection pinned to
+  a node running old code outlives a node running new code that has begun
+  publishing the new type. That belongs to the existing cross-node clustering
+  question (see [Open Questions](#open-questions)), not to this one.
+- **Wakeup routing.** With expansion, routing works exactly as it would for an
+  explicit list of types. Without it, the `Dispatcher` must test every
+  connection's filter against each published type — a few hashes per
+  connection per publish, cheap in absolute terms but `O(C)` again, which is
+  the amplification the routing existed to remove.
+- **Whether the producer echoes the resolved type list.** If it expands, it
+  already knows exactly which types tested positive, so it can echo them on
+  the `200` the same way it echoes the pacing values it actually applied (see
+  [Transport](#transport-sse-over-http)). That would hand back the
+  observability an opaque filter destroys — an explicit list says what a
+  subscription is at a glance in a proxy log, and a base64 blob says nothing
+  and cannot be reversed. With an echo a consumer can see its own subscription
+  resolved, spot a false-positive type that is flooding it, and detect an
+  encoding mismatch immediately rather than through missing messages. Open:
+  echo the full list (bounded by the producer's own type count, but
+  potentially large), a count, or a digest — and whether it is always on or a
+  debug affordance.
+- **The default fingerprint width, and whether consumers may choose it.**
+  xor16 is the sensible default for the reason given in
+  [the wire form](#the-wire-form-an-xor-filter-in-dmex-message-filter), but a
+  consumer that knows its producer's traffic shape may rationally want xor8,
+  and one reading a log with a single enormous type may want wider. If it is
+  selectable it has to be carried in the header and validated, which is one
+  more thing that must not be got wrong.
+- **Header size limits.** Header values are capped by the web server and by
+  intermediaries — Cowboy's default `max_header_value_length` is 4096 bytes,
+  nginx's `large_client_header_buffers` 8k — which at xor16 plus base64url
+  puts the practical ceiling somewhere above a thousand event types. That is
+  far beyond any plausible `event_modules` list, but the number should be
+  documented and the server configured deliberately rather than discovered
+  when someone crosses it. At least the failure is loud: a `431` at connect
+  time, not a silently truncated selection.
+- **Filter construction failure.** XOR construction is randomized and can fail
+  to peel, retrying with a fresh seed; it succeeds with high probability and
+  the sets here are tiny, so this is a consumer-side detail rather than a
+  protocol one. Open only in that a bounded retry count, and what to do when
+  it is exhausted, want specifying — falling back to sending no filter at all
+  (whole-log delivery, i.e. v1) rather than failing the subscription.
 - **Whether selection should be narrowable below `event_modules`** — a
   consumer that can *decode* twenty types but only *wants* five would
   otherwise have to receive fifteen it discards, or split into two handlers
