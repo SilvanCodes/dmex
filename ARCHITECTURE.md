@@ -1,7 +1,9 @@
 # DMEx — Architecture
 
 > Status: working draft. The core mechanics below are agreed on; see
-> [Open Questions](#open-questions) for what is still undecided.
+> [Open Questions](#open-questions) for what is still undecided, and
+> [Event-Type Selection](#event-type-selection-post-v1) for the one mechanic
+> deliberately left out of v1.
 
 ## Overview
 
@@ -23,6 +25,17 @@ This buys three things:
 - **Persistent, arbitrarily replayable streams** — messages are never
   removed from the log by the act of consumption. Any consumer can start (or
   restart) from any point in history, including from the very beginning.
+
+**Scope for v1.** A producer streams its whole log, and every subscription
+receives every message on it. There is no server-side selective delivery in
+v1: no filters, no per-subscription subsets, and — here or later — no topics.
+A consumer that cares about only some event types declares the modules it
+knows and ignores everything else locally (see
+[Consuming API](#consuming-api)). Server-side selection is a real requirement
+and it has a design — the consumer's own `event_modules` list, sent as a query
+parameter and applied as a predicate on the producer's read — but it is
+deliberately not in v1; see
+[Event-Type Selection](#event-type-selection-post-v1).
 
 ### References
 
@@ -54,13 +67,10 @@ It is backed by one plain SQL table (SQLite or Postgres):
 CREATE TABLE dmex_messages (
   id          bigserial   PRIMARY KEY,        -- SQLite: INTEGER PRIMARY KEY AUTOINCREMENT
   event_type  text        NOT NULL,
-  topic       text,                           -- NULL = untagged
   data        jsonb       NOT NULL,           -- SQLite: text
   metadata    jsonb       NOT NULL DEFAULT '{}',  -- SQLite: text
   inserted_at timestamptz NOT NULL DEFAULT now()
 );
-
-CREATE INDEX dmex_messages_topic_id_idx ON dmex_messages (topic, id);
 ```
 
 - `id` — a monotonically increasing offset, and the primary means of ordering
@@ -70,10 +80,9 @@ CREATE INDEX dmex_messages_topic_id_idx ON dmex_messages (topic, id);
   (see [Open Questions](#open-questions)) has deleted the tail — a plain
   rowid can be reused, which would break every consumer cursor at once.
 - `event_type` — the type string of the event module the row was published
-  from (see [Event Specifications](#event-specifications)).
-- `topic` — an optional filter tag, declared on the publishing event module
-  (see below). Nullable: an event module that declares no topic writes
-  `NULL` here.
+  from (see [Event Specifications](#event-specifications)). It is the only
+  classification a row carries, and it describes what the message *is*, never
+  who might want to read it (see below).
 - `data` — the JSON-encoded event struct. `jsonb` on Postgres, so operators
   can query inside payloads directly; the accepted cost is that `jsonb`
   normalizes key order and drops duplicate keys, so stored bytes are not
@@ -91,33 +100,36 @@ CREATE INDEX dmex_messages_topic_id_idx ON dmex_messages (topic, id);
 Two notes on the table itself. It is **prefixed** (`dmex_messages`, following
 Oban's `oban_jobs`) because it lives in the host application's own database
 alongside that application's tables, where an unprefixed `messages` would be
-a likely collision. And the only index besides the primary key is the
-composite `(topic, id)` that every producer read uses — see
-[Storage Adapters](#storage-adapters) for why that one is load-bearing, and
-[Open Questions](#open-questions) for whether `event_type` deserves one too.
+a likely collision. And **the primary key is the only index**: every read DMEx
+issues is an `id > cursor` range scan over the whole log (see
+[Producer side](#producer-side)), which the primary key serves directly, so
+v1 ships no secondary index at all — see [Open Questions](#open-questions) for
+whether `event_type` deserves one anyway.
 
 The table is append-only: rows are never updated or deleted by normal
 operation. This is what makes arbitrary replay possible.
 
-`topic` does **not** create a second stream. There is still exactly one
-totally-ordered log, and `id` is drawn from a single per-app sequence
-regardless of topic — a consumer subscribed to one topic simply sees a
-sparse subset of that same id space, so `last_seen` remains directly
-comparable no matter which topic(s) a consumer has subscribed to. Topic is
-purely a selective-delivery filter applied at subscribe time (see
-[Consuming API](#consuming-api) and [Process Architecture](#process-architecture)),
-not a partitioning of the log itself. `topic` is never passed at the publish
-call site — it's declared once on the event module (see
-[Event Specifications](#event-specifications)) and resolved from there on
-every publish of that event type.
+**There is no `topic` column, and its absence is load-bearing.** An earlier
+draft tagged each row with a topic at publish time and filtered subscriptions
+on it. The problem is that this table is immutable, so any classification
+stamped into a row is immutable too: the set of messages a topic denotes would
+be fixed, message by message, at the moment each one was published. Renaming
+or re-scoping a topic could never apply to history; a message published before
+a topic existed could never join it; and a row could belong to exactly one
+topic, forever. That is a *filing* decision — made by and for whoever reads
+the log — welded into the *record of what happened*, and the two have
+different lifetimes.
 
-An **untagged** message (`topic` is `NULL`) is reachable only through an
-unfiltered subscription, and the SQL falls out correctly on its own: `NULL`
-semantics mean a `topic = $1` read never matches such a row, while an
-unfiltered read carries no `topic` predicate at all and therefore sees
-everything. Declaring no topic is legal but consequential, so `use DMEx.Event`
-warns about it at compile time (see
-[Event Specifications](#event-specifications)).
+So the log records only what a message is (`event_type`), never who might want
+it. Selective delivery becomes a separate mechanic resolved at read time,
+where the interested party names the event types it wants and the log is not
+asked to have anticipated the grouping. That mechanic is sketched but
+deliberately **not in v1** — see
+[Event-Type Selection](#event-type-selection-post-v1), which also explains why
+it introduces no *replacement* for `topic` either, named or otherwise. In v1
+there is exactly one stream per producer, every subscription is that whole
+stream, and `id` is drawn from a single per-app sequence, so every consumer's
+`last_seen` is directly comparable with every other's.
 
 ### Producer
 
@@ -177,7 +189,7 @@ direct, minimal mapping onto the
 | --- | --- | --- |
 | `id` | `id:` | The highest message id contained in this frame (see below). DMEx's own client ignores it, resuming from its durable `last_seen` instead, but it is what a generic SSE client echoes back as `Last-Event-ID` — the same header DMEx's client uses (see [Transport](#transport-sse-over-http)), so both resume through one mechanism. |
 | `event` | `event:` | A **transport-level** framing type, not the application's event type. Always `batch` for data frames — there is no single-message frame type (see [Batching & framing](#batching--framing-batch_window-max_batch_size)). This is the only field DMEx itself ever branches on when parsing a chunk. |
-| `data` | `data:` | A JSON **object**, `{"metadata": {...}, "messages": [...]}`: frame-level metadata plus `messages`, a list of **serialized log rows** exactly as stored — `id`, `event_type`, `topic`, `data`, `metadata`, `inserted_at` (see [Message log](#message-log)). **The application's event type lives here, nested under `data`, not in `event:`** (see [Event Specifications](#event-specifications)). |
+| `data` | `data:` | A JSON **object**, `{"metadata": {...}, "messages": [...]}`: frame-level metadata plus `messages`, a list of **serialized log rows** exactly as stored — `id`, `event_type`, `data`, `metadata`, `inserted_at` (see [Message log](#message-log)). **The application's event type lives here, nested under `data`, not in `event:`** (see [Event Specifications](#event-specifications)). |
 | `retry` | `retry:` | The producer's effective heartbeat interval, in ms — a spec-compliant reconnect delay for a generic client, and the pacing signal a DMEx consumer measures silence against (see [Heartbeats](#heartbeats)). Not used for *resumption*, which is driven by `last_seen`. |
 
 Deliberately, the application's event type is **not** carried in SSE's
@@ -205,15 +217,15 @@ re-read-from-the-middle) position.
 `data` has exactly two keys, and only one of them is DMEx's invention:
 
 - **`messages`** — the frame's rows from the log, serialized as they are
-  stored (`id`, `event_type`, `topic`, `data`, `metadata`, `inserted_at` — see
+  stored (`id`, `event_type`, `data`, `metadata`, `inserted_at` — see
   [Message log](#message-log)). No wrapper, no reshaping, no fields lifted out
   or renamed: whatever the log holds is what the frame carries. That keeps
   encoding to "serialize what the read returned" and means the wire format has
   no shape of its own to drift from the schema.
 - **`metadata`** — frame-level facts, computed once at send time. Currently
-  `max_id`: the log's current latest id, given the subscription's `topic`, as
-  of the moment the frame was sent (see
-  [Batching & framing](#batching--framing-batch_window-max_batch_size)). This
+  `max_id`: the log's current latest id as of the moment the frame was sent
+  (see [Batching & framing](#batching--framing-batch_window-max_batch_size)).
+  This
   is the one thing that is genuinely *about the frame* rather than about any
   row in it, which is why it needs a home of its own — stamping it into every
   row would repeat it up to `max_batch_size` times and invite a reader to
@@ -227,9 +239,11 @@ reserved key names a publisher has to avoid.
 
 The rest of each row is **DMEx's** half: `id` drives resumption and
 [duplicate suppression](#consuming-api), `event_type` selects the module to
-decode into. Neither reaches application code — a handler receives its decoded
-struct and the row's `metadata`, nothing else, so no consumer ever has to know
-the log row exists.
+decode into — and, since a v1 subscription is the producer's whole log,
+decides whether the row is delivered to the handler at all (see
+[Consuming API](#consuming-api)). Neither reaches application code — a handler
+receives its decoded struct and the row's `metadata`, nothing else, so no
+consumer ever has to know the log row exists.
 
 `DMEx.Message` models a **frame**, not a single message: one struct per SSE
 chunk, holding the frame's metadata and the list of messages it carries. It
@@ -253,7 +267,7 @@ publishing application — the same shape as
 
 ```elixir
 defmodule MyApp.Events.OrderPlaced do
-  use DMEx.Event, topic: "orders"
+  use DMEx.Event
 
   @derive JSON.Encoder
   defstruct [:order_id, :customer_id, :total]
@@ -269,23 +283,16 @@ end
   submodule without their wire types colliding. Module naming is the single
   source of truth for wire type; it can't drift from what the module is
   actually called.
-- `topic:` is the one thing `use DMEx.Event` still takes explicitly, giving
-  the module `type/0` and `topic/0` callbacks that `publish/3` reads when
-  appending to the log — where `event_type` is the column that then travels
-  inside each row of the `DMEx.Message`
-  [data envelope](#message-envelope), never
-  `DMEx.Message.event` itself, which stays transport-level (see above).
-  `topic` is a property of the *event type*, not something a caller chooses
-  per publish — every `OrderPlaced` is on the `"orders"` topic, always.
-- **`topic:` is optional, but omitting it warns at compile time.** An event
-  module that declares no topic publishes rows with `topic: NULL`, and no
-  topic-filtered subscription can ever match those — they reach unfiltered
-  subscribers only (see [Message log](#message-log)). That is a perfectly
-  reasonable choice for an app whose consumers all read the whole log, and a
-  silent mistake everywhere else, which is exactly the shape of thing a
-  warning is for: `use DMEx.Event` emits a compiler warning naming the
-  module, rather than either failing the build or saying nothing. `topic/0`
-  returns `nil` for such a module.
+- **`use DMEx.Event` takes no options at all.** Its whole job is to give the
+  module a `type/0` callback that `publish/3` reads when appending — where
+  `event_type` is the column that then travels inside each row of the
+  `DMEx.Message` [data envelope](#message-envelope), never
+  `DMEx.Message.event` itself, which stays transport-level (see above). In
+  particular there is no `topic:` option, and no delivery-grouping option of
+  any other name: an event module declares what the event *is*, and nothing
+  about who should receive it. Who receives it is the *consumer's* statement to
+  make, and it already makes it — see
+  [Event-Type Selection](#event-type-selection-post-v1).
 - The struct fields are the event's full, versioned shape. Evolving an
   event's shape is scoped to editing that one module (see
   [Open Questions](#open-questions) on schema versioning).
@@ -295,7 +302,12 @@ end
   rather than dynamically atomizing whatever string the producer sent —
   turning arbitrary attacker-controlled strings into atoms is an
   unbounded-atom-table risk, so the mapping is always consumer-declared, not
-  inferred.
+  inferred. In v1 that list does double duty: because a subscription is the
+  producer's entire log, `event_modules` is also the consumer's *filter* (see
+  [Consuming API](#consuming-api)) — and it is the same list that would later
+  become the wire-level selector sent to the producer, which is why no
+  separate grouping concept is needed anywhere (see
+  [Event-Type Selection](#event-type-selection-post-v1)).
 
 ## Publishing API
 
@@ -311,15 +323,14 @@ the database** — nothing more. `publish/3`:
 
 - serializes the event struct with Elixir's native `JSON` module
   (`JSON.encode!/1`, via `@derive JSON.Encoder` on the event struct);
-- reads `event_type` and `topic` off the struct's own module
-  (`OrderPlaced.type/0` / `OrderPlaced.topic/0` — never passed as call
-  arguments; `topic` may be `nil`, which is inserted as `NULL`);
+- reads `event_type` off the struct's own module (`OrderPlaced.type/0` — never
+  passed as a call argument);
 - passes `metadata` through untouched — the producer module is not recorded
   in it, since `event_type` is fully qualified and already identifies the
   publishing application (see [Producer](#producer));
-- does a single local Ecto `insert` (`event_type`, `topic`, `data`,
-  `metadata`) via the configured storage adapter, and returns the assigned
-  `id` (offset) of the row.
+- does a single local Ecto `insert` (`event_type`, `data`, `metadata`) via
+  the configured storage adapter, and returns the assigned `id` (offset) of
+  the row.
 
 Note that `event_type` is its own column here (see
 [Message log](#message-log)), even though on the wire it travels nested inside
@@ -388,7 +399,6 @@ end
 
 ```elixir
 DMEx.Consumer.subscribe(producer_url,
-  topic: "orders",
   event_modules: [MyApp.Events.OrderPlaced],
   handler: MyApp.OrderHandler,
   start: :beginning,       # :beginning (default) | :latest | <id>; first run only
@@ -405,11 +415,14 @@ DMEx.Consumer.subscribe(producer_url,
   connection to a remote producer's endpoint, resuming from the `last_seen`
   DMEx itself has durably persisted (there is no `last_seen` argument: DMEx
   owns that bookkeeping and sends it as `Last-Event-ID`, see
-  [Transport](#transport-sse-over-http)), passing `topic` so the producer only
-  streams matching messages (omitting `topic` subscribes to everything on that
-  app's log), and sending `batch_window`/`max_batch_size` as request headers to
-  control delivery pacing (see
+  [Transport](#transport-sse-over-http)), and sending
+  `batch_window`/`max_batch_size` as request headers to control delivery
+  pacing (see
   [Batching & framing](#batching--framing-batch_window-max_batch_size)).
+  **There is no filter option of any kind**: a v1 subscription is the
+  producer's whole log, and `event_modules` is what narrows it, locally (see
+  [Event-Type Selection](#event-type-selection-post-v1) for how that same list
+  later becomes a server-side selector, without gaining a new option here).
 - **`batch_window` and `max_batch_size` are a preference, not a setting.**
   They are what the consumer asks for on the *first* connect and what it
   converges back toward when it is keeping up; the producer may clamp them to
@@ -432,15 +445,15 @@ DMEx.Consumer.subscribe(producer_url,
   subscription's identity — `MyApp.OrderHandler` has exactly one cursor,
   wherever it reads from. This keeps the bookkeeping table trivial (handler
   module → id) and makes the cursor mean something a developer can reason
-  about: "how far this piece of code has got," not "how far some
-  URL-plus-topic tuple has got." Two consequences follow, and both are worth
-  knowing before they bite:
+  about: "how far this piece of code has got," not "how far some producer URL
+  has got." Two consequences follow, and both are worth knowing before they
+  bite:
   - **One live subscription per handler module.** Subscribing the same handler
-    to two producers, or to two topics on one producer, would have both
-    sharing and clobbering a single cursor. DMEx therefore registers each
-    stream under its handler module and rejects a second `subscribe/2` for a
-    handler that already has one running — a handler per stream is the model,
-    and enforcing it is cheaper than debugging a cursor that jumps around.
+    to two producers would have both sharing and clobbering a single cursor.
+    DMEx therefore registers each stream under its handler module and rejects
+    a second `subscribe/2` for a handler that already has one running — a
+    handler per stream is the model, and enforcing it is cheaper than
+    debugging a cursor that jumps around.
   - **Renaming a handler module resets its cursor**, and the next start
     therefore replays the producer's log from the beginning. That is a routine
     refactor with a decidedly non-routine consequence, so a rename wants a
@@ -469,9 +482,20 @@ DMEx.Consumer.subscribe(producer_url,
   `metadata`. **Picking the handler's arguments out of the row is the
   consumer's job**, and the only place it happens — the producer ships rows
   verbatim (see [Message Envelope](#message-envelope)), so this is the single
-  point where the log's shape is translated into the application's. An
-  `event_type` with no matching module is surfaced as an error/unknown-event
-  rather than silently guessed at.
+  point where the log's shape is translated into the application's.
+- **An `event_type` with no matching module is skipped, not an error.** This
+  is the direct consequence of v1 having no server-side selection: a
+  subscription receives the producer's entire log, so rows the consumer has no
+  module for are the normal case, not a fault. Such a row advances `last_seen`
+  exactly as a handled one does — it must, or a consumer would wedge on the
+  first event type it doesn't know — and invokes nothing. `event_modules` is
+  therefore the subscription's filter, applied on the consumer after the bytes
+  have already crossed the wire; the deferred selection mechanic moves that
+  same list to the producer so they never cross it (see
+  [Event-Type Selection](#event-type-selection-post-v1)). Skips are worth a
+  telemetry event — a consumer silently discarding most of a stream and a
+  consumer silently discarding the one type it wanted look identical
+  otherwise.
 - **Suppresses duplicates itself, by id.** Before running a handler, the
   stream drops any row whose `id` is `<= last_seen`. This needs no
   new state and no dedupe table: delivery within a subscription is strictly
@@ -510,25 +534,30 @@ DMEx.Consumer.subscribe(producer_url,
 
 ## Transport: SSE over HTTP
 
-- A consumer opens `GET /stream?topic=<topic>` via Phoenix, sending its resume
+- A consumer opens `GET /stream` via Phoenix, sending its resume
   position in the **`Last-Event-ID` request header** and its delivery pacing
   in the **`DMEx-Batch-Window` and `DMEx-Max-Batch-Size` request headers**. The
-  route is singular and carries no application segment: a producer application
-  owns exactly one log (see [Message log](#message-log)), so there is nothing
-  for a path parameter to select between, and the app's own hostname already
-  identifies it. `topic` is optional (omitting it means "everything,"
-  including untagged messages); so are both pacing headers, which fall back to
-  DMEx-supplied defaults (see
+  route is singular and carries no application segment, and in v1 no query
+  string either: a producer application owns exactly one log (see
+  [Message log](#message-log)) and v1 streams all of it, so there is nothing
+  for a path or query parameter to select between, and the app's own hostname
+  already identifies the app. (The post-v1 `filter` parameter is the one thing
+  that will ever hang off this URL — see
+  [Event-Type Selection](#event-type-selection-post-v1).) Both pacing headers
+  are optional and fall back to DMEx-supplied defaults (see
   [Batching & framing](#batching--framing-batch_window-max_batch_size)).
 - **The URL says what the subscription *is*; headers say how it is *paced*.**
   That is the line the two mechanisms fall on, and it is why `batch_window`
-  and `max_batch_size` are headers rather than query parameters. `topic` (and
-  its absence) selects which messages exist for this subscription at all —
-  change it and you have a different stream. The pacing values change nothing
-  about *which* rows arrive or in what order, only how they are cut into
-  frames; two connections differing only in `batch_window` deliver the same
-  messages in the same order, grouped differently. Keeping them out of the URL
-  means one stable URL per
+  and `max_batch_size` are headers rather than query parameters. In v1 the URL
+  side of that line is empty — one producer, one log, one stream, so there is
+  nothing to select between — but it is where the post-v1 event-type selector
+  lands, since which types a subscription carries changes *which* messages
+  exist for it at all (see
+  [Event-Type Selection](#event-type-selection-post-v1)). The pacing values
+  change nothing about *which* rows arrive or in what
+  order, only how they are cut into frames; two connections differing only in
+  `batch_window` deliver the same messages in the same order, grouped
+  differently. Keeping them out of the URL means one stable URL per
   subscription across every reconnect, which matters more now than it did
   before: an adaptive consumer re-negotiates its pacing repeatedly over its
   lifetime (see
@@ -567,7 +596,10 @@ DMEx.Consumer.subscribe(producer_url,
   pacing is a tuning knob whose defaults must be sane anyway, resumption is a
   correctness mechanism — and resumption is the one the spec gave a header to.
   A generic client that does control its headers (any ordinary HTTP client
-  library) has full access to both.
+  library) has full access to both. Note the limitation stops there: the
+  post-v1 event-type selector is a query parameter precisely so that a browser
+  client can still say what it wants to receive (see
+  [Event-Type Selection](#event-type-selection-post-v1)).
 - **Resumption uses the spec's own channel, not a query parameter.**
   `Last-Event-ID` is what the SSE specification defines for exactly this, and
   using it means a bare browser `EventSource` — which sets the header itself on
@@ -584,9 +616,9 @@ DMEx.Consumer.subscribe(producer_url,
   rather than an integer alone:
   - **an integer id** — resume after it, the ordinary case;
   - **`latest`** — start from the tip: the producer resolves it against the
-    log's current `max(id)` and streams nothing until the next matching
-    publish. This is how a consumer that only cares about what happens from
-    now on skips history, without a preflight request or a second parameter
+    log's current `max(id)` and streams nothing until the next publish. This
+    is how a consumer that only cares about what happens from now on skips
+    history, without a preflight request or a second parameter
     (see [Consuming API](#consuming-api), where it is the `:latest` atom);
   - **absent** — from id 0, i.e. the whole log. A first connection with no
     stated position gets everything, which is also what a fresh `EventSource`
@@ -596,13 +628,9 @@ DMEx.Consumer.subscribe(producer_url,
     a bug worth hearing about rather than being handed an arbitrary slice of
     the log.
 
-  Resolving `latest` against the *global* `max(id)` is correct even for a
-  topic-filtered subscription: ids come from one sequence (see
-  [Message log](#message-log)), so everything at or below that value is
-  already published, whatever its topic.
-- The producer then streams every message with `id > last_seen` (and matching
-  `topic`, if given), in ascending order, followed by new matching messages
-  live as they're published, all framed identically as batch frames.
+- The producer then streams every message with `id > last_seen`, in ascending
+  order, followed by new messages live as they're published, all framed
+  identically as batch frames.
 - The producer never turns a connect attempt away for load reasons. There is
   no `503`/`Retry-After` admission control, because there is no aggregate
   budget to enforce it against — see
@@ -662,12 +690,12 @@ precise `last_seen`, never "redo the whole batch." Since every frame is a
 batch frame, there is no second path this could ever drift from.
 
 Every frame carries `max_id` in its frame-level `data.metadata` (see
-[Message Envelope](#message-envelope)): the log's current latest id, given
-the subscription's `topic`, as of the moment the frame was sent — one value
-per frame, since that is what a single read produces. Diffing a message's
-`id` against `max_id` is the "am I falling behind" signal — useful
-for consumer telemetry and alerting. Note that it is **not** the mechanism
-that protects the producer: that is the loop's own structure (see
+[Message Envelope](#message-envelope)): the log's current latest id as of the
+moment the frame was sent — one value per frame, since that is what a single
+read produces. Diffing a message's `id` against `max_id` is the "am I falling
+behind" signal — useful for consumer telemetry and alerting. Note that it is
+**not** the mechanism that protects the producer: that is the loop's own
+structure (see
 [Producer side](#producer-side)), which holds regardless of whether any
 consumer is paying attention to `max_id`.
 
@@ -687,7 +715,7 @@ already handle (see
 
 When a connection is caught up and the log is quiet, the producer sends
 nothing for as long as no one publishes — potentially hours on a
-low-traffic topic. To keep the connection alive and observable, the producer
+low-traffic log. To keep the connection alive and observable, the producer
 emits an SSE **comment frame** (`: hb`) on an idle interval. Comment lines
 are ignored by every spec-compliant SSE client, so this never pollutes the
 message stream or requires consumer-side handling.
@@ -780,9 +808,9 @@ because the request *is* the connection — see
     is on the handler); the message is simply gone from the consumer's
     perspective.
   - **`:dead_message`** — same as `:skip` (advance `last_seen`, keep going),
-    but first the failing message — its `event_type`, `topic`, original log
-    `id`, `data`, `metadata`, the producer URL it arrived from, the failure
-    reason, and the attempt count — is written to a `dead_messages` table via the
+    but first the failing message — its `event_type`, original log `id`,
+    `data`, `metadata`, the producer URL it arrived from, the failure reason,
+    and the attempt count — is written to a `dead_messages` table via the
     consumer's own storage adapter, in the same transaction as the
     `last_seen` advance. Unlike `last_seen`, `dead_messages` is **one table
     shared across all of a consumer's subscriptions**, not one per
@@ -996,36 +1024,32 @@ it:
 
 The cursor is a **single id: the last one actually sent.** There is no
 separate "covered-through" cursor, and no upper bound on the read either.
-Every iteration issues the same query (shown topic-filtered; an unfiltered
-subscription drops the `topic` predicate and takes `max(id)` over the whole
-log, which the primary key on `id` serves directly — and only that form sees
-untagged rows, since `topic = $1` never matches `NULL`):
+Every connection issues exactly the same query, with no predicate but the
+cursor:
 
 ```sql
-SELECT id, event_type, topic, data, metadata,
-       (SELECT max(id) FROM dmex_messages WHERE topic = $1) AS max_id
+SELECT id, event_type, data, metadata,
+       (SELECT max(id) FROM dmex_messages) AS max_id
   FROM dmex_messages
- WHERE topic = $1 AND id > $2
+ WHERE id > $1
  ORDER BY id
- LIMIT $3
+ LIMIT $2
 ```
 
 Two properties of this query are worth being explicit about:
 
-- **A second cursor would buy nothing.** The concern it would address is
-  that a topic is a sparse subset of a single id sequence, so re-reading from
-  the last *sent* id appears to rescan long stretches of known-empty id
-  space. It doesn't: with the composite `(topic, id)` index (see
-  [Storage Adapters](#storage-adapters)) the scan happens **inside that
-  topic's index slice**, where the intervening ids simply do not appear. An
-  index seek to `(topic, cursor)` costs the same whether the next matching
-  row is at `cursor + 1` or `cursor + 10_000_000`. A second cursor is an
-  optimization for an index layout DMEx does not use, and it would add an
-  invariant — "everything below this id is accounted for" — that has to be
-  maintained correctly for no benefit.
+- **A single cursor is unambiguously sufficient**, because with no filtering
+  the rows above the cursor are *dense*: the next id is the next row, so
+  "resume after the last id sent" and "resume after the last id covered" are
+  the same number and there is nothing a second cursor could distinguish. The
+  question only becomes live with server-side selection, where a subscription
+  sees a sparse subset of one id sequence and re-reading from the last *sent*
+  id means scanning id space known to hold nothing for it — a cost an index on
+  the selecting column answers, and a decision deferred with the rest of
+  [Event-Type Selection](#event-type-selection-post-v1).
 - **`max_id` comes back on the same round trip**, as a correlated scalar
-  subquery evaluated once per read. On the same `(topic, id)` index that is
-  a single descent to the rightmost entry. There is no separate latest-id
+  subquery evaluated once per read. On the primary key that is a single
+  descent to the rightmost entry. There is no separate latest-id
   query, so a design paying `C / batch_window` extra queries per second
   against the same database taking the writes is avoided. When the read
   returns zero rows the frame is skipped entirely, so the absent `max_id`
@@ -1039,10 +1063,16 @@ messages behind issue exactly the same query with exactly the same bound.
 
 The tradeoff, stated plainly: every connection issues its own queries, so
 `C` connections at the tip with publish rate `P` cost up to `C × P` reads
-per second — reduced by mailbox coalescing, and substantially further by
-[topic-scoped wakeups](#topic-scoped-wakeups), which mean a publish only
-wakes the connections that could actually match it. In practice the binding
-constraint is **database connection-pool contention**, not raw query load.
+per second — reduced by [wakeup coalescing](#wakeup-coalescing) and by
+`batch_window`, which caps any one connection at one read per window however
+fast the log is being written. In v1 that is the whole of it: with no
+server-side selection, every publish is potentially relevant to every
+connection, so there is nothing to route wakeups by and `C × P` is the honest
+ceiling. Cutting it to per-event-type interest is one of the concrete payoffs
+of [Event-Type Selection](#event-type-selection-post-v1), and it is worth
+knowing that the lever exists before the ceiling is hit. In practice the
+binding constraint is **database connection-pool contention**, not raw query
+load.
 That is a real ceiling — but it degrades gradually and can be raised with
 hardware, traded against a failure mode where one unresponsive client
 exhausts the host application's memory. See
@@ -1070,7 +1100,7 @@ Two transport options, both set on the web server's listener:
   most likely place and the case a heartbeat-based check structurally
   cannot see (see [Heartbeats](#heartbeats)).
 - **`{keepalive, true}`, with `TCP_KEEPIDLE`/`TCP_KEEPINTVL` tuned** — for
-  the case `send_timeout` cannot reach. On a low-traffic topic a peer can
+  the case `send_timeout` cannot reach. On a low-traffic log a peer can
   vanish without sending FIN or RST (power loss, NAT rebind), leaving an
   idle connection whose only traffic is heartbeats. Those are a few bytes,
   the buffer never fills, every `send` returns `:ok` — so `send_timeout`
@@ -1149,18 +1179,18 @@ belt-and-suspenders dispatch pattern from
 a new one. Both engines run the same per-app `DMEx.Dispatcher` GenServer;
 they differ only in whether it also has `LISTEN`/`NOTIFY` available.
 
-- **Postgres**: `publish/3` issues `NOTIFY dmex_<app>, <topic>` alongside the
+- **Postgres**: `publish/3` issues `NOTIFY dmex_<app>` alongside the
   insert, in the same transaction (via `Postgrex.Notifications`, the same
-  mechanism `Oban.Notifier` and EventStore's subscriptions use). Postgres
+  mechanism `Oban.Notifier` and EventStore's subscriptions use). The
+  notification carries an **empty payload** — there is no routing key in v1,
+  because there is nothing to route by: every connection reads the whole log
+  and so every publish is relevant to all of them. Postgres
   delivers notifications at COMMIT, which is exactly right: a row is never
   announced before it is visible, and — given the per-app append
   serialization from [Append ordering](#append-ordering-id-gaps) —
   notification order follows commit order. `DMEx.Dispatcher` `LISTEN`s and,
-  on notification, broadcasts a bare `:wakeup` to the stream processes
-  registered under that topic (see [Producer side](#producer-side)) via a
-  `Registry`. An untagged publish carries an empty payload, which the
-  `Dispatcher` routes to the wildcard key alone — no topic-scoped connection
-  could match such a row anyway.
+  on notification, broadcasts a bare `:wakeup` to every registered stream
+  process (see [Producer side](#producer-side)) via a `Registry`.
 - **Polling, both engines**: the same `DMEx.Dispatcher` also polls on a fixed
   interval (e.g. every second) regardless of notifications received, exactly
   as Oban's stager polls even with `LISTEN`/`NOTIFY` active. This is what
@@ -1174,43 +1204,39 @@ they differ only in whether it also has `LISTEN`/`NOTIFY` available.
 
 Note what the `Dispatcher` does **not** do: it does not read rows, and it
 does not fan out data. Each stream reads for itself, bounded by its own
-`max_batch_size`. A notification payload carries **only a routing key, never
-a range or an id** — the loop reads from its own cursor to whatever is there
-now, so a range in the payload would be information nothing consumes. The
-cursor in each stream is the authority; the notification is only ever a hint
-that work may exist.
+`max_batch_size`. A notification carries **no payload at all — never a range,
+an id, or a row** — because the loop reads from its own cursor to whatever is
+there now, so anything in the payload would be information nothing consumes.
+The cursor in each stream is the authority; the notification is only ever a
+hint that work may exist.
 
 This keeps `DMEx.Dispatcher` to roughly "hold the `LISTEN` connection,
 broadcast an atom, run the poll timer" — a few dozen lines, not a component
 with its own failure modes. It also means the one shared per-app process
 never holds message data on any connection's behalf.
 
-#### Topic-scoped wakeups
+#### Wakeup fan-out
 
-Wakeups are routed by `topic`, not broadcast to every connection. This is
-the main lever on the read amplification described in
-[Producer side](#producer-side): a publish to `orders` wakes only the
-connections that could match it, so the cost falls from `C × P` to roughly
-`Σ_topic (C_topic × P_topic)` — proportional to actual per-topic interest
-rather than to the cross product of every consumer with every publish.
+Every publish wakes every connection. With no server-side selection there is
+no routing key to scope a wakeup by, so `Dispatcher` broadcasts to all
+registered streams and each decides for itself — by reading — whether there is
+anything to send. This is the fan-out behind the `C × P` read ceiling in
+[Producer side](#producer-side), and routing wakeups by `event_type` is the
+first thing [Event-Type Selection](#event-type-selection-post-v1) would buy
+back.
 
-Two details this has to get right:
+One detail this still has to get right, and it matters more without routing:
 
-- **Unfiltered subscriptions.** Omitting `topic` on `subscribe/2` means
-  "everything," so those connections register under a wildcard key and are
-  woken by every publish regardless of topic. Amplification is therefore
-  `C_unfiltered × P + Σ_topic (C_topic × P_topic)`; the win is real but
-  scales with how many consumers actually scope themselves.
-- **The poll must not undo it.** A poll that unconditionally wakes every
-  connection re-creates a `C`-per-interval thundering herd — at a thousand
-  connections and a one-second interval, a thousand reads per second even
-  on a completely idle log. Instead the `Dispatcher` polls
-  `SELECT topic, max(id) FROM dmex_messages WHERE id > $1 GROUP BY topic`,
-  tracking the highest id it has already announced, and broadcasts only to
-  the topics that actually changed. One cheap query per interval, zero
-  wakeups when nothing was published. Untagged rows come back as a `NULL`
-  group, which maps to the wildcard key — waking exactly the unfiltered
-  connections that can see them, and nothing else.
+- **The poll must not wake connections for nothing.** A poll that
+  unconditionally wakes every connection re-creates a `C`-per-interval
+  thundering herd — at a thousand connections and a one-second interval, a
+  thousand reads per second even on a completely idle log. Instead the
+  `Dispatcher` polls `SELECT max(id) FROM dmex_messages`, compares it against
+  the highest id it has already announced, and broadcasts only if it moved.
+  One cheap query per interval — a single index descent, no scan — and zero
+  wakeups when nothing was published. So the idle case costs one query per
+  interval per *app*, not per connection; it is only a genuinely busy log that
+  pays the fan-out.
 
 #### Wakeup coalescing
 
@@ -1259,25 +1285,25 @@ needs to support, at minimum:
 - Appending a message and returning its assigned id, under the per-app
   append serialization described in
   [Append ordering](#append-ordering-id-gaps).
-- Range-scanning messages with `id > cursor` (optionally filtered by
-  `topic`), in id order, with a `LIMIT` — the single read every connection
-  loop issues, whether it is catching up or tailing (see
-  [Producer side](#producer-side)). This wants a composite index on
-  `(topic, id)`, not just `id`: with topic filtering the matching rows are a
-  sparse subset of the id space, and an `id`-only index degrades to a scan
-  on the largest table in the system. Unfiltered subscriptions scan by `id`
-  alone and are served by the primary key; they are also the only reads that
-  see untagged (`topic IS NULL`) rows.
-- Returning the latest `id` for the subscription's `topic` **as part of that
-  same read**, as a correlated scalar subquery, for stamping `max_id`. This
-  is not a separate capability and must not be a separate round trip: on the
-  `(topic, id)` index it is one descent to the rightmost entry, folded into
-  a query the loop was issuing anyway.
-- Reading `topic, max(id) ... GROUP BY topic` above a given id, for the
-  `Dispatcher`'s poll (see [Topic-scoped wakeups](#topic-scoped-wakeups)) —
-  Postgres's fallback path and SQLite's only path.
+- Range-scanning messages with `id > cursor`, in id order, with a `LIMIT` —
+  the single read every connection loop issues, whether it is catching up or
+  tailing (see [Producer side](#producer-side)). It takes no other predicate,
+  so the primary key serves it directly and no secondary index is needed.
+- Returning the log's latest `id` **as part of that same read**, as a
+  correlated scalar subquery, for stamping `max_id`. This is not a separate
+  capability and must not be a separate round trip: it is one descent to the
+  rightmost primary-key entry, folded into a query the loop was issuing
+  anyway.
+- Reading `max(id)` for the `Dispatcher`'s poll (see
+  [Wakeup fan-out](#wakeup-fan-out)) — Postgres's fallback path and SQLite's
+  only path.
 
-The schema is intentionally minimal so it maps cleanly onto both engines.
+The schema is intentionally minimal so it maps cleanly onto both engines, and
+the read surface is deliberately narrower still: three shapes, all of them
+keyed on `id` alone. Selective reads — a range scan restricted to a set of
+event types — are the capability this behaviour would have to grow for
+[Event-Type Selection](#event-type-selection-post-v1), and the one that would
+bring an index requirement with it.
 
 The same `DMEx.Storage` behaviour (and the same two adapters) is reused on
 the consumer side for its own local bookkeeping — a `last_seen` table keyed by
@@ -1332,6 +1358,312 @@ for any other data that application owns. Achieving HA for a given stream is
 the same problem as achieving HA for that application's database (e.g.
 Postgres replication/failover), and is out of scope for DMEx itself.
 
+## Event-Type Selection (post-v1)
+
+Server-side selective delivery — a consumer receiving part of a producer's log
+rather than all of it — is a real requirement, and this is the shape it is
+expected to take. **None of it is in v1.** v1 streams whole logs and filters
+consumer-side (see [Consuming API](#consuming-api)); everything in this
+section is a design direction, recorded so the v1 decisions above stay
+compatible with it and so the reasoning isn't rediscovered later. It is not a
+description of shipped behaviour.
+
+**There are no topics** — not as a column (see [Message log](#message-log)),
+and not as a separate named mechanic either. A topic is a name standing for a
+set of event types, and a name is a second vocabulary somebody has to define,
+publish, version, discover, and keep in sync with the types it names. Every
+one of those costs is paid to describe something the consumer has already
+said.
+
+Because it has. A subscription already declares `event_modules` — the list of
+event modules it can decode (see [Event Specifications](#event-specifications))
+— and that list is not optional: without it a consumer cannot turn an
+`event_type` back into a struct at all. **That list is the selection.** DMEx
+maps it through each module's `type/0`, encodes the resulting `event_type`
+strings into a compact filter, and sends it on the `GET /stream` request; the
+producer resolves that filter against its own event types and reads only
+matching rows. Nothing new is declared anywhere, by anyone.
+
+### What that buys
+
+- **One list, two jobs, no drift.** A separately-defined grouping can always
+  disagree with reality — naming a type the consumer cannot decode, or
+  omitting one it can, either of which is a silent bug. A selection *derived
+  from* `event_modules` is exactly the set of types the handler is equipped
+  for, by construction, and cannot be otherwise.
+- **Arbitrary subsets, no coordination.** Any consumer selects any set of
+  types; sets overlap freely between consumers and nobody has to agree on
+  them. No producer-side curation, and no consumer blocked waiting for a
+  producer to define the grouping it happens to need.
+- **Evolvable, in the place it is read.** Changing what a subscription
+  receives is editing a list in the consumer's own code — the same edit that
+  makes it *able* to handle the new type in the first place. An ordinary code
+  change, an ordinary deploy, an ordinary reconnect; no remote definition
+  changing under a running consumer.
+- **The producer stays stateless about consumers.** The selection travels on
+  the request, per connection, and nothing about it is stored. The
+  ["producer holds nothing"](#consumer) property survives intact — a
+  producer-side registry of named groupings would have been the first thing to
+  chip at it.
+
+One consequence to know before it bites: **adding a module to `event_modules`
+selects that type from the cursor forward, not from the beginning.** The
+cursor is a single id and only ever moves forward, so historical rows of the
+newly-selected type — everything below `last_seen`, published while the
+consumer wasn't asking for it — are not revisited. A consumer that needs that
+history has to reset its cursor deliberately. Whether DMEx should offer
+anything to make that less manual is open.
+
+### The wire form: an XOR filter in the query string
+
+Two decisions, settled: **the selection travels as an XOR filter**, and it
+travels in the **URL, as `?filter=<blob>`**.
+
+**Why a filter rather than the names.** `event_type`s are fully-qualified
+module names — `MyApp.Events.OrderPlaced` is 24 characters — so enumerating
+them costs roughly 25–40 bytes per type and a consumer with a few hundred
+modules overruns what proxies and servers will carry. An
+[XOR filter](https://arxiv.org/abs/1912.08258) (Graf & Lemire) encodes the
+same set at **≈1.23 bytes per type at 8-bit fingerprints, ≈2.46 at 16-bit**,
+before base64url. That is a ten- to thirty-fold reduction depending on
+fingerprint width — not a constant size, since the filter still grows with the
+set, but with a small enough constant that the size question stops being
+interesting: a thousand event types fit in a couple of kilobytes at xor16.
+
+XOR filters are the right family here rather than Bloom or cuckoo because the
+set is **static**: built once from `event_modules` and never added to for a
+connection's lifetime. That is exactly the constraint XOR filters trade
+mutability for, and they are ~15% smaller than a Bloom filter at equal error
+and faster to query (three lookups, no probing loop). Binary fuse filters are
+the closely-related successor and smaller still; XOR is chosen for having the
+wider set of implementations across languages, which matters for the
+non-Elixir consumers discussed below.
+
+The error direction is what makes any of this acceptable: **no false
+negatives**, so every type the consumer selected is delivered, and a false
+positive only costs an unwanted row crossing the wire to be dropped by the
+skip path v1 already specifies (see [Consuming API](#consuming-api)).
+
+**Sizing is not about bandwidth percentages, and this is the subtle part.**
+Membership is tested on the *type string*, not per row, so a false positive
+does not sprinkle 0.39% of extra rows across the stream — it admits **one
+entire event type, for the whole life of the connection**. At an 8-bit
+fingerprint (2⁻⁸ ≈ 0.39%), a producer with 100 types and a consumer selecting
+10 expects 90 × 0.0039 ≈ 0.35 spurious types; if the unlucky one is the
+highest-volume type in the system, that connection receives all of it. Since
+the cost of going to 16-bit fingerprints is 1.23 extra bytes per selected type
+— nothing, at these set sizes — and it cuts that probability by 256×,
+**xor16 is the sensible default** and the 8-bit variant an option for
+consumers that know their producer's traffic shape.
+
+**Why the query string, and why the rule in
+[Transport](#transport-sse-over-http) survives unamended.** That rule puts
+what a subscription *is* in the URL and how it is *paced* in headers. A type
+selector is identity, so it lands in the URL — and two things make that the
+right answer rather than merely the consistent one:
+
+- **A browser `EventSource` can select.** It sets no request headers beyond
+  `Last-Event-ID`, but the URL is entirely its own. Carrying the filter in a
+  header would have left every browser client receiving its producer's whole
+  log and discarding most of it; carrying it in the query string gives a bare
+  `EventSource` real server-side selection with no client library at all. This
+  is the deciding argument.
+- **Selection changes at deploy cadence, not connection cadence.** The
+  URL-stability half of the rule has force in proportion to how often a value
+  changes, and that is what separates the two cases: an adaptive consumer
+  re-negotiates `batch_window`/`max_batch_size` repeatedly *within* one
+  subscription's lifetime (see
+  [Backpressure & adaptive batching](#backpressure--adaptive-batching)), so
+  those in a URL would mint new URLs continuously, while `event_modules`
+  changes when somebody edits code and ships it. One URL per deployment is
+  precisely the stable grouping the rule is protecting.
+
+The cost, stated plainly: the blob lands in every access-log line of every
+intermediary, and the request-line limit (around 8 KB in both nginx and
+Apache by default) becomes the ceiling rather than a header limit. At xor16
+that is on the order of two thousand event types, and even a conservative 2 KB
+budget leaves several hundred. Note this is exactly **why the filter is
+load-bearing**: spelled-out module names at 25–40 bytes each would exhaust a
+2 KB request line at around sixty types, which is an entirely plausible
+`event_modules` list. The filter is what makes the URL viable, and the URL is
+what makes browser consumers viable.
+
+**The parameter.** `?filter=<blob>`, where the blob is the filter's
+`{seed, fingerprints}` tuple — the 64-bit seed followed by the fingerprint
+array, big-endian — encoded as **unpadded base64url**
+([RFC 4648 §5](https://www.rfc-editor.org/rfc/rfc4648#section-5); standard
+base64's `+` and `/` would need percent-encoding and `=` padding is noise in a
+query string). No length field is needed: the array length falls out of the
+decoded byte count given the fixed fingerprint width, and the segment length
+the three hash positions are derived from falls out of that. **Absent means
+the whole log**, which keeps v1's behaviour as the default for any client that
+does not ask. A blob that is not valid base64url, or whose decoded length is
+not a seed plus a whole number of fingerprints, is a `400` — the same standard
+`Last-Event-ID` and the pacing headers are held to.
+
+**The encoding must be pinned bit-for-bit.** The blob carries only the seed
+and the array; everything else — the fingerprint width, the hash
+construction, the byte order, and the fact that the hashed key is the UTF-8
+`event_type` string — is fixed by DMEx and carried by neither side. None of it
+may be negotiated. This is the one place in the protocol where producer and
+consumer must agree exactly, because disagreement does not produce a garbled
+filter — it produces **false negatives**, which is silent message loss and
+precisely the failure the whole scheme was chosen for not having. It also has
+to be written down as a spec
+rather than left to the Elixir implementation, since a non-Elixir consumer has
+to reproduce it exactly.
+
+**What a browser still cannot do is pace itself.** `DMEx-Batch-Window` and
+`DMEx-Max-Batch-Size` remain headers, so an `EventSource` takes the producer's
+defaults (see [Transport](#transport-sse-over-http)). That asymmetry is the
+rule working rather than an inconsistency in it: pacing is a tuning knob whose
+defaults have to be sane anyway, while selection decides what crosses the wire
+at all, and a client with no way to express it pays for that on every message
+for as long as it stays connected.
+
+### What it would not change
+
+- **Not a partitioning of the log.** There is still exactly one
+  totally-ordered log per producer and one id sequence; a selective
+  subscription sees a sparse subset of that same id space, so every consumer's
+  `last_seen` stays directly comparable with every other's regardless of what
+  it selected.
+- **Not visible at the publish call site.** `publish/3` keeps its signature
+  and writes the same columns, and event modules keep taking no options. A
+  publisher does not know, and does not need to know, who is selecting its
+  event types.
+- **Not a change to delivery semantics.** Selection changes which rows a
+  connection is sent, and nothing about ordering, duplicate suppression, or
+  the handler/transaction/`last_seen` pipeline.
+
+### Where it would attach
+
+The seams are already in place, and naming them is most of what deferring the
+work is meant to protect:
+
+- **Subscribe** — no new option. `event_modules` gains a second role, and
+  `DMEx.Consumer.Stream` derives the wire values from it.
+- **Transport** — the `filter` query parameter, per the wire form above.
+  Fixed for a connection's lifetime, for the same reason pacing is: a consumer
+  wanting a different selection reconnects.
+- **Read path** — the loop's query grows one predicate
+  (`WHERE event_type = ANY($1) AND id > $2`), which brings back both the
+  composite-index requirement (`(event_type, id)`) and the sparse-cursor
+  question retired in [Producer side](#producer-side).
+- **Wakeups** — the routing key is the published row's own `event_type`, and
+  connections register under the types they selected. That is *exact*: a
+  publish wakes precisely the connections that asked for that type, with no
+  intermediate grouping to be approximate about it. This is the
+  read-amplification lever described in [Wakeup fan-out](#wakeup-fan-out).
+- **Producer-side validation** — there is none, deliberately. A consumer may
+  legitimately name a type the producer has never published (a consumer
+  deployed ahead of the producer that will emit it), so the filter is resolved
+  against whatever the producer knows and never checked for plausibility: no
+  rejecting a filter that matches nothing, and emphatically no atomizing of
+  any consumer-supplied string,
+  which is the same unbounded-atom-table risk the consumer side already
+  refuses to take (see [Event Specifications](#event-specifications)). A name
+  that matches nothing simply matches nothing.
+- **Consumer** — the skip path in [Consuming API](#consuming-api) becomes a
+  defence rather than the normal case. A selective stream should only ever
+  carry decodable types, so an unknown one now indicates a real mismatch and
+  is worth surfacing rather than quietly dropping.
+
+### Open, if and when it lands
+
+- **Whether the producer expands the filter or tests row by row.** A filter
+  cannot be pushed into a SQL index; membership is a computation, not
+  something an index can seek on. The producer can sidestep that by expanding
+  the filter *once at connect time* against its own compiled event modules,
+  turning it into the `event_type = ANY($1)` list the read path wants. Testing
+  per row instead leaves the read as v1's unfiltered scan with filtering in
+  the application: no index seek, but no regression against v1 either — and no
+  expansion to keep current, which the next point is about.
+- **If it expands, it must expand over the producer's event modules, not over
+  its log contents.** The two sources look interchangeable and are not.
+  Expanding over the types the log has actually seen
+  (`SELECT DISTINCT event_type ...`) goes stale silently: a producer's code
+  can know a type it has not yet emitted, and the first emission of it
+  involves no restart and no reconnect, so an open connection keeps an
+  expansion missing a type its consumer genuinely selected. Expanding over the
+  producer's own compiled event modules has no such gap — that set changes
+  only when the producer deploys, and a deploy takes down the web server and
+  with it every SSE connection, since the request process *is* the stream (see
+  [Producer side](#producer-side)). Every affected consumer reconnects and
+  re-expands against the new set, so the repair is forced by the same property
+  that makes producer restarts uneventful, with no re-expansion machinery to
+  build or get wrong.
+
+  Worth recording the trap, since it is the intuitive reading: that a type the
+  producer has only just begun publishing must have been unknown to the
+  consumer too, and so could only ever be a false positive. It does not hold.
+  The two vocabularies are independent — a consumer deployed ahead of the
+  producer legitimately names types the producer has not yet emitted, which is
+  exactly why validation was dropped above — so such a type can be a true
+  positive, and dropping it would be a real false negative. What saves it is
+  the deploy boundary, not the definition.
+
+  The one residue is a rolling multi-node deploy, where a connection pinned to
+  a node running old code outlives a node running new code that has begun
+  publishing the new type. That belongs to the existing cross-node clustering
+  question (see [Open Questions](#open-questions)), not to this one.
+- **Wakeup routing.** With expansion, routing works exactly as it would for an
+  explicit list of types. Without it, the `Dispatcher` must test every
+  connection's filter against each published type — a few hashes per
+  connection per publish, cheap in absolute terms but `O(C)` again, which is
+  the amplification the routing existed to remove.
+- **Whether the producer echoes the resolved type list.** If it expands, it
+  already knows exactly which types tested positive, so it can echo them on
+  the `200` the same way it echoes the pacing values it actually applied (see
+  [Transport](#transport-sse-over-http)). That would hand back the
+  observability an opaque filter destroys — an explicit list says what a
+  subscription is at a glance in a proxy log, and a base64 blob says nothing
+  and cannot be reversed. With an echo a consumer can see its own subscription
+  resolved, spot a false-positive type that is flooding it, and detect an
+  encoding mismatch immediately rather than through missing messages. Open:
+  echo the full list (bounded by the producer's own type count, but
+  potentially large), a count, or a digest — and whether it is always on or a
+  debug affordance.
+- **The default fingerprint width, and whether consumers may choose it.**
+  xor16 is the sensible default for the reason given in
+  [the wire form](#the-wire-form-an-xor-filter-in-the-query-string), but a
+  consumer that knows its producer's traffic shape may rationally want xor8,
+  and one reading a log with a single enormous type may want wider. If it is
+  selectable it has to be carried in the header and validated, which is one
+  more thing that must not be got wrong.
+- **Request-line limits.** URLs are capped by the web server and by every
+  intermediary — nginx's `large_client_header_buffers` and Apache's
+  `LimitRequestLine` are both around 8 KB by default — which at xor16 plus
+  base64url puts the practical ceiling in the low thousands of event types.
+  That is far beyond any plausible `event_modules` list, but the number should
+  be documented and the limits configured deliberately rather than discovered
+  when someone crosses one. At least the failure is loud: a `414` at connect
+  time, not a silently truncated selection.
+- **Filter construction failure.** XOR construction is randomized and can fail
+  to peel, retrying with a fresh seed; it succeeds with high probability and
+  the sets here are tiny, so this is a consumer-side detail rather than a
+  protocol one. Open only in that a bounded retry count, and what to do when
+  it is exhausted, want specifying — falling back to sending no filter at all
+  (whole-log delivery, i.e. v1) rather than failing the subscription.
+- **Whether selection should be narrowable below `event_modules`** — a
+  consumer that can *decode* twenty types but only *wants* five would
+  otherwise have to receive fifteen it discards, or split into two handlers
+  and therefore two cursors. Does `subscribe/2` want an explicit override, or
+  is "your module list is your subscription" the whole rule? The rule is
+  simpler; the override is the escape hatch for a handler whose decode
+  vocabulary is genuinely wider than its interest.
+- **Second cursor, again** — with a sparse subset the last-*sent* id no longer
+  implies the rows in between were examined and rejected. Whether that needs a
+  second cursor or is answered entirely by the `(event_type, id)` index (an
+  index seek costing the same whether the next matching row is one id away or
+  ten million) has to be settled with the index, not before it.
+- **Non-Elixir consumers** — the selector is a list of Elixir module names, so
+  a consumer in another language must know those strings out-of-band. That is
+  the same coupling as
+  [sharing event modules across independent applications](#open-questions),
+  now showing up in the URL as well as in the decode step, and it strengthens
+  the case for the schema-endpoint option discussed there.
+
 ## Open Questions
 
 Things intentionally left open for the next round of discussion.
@@ -1348,14 +1680,18 @@ Things intentionally left open for the next round of discussion.
   [Consumer side](#consumer-side) but not its keys or indexes, including
   whether `(producer_url, id)` should be unique so a replay tool can't insert
   the same dead message twice.
-- **Is an `event_type` index worth its write cost?** No DMEx read path uses
-  one — every producer read is a `(topic, id)` range scan (see
-  [Producer side](#producer-side)) — so an index on `event_type` exists purely
-  for operators querying the log by hand. It is not free: appends are already
-  serialized per app (see [Append ordering](#append-ordering-id-gaps)), so
-  index maintenance sits directly on the one write path that cannot be
-  parallelized away. Open: ship without it and let operators add one, or
-  include it because ad-hoc log inspection is a first-class use case?
+- **Is an `event_type` index worth its write cost?** No v1 read path uses
+  one — every producer read is a bare `id > cursor` range scan (see
+  [Producer side](#producer-side)) — so in v1 an index on `event_type` exists
+  purely for operators querying the log by hand. It is not free: appends are
+  already serialized per app (see
+  [Append ordering](#append-ordering-id-gaps)), so index maintenance sits
+  directly on the one write path that cannot be parallelized away. Open: ship
+  without it and let operators add one, or include it because ad-hoc log
+  inspection is a first-class use case? Note this stops being a judgement call
+  the moment [Event-Type Selection](#event-type-selection-post-v1) lands — a
+  selective read filters on `event_type`, so `(event_type, id)` becomes a
+  required index rather than an operator convenience.
 - **Payload byte fidelity** — `data` and `metadata` are `jsonb` (see
   [Message log](#message-log)), chosen for in-database querying of payloads,
   which is a first-class use case for a log people inspect by hand. The
@@ -1406,12 +1742,14 @@ Things intentionally left open for the next round of discussion.
   runs behind)?
 - **Read amplification ceiling** — each connection issuing its own reads
   (see [Producer side](#producer-side)) trades bounded memory for query
-  volume. [Topic-scoped wakeups](#topic-scoped-wakeups) cut this to
-  per-topic interest, but unfiltered subscriptions still see every publish,
-  and the practical limit is DB connection-pool contention. Open: what is
-  the realistic connection ceiling per producer app, does the pool need
-  partitioning so stream reads can't starve publish writes, and is a
-  shared per-topic cache of recent rows ever worth the shared mutable state
+  volume. In v1 every connection sees every publish (see
+  [Wakeup fan-out](#wakeup-fan-out)) — routing wakeups by interest is deferred
+  with [Event-Type Selection](#event-type-selection-post-v1) — so the ceiling
+  is the
+  full `C × P`, and the practical limit is DB connection-pool contention.
+  Open: what is the realistic connection ceiling per producer app, does the
+  pool need partitioning so stream reads can't starve publish writes, and is a
+  shared cache of recent rows at the tip ever worth the shared mutable state
   it reintroduces? This subsumes the older "multi-consumer fan-out"
   question: many consumers reading one stream independently already works
   (each tracks its own `last_seen` and gets its own connection process), so
@@ -1443,11 +1781,17 @@ Things intentionally left open for the next round of discussion.
 - **Retention / compaction policy** — logs grow forever by default; what
   operator-facing controls exist for archiving or pruning old messages, and
   how does that interact with "arbitrarily replayable"?
-- **Topic matching semantics** — is `topic` an exact-match tag only, or does
-  it need RabbitMQ-style hierarchical/wildcard patterns (e.g. `orders.*`)?
-  Note that untagged events (see [Message log](#message-log)) already occupy
-  the "matches only the everything-subscription" corner of whatever matching
-  scheme is chosen, so any pattern syntax has to keep that case coherent.
+- **Server-side selective delivery** — deliberately out of scope for v1, with
+  its intended shape (the consumer's `event_modules` list on the wire as an
+  `event_type` selector) and its own open questions written up in
+  [Event-Type Selection](#event-type-selection-post-v1). The
+  question that belongs *here* is when to build it: shipping v1 without it
+  means every consumer pays for every message its producer publishes, in
+  bandwidth and in a decode-and-discard pass, and every producer pays `C × P`
+  reads (see [Producer side](#producer-side)). Open: is the trigger a measured
+  one — bandwidth on a fat log, read load at a connection count — or is it
+  simply the first non-trivial adopter with a log whose consumers each want a
+  slice?
 - **Append serialization cost** — per-app advisory-locked appends (see
   [Append ordering](#append-ordering-id-gaps)) make the reader cursor sound
   but serialize all publishes for an app, and a publish inside a long
@@ -1480,7 +1824,7 @@ Things intentionally left open for the next round of discussion.
   to `max_restarts: 3, max_seconds: 5`. A tight crash-loop blows that budget
   in under a second and takes down `DMEx.Consumer.Supervisor` — and with it
   **every other subscription in the consumer app**, including healthy ones
-  on unrelated topics. Open: what restart intensity actually expresses
+  reading unrelated producers. Open: what restart intensity actually expresses
   "crash-loop forever on this one subscription without killing its
   siblings"? Related: each restart reopens the connection and triggers a
   fresh producer-side read, so an un-backed-off crash-loop hammers a
