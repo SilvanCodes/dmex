@@ -1496,24 +1496,45 @@ work is meant to protect:
   and a consumer picks its point on that line by sizing the filter — spending
   URL bytes to buy bandwidth.
 
-  Four things it does not settle:
+  Four things to pin down:
   - **Whether the producer expands the filter or tests row by row.** A Bloom
     filter cannot be pushed into a SQL index; membership is a computation, not
     something an index can seek on. The producer can sidestep that by
-    expanding the filter *once at connect time* against the event types it
-    actually publishes — which it knows, they are its own event modules —
-    turning it straight back into the `event_type = ANY($1)` list the read
-    path wants. Testing per row instead leaves the read as v1's unfiltered
-    scan with filtering in the application: no index seek, but no regression
-    against v1 either.
-  - **Expansion goes stale, silently.** If the producer expands at connect
-    time and later begins publishing a *new* event type the filter would have
-    accepted, that connection's expanded list does not contain it, and the
-    guarantee quietly weakens to "no false negatives among the types that
-    existed when I connected." Connections here are long-lived, so this is not
-    a corner case. Re-expanding when the producer first publishes an unseen
-    type is the obvious fix and is cheap — but it has to be specified,
-    precisely because the failure is invisible.
+    expanding the filter *once at connect time* against its own compiled event
+    modules, turning it straight back into the `event_type = ANY($1)` list the
+    read path wants. Testing per row instead leaves the read as v1's
+    unfiltered scan with filtering in the application: no index seek, but no
+    regression against v1 either — and no expansion to keep current, which the
+    next point is about.
+  - **Expansion must be over the producer's event modules, not over its log
+    contents.** The two sources look interchangeable and are not. Expanding
+    over the types the log has actually seen
+    (`SELECT DISTINCT event_type ...`) goes stale silently: a producer's code
+    can know a type it has not yet emitted, and the first emission of it
+    involves no restart and no reconnect, so an open connection keeps an
+    expansion missing a type its consumer genuinely selected. Expanding over
+    the producer's own compiled event modules has no such gap — that set
+    changes only when the producer deploys, and a deploy takes down the web
+    server and with it every SSE connection, since the request process *is*
+    the stream (see [Producer side](#producer-side)). Every affected consumer
+    reconnects and re-expands against the new set, so the repair is forced by
+    the same property that makes producer restarts uneventful, with no
+    re-expansion machinery to build or get wrong.
+
+    Worth recording the trap, since it is the intuitive reading: that a type
+    the producer has only just begun publishing must have been unknown to the
+    consumer too, and so could only ever be a false positive. It does not
+    hold. The two vocabularies are independent — a consumer deployed ahead of
+    the producer legitimately names types the producer has not yet emitted,
+    which is exactly why validation was dropped above — so such a type can be
+    a true positive, and dropping it would be a real false negative. What
+    saves it is the deploy boundary, not the definition.
+
+    The one residue is a rolling multi-node deploy, where a connection pinned
+    to a node running old code outlives a node running new code that has begun
+    publishing the new type. That belongs to the existing cross-node
+    clustering question (see [Open Questions](#open-questions)), not to this
+    one.
   - **Wakeup routing.** With expansion, routing works exactly as it does for
     an explicit list. Without it, the `Dispatcher` must test every
     connection's filter against each published type — a few hashes per
