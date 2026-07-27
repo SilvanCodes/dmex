@@ -67,8 +67,8 @@ It is backed by one plain SQL table (SQLite or Postgres):
 CREATE TABLE dmex_messages (
   id          bigserial   PRIMARY KEY,        -- SQLite: INTEGER PRIMARY KEY AUTOINCREMENT
   event_type  text        NOT NULL,
-  data        jsonb       NOT NULL,           -- SQLite: text
-  metadata    jsonb       NOT NULL DEFAULT '{}',  -- SQLite: text
+  data        jsonb       NOT NULL,           -- SQLite: text CHECK (json_valid(data))
+  metadata    jsonb       NOT NULL DEFAULT '{}',  -- SQLite: text CHECK (json_valid(metadata))
   inserted_at timestamptz NOT NULL DEFAULT now()
 );
 ```
@@ -88,7 +88,11 @@ CREATE TABLE dmex_messages (
   normalizes key order and drops duplicate keys, so stored bytes are not
   byte-identical to what the publisher encoded (see
   [Open Questions](#open-questions)). SQLite has no `jsonb` column type —
-  `text`, with its JSON functions available over it.
+  `text`, with its JSON functions available over it — and a
+  `CHECK (json_valid(...))` constraint, since the producer splices this text
+  straight into the wire frame without parsing it (see
+  [Frame encoding](#frame-encoding)) and a malformed row would corrupt the
+  frame around it rather than failing on its own.
 - `metadata` — free-form message metadata, entirely publisher-owned: DMEx
   writes nothing of its own into it (see [Publishing API](#publishing-api)).
   Defaulted to `{}` rather than nullable, so no read path has to distinguish
@@ -405,7 +409,7 @@ DMEx.Consumer.subscribe(producer_url,
   on_failure: :crash,      # :crash | :skip | :dead_message
   batch_window: 200,       # ms; preferred minimum time between frames
   max_batch_size: 500,     # rows; preferred maximum messages per frame
-  queue_limit: 2_000,      # rows; bound on the internal queue
+  queue_limit: 1_000,      # rows; bound on the internal queue (2 × max_batch_size)
   adaptive: true           # re-negotiate the two above from measured drain rate
 )
 ```
@@ -711,6 +715,187 @@ was going to issue eventually anyway and costs the producer nothing it doesn't
 already handle (see
 [Backpressure & adaptive batching](#backpressure--adaptive-batching)).
 
+### Frame encoding
+
+A data frame, in full — one `id:`, one `event:`, one `data:`, terminated by a
+blank line:
+
+```
+id: 1042
+event: batch
+data: {"metadata":{"max_id":1180},"messages":[{"id":1041,"event_type":"MyApp.Events.OrderPlaced","data":{"order_id":7,"total":1999},"metadata":{},"inserted_at":"2026-07-27T10:31:04.221Z"},{"id":1042,"event_type":"MyApp.Events.OrderShipped","data":{"order_id":7},"metadata":{"trace_id":"abc"},"inserted_at":"2026-07-27T10:31:04.884Z"}]}
+
+```
+
+`retry:` travels in a frame of its own at stream open (see
+[Heartbeats](#heartbeats)), which is well-defined and dispatches nothing: the
+SSE parser applies a `retry:` field the moment it parses the line, while an
+event is only dispatched if the data buffer is non-empty when the blank line
+arrives. Heartbeats are comment frames (`: hb`) on the same principle.
+
+**One `data:` line, not one per message.** SSE joins consecutive `data:` lines
+with LF into a single payload, so the choice is really about what that joined
+payload is. With one line it is exactly a JSON document: a client hands
+`event.data` to its JSON parser and is finished, in any language, with no
+DMEx-specific rule to learn. Putting the frame metadata and each row on its own
+`data:` line — the readable-in-`curl` option — would make the joined payload
+NDJSON instead, which is a second framing layer *inside* the frame that DMEx
+would have to specify and every client would have to implement before it could
+parse anything at all. That is a poor trade against a format whose selling point
+is that any SSE-capable HTTP client can consume it (see
+[Transport](#transport-sse-over-http)): `curl` readability is recoverable with a
+`jq` in the pipe, and a bespoke sub-format is not recoverable at all.
+
+The honest cost is that a consumer must buffer a whole frame before it can parse
+any of it, where per-line framing would let it parse row by row as bytes arrive.
+That is bounded by the frame byte cap (see
+[Stalled connections](#stalled-connections)), which the consumer enforces on its
+own side as well — see [unbatching](#unbatching-on-the-consumer) below.
+
+**No base64, and none is needed.** The only reason to encode a payload here
+would be that `data:` is line-delimited, so a raw LF or CR would end the field
+and split the frame. JSON cannot produce one: the grammar requires U+0000–U+001F
+to be escaped inside strings, so a compact `JSON.encode!` result is newline-free
+by construction *of the format*, not by a choice the encoder makes and could
+un-make. (U+2028/U+2029 are not SSE line terminators either — the spec's
+terminators are CR, LF and CRLF only — so they need no special handling despite
+being a perennial hazard in JavaScript contexts.) Base64 would cost a third more
+bytes on every message, make the stream opaque to `curl`, `jq` and proxy logs,
+and buy nothing.
+
+Two invariants keep that true, and they are the whole of the encoding contract:
+the frame is **never pretty-printed**, and nothing is spliced into it that did
+not come out of a JSON encoder or a JSON-typed column.
+
+**Rows are spliced, never re-encoded.** The frame is built as iodata — a fixed
+prefix, the rows joined by commas, a fixed suffix — and each row's `data` and
+`metadata` go in as **text**, exactly as the read returned them (`data::text` on
+Postgres; already `text` on SQLite, see [Message log](#message-log)). The
+alternative is to let the driver decode `jsonb` into an Elixir map and re-encode
+it, which pays a decode plus an encode per row — and, because every connection
+issues its own read (see [Producer side](#producer-side)), pays it once per
+connection for the same rows. Splicing makes the producer's per-row work a
+memcpy, which is what "serialize what the read returned" (see
+[Message Envelope](#message-envelope)) has to mean if it is to mean anything.
+
+This rests on the stored text being valid JSON. Postgres's column type
+guarantees it; SQLite's `text` does not, so the DDL carries
+`CHECK (json_valid(...))` on both columns (see [Message log](#message-log)) —
+worth having regardless, and load-bearing here, since a malformed row would
+otherwise corrupt the frame around it rather than failing on its own. It is also
+another face of the [payload byte fidelity](#open-questions) question: what gets
+spliced is `jsonb`'s normalized rendering, not the publisher's original bytes.
+
+#### Compression
+
+Negotiated the ordinary HTTP way — the consumer sends `Accept-Encoding: gzip`,
+the producer answers with `Content-Encoding: gzip` and compresses the chunk
+stream. A browser `EventSource` gets it for free, which is notable given how
+little else it can negotiate (see [Transport](#transport-sse-over-http)).
+
+It pays unusually well here, and **batching is why**. A frame holds up to
+`max_batch_size` rows with identical key names, a small set of repeating
+`event_type` strings, and near-identical timestamps — the redundancy is
+*within* the frame, so it is available to the compressor immediately rather than
+depending on cross-frame dictionary state. Framing and compression compound
+rather than merely coexisting.
+
+Three things have to be got right, and the third is the one that decides the
+default:
+
+- **It must flush per frame.** Left to itself, deflate buffers until it has a
+  block worth emitting, which would hold a frame on the wire until the *next*
+  frame pushed it out — unbounded added latency on a quiet stream, and a
+  heartbeat that arrives only when it is no longer needed, which is precisely
+  the failure heartbeats exist to prevent. Every `chunk/2` must end in a sync
+  flush. If the web server applies compression automatically, that behaviour has
+  to be verified rather than assumed; if it does not flush per chunk, DMEx
+  compresses and sets the header itself.
+- **Flushing costs ratio, and that is the trade being made.** A sync flush ends
+  the block and emits a few bytes of overhead, and small frames compress worse
+  than large ones. A consumer that has adapted down to tiny batches is therefore
+  also getting worse compression — the two degrade together, which is the right
+  direction but worth knowing.
+- **Per-connection compressor state is the catch, and it lands squarely on the
+  property the producer loop was built to have.** A zlib deflate stream at
+  defaults (`windowBits` 15, `memLevel` 8) is on the order of 256 KB of state
+  held for the connection's entire life. At a thousand connections that is
+  ~256 MB — dwarfing "memory per connection is one batch" (see
+  [Producer side](#producer-side)) and quietly reintroducing the unbounded-growth
+  class of failure that section exists to make unrepresentable. Smaller
+  parameters (`windowBits` 12, `memLevel` 4, ~32 KB) trade ratio for footprint
+  and are the sane operating point.
+
+So compression is **producer-side opt-in with explicitly-sized zlib parameters**,
+not on by default: it is the one feature in the design whose cost is paid in the
+same currency the producer's memory bound is denominated in. The consumer side
+carries an inflate stream too, but one per subscription rather than one per
+connection served, so it is not the same question.
+
+Worth recording rather than resolving: compressing a response that mixes
+attacker-influenced content with content the attacker should not learn leaks
+through length (the BREACH/CRIME family). The setting here is unlike the classic
+one — no per-request reflection, no secret to extract token-by-token — and it
+requires an adversary who can both publish into a producer's log and observe the
+sizes of someone else's stream. That is a question about who may publish and who
+may read, which belongs with [auth](#open-questions).
+
+#### Response headers and intermediaries
+
+Beyond the pacing echo (`DMEx-Batch-Window` / `DMEx-Max-Batch-Size`, see
+[Transport](#transport-sse-over-http)), the `200` carries the ordinary SSE set —
+`Content-Type: text/event-stream` (always UTF-8; the charset parameter is
+ignored by the spec), `Cache-Control: no-cache`, and `Connection: keep-alive` on
+HTTP/1.1 — plus one that is not standard and is not optional in practice:
+
+- **`X-Accel-Buffering: no`.** nginx proxies with `proxy_buffering on` by
+  default, which holds response bytes until its buffer fills or the response
+  ends. On an SSE stream that converts `batch_window` pacing into "whenever the
+  buffer happens to fill" and swallows heartbeats entirely, so a healthy stream
+  looks dead to both the consumer's liveness check and the proxy's own idle
+  timeout. The header is nginx-specific and ignored elsewhere, and it is
+  strictly a fallback for operators who have not set `proxy_buffering off`
+  themselves — but it is the difference between DMEx working behind a default
+  nginx and not.
+
+Two operator-side settings belong in the deployment notes for the same reason:
+`proxy_read_timeout` must comfortably exceed the effective heartbeat interval
+(`heartbeat_ms + batch_window`, see [Heartbeats](#heartbeats)), and any
+intermediary doing its own response buffering has to be turned off rather than
+tuned.
+
+#### Unbatching on the consumer
+
+**Chunk boundaries are not frame boundaries.** Chunked transfer encoding and TCP
+both deliver arbitrary byte runs, so a frame can span several reads and a read
+can contain several frames plus part of another. The consumer accumulates into a
+buffer and dispatches on the blank-line delimiter, discarding comment lines
+(`: hb`) after counting them as liveness (see [Heartbeats](#heartbeats)).
+
+**That accumulation buffer must be bounded, and the queue bound does not cover
+it.** A producer that never emits a blank line — broken, hostile, or simply
+mid-frame when it wedged — grows the buffer without limit, and it does so on the
+socket path *above* the queue, where `queue_limit` has no reach (see
+[The queue](#the-queue)). The cap is the consumer's own maximum frame size:
+derived from the producer's echoed `DMEx-Max-Batch-Size` with generous headroom,
+or a configured absolute. Exceeding it drops the connection and reconnects from
+`last_seen`, which costs nothing beyond a re-read — a drop is not a delivery
+event (see [Stalled connections](#stalled-connections)).
+
+On a complete frame the consumer parses `data` **once**, one level deep, into
+frame metadata plus the list of rows (see
+[Message Envelope](#message-envelope)), pushes those rows onto the queue in
+order, and discards the frame. Only `max_id` outlives it, as the lag telemetry.
+Turning a row's `data` into a struct happens later, in the pipeline, for the
+reasons given in [The queue](#the-queue) — which is also why the parse here
+stops one level short rather than decoding the whole frame in one pass.
+
+Note the asymmetry with the producer, and that it is real rather than an
+inconsistency: the producer splices row JSON without parsing it, while the
+consumer must parse it, because it is the side that has to turn rows into
+structs. Only the *depth* of the parse is negotiable, and that is what stopping
+one level short buys.
+
 ### Heartbeats
 
 When a connection is caught up and the log is quiet, the producer sends
@@ -844,12 +1029,15 @@ The gap is that TCP backpressure is one bit. It can say *stop*; it cannot say
 second message, and they are already per-connection consumer-supplied values —
 so the consumer needs a way to know what to ask for, and an occasion to ask.
 
+##### The queue
+
 **The queue is the measurement.** `DMEx.Consumer.Stream` holds one bounded
 FIFO of rows — de-batched on arrival, since `DMEx.Message` has already parsed
 the frame — sitting between the socket and the
 handler/transaction/`last_seen` pipeline. It gates the socket re-arm: the next
-`active: :once` is requested only while the queue is below `queue_limit`, so
-the receive window still closes and structural backpressure still holds (see
+`active: :once` is requested only while the queue still has room (the exact
+gate is below), so the receive window still closes and structural backpressure
+still holds (see
 [Consuming API](#consuming-api)). The queue is not there to absorb overload —
 `queue_limit` rows of slack absorb nothing at a sustained mismatch. It is there
 so the process can observe two things a consumer holding exactly one frame
@@ -857,14 +1045,177 @@ cannot:
 
 - **depth** — how close the socket is to being held off, i.e. whether there is
   pressure right now;
-- **drain rate** — an EWMA of messages committed per second, which is this
-  handler's actual capacity, measured rather than configured.
+- **drain rate** — this handler's actual capacity, measured rather than
+  configured. How that is derived, and in particular how it survives an idle
+  connection, is the next section.
+
+Three rules fix what goes into the queue, and all three exist so that every
+number the controller reads is in one unit:
+
+- **It holds rows, not frames and not structs.** A row enters exactly as
+  `DMEx.Message` yielded it (`id`, `event_type`, `data`, `metadata`,
+  `inserted_at`, see [Message Envelope](#message-envelope)); turning its `data`
+  into an event struct happens in the pipeline, on the way *out*. Decoding on
+  the way in would put per-row JSON work on the socket path — above the
+  `queue_limit` bound, so unbounded by it, and invisible to the drain
+  measurement even though it is real cost the consumer pays for every row.
+- **Every row is admitted, including ones that will be skipped.** The
+  `event_modules` lookup happens in the pipeline too, not at admission — a skip
+  is a pipeline step rather than a filter, since it still advances `last_seen`
+  (see [Consuming API](#consuming-api)). This matters more than it looks: in v1
+  a subscription receives the producer's whole log, so most rows may be skips,
+  and filtering them at the door would leave depth and drain rate counting
+  *handled* rows while `max_batch_size` counts *wire* rows. Every use of one to
+  compute the other would then need a mix ratio that changes whenever the
+  producer's traffic shape does. Admitting everything keeps depth, drain rate
+  and `max_batch_size` in the same unit — rows on the wire — with no conversion
+  anywhere in the controller.
+- **It is FIFO, and one pipeline drains it.** Ordering within a subscription is
+  a delivery guarantee and duplicate suppression is an `id > last_seen`
+  comparison (see [Delivery Semantics](#delivery-semantics)); both assume the
+  queue hands rows on in the order they arrived, one at a time. The queue adds
+  slack, never concurrency.
+
+**The bound is stated relative to the arrival quantum, and the default is
+`2 × max_batch_size`.** Rows arrive one frame at a time, up to
+`max_batch_size` of them at once, so a `queue_limit` that is not comfortably
+larger than `max_batch_size` makes the socket re-arm gate on ordinary operation
+rather than on pressure — one normal frame would fill it. Two frames' worth is
+the smallest bound that makes the distinction meaningful: a frame can land while
+the previous one is still draining without that alone being a signal, and depth
+above one frame's worth means the consumer genuinely did not finish the last
+frame before the next arrived. Larger multiples buy nothing the measurement
+needs — the queue is not there to absorb overload — and cost memory in direct
+proportion. The invariant holds by itself once set, because adaptation only ever
+moves `max_batch_size` *below* the configured value (see
+[the control law](#the-control-law)), never above it, so the ratio can only
+widen from 2×.
+
+**The re-arm gate leaves room for a whole frame**, and that is what makes
+`queue_limit` a true bound rather than an approximate one. Rows are admitted a
+frame at a time — the frame has already been parsed when the first of its rows
+is enqueued (see [Frame encoding](#frame-encoding)) — so a gate of "re-arm while
+depth is below `queue_limit`" would let a full frame land on a nearly-full queue
+and overshoot by up to `max_batch_size`. The gate is therefore
+`depth + max_batch_size <= queue_limit`: re-arm only while a whole frame would
+still fit. At the 2× default that is "re-arm while depth is at most one frame's
+worth," and peak depth is exactly `queue_limit`.
+
+Two things fall out of that, and they are convenient rather than coincidental.
+The pressure threshold and the re-arm threshold are **the same number**
+(`max_batch_size`, i.e. half of `queue_limit`), so "depth above the high-water
+mark" and "the socket is being held off" are one condition rather than two that
+have to be kept consistent. And the trigger for adaptation is then just that
+condition sustained past one `batch_window` (see
+[the control law](#the-control-law)) — the producer has had a full window to
+deliver a frame the consumer had no room for.
 
 The queue itself is not durable and does not need to be. Everything in it sits
 above `last_seen` with no handler having run for it, so throwing it away is
 indistinguishable from never having received it: the producer still holds those
 rows, and the next connect re-reads them from the same cursor every reconnect in
 this design already resumes from.
+
+##### Deriving throughput when the stream idles
+
+The obvious measurement is messages committed per wall-clock second, and it is
+wrong — worth being precise about, because it is the one every throughput
+counter already gives you. **Committed-per-second is the arrival rate whenever
+the consumer is not saturated.** A handler capable of 5,000 rows/s that is sent
+50 reports 50; an idle connection reports zero. Neither number is a capacity,
+and feeding either into a sizing rule would shrink an idle consumer's batches
+toward the floor precisely when there was nothing wrong.
+
+**So the primitive is service time, not throughput.** For each row leaving the
+queue, the stream records the monotonic duration of its pipeline pass: decode →
+transaction begin → `handle_message/2` → `last_seen` write → commit. Capacity is
+`1 / mean_service_time`, and that has three properties throughput does not:
+
+- **It is defined at depth 1.** Service time is a property of a single row, so a
+  stream that never holds more than one row still measures it. No backlog is
+  required to learn how fast the handler is — which is the entire point, since a
+  backlog is the condition the measurement exists to avoid.
+- **Idle contributes no samples rather than bad ones.** The EWMA is indexed by
+  *sample*, not by clock. An hour of silence leaves the estimate exactly where
+  the last row left it, rather than decaying it toward zero and making every
+  quiet consumer re-learn its own capacity from scratch each time traffic
+  resumes.
+- **It is the right statistic for sizing a batch.** Draining `n` rows costs the
+  *sum* of `n` service times, and by linearity the expected sum is `n × mean`
+  whatever the distribution's shape. The mean is therefore exactly what
+  `drain_rate × batch_window` wants. Tail latency governs a single message's
+  deadline, not a batch's total, so tracking a high quantile instead would
+  systematically undersize batches for any handler with bimodal cost — one cheap
+  event type and one expensive one, which is the common case rather than the
+  exotic one.
+
+**What a sample contains, and what it must not:**
+
+- **Queue wait is excluded.** Time a row spends *in* the queue is a function of
+  the backlog ahead of it, not of the handler. Including it would make service
+  time grow with depth, which is to say it would fold the pressure signal into
+  the capacity signal — and the controller needs them independent, since it uses
+  one to decide *whether* to act and the other to decide *how much*.
+- **Local retry backoff is excluded, along with the failed attempts.** A raising
+  handler is retried in-process with backoff (see
+  [Consumer side](#consumer-side)); those sleeps are wall-clock the stream
+  spends not draining, but they are a failure mode, not a capacity. One poison
+  message under exponential backoff would otherwise drag the estimate down by
+  orders of magnitude and pin the subscription's batches at the floor long after
+  `on_failure` had resolved it. The sample is the successful pass. A persistent
+  failure still shows up — it fills the queue, which is the depth signal — and
+  all three `on_failure` modes terminate it without the controller needing an
+  opinion.
+- **Skips are sampled at their real cost.** A row with no matching module costs
+  a lookup, a `last_seen` write and a commit: cheap beside a handler, but not
+  free, and genuinely paid per wire row. Since the queue admits them and
+  `max_batch_size` counts them, the estimate must price them (see
+  [Open Questions](#open-questions) on what per-row commits cost a
+  mostly-skipped stream).
+
+**Utilization is the second measurement, and it is what makes idleness
+legible.** Alongside service time the stream accumulates busy time — the same
+intervals it samples — over a sliding wall-clock window;
+`utilization = busy_time / window` is the fraction of the time the pipeline had
+anything to do. The three signals answer different questions, and the idle
+column is why none of them substitutes for another:
+
+| signal | what it says | when the stream is idle |
+| --- | --- | --- |
+| service time | how fast this handler is | last known value, unchanged |
+| utilization | how much of that capacity is already spoken for | ≈ 0 |
+| depth | whether there is pressure right now | 0 |
+
+**Pressure triggers; capacity sizes; utilization is for humans.** Adaptation
+fires only on depth sustained above the high-water mark for longer than one
+`batch_window` — a condition an idle or comfortably-keeping-up stream cannot
+reach, because rows leave faster than they arrive. Service time triggers
+nothing; it is read only *after* the trigger, to answer "then how much should I
+ask for?" Utilization triggers nothing either, and is not in the control loop at
+all — it is the telemetry that separates "keeping up with room to spare" (low
+utilization, low lag) from "keeping up with none" (utilization near 1, lag still
+low, one traffic increment from falling behind). The `max_id` lag diff (see
+[Batching & framing](#batching--framing-batch_window-max_batch_size)) cannot
+tell those apart, because both of them are caught up.
+
+**Warm-up and staleness**, the two guards that follow from an estimate built
+from possibly very few samples:
+
+- Below a minimum sample count the controller does not act at all: it holds the
+  configured `batch_window`/`max_batch_size` and lets the queue fill or not.
+  Re-parameterizing off two or three samples is how a control loop ends up
+  chasing its own warm-up.
+- After a long silence the estimate is **stale rather than wrong**, and is
+  treated that way: it is kept as the starting point, since a handler's speed
+  rarely changes for free and it is the only evidence there is, but it must be
+  re-warmed to the minimum sample count before it can drive a
+  re-parameterization. That costs nothing in practice — the samples come from
+  the very rows creating the pressure.
+
+All of this is per-subscription, in-memory, monotonic-clock, and dies with the
+process (see the limits at the end of this section).
+
+##### The control law
 
 **The control law is AIMD**, over the connection rather than the packet. On
 sustained pressure — depth above a high-water mark for longer than one
@@ -875,14 +1226,27 @@ request to what it has been measured to drain:
 max_batch_size' = clamp(drain_rate × batch_window, floor, max_batch_size)
 ```
 
-That is the whole target: ask for no more per window than the handler empties
-per window. If that computation hits the floor and pressure persists, the
-consumer widens `batch_window` instead (multiplicatively), which lowers frame
-*rate* once frame *size* has nowhere left to go. Recovery is the additive half:
-after several consecutive windows spent near-empty, the consumer steps back
-toward its configured `batch_window`/`max_batch_size` a notch at a time. Back
-off fast, recover slowly — the asymmetry is deliberate, and it is the same
-reason every other AIMD controller has it.
+where `drain_rate` is `1 / mean_service_time` from the previous section, not an
+observed throughput. That is the whole target: ask for no more per window than
+the handler empties per window. If that computation hits the floor and pressure
+persists, the consumer widens `batch_window` instead (multiplicatively), which
+lowers frame *rate* once frame *size* has nowhere left to go. Recovery is the
+additive half: after several consecutive windows spent near-empty, the consumer
+steps back toward its configured `batch_window`/`max_batch_size` a notch at a
+time. Back off fast, recover slowly — the asymmetry is deliberate, and it is the
+same reason every other AIMD controller has it.
+
+**Recovery unwinds in the reverse order of back-off**: `batch_window` narrows
+back toward its configured value before `max_batch_size` grows again. The two
+are not symmetric in what they cost while the stream is quiet. An oversized
+`max_batch_size` costs nothing at all when there is little to send — it is a
+`LIMIT` on the producer's read, not a demand, so a quiet log simply returns
+fewer rows — whereas a widened `batch_window` is a floor on frame *rate*, and
+therefore sits directly in the end-to-end latency of every message on an
+otherwise idle stream. A consumer that widened its window under load and then
+went quiet is paying that latency for nothing, and it is the one parameter worth
+reclaiming promptly. The reconnect this costs is the cheapest kind: an idle
+stream's re-read finds nothing.
 
 **Re-parameterizing means reconnecting, and the order matters:**
 
@@ -1717,18 +2081,37 @@ Things intentionally left open for the next round of discussion.
   floor set too high leaves a slow consumer nothing to ask for and puts it back
   on the `send_timeout` path the adaptation exists to avoid.
 - **Adaptive control-law constants** — the shape is settled (AIMD over
-  reconnects, see
+  reconnects, and service time as the capacity primitive, see
   [Backpressure & adaptive batching](#backpressure--adaptive-batching)); the
-  numbers are not. What are the high- and low-water marks as fractions of
-  `queue_limit`, the EWMA window for drain rate, the multiplicative
-  back-off and additive recovery steps, the number of quiet windows before
-  recovery starts, and the minimum interval between re-parameterizations? And
-  what is a sensible default `queue_limit` — large enough that drain rate is
-  measurable over a batch or two, small enough that the memory is
-  uninteresting. Related: should the queue also be bounded in *bytes*, for the
-  same reason the producer wants a frame byte cap (see below)? A `queue_limit`
-  in rows says nothing about memory when payloads vary by three orders of
-  magnitude.
+  numbers are not. What are the multiplicative back-off and additive recovery
+  steps, the number of quiet windows before recovery starts, and the minimum
+  interval between re-parameterizations? On the measurement side: the EWMA
+  smoothing factor over service-time samples, the minimum sample count before
+  the controller may act, and how long an estimate may go unsampled before it
+  counts as stale and must be re-warmed. The high- and low-water marks want
+  expressing **relative to `max_batch_size`, not as bare fractions of
+  `queue_limit`** — what the high-water mark has to exclude is the transient of
+  one normal frame arriving, so the quantity it must sit above is the arrival
+  quantum. `queue_limit` itself is settled at `2 × max_batch_size`. Related:
+  should the queue also be bounded in *bytes*, for the same reason the producer
+  wants a frame byte cap (see below)? A `queue_limit` in rows says nothing about
+  memory when payloads vary by three orders of magnitude.
+- **Per-row commits on a mostly-skipped stream** — in v1 a subscription
+  receives the producer's whole log, and a skipped row still gets its own
+  transaction and `last_seen` advance (see
+  [Consuming API](#consuming-api)). On a stream where the consumer has modules
+  for a small fraction of the types, the drain is then dominated by commits for
+  rows nothing was done with — which caps measured capacity, and so caps the
+  batch sizes the controller will ask for, on work that is pure overhead. Open:
+  is it worth coalescing a run of consecutive skips into a single `last_seen`
+  advance? It is safe on its face — no handler ran, so there is nothing to roll
+  back and the cursor only ever lands on a row boundary — but it makes
+  `last_seen` advance in variable-size jumps, and it is the first place in the
+  design where a batch means anything to processing rather than only to framing
+  (see
+  [Batching & framing](#batching--framing-batch_window-max_batch_size)). Note
+  that [Event-Type Selection](#event-type-selection-post-v1) removes the
+  motivation entirely, which is an argument for not building it.
 - **Adaptation-induced reconnect churn** — every re-parameterization is a
   reconnect, and a reconnect costs the producer a fresh `id > last_seen`
   read. Hysteresis and a minimum re-parameterization interval bound this per
@@ -1843,14 +2226,17 @@ Things intentionally left open for the next round of discussion.
   record of the failure (unlike `:dead_message`). Is that intentional as a
   "you must supply your own telemetry" mode, or should DMEx always emit a
   telemetry event/log line on skip regardless of `on_failure`?
-- **Batch framing shape** — the always-batch decision and the
-  `{"metadata": ..., "messages": [...]}` object are settled (see
-  [Message Envelope](#message-envelope)); how that object is laid across the
-  wire is not. A single `data:` line holding the whole JSON object is the
-  simple option; SSE's multi-line-per-field convention would let the frame
-  metadata and each message sit on their own `data:` line, which is far more
-  readable in a `curl` session and in proxy logs, at the cost of the
-  consumer's parser having to rejoin lines before decoding.
+- **Compression defaults** — the mechanism is settled (opt-in
+  `Content-Encoding: gzip` with a per-frame sync flush, see
+  [Compression](#compression)); the numbers are not. What `windowBits` and
+  `memLevel` does DMEx ship, given that the default 256 KB per connection is
+  incompatible with the producer's memory story at any interesting connection
+  count? Related: should the frame byte cap (see below) be measured before or
+  after compression — before is simpler and bounds the producer's own buffers,
+  after is what `send_timeout` actually sees on the socket. And is opt-in the
+  right default, or should it be on with small parameters, given that a browser
+  `EventSource` requests it automatically and gets it or not purely by the
+  producer's choice?
 - **Event schema versioning** — each event type has a dedicated Elixir
   module, but there's no versioning scheme yet for evolving a struct's
   fields (e.g. `order_placed_v2`) without breaking consumers pinned to the
