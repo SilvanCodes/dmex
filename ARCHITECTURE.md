@@ -2,8 +2,10 @@
 
 > Status: working draft. The core mechanics below are agreed on; see
 > [Open Questions](#open-questions) for what is still undecided, and
-> [Message-Type Selection](#message-type-selection-post-v1) for the one mechanic
-> deliberately left out of v1.
+> [ROADMAP.md](ROADMAP.md) for the mechanics deliberately left out of v1 —
+> [Message-Type Selection](ROADMAP.md#message-type-selection) and
+> [Stream Stats](ROADMAP.md#stream-stats-get-streamstats). This document
+> describes shipped or agreed v1 behaviour only; the roadmap describes intent.
 
 ## Overview
 
@@ -32,10 +34,10 @@ v1: no filters, no per-subscription subsets, and — here or later — no topics
 A consumer that cares about only some message types declares the modules it
 knows and ignores everything else locally (see
 [Consuming API](#consuming-api)). Server-side selection is a real requirement
-and it has a design — the consumer's own `message_modules` list, sent as a query
-parameter and applied as a predicate on the producer's read — but it is
-deliberately not in v1; see
-[Message-Type Selection](#message-type-selection-post-v1).
+and it has a design — the consumer's own `message_modules` list, encoded into a
+filter carried in the stream path (`GET /stream/<blob>`) and applied as a
+predicate on the producer's read — but it is deliberately not in v1; see
+[Message-Type Selection](ROADMAP.md#message-type-selection).
 
 ### References
 
@@ -129,7 +131,7 @@ it. Selective delivery becomes a separate mechanic resolved at read time,
 where the interested party names the message types it wants and the log is not
 asked to have anticipated the grouping. That mechanic is sketched but
 deliberately **not in v1** — see
-[Message-Type Selection](#message-type-selection-post-v1), which also explains why
+[Message-Type Selection](ROADMAP.md#message-type-selection), which also explains why
 it introduces no *replacement* for `topic` either, named or otherwise. In v1
 there is exactly one stream per producer, every subscription is that whole
 stream, and `id` is drawn from a single per-app sequence, so every consumer's
@@ -296,7 +298,7 @@ end
   any other name: a message module declares what the message *is*, and nothing
   about who should receive it. Who receives it is the *consumer's* statement to
   make, and it already makes it — see
-  [Message-Type Selection](#message-type-selection-post-v1).
+  [Message-Type Selection](ROADMAP.md#message-type-selection).
 
   The second callback is **`cast/1`**, the read-side inverse: it turns a row's
   already-JSON-decoded `data` map into the struct. It is generated with a
@@ -323,7 +325,7 @@ end
   [Consuming API](#consuming-api)) — and it is the same list that would later
   become the wire-level selector sent to the producer, which is why no
   separate grouping concept is needed anywhere (see
-  [Message-Type Selection](#message-type-selection-post-v1)).
+  [Message-Type Selection](ROADMAP.md#message-type-selection)).
 
 ## Publishing API
 
@@ -437,7 +439,7 @@ DMEx.Consumer.subscribe(producer_url,
   [Batching & framing](#batching--framing-batch_window-max_batch_size)).
   **There is no filter option of any kind**: a v1 subscription is the
   producer's whole log, and `message_modules` is what narrows it, locally (see
-  [Message-Type Selection](#message-type-selection-post-v1) for how that same list
+  [Message-Type Selection](ROADMAP.md#message-type-selection) for how that same list
   later becomes a server-side selector, without gaining a new option here).
 - **`batch_window` and `max_batch_size` are a preference, not a setting.**
   They are what the consumer asks for on the *first* connect and what it
@@ -508,7 +510,7 @@ DMEx.Consumer.subscribe(producer_url,
   therefore the subscription's filter, applied on the consumer after the bytes
   have already crossed the wire; the deferred selection mechanic moves that
   same list to the producer so they never cross it (see
-  [Message-Type Selection](#message-type-selection-post-v1)). Skips are worth a
+  [Message-Type Selection](ROADMAP.md#message-type-selection)). Skips are worth a
   telemetry event — a consumer silently discarding most of a stream and a
   consumer silently discarding the one type it wanted look identical
   otherwise.
@@ -556,13 +558,14 @@ DMEx.Consumer.subscribe(producer_url,
   sending its resume
   position in the **`Last-Event-ID` request header** and its delivery pacing
   in the **`DMEx-Batch-Window` and `DMEx-Max-Batch-Size` request headers**. The
-  route is singular and carries no application segment, and in v1 no query
-  string either: a producer application owns exactly one log (see
+  route is singular and carries no application segment, no trailing segment,
+  and no query string: a producer application owns exactly one log (see
   [Message log](#message-log)) and v1 streams all of it, so there is nothing
   for a path or query parameter to select between, and the app's own hostname
-  already identifies the app. (The post-v1 `filter` parameter is the one thing
-  that will ever hang off this URL — see
-  [Message-Type Selection](#message-type-selection-post-v1).) Both pacing headers
+  already identifies the app. (The post-v1 filter segment — `/stream/<blob>` —
+  is the one thing that will ever hang off this URL, which is why the mount is
+  a prefix `forward` rather than an exact route; see
+  [Message-Type Selection](ROADMAP.md#message-type-selection).) Both pacing headers
   are optional and fall back to DMEx-supplied defaults (see
   [Batching & framing](#batching--framing-batch_window-max_batch_size)).
 - **The URL says what the subscription *is*; headers say how it is *paced*.**
@@ -570,9 +573,9 @@ DMEx.Consumer.subscribe(producer_url,
   and `max_batch_size` are headers rather than query parameters. In v1 the URL
   side of that line is empty — one producer, one log, one stream, so there is
   nothing to select between — but it is where the post-v1 message-type selector
-  lands, since which types a subscription carries changes *which* messages
-  exist for it at all (see
-  [Message-Type Selection](#message-type-selection-post-v1)). The pacing values
+  lands, as a path segment, since which types a subscription carries changes
+  *which* messages exist for it at all (see
+  [Message-Type Selection](ROADMAP.md#message-type-selection)). The pacing values
   change nothing about *which* rows arrive or in what
   order, only how they are cut into frames; two connections differing only in
   `batch_window` deliver the same messages in the same order, grouped
@@ -616,9 +619,9 @@ DMEx.Consumer.subscribe(producer_url,
   correctness mechanism — and resumption is the one the spec gave a header to.
   A generic client that does control its headers (any ordinary HTTP client
   library) has full access to both. Note the limitation stops there: the
-  post-v1 message-type selector is a query parameter precisely so that a browser
+  post-v1 message-type selector lives in the URL path precisely so that a browser
   client can still say what it wants to receive (see
-  [Message-Type Selection](#message-type-selection-post-v1)).
+  [Message-Type Selection](ROADMAP.md#message-type-selection)).
 - **Resumption uses the spec's own channel, not a query parameter.**
   `Last-Event-ID` is what the SSE specification defines for exactly this, and
   using it means a bare browser `EventSource` — which sets the header itself on
@@ -1447,7 +1450,7 @@ Two properties of this query are worth being explicit about:
   sees a sparse subset of one id sequence and re-reading from the last *sent*
   id means scanning id space known to hold nothing for it — a cost an index on
   the selecting column answers, and a decision deferred with the rest of
-  [Message-Type Selection](#message-type-selection-post-v1).
+  [Message-Type Selection](ROADMAP.md#message-type-selection).
 - **`max_id` comes back on the same round trip**, as a correlated scalar
   subquery evaluated once per read. On the primary key that is a single
   descent to the rightmost entry. There is no separate latest-id
@@ -1470,7 +1473,7 @@ fast the log is being written. In v1 that is the whole of it: with no
 server-side selection, every publish is potentially relevant to every
 connection, so there is nothing to route wakeups by and `C × P` is the honest
 ceiling. Cutting it to per-message-type interest is one of the concrete payoffs
-of [Message-Type Selection](#message-type-selection-post-v1), and it is worth
+of [Message-Type Selection](ROADMAP.md#message-type-selection), and it is worth
 knowing that the lever exists before the ceiling is hit. In practice the
 binding constraint is **database connection-pool contention**, not raw query
 load.
@@ -1623,7 +1626,7 @@ no routing key to scope a wakeup by, so `Dispatcher` broadcasts to all
 registered streams and each decides for itself — by reading — whether there is
 anything to send. This is the fan-out behind the `C × P` read ceiling in
 [Producer side](#producer-side), and routing wakeups by `message_type` is the
-first thing [Message-Type Selection](#message-type-selection-post-v1) would buy
+first thing [Message-Type Selection](ROADMAP.md#message-type-selection) would buy
 back.
 
 One detail this still has to get right, and it matters more without routing:
@@ -1703,7 +1706,7 @@ The schema is intentionally minimal so it maps cleanly onto both engines, and
 the read surface is deliberately narrower still: three shapes, all of them
 keyed on `id` alone. Selective reads — a range scan restricted to a set of
 message types — are the capability this behaviour would have to grow for
-[Message-Type Selection](#message-type-selection-post-v1), and the one that would
+[Message-Type Selection](ROADMAP.md#message-type-selection), and the one that would
 bring an index requirement with it.
 
 The same `DMEx.Storage` behaviour (and the same two adapters) is reused on
@@ -1759,311 +1762,18 @@ for any other data that application owns. Achieving HA for a given stream is
 the same problem as achieving HA for that application's database (e.g.
 Postgres replication/failover), and is out of scope for DMEx itself.
 
-## Message-Type Selection (post-v1)
+## Roadmap
 
-Server-side selective delivery — a consumer receiving part of a producer's log
-rather than all of it — is a real requirement, and this is the shape it is
-expected to take. **None of it is in v1.** v1 streams whole logs and filters
-consumer-side (see [Consuming API](#consuming-api)); everything in this
-section is a design direction, recorded so the v1 decisions above stay
-compatible with it and so the reasoning isn't rediscovered later. It is not a
-description of shipped behaviour.
+Two mechanics are designed but deliberately **not in v1**, and they live in
+[ROADMAP.md](ROADMAP.md) rather than here:
 
-**There are no topics** — not as a column (see [Message log](#message-log)),
-and not as a separate named mechanic either. A topic is a name standing for a
-set of message types, and a name is a second vocabulary somebody has to define,
-publish, version, discover, and keep in sync with the types it names. Every
-one of those costs is paid to describe something the consumer has already
-said.
-
-Because it has. A subscription already declares `message_modules` — the list of
-message modules it can decode (see [Message Specifications](#message-specifications))
-— and that list is not optional: without it a consumer cannot turn an
-`message_type` back into a struct at all. **That list is the selection.** DMEx
-maps it through each module's `type/0`, encodes the resulting `message_type`
-strings into a compact filter, and sends it on the `GET /stream` request; the
-producer resolves that filter against its own message types and reads only
-matching rows. Nothing new is declared anywhere, by anyone.
-
-### What that buys
-
-- **One list, two jobs, no drift.** A separately-defined grouping can always
-  disagree with reality — naming a type the consumer cannot decode, or
-  omitting one it can, either of which is a silent bug. A selection *derived
-  from* `message_modules` is exactly the set of types the handler is equipped
-  for, by construction, and cannot be otherwise.
-- **Arbitrary subsets, no coordination.** Any consumer selects any set of
-  types; sets overlap freely between consumers and nobody has to agree on
-  them. No producer-side curation, and no consumer blocked waiting for a
-  producer to define the grouping it happens to need.
-- **Evolvable, in the place it is read.** Changing what a subscription
-  receives is editing a list in the consumer's own code — the same edit that
-  makes it *able* to handle the new type in the first place. An ordinary code
-  change, an ordinary deploy, an ordinary reconnect; no remote definition
-  changing under a running consumer.
-- **The producer stays stateless about consumers.** The selection travels on
-  the request, per connection, and nothing about it is stored. The
-  ["producer holds nothing"](#consumer) property survives intact — a
-  producer-side registry of named groupings would have been the first thing to
-  chip at it.
-
-One consequence to know before it bites: **adding a module to `message_modules`
-selects that type from the cursor forward, not from the beginning.** The
-cursor is a single id and only ever moves forward, so historical rows of the
-newly-selected type — everything below `last_seen`, published while the
-consumer wasn't asking for it — are not revisited. A consumer that needs that
-history has to reset its cursor deliberately. Whether DMEx should offer
-anything to make that less manual is open.
-
-### The wire form: an XOR filter in the query string
-
-Two decisions, settled: **the selection travels as an XOR filter**, and it
-travels in the **URL, as `?filter=<blob>`**.
-
-**Why a filter rather than the names.** `message_type`s are fully-qualified
-module names — `MyApp.Messages.OrderPlaced` is 24 characters — so enumerating
-them costs roughly 25–40 bytes per type and a consumer with a few hundred
-modules overruns what proxies and servers will carry. An
-[XOR filter](https://arxiv.org/abs/1912.08258) (Graf & Lemire) encodes the
-same set at **≈1.23 bytes per type at 8-bit fingerprints, ≈2.46 at 16-bit**,
-before base64url. That is a ten- to thirty-fold reduction depending on
-fingerprint width — not a constant size, since the filter still grows with the
-set, but with a small enough constant that the size question stops being
-interesting: a thousand message types fit in a couple of kilobytes at xor16.
-
-XOR filters are the right family here rather than Bloom or cuckoo because the
-set is **static**: built once from `message_modules` and never added to for a
-connection's lifetime. That is exactly the constraint XOR filters trade
-mutability for, and they are ~15% smaller than a Bloom filter at equal error
-and faster to query (three lookups, no probing loop). Binary fuse filters are
-the closely-related successor and smaller still; XOR is chosen for having the
-wider set of implementations across languages, which matters for the
-non-Elixir consumers discussed below.
-
-The error direction is what makes any of this acceptable: **no false
-negatives**, so every type the consumer selected is delivered, and a false
-positive only costs an unwanted row crossing the wire to be dropped by the
-skip path v1 already specifies (see [Consuming API](#consuming-api)).
-
-**Sizing is not about bandwidth percentages, and this is the subtle part.**
-Membership is tested on the *type string*, not per row, so a false positive
-does not sprinkle 0.39% of extra rows across the stream — it admits **one
-entire message type, for the whole life of the connection**. At an 8-bit
-fingerprint (2⁻⁸ ≈ 0.39%), a producer with 100 types and a consumer selecting
-10 expects 90 × 0.0039 ≈ 0.35 spurious types; if the unlucky one is the
-highest-volume type in the system, that connection receives all of it. Since
-the cost of going to 16-bit fingerprints is 1.23 extra bytes per selected type
-— nothing, at these set sizes — and it cuts that probability by 256×,
-**xor16 is the sensible default** and the 8-bit variant an option for
-consumers that know their producer's traffic shape.
-
-**Why the query string, and why the rule in
-[Transport](#transport-sse-over-http) survives unamended.** That rule puts
-what a subscription *is* in the URL and how it is *paced* in headers. A type
-selector is identity, so it lands in the URL — and two things make that the
-right answer rather than merely the consistent one:
-
-- **A browser `EventSource` can select.** It sets no request headers beyond
-  `Last-Event-ID`, but the URL is entirely its own. Carrying the filter in a
-  header would have left every browser client receiving its producer's whole
-  log and discarding most of it; carrying it in the query string gives a bare
-  `EventSource` real server-side selection with no client library at all. This
-  is the deciding argument.
-- **Selection changes at deploy cadence, not connection cadence.** The
-  URL-stability half of the rule has force in proportion to how often a value
-  changes, and that is what separates the two cases: an adaptive consumer
-  re-negotiates `batch_window`/`max_batch_size` repeatedly *within* one
-  subscription's lifetime (see
-  [Backpressure & adaptive batching](#backpressure--adaptive-batching)), so
-  those in a URL would mint new URLs continuously, while `message_modules`
-  changes when somebody edits code and ships it. One URL per deployment is
-  precisely the stable grouping the rule is protecting.
-
-The cost, stated plainly: the blob lands in every access-log line of every
-intermediary, and the request-line limit (around 8 KB in both nginx and
-Apache by default) becomes the ceiling rather than a header limit. At xor16
-that is on the order of two thousand message types, and even a conservative 2 KB
-budget leaves several hundred. Note this is exactly **why the filter is
-load-bearing**: spelled-out module names at 25–40 bytes each would exhaust a
-2 KB request line at around sixty types, which is an entirely plausible
-`message_modules` list. The filter is what makes the URL viable, and the URL is
-what makes browser consumers viable.
-
-**The parameter.** `?filter=<blob>`, where the blob is the filter's
-`{seed, fingerprints}` tuple — the 64-bit seed followed by the fingerprint
-array, big-endian — encoded as **unpadded base64url**
-([RFC 4648 §5](https://www.rfc-editor.org/rfc/rfc4648#section-5); standard
-base64's `+` and `/` would need percent-encoding and `=` padding is noise in a
-query string). No length field is needed: the array length falls out of the
-decoded byte count given the fixed fingerprint width, and the segment length
-the three hash positions are derived from falls out of that. **Absent means
-the whole log**, which keeps v1's behaviour as the default for any client that
-does not ask. A blob that is not valid base64url, or whose decoded length is
-not a seed plus a whole number of fingerprints, is a `400` — the same standard
-`Last-Event-ID` and the pacing headers are held to.
-
-**The encoding must be pinned bit-for-bit.** The blob carries only the seed
-and the array; everything else — the fingerprint width, the hash
-construction, the byte order, and the fact that the hashed key is the UTF-8
-`message_type` string — is fixed by DMEx and carried by neither side. None of it
-may be negotiated. This is the one place in the protocol where producer and
-consumer must agree exactly, because disagreement does not produce a garbled
-filter — it produces **false negatives**, which is silent message loss and
-precisely the failure the whole scheme was chosen for not having. It also has
-to be written down as a spec
-rather than left to the Elixir implementation, since a non-Elixir consumer has
-to reproduce it exactly.
-
-**What a browser still cannot do is pace itself.** `DMEx-Batch-Window` and
-`DMEx-Max-Batch-Size` remain headers, so an `EventSource` takes the producer's
-defaults (see [Transport](#transport-sse-over-http)). That asymmetry is the
-rule working rather than an inconsistency in it: pacing is a tuning knob whose
-defaults have to be sane anyway, while selection decides what crosses the wire
-at all, and a client with no way to express it pays for that on every message
-for as long as it stays connected.
-
-### What it would not change
-
-- **Not a partitioning of the log.** There is still exactly one
-  totally-ordered log per producer and one id sequence; a selective
-  subscription sees a sparse subset of that same id space, so every consumer's
-  `last_seen` stays directly comparable with every other's regardless of what
-  it selected.
-- **Not visible at the publish call site.** `publish/3` keeps its signature
-  and writes the same columns, and message modules keep taking no options. A
-  publisher does not know, and does not need to know, who is selecting its
-  message types.
-- **Not a change to delivery semantics.** Selection changes which rows a
-  connection is sent, and nothing about ordering, duplicate suppression, or
-  the handler/transaction/`last_seen` pipeline.
-
-### Where it would attach
-
-The seams are already in place, and naming them is most of what deferring the
-work is meant to protect:
-
-- **Subscribe** — no new option. `message_modules` gains a second role, and
-  `DMEx.Consumer.Stream` derives the wire values from it.
-- **Transport** — the `filter` query parameter, per the wire form above.
-  Fixed for a connection's lifetime, for the same reason pacing is: a consumer
-  wanting a different selection reconnects.
-- **Read path** — the loop's query grows one predicate
-  (`WHERE message_type = ANY($1) AND id > $2`), which brings back both the
-  composite-index requirement (`(message_type, id)`) and the sparse-cursor
-  question retired in [Producer side](#producer-side).
-- **Wakeups** — the routing key is the published row's own `message_type`, and
-  connections register under the types they selected. That is *exact*: a
-  publish wakes precisely the connections that asked for that type, with no
-  intermediate grouping to be approximate about it. This is the
-  read-amplification lever described in [Wakeup fan-out](#wakeup-fan-out).
-- **Producer-side validation** — there is none, deliberately. A consumer may
-  legitimately name a type the producer has never published (a consumer
-  deployed ahead of the producer that will emit it), so the filter is resolved
-  against whatever the producer knows and never checked for plausibility: no
-  rejecting a filter that matches nothing, and emphatically no atomizing of
-  any consumer-supplied string,
-  which is the same unbounded-atom-table risk the consumer side already
-  refuses to take (see [Message Specifications](#message-specifications)). A name
-  that matches nothing simply matches nothing.
-- **Consumer** — the skip path in [Consuming API](#consuming-api) becomes a
-  defence rather than the normal case. A selective stream should only ever
-  carry decodable types, so an unknown one now indicates a real mismatch and
-  is worth surfacing rather than quietly dropping.
-
-### Open, if and when it lands
-
-- **Whether the producer expands the filter or tests row by row.** A filter
-  cannot be pushed into a SQL index; membership is a computation, not
-  something an index can seek on. The producer can sidestep that by expanding
-  the filter *once at connect time* against its own compiled message modules,
-  turning it into the `message_type = ANY($1)` list the read path wants. Testing
-  per row instead leaves the read as v1's unfiltered scan with filtering in
-  the application: no index seek, but no regression against v1 either — and no
-  expansion to keep current, which the next point is about.
-- **If it expands, it must expand over the producer's message modules, not over
-  its log contents.** The two sources look interchangeable and are not.
-  Expanding over the types the log has actually seen
-  (`SELECT DISTINCT message_type ...`) goes stale silently: a producer's code
-  can know a type it has not yet emitted, and the first emission of it
-  involves no restart and no reconnect, so an open connection keeps an
-  expansion missing a type its consumer genuinely selected. Expanding over the
-  producer's own compiled message modules has no such gap — that set changes
-  only when the producer deploys, and a deploy takes down the web server and
-  with it every SSE connection, since the request process *is* the stream (see
-  [Producer side](#producer-side)). Every affected consumer reconnects and
-  re-expands against the new set, so the repair is forced by the same property
-  that makes producer restarts uneventful, with no re-expansion machinery to
-  build or get wrong.
-
-  Worth recording the trap, since it is the intuitive reading: that a type the
-  producer has only just begun publishing must have been unknown to the
-  consumer too, and so could only ever be a false positive. It does not hold.
-  The two vocabularies are independent — a consumer deployed ahead of the
-  producer legitimately names types the producer has not yet emitted, which is
-  exactly why validation was dropped above — so such a type can be a true
-  positive, and dropping it would be a real false negative. What saves it is
-  the deploy boundary, not the definition.
-
-  The one residue is a rolling multi-node deploy, where a connection pinned to
-  a node running old code outlives a node running new code that has begun
-  publishing the new type. That belongs to the existing cross-node clustering
-  question (see [Open Questions](#open-questions)), not to this one.
-- **Wakeup routing.** With expansion, routing works exactly as it would for an
-  explicit list of types. Without it, the `Dispatcher` must test every
-  connection's filter against each published type — a few hashes per
-  connection per publish, cheap in absolute terms but `O(C)` again, which is
-  the amplification the routing existed to remove.
-- **Whether the producer echoes the resolved type list.** If it expands, it
-  already knows exactly which types tested positive, so it can echo them on
-  the `200` the same way it echoes the pacing values it actually applied (see
-  [Transport](#transport-sse-over-http)). That would hand back the
-  observability an opaque filter destroys — an explicit list says what a
-  subscription is at a glance in a proxy log, and a base64 blob says nothing
-  and cannot be reversed. With an echo a consumer can see its own subscription
-  resolved, spot a false-positive type that is flooding it, and detect an
-  encoding mismatch immediately rather than through missing messages. Open:
-  echo the full list (bounded by the producer's own type count, but
-  potentially large), a count, or a digest — and whether it is always on or a
-  debug affordance.
-- **The default fingerprint width, and whether consumers may choose it.**
-  xor16 is the sensible default for the reason given in
-  [the wire form](#the-wire-form-an-xor-filter-in-the-query-string), but a
-  consumer that knows its producer's traffic shape may rationally want xor8,
-  and one reading a log with a single enormous type may want wider. If it is
-  selectable it has to be carried in the header and validated, which is one
-  more thing that must not be got wrong.
-- **Request-line limits.** URLs are capped by the web server and by every
-  intermediary — nginx's `large_client_header_buffers` and Apache's
-  `LimitRequestLine` are both around 8 KB by default — which at xor16 plus
-  base64url puts the practical ceiling in the low thousands of message types.
-  That is far beyond any plausible `message_modules` list, but the number should
-  be documented and the limits configured deliberately rather than discovered
-  when someone crosses one. At least the failure is loud: a `414` at connect
-  time, not a silently truncated selection.
-- **Filter construction failure.** XOR construction is randomized and can fail
-  to peel, retrying with a fresh seed; it succeeds with high probability and
-  the sets here are tiny, so this is a consumer-side detail rather than a
-  protocol one. Open only in that a bounded retry count, and what to do when
-  it is exhausted, want specifying — falling back to sending no filter at all
-  (whole-log delivery, i.e. v1) rather than failing the subscription.
-- **Whether selection should be narrowable below `message_modules`** — a
-  consumer that can *decode* twenty types but only *wants* five would
-  otherwise have to receive fifteen it discards, or split into two handlers
-  and therefore two cursors. Does `subscribe/2` want an explicit override, or
-  is "your module list is your subscription" the whole rule? The rule is
-  simpler; the override is the escape hatch for a handler whose decode
-  vocabulary is genuinely wider than its interest.
-- **Second cursor, again** — with a sparse subset the last-*sent* id no longer
-  implies the rows in between were examined and rejected. Whether that needs a
-  second cursor or is answered entirely by the `(message_type, id)` index (an
-  index seek costing the same whether the next matching row is one id away or
-  ten million) has to be settled with the index, not before it.
-- **Non-Elixir consumers** — the selector is a list of Elixir module names, so
-  a consumer in another language must know those strings out-of-band. That is
-  the same coupling as
-  [sharing message modules across independent applications](#open-questions),
-  now showing up in the URL as well as in the decode step, and it strengthens
-  the case for the schema-endpoint option discussed there.
+- **[Message-Type Selection](ROADMAP.md#message-type-selection)** — server-side
+  selective delivery, carried as an XOR filter in the stream path
+  (`GET /stream/<blob>`). This document links to it wherever a v1 decision was
+  made with it in mind; nothing described there is shipped behaviour.
+- **[Stream Stats](ROADMAP.md#stream-stats-get-streamstats)** —
+  `GET /stream/stats`, reporting the message types a log contains and the id
+  range each one spans.
 
 ## Settled by the v1 implementation
 
@@ -2246,7 +1956,7 @@ schema decisions this document once listed here have moved to
   design where a batch means anything to processing rather than only to framing
   (see
   [Batching & framing](#batching--framing-batch_window-max_batch_size)). Note
-  that [Message-Type Selection](#message-type-selection-post-v1) removes the
+  that [Message-Type Selection](ROADMAP.md#message-type-selection) removes the
   motivation entirely, which is an argument for not building it.
 - **Adaptation-induced reconnect churn** — every re-parameterization is a
   reconnect, and a reconnect costs the producer a fresh `id > last_seen`
@@ -2274,7 +1984,7 @@ schema decisions this document once listed here have moved to
   (see [Producer side](#producer-side)) trades bounded memory for query
   volume. In v1 every connection sees every publish (see
   [Wakeup fan-out](#wakeup-fan-out)) — routing wakeups by interest is deferred
-  with [Message-Type Selection](#message-type-selection-post-v1) — so the ceiling
+  with [Message-Type Selection](ROADMAP.md#message-type-selection) — so the ceiling
   is the
   full `C × P`, and the practical limit is DB connection-pool contention.
   Open: what is the realistic connection ceiling per producer app, does the
@@ -2296,14 +2006,16 @@ schema decisions this document once listed here have moved to
 - **Server-side selective delivery** — deliberately out of scope for v1, with
   its intended shape (the consumer's `message_modules` list on the wire as an
   `message_type` selector) and its own open questions written up in
-  [Message-Type Selection](#message-type-selection-post-v1). The
+  [Message-Type Selection](ROADMAP.md#message-type-selection). The
   question that belongs *here* is when to build it: shipping v1 without it
   means every consumer pays for every message its producer publishes, in
   bandwidth and in a decode-and-discard pass, and every producer pays `C × P`
   reads (see [Producer side](#producer-side)). Open: is the trigger a measured
   one — bandwidth on a fat log, read load at a connection count — or is it
   simply the first non-trivial adopter with a log whose consumers each want a
-  slice?
+  slice? Note it drags a second endpoint with it —
+  [`GET /stream/stats`](ROADMAP.md#stream-stats-get-streamstats) wants the same
+  `(message_type, id)` index — so the two are one piece of work, not two.
 - **Append serialization cost** — **now measured.**
   `bench/e2e/publish_throughput.exs` compares `publish/3` against the identical
   insert without the lock. At concurrency 1–2 the lock costs about **1.13x** —
@@ -2398,7 +2110,11 @@ schema decisions this document once listed here have moved to
     shapes (e.g. as JSON Schema). Consumers could codegen structs from it,
     or just validate/introspect at runtime. Decouples deploys and opens the
     door to non-Elixir consumers, at the cost of a second interface DMEx has
-    to keep honest and versioned alongside the actual message modules.
+    to keep honest and versioned alongside the actual message modules. The
+    roadmap's [`GET /stream/stats`](ROADMAP.md#stream-stats-get-streamstats)
+    is the small first step of this — the type strings and their id ranges,
+    no field shapes — and is deliberately scoped so it does not commit DMEx to
+    the versioned-schema half.
   - **Loose/dynamic decode fallback** — let a subscription skip
     `message_modules` entirely and receive the raw decoded JSON `map` plus
     `message_type` string instead of a typed struct. No shared module needed
