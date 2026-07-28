@@ -25,21 +25,28 @@ defmodule DMEx.Integration.CatchupTest do
     Handlers.report_to(self())
 
     start_supervised!(Producer)
-    start_supervised!({Consumer, name: TestConsumer, repo: DMEx.Test.IntegrationRepo})
+
+    # The server binds port 0, so the producer map is necessarily built at
+    # runtime — which is exactly why it lives on the child spec rather than in
+    # application config.
+    url = Server.start!() <> "/stream"
+
+    start_supervised!(
+      {Consumer,
+       name: TestConsumer, repo: DMEx.Test.IntegrationRepo, producer: Server.producers(url)}
+    )
 
     seed(@backlog)
 
-    %{url: Server.start!() <> "/stream"}
+    %{url: url}
   end
 
-  test "drains a large backlog in order, in frames no larger than requested", ctx do
+  test "drains a large backlog in order, in frames no larger than requested", _ctx do
     ref = :telemetry_test.attach_event_handlers(self(), [[:dmex, :stream, :frame]])
 
     {:ok, _} =
-      Consumer.subscribe(ctx.url,
+      Consumer.subscribe(Handlers.Echo,
         consumer: TestConsumer,
-        handler: Handlers.Echo,
-        message_modules: [OrderPlaced],
         max_batch_size: 250,
         batch_window: 20
       )
@@ -60,14 +67,12 @@ defmodule DMEx.Integration.CatchupTest do
     assert Enum.max(frame_sizes) <= 250
   end
 
-  test "the first frame's max_id tells the consumer how big the gap is", ctx do
+  test "the first frame's max_id tells the consumer how big the gap is", _ctx do
     ref = :telemetry_test.attach_event_handlers(self(), [[:dmex, :consumer, :lag]])
 
     {:ok, _} =
-      Consumer.subscribe(ctx.url,
+      Consumer.subscribe(Handlers.Echo,
         consumer: TestConsumer,
-        handler: Handlers.Echo,
-        message_modules: [OrderPlaced],
         max_batch_size: 100,
         batch_window: 20
       )
@@ -78,14 +83,12 @@ defmodule DMEx.Integration.CatchupTest do
     assert lag > 0
   end
 
-  test "and how much of the consumer's capacity is already spoken for", ctx do
+  test "and how much of the consumer's capacity is already spoken for", _ctx do
     ref = :telemetry_test.attach_event_handlers(self(), [[:dmex, :consumer, :lag]])
 
     {:ok, _} =
-      Consumer.subscribe(ctx.url,
+      Consumer.subscribe(Handlers.Echo,
         consumer: TestConsumer,
-        handler: Handlers.Echo,
-        message_modules: [OrderPlaced],
         max_batch_size: 100,
         batch_window: 20
       )

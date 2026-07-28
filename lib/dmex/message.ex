@@ -140,6 +140,19 @@ defmodule DMEx.Message do
   end
 
   @doc """
+  Whether `module` was built with `use DMEx.Message`.
+
+  The mirror of `DMEx.Consumer.Handler.handler?/1`, and used for the same
+  reason: a handler declaring a module that is not a message should be rejected
+  by name rather than blow up as an `UndefinedFunctionError` on `type/0`.
+  """
+  @spec message?(module()) :: boolean()
+  def message?(module) when is_atom(module) do
+    Code.ensure_loaded?(module) and function_exported?(module, :type, 0) and
+      function_exported?(module, :cast, 1)
+  end
+
+  @doc """
   Builds a `message_type => module` lookup from a list of message modules.
 
   This is how a consumer resolves the `message_type` on a row back to a module.

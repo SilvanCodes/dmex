@@ -29,7 +29,10 @@ Helper.section("end_to_end_latency — publish to handler, percentiles")
 
 defmodule Bench.LatencyHandler do
   @moduledoc false
-  use DMEx.Consumer.Handler
+  use DMEx.Consumer.Handler,
+    producer: :bench,
+    id: :latency,
+    messages: [DMEx.Test.Messages.OrderPlaced]
 
   alias DMEx.Test.Messages.OrderPlaced
 
@@ -52,18 +55,14 @@ Helper.start_repo!()
 Helper.reset_log!()
 
 Helper.start_producer!()
-Helper.start_consumer!(Bench.Consumer)
 
 :persistent_term.put(:bench_latency_owner, self())
 
 url = Helper.start_server!() <> "/stream"
 
-{:ok, _} =
-  Consumer.subscribe(url,
-    consumer: Bench.Consumer,
-    handler: Bench.LatencyHandler,
-    message_modules: [OrderPlaced]
-  )
+Helper.start_consumer!(Bench.Consumer, url)
+
+{:ok, _} = Consumer.subscribe(Bench.LatencyHandler, consumer: Bench.Consumer)
 
 # The publish timestamp travels inside the message, so both ends are read from
 # the same monotonic clock on the same node — no clock skew to reason about.

@@ -49,7 +49,7 @@ defmodule DMEx.Storage do
 
   ### `c:last_seen/2` must distinguish "no cursor" from "cursor at 0"
 
-  It returns `nil`, not `0`, when a handler has never committed anything. That
+  It returns `nil`, not `0`, when a subscription has never committed anything. That
   is what makes `start: :latest` meaningful exactly once: a subscription with no
   cursor resolves `:latest` against the producer's tip, and one with a cursor —
   even at 0 — ignores `:start` entirely, because the durable position is always
@@ -122,12 +122,15 @@ defmodule DMEx.Storage do
   @callback max_id(opts()) :: {:ok, non_neg_integer()} | {:error, term()}
 
   @doc """
-  The durable read position for a handler, or `nil` if it has never committed one.
+  The durable read position for a subscription, or `nil` if it has never
+  committed one.
 
-  Keyed by handler module because the handler *is* the subscription's identity.
-  See the module documentation for why `nil` and `0` must not be conflated.
+  Keyed by the subscription's declared identifier — `"orders/order_projection"`,
+  the `\#{producer}/\#{id}` pair from `DMEx.Consumer.Handler` — rather than by the
+  handler module, so renaming the module does not mint a new subscription. See
+  the module documentation for why `nil` and `0` must not be conflated.
   """
-  @callback last_seen(opts(), handler :: module()) ::
+  @callback last_seen(opts(), subscription :: String.t()) ::
               {:ok, non_neg_integer() | nil} | {:error, term()}
 
   @doc """
@@ -140,13 +143,14 @@ defmodule DMEx.Storage do
   @callback transaction(opts(), (-> result)) :: {:ok, result} | {:error, term()} when result: var
 
   @doc """
-  Moves a handler's cursor to `id`, recording which producer it read from.
+  Moves a subscription's cursor to `id`, recording which producer it read from.
 
   Always called inside `c:transaction/2`. It does not refuse to move backwards:
   duplicate suppression happens in the pipeline, which is the authority, and an
   operator resetting a cursor deliberately needs this to go both ways.
   """
-  @callback advance(opts(), handler :: module(), id :: pos_integer(), url :: String.t()) :: :ok
+  @callback advance(opts(), subscription :: String.t(), id :: pos_integer(), url :: String.t()) ::
+              :ok
 
   @doc """
   Records a message its handler gave up on.
@@ -154,9 +158,9 @@ defmodule DMEx.Storage do
   Written in the same transaction as the `last_seen` advance that moves past it,
   so a dead message and the cursor that skipped it commit together or not at all.
 
-  `attrs` carries `:handler` and `:producer_url` — the table is shared across
-  every subscription in the application, and a log id alone is ambiguous across
-  producers — followed by the log row itself: `:id`, `:message_type`, `:data`,
+  `attrs` carries `:subscription` and `:producer_url` — the table is shared
+  across every subscription in the application, and a log id alone is ambiguous
+  across producers — followed by the log row itself: `:id`, `:message_type`, `:data`,
   `:metadata` and `:inserted_at`, unchanged from what arrived.
 
   **Nothing about the failure is stored.** No exception, no message, no attempt
@@ -167,47 +171,49 @@ defmodule DMEx.Storage do
   @callback dead_message(opts(), attrs :: map()) :: :ok | {:error, term()}
 
   @doc """
-  Every message `handler` has given up on, oldest first, as ordinary log rows.
+  Every message `subscription` has given up on, oldest first, as ordinary log
+  rows.
 
   The rows come back in `t:row/0` shape — the same shape `c:read/3` returns and
   the same shape the consumer pipeline consumes — because the stored columns are
   the log's columns. Replaying a dead message is therefore feeding a row back to
   a handler, with no reshaping in between.
   """
-  @callback dead_messages(opts(), handler :: module()) :: {:ok, [row()]} | {:error, term()}
+  @callback dead_messages(opts(), subscription :: String.t()) ::
+              {:ok, [row()]} | {:error, term()}
 
   @doc """
-  Removes one dead message, identified the way it is keyed: by handler and log
-  id. A handler has exactly one live subscription, so its own ids cannot
+  Removes one dead message, identified the way it is keyed: by subscription and
+  log id. A subscription reads exactly one producer's log, so its own ids cannot
   collide, and `producer_url` is provenance rather than identity.
 
   Called inside `c:transaction/2` by a replay, so that a message is dropped from
   this table exactly when its handler finally accepted it.
   """
-  @callback delete_dead_message(opts(), handler :: module(), id :: non_neg_integer()) ::
+  @callback delete_dead_message(opts(), subscription :: String.t(), id :: non_neg_integer()) ::
               :ok | {:error, term()}
 
   @doc """
-  A handler's full cursor row, or `nil`.
+  A subscription's full cursor row, or `nil`.
 
   `c:last_seen/2` answers the read path's question — where am I — and returns
   only the id. This answers an operator's: which producer was this reading
   from, and when did it last move? Used by `DMEx.Consumer.Cursors`, not by the
   stream.
   """
-  @callback cursor(opts(), handler :: module()) ::
+  @callback cursor(opts(), subscription :: String.t()) ::
               {:ok,
                %{required(:last_seen) => non_neg_integer(), optional(atom()) => term()} | nil}
               | {:error, term()}
 
   @doc """
-  Removes a handler's cursor entirely.
+  Removes a subscription's cursor entirely.
 
   Distinct from advancing it to 0: with no row at all the subscription's
   `start:` option applies again on its next start, which is what makes
   "re-read this stream from wherever `start:` says" expressible.
   """
-  @callback delete_cursor(opts(), handler :: module()) :: :ok | {:error, term()}
+  @callback delete_cursor(opts(), subscription :: String.t()) :: :ok | {:error, term()}
 
   @doc """
   Processes this adapter needs running alongside a producer.

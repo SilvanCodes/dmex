@@ -58,4 +58,15 @@ defmodule DMEx.Test.Server do
 
     "http://127.0.0.1:#{port}"
   end
+
+  @doc """
+  The producer map binding `:test` — the name every `DMEx.Test.Handlers` module
+  declares — to `url`.
+
+  The reason the map lives on the `DMEx.Consumer` child spec rather than in
+  application config, stated as code: the port is 0 until the server is running,
+  so this cannot be a literal anywhere.
+  """
+  @spec producers(String.t()) :: %{atom() => String.t()}
+  def producers(url), do: %{test: url}
 end

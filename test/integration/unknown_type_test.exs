@@ -24,13 +24,22 @@ defmodule DMEx.Integration.UnknownTypeTest do
     Handlers.report_to(self())
 
     start_supervised!(Producer)
-    start_supervised!({Consumer, name: TestConsumer, repo: DMEx.Test.IntegrationRepo})
 
-    %{url: Server.start!() <> "/stream"}
+    # The server binds port 0, so the producer map is necessarily built at
+    # runtime — which is exactly why it lives on the child spec rather than in
+    # application config.
+    url = Server.start!() <> "/stream"
+
+    start_supervised!(
+      {Consumer,
+       name: TestConsumer, repo: DMEx.Test.IntegrationRepo, producer: Server.producers(url)}
+    )
+
+    %{url: url}
   end
 
-  test "a type the consumer cannot decode is passed over, and the rest arrive", ctx do
-    subscribe(ctx, [OrderPlaced])
+  test "a type the consumer cannot decode is passed over, and the rest arrive", _ctx do
+    subscribe(Handlers.Echo)
 
     # Interleaved deliberately: an unknown type first, so a consumer that
     # wedged on it would never deliver anything at all.
@@ -47,8 +56,8 @@ defmodule DMEx.Integration.UnknownTypeTest do
     eventually(fn -> cursor() == {:ok, id} end)
   end
 
-  test "a stream a consumer understands none of still advances", ctx do
-    subscribe(ctx, [OrderPlaced])
+  test "a stream a consumer understands none of still advances", _ctx do
+    subscribe(Handlers.Echo)
 
     for n <- 1..5, do: {:ok, _} = Producer.publish(%OrderShipped{order_id: n, carrier: "dhl"})
     {:ok, id} = Postgres.max_id(Producer.__dmex__().storage_opts)
@@ -57,10 +66,10 @@ defmodule DMEx.Integration.UnknownTypeTest do
     refute_received {:handled, _, _}
   end
 
-  test "skips are reported, since silence looks identical to a broken filter", ctx do
+  test "skips are reported, since silence looks identical to a broken filter", _ctx do
     ref = :telemetry_test.attach_event_handlers(self(), [[:dmex, :consumer, :skip]])
 
-    subscribe(ctx, [OrderPlaced])
+    subscribe(Handlers.Echo)
 
     {:ok, _} = Producer.publish(%OrderShipped{order_id: 1, carrier: "dhl"})
 
@@ -69,10 +78,11 @@ defmodule DMEx.Integration.UnknownTypeTest do
     assert metadata.handler == Handlers.Echo
   end
 
-  test "declaring both modules delivers both", ctx do
+  test "declaring both modules delivers both", _ctx do
     # The same list does double duty: it is what makes decoding possible and
-    # what narrows the stream. Widening it is one edit.
-    subscribe(ctx, [OrderPlaced, OrderShipped])
+    # what narrows the stream. Widening it is one edit — of the handler module,
+    # which is where the list lives.
+    subscribe(Handlers.EchoAll)
 
     {:ok, _} = Producer.publish(%OrderPlaced{order_id: 1})
     {:ok, _} = Producer.publish(%OrderShipped{order_id: 2, carrier: "dhl"})
@@ -81,17 +91,13 @@ defmodule DMEx.Integration.UnknownTypeTest do
     assert_receive {:handled, %OrderShipped{order_id: 2, carrier: "dhl"}, _}, 5_000
   end
 
-  defp subscribe(ctx, modules) do
-    {:ok, _} =
-      Consumer.subscribe(ctx.url,
-        consumer: TestConsumer,
-        handler: Handlers.Echo,
-        message_modules: modules,
-        batch_window: 50
-      )
+  # The message list is part of the module now, so "the same handler with a
+  # different list" is a different module.
+  defp subscribe(handler) do
+    {:ok, _} = Consumer.subscribe(handler, consumer: TestConsumer, batch_window: 50)
   end
 
   defp cursor do
-    Postgres.last_seen(%{repo: DMEx.Test.IntegrationRepo, prefix: nil}, Handlers.Echo)
+    Postgres.last_seen(%{repo: DMEx.Test.IntegrationRepo, prefix: nil}, "test/echo")
   end
 end

@@ -4,8 +4,8 @@ defmodule DMEx.Consumer.DeadMessages do
 
   `dmex_dead_messages` is **structurally a message log**: the stored columns are
   `dmex_messages`' columns — `id`, `message_type`, `data`, `metadata`,
-  `inserted_at` — with the handler and producer URL alongside to say where each
-  row belongs. `id` is still the producer's own log id and `inserted_at` is
+  `inserted_at` — with the subscription id and producer URL alongside to say
+  where each row belongs. `id` is still the producer's own log id and `inserted_at` is
   still the original publish time.
 
   That is the whole reason replay is a few lines rather than a subsystem: a dead
@@ -25,13 +25,10 @@ defmodule DMEx.Consumer.DeadMessages do
   read back out of the log itself.
 
       # what is stuck
-      DMEx.Consumer.DeadMessages.list(MyApp.OrderHandler, repo: MyApp.Repo)
+      DMEx.Consumer.DeadMessages.list(MyApp.OrderProjection, repo: MyApp.Repo)
 
       # fix the handler, deploy, then
-      DMEx.Consumer.DeadMessages.replay(MyApp.OrderHandler,
-        repo: MyApp.Repo,
-        message_modules: [MyApp.Messages.OrderPlaced]
-      )
+      DMEx.Consumer.DeadMessages.replay(MyApp.OrderProjection, repo: MyApp.Repo)
 
   ## Replay does not touch the cursor
 
@@ -47,18 +44,19 @@ defmodule DMEx.Consumer.DeadMessages do
   ## Options
 
   `repo:` (required), plus optional `storage:` and `prefix:`, the same as
-  `DMEx.Consumer`. `replay/2` additionally needs `message_modules:` — the same
-  list the subscription declares, since decoding a row is exactly as
-  consumer-declared here as it is on the live path.
+  `DMEx.Consumer`. Nothing else: which messages to decode and which subscription
+  a row belongs to both come off the handler module, so there is no second place
+  to keep them in step with the live path.
   """
 
   alias DMEx.Consumer
+  alias DMEx.Consumer.Handler
   alias DMEx.Message
 
   require Logger
 
   @doc """
-  Every message `handler` gave up on, oldest first.
+  Every message `handler`'s subscription gave up on, oldest first.
 
   Rows come back in `t:DMEx.Storage.row/0` shape — `data` and `metadata` as JSON
   text, exactly as stored.
@@ -67,7 +65,7 @@ defmodule DMEx.Consumer.DeadMessages do
   def list(handler, opts) when is_atom(handler) do
     {storage, storage_opts} = Consumer.storage!(opts)
 
-    storage.dead_messages(storage_opts, handler)
+    storage.dead_messages(storage_opts, Handler.subscription_id(handler))
   end
 
   @doc """
@@ -83,12 +81,14 @@ defmodule DMEx.Consumer.DeadMessages do
   @spec replay(module(), keyword()) :: %{replayed: non_neg_integer(), failed: non_neg_integer()}
   def replay(handler, opts) when is_atom(handler) do
     {storage, storage_opts} = Consumer.storage!(opts)
-    modules = opts |> Keyword.fetch!(:message_modules) |> Message.registry()
 
-    {:ok, rows} = storage.dead_messages(storage_opts, handler)
+    declaration = declaration!(handler)
+    modules = Message.registry(declaration.messages)
+
+    {:ok, rows} = storage.dead_messages(storage_opts, declaration.id)
 
     Enum.reduce(rows, %{replayed: 0, failed: 0}, fn row, counts ->
-      case replay_one(row, handler, modules, storage, storage_opts) do
+      case replay_one(row, declaration, modules, storage, storage_opts) do
         :ok -> Map.update!(counts, :replayed, &(&1 + 1))
         :error -> Map.update!(counts, :failed, &(&1 + 1))
       end
@@ -105,43 +105,53 @@ defmodule DMEx.Consumer.DeadMessages do
   def discard(handler, id, opts) when is_atom(handler) and is_integer(id) do
     {storage, storage_opts} = Consumer.storage!(opts)
 
-    :ok = storage.delete_dead_message(storage_opts, handler, id)
+    :ok = storage.delete_dead_message(storage_opts, Handler.subscription_id(handler), id)
   end
 
   ## Internals
 
-  defp replay_one(row, handler, modules, storage, storage_opts) do
+  defp declaration!(handler) do
+    unless Handler.handler?(handler) do
+      raise ArgumentError,
+            "#{inspect(handler)} is not a DMEx handler. " <>
+              "Add `use DMEx.Consumer.Handler` to it."
+    end
+
+    handler.__dmex__()
+  end
+
+  defp replay_one(row, declaration, modules, storage, storage_opts) do
     case Map.fetch(modules, row.message_type) do
       :error ->
         Logger.warning(
-          "DMEx cannot replay dead message #{row.id}: no module declared for " <>
-            "#{row.message_type}. Add it to :message_modules."
+          "DMEx cannot replay dead message #{row.id}: #{inspect(declaration.handler)} " <>
+            "declares no module for #{row.message_type}. Add it to the handler's `messages:`."
         )
 
         :error
 
       {:ok, module} ->
-        run(row, module, handler, storage, storage_opts)
+        run(row, module, declaration, storage, storage_opts)
     end
   end
 
-  defp run(row, module, handler, storage, storage_opts) do
+  defp run(row, module, declaration, storage, storage_opts) do
     # Stored as text, decoded here, exactly as the live path does it.
     message = module.cast(JSON.decode!(row.data))
     metadata = JSON.decode!(row.metadata)
 
     {:ok, _} =
       storage.transaction(storage_opts, fn ->
-        _ = handler.handle_message(message, metadata)
+        _ = declaration.handler.handle_message(message, metadata)
 
-        :ok = storage.delete_dead_message(storage_opts, handler, row.id)
+        :ok = storage.delete_dead_message(storage_opts, declaration.id, row.id)
       end)
 
     :ok
   rescue
     exception ->
       Logger.warning(
-        "DMEx replay of dead message #{row.id} for #{inspect(handler)} failed again: " <>
+        "DMEx replay of dead message #{row.id} for #{declaration.id} failed again: " <>
           Exception.message(exception)
       )
 

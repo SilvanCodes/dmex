@@ -39,8 +39,8 @@ defmodule DMEx.Consumer.Failure do
   being skipped.
 
   **What is stored is the message, and only the message.** The dead-messages
-  table is structurally `dmex_messages` plus the handler and producer URL that
-  say where the row belongs, so a stored row *is* a log row — see
+  table is structurally `dmex_messages` plus the subscription id and producer
+  URL that say where the row belongs, so a stored row *is* a log row — see
   `DMEx.Consumer.DeadMessages`, where replaying one is feeding it back to a
   handler with no reshaping in between. Equal as a value rather than
   byte-for-byte: the payload is re-encoded from the term the frame decoded.
@@ -81,7 +81,7 @@ defmodule DMEx.Consumer.Failure do
   defp skip(state, row, id, exception, attempts) do
     {:ok, _} =
       state.storage.transaction(state.storage_opts, fn ->
-        :ok = state.storage.advance(state.storage_opts, state.handler, id, state.url)
+        :ok = state.storage.advance(state.storage_opts, state.subscription, id, state.url)
       end)
 
     report(state, row, id, exception, attempts, :skip)
@@ -96,7 +96,7 @@ defmodule DMEx.Consumer.Failure do
         # cursor that moved past it are the same fact.
         :ok =
           state.storage.dead_message(state.storage_opts, %{
-            handler: state.handler,
+            subscription: state.subscription,
             producer_url: state.url,
             id: id,
             message_type: Map.fetch!(row, "message_type"),
@@ -105,7 +105,7 @@ defmodule DMEx.Consumer.Failure do
             inserted_at: Map.fetch!(row, "inserted_at")
           })
 
-        :ok = state.storage.advance(state.storage_opts, state.handler, id, state.url)
+        :ok = state.storage.advance(state.storage_opts, state.subscription, id, state.url)
       end)
 
     report(state, row, id, exception, attempts, :dead_message)
@@ -120,7 +120,7 @@ defmodule DMEx.Consumer.Failure do
 
   defp report(state, row, id, exception, attempts, mode) do
     Logger.error(fn ->
-      "DMEx #{inspect(state.handler)} gave up on message #{id} " <>
+      "DMEx #{state.subscription} (#{inspect(state.handler)}) gave up on message #{id} " <>
         "(#{Map.fetch!(row, "message_type")}) from #{state.url} after #{attempts} " <>
         "attempt(s): #{Exception.message(exception)} — on_failure: #{mode}"
     end)
@@ -129,6 +129,7 @@ defmodule DMEx.Consumer.Failure do
       [:dmex, :consumer, :failed],
       %{id: id, attempts: attempts},
       %{
+        subscription: state.subscription,
         handler: state.handler,
         message_type: Map.fetch!(row, "message_type"),
         url: state.url,

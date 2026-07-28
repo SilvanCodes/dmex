@@ -69,17 +69,27 @@ defmodule DMEx.Migration.Postgres do
 
   defp up_consumer(prefix) do
     create_if_not_exists table(:dmex_cursors, primary_key: false, prefix: prefix) do
-      # The handler module *is* the subscription's identity, so it is the key
-      # rather than a surrogate id. The resulting unique index is also what
-      # enforces "one live subscription per handler module" in storage, not only
-      # in the process registry.
+      # The identifier a handler declares — "orders/order_projection", the
+      # `producer/id` pair from `use DMEx.Consumer.Handler` — so it is the key
+      # rather than a surrogate id. The resulting unique index is what enforces
+      # "one cursor per subscription" in storage, not only in the process
+      # registry.
       #
-      # Stored as text via inspect/1 and never converted back to an atom.
-      add(:handler, :text, primary_key: true)
+      # Keying on the declaration rather than the handler's module name is what
+      # makes renaming that module free. What still costs a migration is
+      # changing the declaration itself — a different `id:`, or a different key
+      # in the consumer's producer map — which is what
+      # `DMEx.Consumer.Cursors.rename!/3` is for.
+      #
+      # Both halves are `[a-z][a-z0-9_]*`, so "/" separates them unambiguously
+      # and two distinct pairs can never render to one string.
+      add(:subscription, :text, primary_key: true)
       add(:last_seen, :bigint, null: false)
 
-      # Informational: which producer this cursor last read from. The cursor's
-      # identity is the handler alone, so this is for operators, not lookups.
+      # Informational: which producer this cursor last read from. Identity is
+      # the subscription string alone, so this is for operators, not lookups —
+      # which is why repointing a producer name at a new host needs no
+      # migration.
       add(:producer_url, :text, null: false)
       add(:updated_at, :timestamptz, null: false, default: fragment("now()"))
     end
@@ -104,9 +114,10 @@ defmodule DMEx.Migration.Postgres do
     create_if_not_exists table(:dmex_dead_messages, primary_key: false, prefix: prefix) do
       # The table is shared across every subscription in the application — one
       # place to see everything anything gave up on — so a row has to say which
-      # handler owns it. That plus the log id is the identity: a handler has
-      # exactly one live subscription, so its own ids cannot collide.
-      add(:handler, :text, primary_key: true)
+      # subscription owns it, by the same declared identifier `dmex_cursors` is
+      # keyed on. That plus the log id is the identity: a subscription reads
+      # exactly one producer's log, so its own ids cannot collide.
+      add(:subscription, :text, primary_key: true)
 
       # Provenance rather than identity. Messages carry no origin, so without
       # this a dead row cannot say which producer it came from.

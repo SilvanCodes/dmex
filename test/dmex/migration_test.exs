@@ -63,11 +63,13 @@ defmodule DMEx.MigrationTest do
   end
 
   describe "dmex_cursors" do
-    test "the handler module is the primary key" do
-      # The handler *is* the subscription's identity, so the resulting unique
-      # index also enforces "one live subscription per handler module" in
-      # storage, not only in the process registry.
-      assert primary_key("dmex_cursors") == ["handler"]
+    test "the declared subscription identifier is the primary key" do
+      # The `producer/id` pair a handler declares *is* the subscription's
+      # identity, so the resulting unique index also enforces "one cursor per
+      # subscription" in storage, not only in the process registry — and keying
+      # on the declaration rather than the module name is what makes renaming
+      # the module free.
+      assert primary_key("dmex_cursors") == ["subscription"]
     end
 
     test "carries a durable position and the producer it last read from" do
@@ -81,10 +83,10 @@ defmodule DMEx.MigrationTest do
 
   describe "dmex_dead_messages" do
     # The table is shared across every subscription, so a row has to say which
-    # handler owns it — and a handler has exactly one live subscription, so its
+    # one owns it — and a subscription reads exactly one producer's log, so its
     # own log ids cannot collide.
-    test "is keyed by handler and the producer's own log id" do
-      assert primary_key("dmex_dead_messages") == ["handler", "id"]
+    test "is keyed by subscription and the producer's own log id" do
+      assert primary_key("dmex_dead_messages") == ["subscription", "id"]
     end
 
     # This is the property the whole shape exists for: a dead row *is* a log

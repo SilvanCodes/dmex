@@ -52,8 +52,11 @@ MyApp.Producer.publish(%MyApp.Messages.OrderPlaced{order_id: 7})
 
 ```elixir
 # consumer
-defmodule MyApp.OrderHandler do
-  use DMEx.Consumer.Handler
+defmodule MyApp.OrderProjection do
+  use DMEx.Consumer.Handler,
+    producer: :orders,
+    id: :order_projection,
+    messages: [MyApp.Messages.OrderPlaced]
 
   @impl true
   def handle_message(%MyApp.Messages.OrderPlaced{} = message, _metadata), do: :ok
@@ -61,12 +64,16 @@ end
 
 {DMEx.Consumer,
  repo: MyApp.Repo,
- subscriptions: [
-   [url: "https://orders.internal/stream",
-    message_modules: [MyApp.Messages.OrderPlaced],
-    handler: MyApp.OrderHandler]
- ]}
+ producer: %{orders: "https://orders.internal/stream"},
+ handlers: [MyApp.OrderProjection]}
 ```
+
+The handler module is the whole declaration: which producer, under what name,
+and for which message types. The consumer binds names to URLs, so a URL appears
+once rather than at every subscription site. A subscription's durable identity
+is the declared `"orders/order_projection"` pair rather than the module name —
+so renaming the module is free, and only changing the declaration itself costs a
+cursor migration.
 
 Start with the `DMEx` moduledoc, then `DMEx.Config` for every default and why it
 has the value it does.
@@ -83,13 +90,12 @@ are exhausted, `on_failure` decides:
 - `:dead_message` — record it first, in the same transaction as the advance.
 
 `dmex_dead_messages` is **structurally a message log**: the same `id`,
-`message_type`, `data`, `metadata` and `inserted_at`, with the handler and
-producer URL alongside. A dead row *is* a log row, so replay is handing it back
-rather than rebuilding a message from parts:
+`message_type`, `data`, `metadata` and `inserted_at`, with the subscription id
+and producer URL alongside. A dead row *is* a log row, so replay is handing it
+back rather than rebuilding a message from parts:
 
-    DMEx.Consumer.DeadMessages.list(MyApp.OrderHandler, repo: MyApp.Repo)
-    DMEx.Consumer.DeadMessages.replay(MyApp.OrderHandler,
-      repo: MyApp.Repo, message_modules: [MyApp.Messages.OrderPlaced])
+    DMEx.Consumer.DeadMessages.list(MyApp.OrderProjection, repo: MyApp.Repo)
+    DMEx.Consumer.DeadMessages.replay(MyApp.OrderProjection, repo: MyApp.Repo)
 
 Nothing about the failure is stored — no exception, no attempt count. A failure
 is an event, not a property of the message, so it lives in your logs and in

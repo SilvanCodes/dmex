@@ -46,11 +46,18 @@ defmodule DMEx.Telemetry do
 
   ## Consumer
 
+  Every consumer event carries **both** `:subscription` and `:handler`.
+  `:subscription` is the durable identifier — `"orders/order_projection"` — and
+  is what a dashboard should group and alert on, since it survives renaming the
+  module. `:handler` is the module, which is what a human reads in a log line
+  and what points at the code to open. They are deliberately not the same
+  string, and after one refactor they usually differ.
+
   ### `[:dmex, :consumer, :message, :start | :stop | :exception]`
 
   A `:telemetry.span/3` around **one attempt** at one message: the handler call
-  and the cursor advance, in their transaction. Metadata: `:handler`,
-  `:message_type`, `:url`, `:id`, `:attempt`.
+  and the cursor advance, in their transaction. Metadata: `:subscription`,
+  `:handler`, `:message_type`, `:url`, `:id`, `:attempt`.
 
   A retried message emits one span per attempt, so `:exception` events with
   `attempt: 1` followed by a `:stop` with `attempt: 2` is a transient failure
@@ -61,7 +68,7 @@ defmodule DMEx.Telemetry do
   ### `[:dmex, :consumer, :skip]`
 
   A row whose `message_type` matched no declared module. Measurements: `:id`.
-  Metadata: `:handler`, `:message_type`, `:url`.
+  Metadata: `:subscription`, `:handler`, `:message_type`, `:url`.
 
   **Worth a dashboard even though it is the normal case.** In v1 a subscription
   receives the producer's entire log, so skips are expected — but a consumer
@@ -71,8 +78,8 @@ defmodule DMEx.Telemetry do
   ### `[:dmex, :consumer, :failed]`
 
   A message that exhausted its local retries. Measurements: `:id`,
-  `:attempts`. Metadata: `:handler`, `:message_type`, `:url`, `:on_failure`
-  (which terminal action was taken), `:reason`.
+  `:attempts`. Metadata: `:subscription`, `:handler`, `:message_type`, `:url`,
+  `:on_failure` (which terminal action was taken), `:reason`.
 
   Emitted for `:skip` and `:dead_message`. `:crash` re-raises instead, so the
   supervisor's own report is the record there.
@@ -80,7 +87,8 @@ defmodule DMEx.Telemetry do
   ### `[:dmex, :consumer, :lag]`
 
   Per frame received. Measurements: `:lag` (the producer's tip minus the last id
-  in the frame), `:rows`, and `:utilization`. Metadata: `:handler`, `:url`.
+  in the frame), `:rows`, and `:utilization`. Metadata: `:subscription`,
+  `:handler`, `:url`.
 
   `:lag` is the "am I falling behind" signal, and the consumer-side twin of
   `[:dmex, :stream, :frame]`'s. **`:utilization` is what it cannot tell you**: a
@@ -94,7 +102,7 @@ defmodule DMEx.Telemetry do
   ### `[:dmex, :consumer, :socket]`
 
   The socket was gated off or re-armed. Measurements: `:depth`. Metadata:
-  `:handler`, `:url`, `:mode` (`:passive` or `:active`).
+  `:subscription`, `:handler`, `:url`, `:mode` (`:passive` or `:active`).
 
   `:passive` means the TCP receive window is closing because this consumer
   stopped re-arming — structural backpressure working, not a fault. Sustained
@@ -104,8 +112,8 @@ defmodule DMEx.Telemetry do
 
   The controller decided to ask for different pacing. Measurements:
   `:batch_window`, `:max_batch_size` (the new request) and `:depth` at the
-  moment of the decision. Metadata: `:handler`, `:url`, `:mean_service_ms` —
-  the measured capacity the new size was computed from.
+  moment of the decision. Metadata: `:subscription`, `:handler`, `:url`,
+  `:mean_service_ms` — the measured capacity the new size was computed from.
 
   Each of these costs a close, a local drain and a reconnect, so a healthy
   subscription emits a handful over its lifetime. A steady stream of them is
@@ -114,7 +122,8 @@ defmodule DMEx.Telemetry do
 
   ### `[:dmex, :consumer, :reconnect]`
 
-  Measurements: `:attempt`, `:delay`. Metadata: `:handler`, `:url`, `:reason`.
+  Measurements: `:attempt`, `:delay`. Metadata: `:subscription`, `:handler`,
+  `:url`, `:reason`.
 
   A steadily climbing `:attempt` is a subscription that cannot connect;
   `:reason` distinguishes a producer restart from a poison message crash-looping

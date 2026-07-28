@@ -7,19 +7,20 @@ defmodule DMEx.Consumer.DeadMessagesTest do
   alias DMEx.Storage.Postgres
   alias DMEx.Test.Handlers
   alias DMEx.Test.Messages.OrderPlaced
-  alias DMEx.Test.Messages.OrderShipped
 
   @moduletag :capture_log
 
   @url "https://orders.internal/stream"
   @handler Handlers.FailTimes
+  @subscription "test/fail_times"
 
   setup do
     Handlers.report_to(self())
 
+    # `replay/2` takes no message list any more — it reads the handler's own.
     %{
       opts: [repo: Repo],
-      replay: [repo: Repo, message_modules: [OrderPlaced]],
+      replay: [repo: Repo],
       storage_opts: %{repo: Repo, prefix: nil}
     }
   end
@@ -113,26 +114,35 @@ defmodule DMEx.Consumer.DeadMessagesTest do
       assert {:ok, [_row]} = DeadMessages.list(@handler, ctx.opts)
     end
 
+    # FailTimesMismatched declares FailTimes' identity — so it addresses the very
+    # same dead rows — while listing a type those rows are not. That is what
+    # "cannot decode" looks like once the list lives on the module.
     test "replays only what it can decode, rather than losing the rest", ctx do
       kill(ctx, 1)
       Handlers.FailTimes.set(0)
 
       assert %{replayed: 0, failed: 1} =
-               DeadMessages.replay(@handler, repo: Repo, message_modules: [OrderShipped])
+               DeadMessages.replay(Handlers.FailTimesMismatched, ctx.replay)
 
       assert {:ok, [_row]} = DeadMessages.list(@handler, ctx.opts)
     end
 
+    test "rejects a module that is not a handler", ctx do
+      assert_raise ArgumentError, ~r/is not a DMEx handler/, fn ->
+        DeadMessages.replay(Handlers.NotAHandler, ctx.replay)
+      end
+    end
+
     test "does not touch the subscription's cursor", ctx do
       kill(ctx, 1)
-      :ok = Postgres.advance(ctx.storage_opts, @handler, 500, @url)
+      :ok = Postgres.advance(ctx.storage_opts, @subscription, 500, @url)
       Handlers.FailTimes.set(0)
 
       DeadMessages.replay(@handler, ctx.replay)
 
       # A replayed message is delivered out of band; rewinding the cursor to
       # reach it would redeliver everything in between.
-      assert {:ok, 500} = Postgres.last_seen(ctx.storage_opts, @handler)
+      assert {:ok, 500} = Postgres.last_seen(ctx.storage_opts, @subscription)
     end
 
     test "is a no-op when there is nothing dead", ctx do
@@ -170,7 +180,6 @@ defmodule DMEx.Consumer.DeadMessagesTest do
         storage: DMEx.Storage.Postgres,
         storage_opts: ctx.storage_opts,
         handler: @handler,
-        message_modules: [OrderPlaced],
         url: @url,
         cursor: id - 1,
         config: Config.consumer!(on_failure: :dead_message, max_attempts: 1)

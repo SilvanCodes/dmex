@@ -34,9 +34,18 @@ defmodule DMEx.BenchHelper do
     end
   end
 
-  @doc "Starts a named consumer, tolerating one already running."
-  def start_consumer!(name) do
-    case DMEx.Consumer.start_link(name: name, repo: DMEx.Test.IntegrationRepo) do
+  @doc """
+  Starts a named consumer bound to `url` as producer `:bench`, tolerating one
+  already running.
+
+  The server binds an ephemeral port, so the map cannot be a literal.
+  """
+  def start_consumer!(name, url) do
+    case DMEx.Consumer.start_link(
+           name: name,
+           repo: DMEx.Test.IntegrationRepo,
+           producer: %{bench: url}
+         ) do
       {:ok, pid} -> pid
       {:error, {:already_started, pid}} -> pid
     end

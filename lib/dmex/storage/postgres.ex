@@ -98,11 +98,11 @@ defmodule DMEx.Storage.Postgres do
   end
 
   @impl DMEx.Storage
-  def last_seen(opts, handler) when is_atom(handler) do
+  def last_seen(opts, subscription) when is_binary(subscription) do
     repo = Map.fetch!(opts, :repo)
-    sql = "SELECT last_seen FROM #{table(opts, @cursors)} WHERE handler = $1"
+    sql = "SELECT last_seen FROM #{table(opts, @cursors)} WHERE subscription = $1"
 
-    case SQL.query(repo, sql, [inspect(handler)]) do
+    case SQL.query(repo, sql, [subscription]) do
       {:ok, %{rows: [[last_seen]]}} -> {:ok, last_seen}
       {:ok, %{rows: []}} -> {:ok, nil}
       {:error, reason} -> {:error, reason}
@@ -110,16 +110,16 @@ defmodule DMEx.Storage.Postgres do
   end
 
   @impl DMEx.Storage
-  def cursor(opts, handler) when is_atom(handler) do
+  def cursor(opts, subscription) when is_binary(subscription) do
     repo = Map.fetch!(opts, :repo)
 
     sql = """
     SELECT last_seen, producer_url, updated_at
       FROM #{table(opts, @cursors)}
-     WHERE handler = $1
+     WHERE subscription = $1
     """
 
-    case SQL.query(repo, sql, [inspect(handler)]) do
+    case SQL.query(repo, sql, [subscription]) do
       {:ok, %{rows: [[last_seen, url, updated_at]]}} ->
         {:ok, %{last_seen: last_seen, producer_url: url, updated_at: updated_at}}
 
@@ -132,11 +132,11 @@ defmodule DMEx.Storage.Postgres do
   end
 
   @impl DMEx.Storage
-  def delete_cursor(opts, handler) when is_atom(handler) do
+  def delete_cursor(opts, subscription) when is_binary(subscription) do
     repo = Map.fetch!(opts, :repo)
-    sql = "DELETE FROM #{table(opts, @cursors)} WHERE handler = $1"
+    sql = "DELETE FROM #{table(opts, @cursors)} WHERE subscription = $1"
 
-    case SQL.query(repo, sql, [inspect(handler)]) do
+    case SQL.query(repo, sql, [subscription]) do
       {:ok, _} -> :ok
       {:error, reason} -> {:error, reason}
     end
@@ -150,19 +150,19 @@ defmodule DMEx.Storage.Postgres do
   end
 
   @impl DMEx.Storage
-  def advance(opts, handler, id, url) when is_atom(handler) and is_integer(id) do
+  def advance(opts, subscription, id, url) when is_binary(subscription) and is_integer(id) do
     repo = Map.fetch!(opts, :repo)
 
     sql = """
-    INSERT INTO #{table(opts, @cursors)} (handler, last_seen, producer_url, updated_at)
+    INSERT INTO #{table(opts, @cursors)} (subscription, last_seen, producer_url, updated_at)
          VALUES ($1, $2, $3, now())
-    ON CONFLICT (handler)
+    ON CONFLICT (subscription)
       DO UPDATE SET last_seen = EXCLUDED.last_seen,
                     producer_url = EXCLUDED.producer_url,
                     updated_at = now()
     """
 
-    {:ok, _} = SQL.query(repo, sql, [inspect(handler), id, url])
+    {:ok, _} = SQL.query(repo, sql, [subscription, id, url])
 
     :ok
   end
@@ -173,12 +173,12 @@ defmodule DMEx.Storage.Postgres do
 
     sql = """
     INSERT INTO #{table(opts, @dead_messages)}
-           (handler, producer_url, id, message_type, data, metadata, inserted_at)
+           (subscription, producer_url, id, message_type, data, metadata, inserted_at)
          VALUES ($1, $2, $3, $4, $5::text::jsonb, $6::text::jsonb, $7::text::timestamptz)
     """
 
     params = [
-      inspect(Map.fetch!(attrs, :handler)),
+      Map.fetch!(attrs, :subscription),
       Map.fetch!(attrs, :producer_url),
       Map.fetch!(attrs, :id),
       Map.fetch!(attrs, :message_type),
@@ -194,7 +194,7 @@ defmodule DMEx.Storage.Postgres do
   end
 
   @impl DMEx.Storage
-  def dead_messages(opts, handler) when is_atom(handler) do
+  def dead_messages(opts, subscription) when is_binary(subscription) do
     repo = Map.fetch!(opts, :repo)
 
     # The same projection `read/3` uses, because the columns are the same
@@ -202,23 +202,24 @@ defmodule DMEx.Storage.Postgres do
     sql = """
     SELECT id, message_type, data::text, metadata::text, inserted_at
       FROM #{table(opts, @dead_messages)}
-     WHERE handler = $1
+     WHERE subscription = $1
      ORDER BY id
     """
 
-    case SQL.query(repo, sql, [inspect(handler)]) do
+    case SQL.query(repo, sql, [subscription]) do
       {:ok, %{rows: rows}} -> {:ok, Enum.map(rows, &to_row/1)}
       {:error, reason} -> {:error, reason}
     end
   end
 
   @impl DMEx.Storage
-  def delete_dead_message(opts, handler, id) when is_atom(handler) and is_integer(id) do
+  def delete_dead_message(opts, subscription, id)
+      when is_binary(subscription) and is_integer(id) do
     repo = Map.fetch!(opts, :repo)
 
-    sql = "DELETE FROM #{table(opts, @dead_messages)} WHERE handler = $1 AND id = $2"
+    sql = "DELETE FROM #{table(opts, @dead_messages)} WHERE subscription = $1 AND id = $2"
 
-    case SQL.query(repo, sql, [inspect(handler), id]) do
+    case SQL.query(repo, sql, [subscription, id]) do
       {:ok, _} -> :ok
       {:error, reason} -> {:error, reason}
     end

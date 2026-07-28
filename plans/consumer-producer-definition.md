@@ -1,7 +1,12 @@
 # Consumer-side producer definition
 
-> Status: **planned, not implemented.** This is the design record for the
-> refactor; nothing in `lib/` has moved yet.
+> Status: **implemented.** This is the design record for the refactor; the code
+> now matches it. Two things landed differently from the text below, both noted
+> in place: `subscribe/2` also accepts `producer:` as a call-site override (the
+> same escape hatch `repo:` has), and `@subscription_opts` is `[:consumer,
+> :producer]` rather than `[:handler, :consumer]`, since the handler is the
+> positional argument and a stray `handler:` should raise rather than be
+> ignored.
 
 ## Context
 
@@ -160,12 +165,22 @@ Mirror of `Handler.handler?/1`, so `Pipeline.build/1` can reject a module in
 
 ### 3. `lib/dmex/consumer.ex`
 
-- `@subscription_opts` (`consumer.ex:78`) → `[:handler, :consumer]`.
+- `@subscription_opts` (`consumer.ex:78`) → `[:consumer, :producer]`. **Landed
+  differently:** `:handler` is left out deliberately — it is the positional
+  argument now, so a stray `handler:` in the options is a mistake worth raising
+  on rather than silently ignoring. `:producer` is in for the override below.
 - `:subscriptions` option → `:handlers`, a list of `module` or
   `{module, keyword}`.
 - New `:producer` option: a map of name → URL. Validate at `init/1` — keys match
   the identifier format, values are non-empty binaries with an `http`/`https`
   scheme and a host. Raise naming the offending entry.
+
+  **Landed differently:** `subscribe/2` accepts `producer:` too, resolving it
+  exactly as it resolves `repo:` — call-site map first, then the running
+  consumer's registry metadata, then a raise naming both fixes. Without this a
+  `subscribe/2` had no way at all to name a URL, since `:url` is gone; with it
+  the two resolutions are symmetric. A consumer still has to be running either
+  way, because it owns the registry each subscription registers in.
 - Seed the map into registry metadata alongside `:storage`, reusing the existing
   trick at `consumer.ex:104` so `subscribe/2` resolves with no GenServer call:
 

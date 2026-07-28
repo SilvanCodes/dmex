@@ -43,7 +43,7 @@ defmodule DMEx.Consumer.FailureTest do
       state = state(ctx, handler: Handlers.FailTimes, max_attempts: 3)
 
       assert {:ok, 1} = Pipeline.run(row(1), state)
-      assert {:ok, 1} = Postgres.last_seen(ctx.storage_opts, Handlers.FailTimes)
+      assert {:ok, 1} = Postgres.last_seen(ctx.storage_opts, "test/fail_times")
     end
 
     test "each attempt gets its own telemetry span", ctx do
@@ -80,7 +80,7 @@ defmodule DMEx.Consumer.FailureTest do
 
       catch_error(Pipeline.run(row(1), state))
 
-      assert {:ok, nil} = Postgres.last_seen(ctx.storage_opts, Handlers.Raising)
+      assert {:ok, nil} = Postgres.last_seen(ctx.storage_opts, "test/raising")
     end
 
     test "writes no dead message", ctx do
@@ -97,7 +97,7 @@ defmodule DMEx.Consumer.FailureTest do
       state = state(ctx, handler: Handlers.Raising, on_failure: :skip)
 
       assert {:ok, 1} = Pipeline.run(row(1), state)
-      assert {:ok, 1} = Postgres.last_seen(ctx.storage_opts, Handlers.Raising)
+      assert {:ok, 1} = Postgres.last_seen(ctx.storage_opts, "test/raising")
     end
 
     test "does not stop the rest of the batch", ctx do
@@ -133,7 +133,7 @@ defmodule DMEx.Consumer.FailureTest do
       state = state(ctx, handler: Handlers.Raising, on_failure: :dead_message)
 
       assert {:ok, 1} = Pipeline.run(row(1), state)
-      assert {:ok, 1} = Postgres.last_seen(ctx.storage_opts, Handlers.Raising)
+      assert {:ok, 1} = Postgres.last_seen(ctx.storage_opts, "test/raising")
       assert dead_count() == 1
     end
 
@@ -145,14 +145,16 @@ defmodule DMEx.Consumer.FailureTest do
 
       Pipeline.run(row(1, metadata: %{"trace_id" => "abc"}), state)
 
-      assert [[handler, url, id, type, data, metadata, inserted_at]] =
+      assert [[subscription, url, id, type, data, metadata, inserted_at]] =
                query("""
-               SELECT handler, producer_url, id, message_type,
+               SELECT subscription, producer_url, id, message_type,
                       data::text, metadata::text, inserted_at
                  FROM dmex_dead_messages
                """)
 
-      assert handler == "DMEx.Test.Handlers.Raising"
+      # The declared identity, not the module name — which is what makes
+      # renaming the handler free.
+      assert subscription == "test/raising"
       assert url == @url
       # The producer's own log id, not a surrogate — so duplicate suppression
       # still means what it always meant.
@@ -180,7 +182,7 @@ defmodule DMEx.Consumer.FailureTest do
                """)
 
       assert columns == [
-               ~w(data handler id inserted_at message_type metadata producer_url)
+               ~w(data id inserted_at message_type metadata producer_url subscription)
              ]
     end
 
@@ -213,9 +215,9 @@ defmodule DMEx.Consumer.FailureTest do
       assert dead_count() == 1
 
       # Now rewind the cursor to 1 and feed message 2 again. Its dead-message
-      # insert will conflict on (handler, id), which aborts the transaction the
-      # cursor advance is sharing.
-      :ok = Postgres.advance(ctx.storage_opts, Handlers.Raising, 1, @url)
+      # insert will conflict on (subscription, id), which aborts the transaction
+      # the cursor advance is sharing.
+      :ok = Postgres.advance(ctx.storage_opts, "test/raising", 1, @url)
 
       assert catch_error(Pipeline.run(row(2), %{state | cursor: 1}))
 
@@ -223,7 +225,7 @@ defmodule DMEx.Consumer.FailureTest do
       # its own — which is the whole reason they share a transaction. Without
       # that, the cursor would now read 2 and the message would be both skipped
       # and unrecorded.
-      assert {:ok, 1} = Postgres.last_seen(ctx.storage_opts, Handlers.Raising)
+      assert {:ok, 1} = Postgres.last_seen(ctx.storage_opts, "test/raising")
       assert dead_count() == 1
     end
 
@@ -255,7 +257,6 @@ defmodule DMEx.Consumer.FailureTest do
       storage: DMEx.Storage.Postgres,
       storage_opts: ctx.storage_opts,
       handler: Keyword.fetch!(opts, :handler),
-      message_modules: [OrderPlaced],
       url: @url,
       cursor: 0,
       # A short backoff: these tests are about which terminal action runs, not

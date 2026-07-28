@@ -39,7 +39,7 @@ defmodule DMEx.Consumer.PipelineTest do
       assert {:ok, 10} = Pipeline.run(row(3), state)
 
       # The cursor was never written, so nothing was committed for it either.
-      assert {:ok, nil} = Postgres.last_seen(ctx.storage_opts, Handlers.Echo)
+      assert {:ok, nil} = Postgres.last_seen(ctx.storage_opts, "test/echo")
     end
 
     test "makes a replayed frame harmless", ctx do
@@ -63,7 +63,7 @@ defmodule DMEx.Consumer.PipelineTest do
       assert {:ok, 1} = Pipeline.run(unknown_row(1), state)
 
       refute_received {:handled, _, _}
-      assert {:ok, 1} = Postgres.last_seen(ctx.storage_opts, Handlers.Echo)
+      assert {:ok, 1} = Postgres.last_seen(ctx.storage_opts, "test/echo")
     end
 
     # Without the advance, a consumer would wedge forever on the first message
@@ -74,7 +74,7 @@ defmodule DMEx.Consumer.PipelineTest do
       assert {:ok, 3} = Pipeline.run_all([unknown_row(1), row(2), unknown_row(3)], state)
 
       assert_received {:handled, %OrderPlaced{order_id: 2}, _}
-      assert {:ok, 3} = Postgres.last_seen(ctx.storage_opts, Handlers.Echo)
+      assert {:ok, 3} = Postgres.last_seen(ctx.storage_opts, "test/echo")
     end
 
     # A consumer silently discarding most of a stream and one silently
@@ -99,7 +99,7 @@ defmodule DMEx.Consumer.PipelineTest do
 
       assert {:ok, 1} = Pipeline.run(row(1), state)
 
-      assert {:ok, 1} = Postgres.last_seen(ctx.storage_opts, Handlers.Echo)
+      assert {:ok, 1} = Postgres.last_seen(ctx.storage_opts, "test/echo")
     end
 
     # Everything else in the row stays with DMEx: the id, the message_type, the
@@ -123,7 +123,7 @@ defmodule DMEx.Consumer.PipelineTest do
     end
 
     test "decodes into whichever module the type names", ctx do
-      state = state(ctx, handler: Handlers.Echo, modules: [OrderPlaced, OrderShipped], cursor: 0)
+      state = state(ctx, handler: Handlers.EchoAll, cursor: 0)
 
       Pipeline.run_all([row(1), shipped_row(2)], state)
 
@@ -163,7 +163,7 @@ defmodule DMEx.Consumer.PipelineTest do
 
       catch_error(Pipeline.run(row(1), state))
 
-      assert {:ok, nil} = Postgres.last_seen(ctx.storage_opts, Handlers.Raising)
+      assert {:ok, nil} = Postgres.last_seen(ctx.storage_opts, "test/raising")
     end
 
     # The rollback probe. If the scratch row survived, the callback and the
@@ -175,7 +175,7 @@ defmodule DMEx.Consumer.PipelineTest do
       catch_error(Pipeline.run(row(1), state))
 
       assert [[0]] = SQL.query!(Repo, "SELECT count(*) FROM dmex_test_scratch", []).rows
-      assert {:ok, nil} = Postgres.last_seen(ctx.storage_opts, Handlers.WritesThenRaises)
+      assert {:ok, nil} = Postgres.last_seen(ctx.storage_opts, "test/writes_then_raises")
     end
 
     test "stops the batch at the failing row rather than skipping past it", ctx do
@@ -195,13 +195,38 @@ defmodule DMEx.Consumer.PipelineTest do
       end
     end
 
-    test "builds the type registry once, from the declared modules", ctx do
-      state = state(ctx, handler: Handlers.Echo, modules: [OrderPlaced, OrderShipped])
+    test "builds the type registry once, from the handler's own declaration", ctx do
+      state = state(ctx, handler: Handlers.EchoAll)
 
       assert state.modules == %{
                "DMEx.Test.Messages.OrderPlaced" => OrderPlaced,
                "DMEx.Test.Messages.OrderShipped" => OrderShipped
              }
+    end
+
+    test "carries the handler's subscription id", ctx do
+      assert state(ctx, handler: Handlers.Echo).subscription == "test/echo"
+    end
+
+    # Not checked inside `use DMEx.Consumer.Handler`: touching a message module
+    # from the macro would make every handler compile-time dependent on every
+    # type it lists. Here they are loaded already, and it costs once per
+    # subscription.
+    test "rejects a declared module that is not a DMEx message", ctx do
+      defmodule DeclaresNonMessage do
+        @moduledoc false
+        use DMEx.Consumer.Handler,
+          producer: :test,
+          id: :declares_non_message,
+          messages: [DMEx.Test.Handlers.NotAHandler]
+
+        @impl true
+        def handle_message(_message, _metadata), do: :ok
+      end
+
+      assert_raise ArgumentError, ~r/is not a DMEx message module/, fn ->
+        state(ctx, handler: DeclaresNonMessage)
+      end
     end
   end
 
@@ -250,7 +275,6 @@ defmodule DMEx.Consumer.PipelineTest do
       storage: DMEx.Storage.Postgres,
       storage_opts: ctx.storage_opts,
       handler: Keyword.fetch!(opts, :handler),
-      message_modules: Keyword.get(opts, :modules, [OrderPlaced]),
       url: @url,
       cursor: Keyword.get(opts, :cursor, 0)
     )

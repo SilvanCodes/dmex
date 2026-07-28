@@ -31,11 +31,20 @@ defmodule DMEx.Integration.AdaptiveTest do
     Handlers.report_to(self())
 
     start_supervised!(Producer)
-    start_supervised!({Consumer, name: TestConsumer, repo: DMEx.Test.IntegrationRepo})
+
+    # The server binds port 0, so the producer map is necessarily built at
+    # runtime — which is exactly why it lives on the child spec rather than in
+    # application config.
+    url = Server.start!() <> "/stream"
+
+    start_supervised!(
+      {Consumer,
+       name: TestConsumer, repo: DMEx.Test.IntegrationRepo, producer: Server.producers(url)}
+    )
 
     seed(@backlog)
 
-    %{url: Server.start!() <> "/stream"}
+    %{url: url}
   end
 
   describe "a consumer that cannot keep up" do
@@ -43,10 +52,8 @@ defmodule DMEx.Integration.AdaptiveTest do
       # A big batch against a slow handler: the producer can hand over far more
       # per window than the consumer drains, which is exactly the mismatch.
       {:ok, pid} =
-        Consumer.subscribe(ctx.url,
+        Consumer.subscribe(Handlers.Echo,
           consumer: TestConsumer,
-          handler: Handlers.Echo,
-          message_modules: [OrderPlaced],
           max_batch_size: 500,
           batch_window: 20,
           min_samples: 5,
@@ -72,7 +79,7 @@ defmodule DMEx.Integration.AdaptiveTest do
       assert Queue.depth(state.queue) <= state.queue.limit
     end
 
-    test "re-parameterizes down to something it can actually drain", ctx do
+    test "re-parameterizes down to something it can actually drain", _ctx do
       ref = :telemetry_test.attach_event_handlers(self(), [[:dmex, :consumer, :reparameterize]])
 
       assert_receive {[:dmex, :consumer, :reparameterize], ^ref, measurements, metadata}, 30_000
@@ -102,7 +109,7 @@ defmodule DMEx.Integration.AdaptiveTest do
       )
     end
 
-    test "loses nothing across the re-parameterization", ctx do
+    test "loses nothing across the re-parameterization", _ctx do
       # Close, drain locally, reconnect from the post-drain cursor: every queued
       # row goes through its own transaction, so nothing already transferred is
       # re-fetched and nothing is skipped.
@@ -117,12 +124,10 @@ defmodule DMEx.Integration.AdaptiveTest do
   end
 
   describe "recovering" do
-    test "climbs back toward the configured pacing once the pressure clears", ctx do
+    test "climbs back toward the configured pacing once the pressure clears", _ctx do
       {:ok, pid} =
-        Consumer.subscribe(ctx.url,
+        Consumer.subscribe(Handlers.Echo,
           consumer: TestConsumer,
-          handler: Handlers.Echo,
-          message_modules: [OrderPlaced],
           max_batch_size: 500,
           batch_window: 20,
           min_samples: 5,
@@ -152,16 +157,14 @@ defmodule DMEx.Integration.AdaptiveTest do
   end
 
   describe "a consumer that is keeping up" do
-    test "never re-parameterizes", ctx do
+    test "never re-parameterizes", _ctx do
       ref = :telemetry_test.attach_event_handlers(self(), [[:dmex, :consumer, :reparameterize]])
 
       # A small batch that the handler empties well within the window, so depth
       # never sustains above the mark and the trigger cannot fire.
       {:ok, _pid} =
-        Consumer.subscribe(ctx.url,
+        Consumer.subscribe(Handlers.Echo,
           consumer: TestConsumer,
-          handler: Handlers.Echo,
-          message_modules: [OrderPlaced],
           max_batch_size: 5,
           batch_window: 100,
           min_samples: 5,
@@ -177,14 +180,12 @@ defmodule DMEx.Integration.AdaptiveTest do
   end
 
   describe "adaptive: false" do
-    test "pins the pacing however far behind it falls", ctx do
+    test "pins the pacing however far behind it falls", _ctx do
       ref = :telemetry_test.attach_event_handlers(self(), [[:dmex, :consumer, :reparameterize]])
 
       {:ok, pid} =
-        Consumer.subscribe(ctx.url,
+        Consumer.subscribe(Handlers.Echo,
           consumer: TestConsumer,
-          handler: Handlers.Echo,
-          message_modules: [OrderPlaced],
           max_batch_size: 500,
           batch_window: 20,
           min_samples: 5,

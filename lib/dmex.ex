@@ -59,8 +59,11 @@ defmodule DMEx do
   A consuming application implements a handler and declares its subscriptions in
   its supervision tree:
 
-      defmodule MyApp.OrderHandler do
-        use DMEx.Consumer.Handler
+      defmodule MyApp.OrderProjection do
+        use DMEx.Consumer.Handler,
+          producer: :orders,
+          id: :order_projection,
+          messages: [MyApp.Messages.OrderPlaced]
 
         @impl true
         def handle_message(%MyApp.Messages.OrderPlaced{} = message, _metadata) do
@@ -70,24 +73,25 @@ defmodule DMEx do
 
       {DMEx.Consumer,
        repo: MyApp.Repo,
-       subscriptions: [
-         [url: "https://orders.internal/stream",
-          message_modules: [MyApp.Messages.OrderPlaced],
-          handler: MyApp.OrderHandler]
-       ]}
+       producer: %{orders: "https://orders.internal/stream"},
+       handlers: [MyApp.OrderProjection]}
 
-  `DMEx.Consumer.subscribe/2` starts one at runtime instead. The producer URL is
-  static configuration of the consuming application — there is deliberately no
-  discovery service in that path, since it would reintroduce exactly the shared
-  infrastructure DMEx exists to avoid.
+  The handler module is the whole declaration — which producer, under what name,
+  for which message types — and the consumer binds producer names to URLs.
+  `DMEx.Consumer.subscribe/2` starts one at runtime instead, taking the same
+  module. The URLs are static configuration of the consuming application — there
+  is deliberately no discovery service in that path, since it would reintroduce
+  exactly the shared infrastructure DMEx exists to avoid.
 
   DMEx owns the read position (`last_seen`) on the consumer's behalf, keyed by
-  handler module, and the producer holds no consumer state at all.
+  the declared `"producer/id"` pair, and the producer holds no consumer state at
+  all. Keying on the declaration rather than the module name is what makes
+  renaming a handler free.
 
   ## Three things worth knowing before you build on it
 
     * **A v1 subscription is the producer's whole log.** There is no filter
-      option of any kind. `message_modules` is what narrows it, locally, after
+      option of any kind. A handler's `messages:` is what narrows it, locally, after
       the bytes have crossed the wire — a row whose type is not in that list
       advances the cursor and invokes nothing. Server-side selection has a
       design and is deliberately not in v1.

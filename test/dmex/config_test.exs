@@ -94,9 +94,8 @@ defmodule DMEx.ConfigTest do
     test "ignores keys that belong to the subscription rather than its pacing" do
       assert %Consumer{} =
                Config.consumer!(
-                 url: "https://example.test/stream",
-                 handler: MyApp.Handler,
-                 message_modules: [],
+                 consumer: MyApp.Consumer,
+                 producer: %{orders: "https://example.test/stream"},
                  repo: MyApp.Repo
                )
     end

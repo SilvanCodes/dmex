@@ -107,14 +107,14 @@ defmodule DMEx.Test.Storage do
   end
 
   @impl DMEx.Storage
-  def last_seen(opts, handler) do
-    Agent.get(store(opts), fn state -> {:ok, Map.get(state.cursors, handler)} end)
+  def last_seen(opts, subscription) when is_binary(subscription) do
+    Agent.get(store(opts), fn state -> {:ok, Map.get(state.cursors, subscription)} end)
   end
 
   @impl DMEx.Storage
-  def cursor(opts, handler) do
+  def cursor(opts, subscription) when is_binary(subscription) do
     Agent.get(store(opts), fn state ->
-      case Map.get(state.cursors, handler) do
+      case Map.get(state.cursors, subscription) do
         nil -> {:ok, nil}
         id -> {:ok, %{last_seen: id, producer_url: "stub", updated_at: nil}}
       end
@@ -122,28 +122,28 @@ defmodule DMEx.Test.Storage do
   end
 
   @impl DMEx.Storage
-  def delete_cursor(opts, handler) do
-    update(opts, &%{&1 | cursors: Map.delete(&1.cursors, handler)})
+  def delete_cursor(opts, subscription) when is_binary(subscription) do
+    update(opts, &%{&1 | cursors: Map.delete(&1.cursors, subscription)})
   end
 
   @impl DMEx.Storage
   def transaction(_opts, fun), do: {:ok, fun.()}
 
   @impl DMEx.Storage
-  def advance(opts, handler, id, _url) do
-    update(opts, &%{&1 | cursors: Map.put(&1.cursors, handler, id)})
+  def advance(opts, subscription, id, _url) when is_binary(subscription) do
+    update(opts, &%{&1 | cursors: Map.put(&1.cursors, subscription, id)})
   end
 
   @impl DMEx.Storage
   def dead_message(opts, attrs), do: update(opts, &%{&1 | dead: [attrs | &1.dead]})
 
   @impl DMEx.Storage
-  def dead_messages(opts, handler) do
+  def dead_messages(opts, subscription) when is_binary(subscription) do
     Agent.get(store(opts), fn state ->
       rows =
         state.dead
         |> Enum.reverse()
-        |> Enum.filter(&(&1.handler == handler))
+        |> Enum.filter(&(&1.subscription == subscription))
         |> Enum.map(&Map.take(&1, [:id, :message_type, :data, :metadata, :inserted_at]))
 
       {:ok, rows}
@@ -151,9 +151,12 @@ defmodule DMEx.Test.Storage do
   end
 
   @impl DMEx.Storage
-  def delete_dead_message(opts, handler, id) do
+  def delete_dead_message(opts, subscription, id) when is_binary(subscription) do
     update(opts, fn state ->
-      %{state | dead: Enum.reject(state.dead, &(&1.handler == handler and &1.id == id))}
+      %{
+        state
+        | dead: Enum.reject(state.dead, &(&1.subscription == subscription and &1.id == id))
+      }
     end)
   end
 

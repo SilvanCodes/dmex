@@ -7,6 +7,11 @@ defmodule DMEx.Storage.PostgresTest do
 
   @url "https://orders.internal/stream"
 
+  # Declared subscription identifiers, the shape DMEx.Consumer.Handler renders.
+  @some "orders/some"
+  @one "orders/one"
+  @two "billing/two"
+
   setup do
     %{opts: %{repo: Repo, lock: {1_701, 4_242}, channel: "dmex_storage_test", prefix: nil}}
   end
@@ -175,46 +180,48 @@ defmodule DMEx.Storage.PostgresTest do
     # exactly once: a subscription with no cursor resolves against the tip, and
     # one with a cursor — even at 0 — ignores :start entirely.
     test "is nil before anything has committed", %{opts: opts} do
-      assert {:ok, nil} = Postgres.last_seen(opts, SomeHandler)
+      assert {:ok, nil} = Postgres.last_seen(opts, @some)
     end
 
     test "advance/4 sets the cursor and last_seen/2 reads it back", %{opts: opts} do
-      assert :ok = Postgres.advance(opts, SomeHandler, 42, @url)
+      assert :ok = Postgres.advance(opts, @some, 42, @url)
 
-      assert {:ok, 42} = Postgres.last_seen(opts, SomeHandler)
+      assert {:ok, 42} = Postgres.last_seen(opts, @some)
     end
 
     test "advance/4 upserts rather than duplicating", %{opts: opts} do
-      :ok = Postgres.advance(opts, SomeHandler, 42, @url)
-      :ok = Postgres.advance(opts, SomeHandler, 43, @url)
+      :ok = Postgres.advance(opts, @some, 42, @url)
+      :ok = Postgres.advance(opts, @some, 43, @url)
 
-      assert {:ok, 43} = Postgres.last_seen(opts, SomeHandler)
+      assert {:ok, 43} = Postgres.last_seen(opts, @some)
       assert count(opts, "dmex_cursors") == 1
     end
 
-    test "cursors are keyed per handler", %{opts: opts} do
-      :ok = Postgres.advance(opts, HandlerOne, 10, @url)
-      :ok = Postgres.advance(opts, HandlerTwo, 20, @url)
+    test "cursors are keyed per subscription", %{opts: opts} do
+      :ok = Postgres.advance(opts, @one, 10, @url)
+      :ok = Postgres.advance(opts, @two, 20, @url)
 
-      assert {:ok, 10} = Postgres.last_seen(opts, HandlerOne)
-      assert {:ok, 20} = Postgres.last_seen(opts, HandlerTwo)
+      assert {:ok, 10} = Postgres.last_seen(opts, @one)
+      assert {:ok, 20} = Postgres.last_seen(opts, @two)
     end
 
     # Duplicate suppression happens in the pipeline, which is the authority, and
     # an operator resetting a cursor deliberately needs this to go both ways.
     test "advance/4 does not refuse to move backwards", %{opts: opts} do
-      :ok = Postgres.advance(opts, SomeHandler, 100, @url)
-      :ok = Postgres.advance(opts, SomeHandler, 5, @url)
+      :ok = Postgres.advance(opts, @some, 100, @url)
+      :ok = Postgres.advance(opts, @some, 5, @url)
 
-      assert {:ok, 5} = Postgres.last_seen(opts, SomeHandler)
+      assert {:ok, 5} = Postgres.last_seen(opts, @some)
     end
 
-    test "stores the handler as text and never converts it back to an atom", %{opts: opts} do
-      :ok = Postgres.advance(opts, SomeHandler, 1, @url)
+    test "stores the identifier verbatim, with no inspect/1 in the way", %{opts: opts} do
+      # The id arrives as a string and goes straight into the query — there is
+      # nothing left to render, and nothing that could ever be atomized back.
+      :ok = Postgres.advance(opts, @some, 1, @url)
 
       # inspect/1, not Atom.to_string/1: the stored key is the readable module
       # name an operator would recognise, and nothing ever converts it back.
-      assert [["SomeHandler"]] = raw(opts, "SELECT handler FROM dmex_cursors")
+      assert [[@some]] = raw(opts, "SELECT subscription FROM dmex_cursors")
     end
   end
 
@@ -262,14 +269,14 @@ defmodule DMEx.Storage.PostgresTest do
     test "stores the log row verbatim, plus where it belongs", %{opts: opts} do
       assert :ok = Postgres.dead_message(opts, dead_attrs())
 
-      assert [[handler, url, id, type, data, metadata, inserted_at]] =
+      assert [[subscription, url, id, type, data, metadata, inserted_at]] =
                raw(opts, """
-               SELECT handler, producer_url, id, message_type,
+               SELECT subscription, producer_url, id, message_type,
                       data::text, metadata::text, inserted_at
                  FROM dmex_dead_messages
                """)
 
-      assert handler == "SomeHandler"
+      assert subscription == @some
       assert url == @url
       assert id == 1042
       assert type == "MyApp.Messages.OrderPlaced"
@@ -278,14 +285,14 @@ defmodule DMEx.Storage.PostgresTest do
       assert %DateTime{} = inserted_at
     end
 
-    test "two handlers may give up on the same producer row", %{opts: opts} do
-      assert :ok = Postgres.dead_message(opts, dead_attrs(handler: HandlerOne))
-      assert :ok = Postgres.dead_message(opts, dead_attrs(handler: HandlerTwo))
+    test "two subscriptions may give up on the same producer row", %{opts: opts} do
+      assert :ok = Postgres.dead_message(opts, dead_attrs(subscription: @one))
+      assert :ok = Postgres.dead_message(opts, dead_attrs(subscription: @two))
 
       assert count(opts, "dmex_dead_messages") == 2
     end
 
-    test "the same handler cannot record the same message twice", %{opts: opts} do
+    test "one subscription cannot record the same message twice", %{opts: opts} do
       assert :ok = Postgres.dead_message(opts, dead_attrs())
 
       assert {:error, %Postgrex.Error{postgres: %{code: :unique_violation}}} =
@@ -299,7 +306,7 @@ defmodule DMEx.Storage.PostgresTest do
     test "reads back rows in the same shape read/3 returns", %{opts: opts} do
       :ok = Postgres.dead_message(opts, dead_attrs())
 
-      assert {:ok, [row]} = Postgres.dead_messages(opts, SomeHandler)
+      assert {:ok, [row]} = Postgres.dead_messages(opts, @some)
 
       assert Map.keys(row) |> Enum.sort() ==
                [:data, :id, :inserted_at, :message_type, :metadata]
@@ -309,31 +316,31 @@ defmodule DMEx.Storage.PostgresTest do
       assert is_binary(row.metadata)
     end
 
-    test "returns only the given handler's messages, oldest first", %{opts: opts} do
-      :ok = Postgres.dead_message(opts, dead_attrs(handler: HandlerOne, id: 3))
-      :ok = Postgres.dead_message(opts, dead_attrs(handler: HandlerOne, id: 1))
-      :ok = Postgres.dead_message(opts, dead_attrs(handler: HandlerTwo, id: 2))
+    test "returns only the given subscription's messages, oldest first", %{opts: opts} do
+      :ok = Postgres.dead_message(opts, dead_attrs(subscription: @one, id: 3))
+      :ok = Postgres.dead_message(opts, dead_attrs(subscription: @one, id: 1))
+      :ok = Postgres.dead_message(opts, dead_attrs(subscription: @two, id: 2))
 
-      assert {:ok, rows} = Postgres.dead_messages(opts, HandlerOne)
+      assert {:ok, rows} = Postgres.dead_messages(opts, @one)
       assert Enum.map(rows, & &1.id) == [1, 3]
     end
 
-    test "is empty for a handler that has given up on nothing", %{opts: opts} do
-      assert {:ok, []} = Postgres.dead_messages(opts, SomeHandler)
+    test "is empty for a subscription that has given up on nothing", %{opts: opts} do
+      assert {:ok, []} = Postgres.dead_messages(opts, @some)
     end
 
-    test "delete removes one message by handler and log id", %{opts: opts} do
+    test "delete removes one message by subscription and log id", %{opts: opts} do
       :ok = Postgres.dead_message(opts, dead_attrs(id: 1))
       :ok = Postgres.dead_message(opts, dead_attrs(id: 2))
 
-      assert :ok = Postgres.delete_dead_message(opts, SomeHandler, 1)
+      assert :ok = Postgres.delete_dead_message(opts, @some, 1)
 
-      assert {:ok, [row]} = Postgres.dead_messages(opts, SomeHandler)
+      assert {:ok, [row]} = Postgres.dead_messages(opts, @some)
       assert row.id == 2
     end
 
     test "deleting something absent is fine", %{opts: opts} do
-      assert :ok = Postgres.delete_dead_message(opts, SomeHandler, 999)
+      assert :ok = Postgres.delete_dead_message(opts, @some, 999)
     end
   end
 
@@ -357,7 +364,7 @@ defmodule DMEx.Storage.PostgresTest do
 
   defp dead_attrs(overrides \\ []) do
     %{
-      handler: Keyword.get(overrides, :handler, SomeHandler),
+      subscription: Keyword.get(overrides, :subscription, @some),
       producer_url: @url,
       id: Keyword.get(overrides, :id, 1042),
       message_type: "MyApp.Messages.OrderPlaced",

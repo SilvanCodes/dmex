@@ -23,13 +23,22 @@ defmodule DMEx.Integration.ResumptionTest do
     Handlers.report_to(self())
 
     start_supervised!(Producer)
-    start_supervised!({Consumer, name: TestConsumer, repo: DMEx.Test.IntegrationRepo})
 
-    %{url: Server.start!() <> "/stream"}
+    # The server binds port 0, so the producer map is necessarily built at
+    # runtime — which is exactly why it lives on the child spec rather than in
+    # application config.
+    url = Server.start!() <> "/stream"
+
+    start_supervised!(
+      {Consumer,
+       name: TestConsumer, repo: DMEx.Test.IntegrationRepo, producer: Server.producers(url)}
+    )
+
+    %{url: url}
   end
 
-  test "killing the stream loses nothing and repeats nothing", ctx do
-    {:ok, pid} = subscribe(ctx, Handlers.Echo)
+  test "killing the stream loses nothing and repeats nothing", _ctx do
+    {:ok, pid} = subscribe(Handlers.Echo)
 
     for n <- 1..5, do: {:ok, _} = Producer.publish(%OrderPlaced{order_id: n})
     assert drain(5) == [1, 2, 3, 4, 5]
@@ -53,10 +62,10 @@ defmodule DMEx.Integration.ResumptionTest do
   #
   # Here the handler's effect is the `send` this test receives, so killing the
   # moment it arrives lands squarely in that window.
-  test "a crash between a handler's effects and its commit redelivers that message", ctx do
+  test "a crash between a handler's effects and its commit redelivers that message", _ctx do
     # SlowCommit reports and then stalls before returning, which holds that
     # window open long enough to kill the process inside it deterministically.
-    {:ok, pid} = subscribe(ctx, Handlers.SlowCommit)
+    {:ok, pid} = subscribe(Handlers.SlowCommit)
 
     for n <- 1..3, do: {:ok, _} = Producer.publish(%OrderPlaced{order_id: n})
 
@@ -67,8 +76,8 @@ defmodule DMEx.Integration.ResumptionTest do
     assert 1 in collect(2_000)
   end
 
-  test "resumes from the durable cursor rather than from the beginning", ctx do
-    {:ok, pid} = subscribe(ctx, Handlers.Echo)
+  test "resumes from the durable cursor rather than from the beginning", _ctx do
+    {:ok, pid} = subscribe(Handlers.Echo)
 
     for n <- 1..5, do: {:ok, _} = Producer.publish(%OrderPlaced{order_id: n})
     assert drain(5) == [1, 2, 3, 4, 5]
@@ -82,8 +91,8 @@ defmodule DMEx.Integration.ResumptionTest do
     refute_receive {:handled, _, _}, 1_000
   end
 
-  test "messages published while disconnected are delivered on reconnect", ctx do
-    {:ok, pid} = subscribe(ctx, Handlers.Echo)
+  test "messages published while disconnected are delivered on reconnect", _ctx do
+    {:ok, pid} = subscribe(Handlers.Echo)
 
     {:ok, _} = Producer.publish(%OrderPlaced{order_id: 1})
     assert drain(1) == [1]
@@ -97,10 +106,10 @@ defmodule DMEx.Integration.ResumptionTest do
     assert drain(5) == [2, 3, 4, 5, 6]
   end
 
-  test "a killed stream mid-batch skips nothing and repeats at most the one in flight", ctx do
+  test "a killed stream mid-batch skips nothing and repeats at most the one in flight", _ctx do
     # The slow handler guarantees the kill lands mid-drain rather than between
     # frames, which is the case duplicate suppression exists for.
-    {:ok, pid} = subscribe(ctx, Handlers.Slow, batch_window: 20)
+    {:ok, pid} = subscribe(Handlers.Slow, batch_window: 20)
 
     for n <- 1..10, do: {:ok, _} = Producer.publish(%OrderPlaced{order_id: n})
 
@@ -117,8 +126,8 @@ defmodule DMEx.Integration.ResumptionTest do
     assert seen == Enum.sort(seen)
   end
 
-  test "the cursor is what a restarted stream reads, and it is committed per message", ctx do
-    subscribe(ctx, Handlers.Echo)
+  test "the cursor is what a restarted stream reads, and it is committed per message", _ctx do
+    subscribe(Handlers.Echo)
 
     for n <- 1..3, do: {:ok, _} = Producer.publish(%OrderPlaced{order_id: n})
     drain(3)
@@ -130,18 +139,10 @@ defmodule DMEx.Integration.ResumptionTest do
 
   ## Helpers
 
-  defp subscribe(ctx, handler, opts \\ []) do
+  defp subscribe(handler, opts \\ []) do
     Consumer.subscribe(
-      ctx.url,
-      Keyword.merge(
-        [
-          consumer: TestConsumer,
-          handler: handler,
-          message_modules: [OrderPlaced],
-          batch_window: 50
-        ],
-        opts
-      )
+      handler,
+      Keyword.merge([consumer: TestConsumer, batch_window: 50], opts)
     )
   end
 
@@ -150,7 +151,7 @@ defmodule DMEx.Integration.ResumptionTest do
   end
 
   defp cursor do
-    Postgres.last_seen(%{repo: DMEx.Test.IntegrationRepo, prefix: nil}, Handlers.Echo)
+    Postgres.last_seen(%{repo: DMEx.Test.IntegrationRepo, prefix: nil}, "test/echo")
   end
 
   defp drain(count) do

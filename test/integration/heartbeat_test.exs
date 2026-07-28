@@ -122,14 +122,17 @@ defmodule DMEx.Integration.HeartbeatTest do
   end
 
   describe "a DMEx consumer on a quiet stream" do
-    setup do
-      start_supervised!({Consumer, name: TestConsumer, repo: DMEx.Test.IntegrationRepo})
+    setup ctx do
+      start_supervised!(
+        {Consumer,
+         name: TestConsumer, repo: DMEx.Test.IntegrationRepo, producer: Server.producers(ctx.url)}
+      )
 
       :ok
     end
 
-    test "stays connected through a long quiet period", ctx do
-      {:ok, pid} = subscribe(ctx)
+    test "stays connected through a long quiet period", _ctx do
+      {:ok, pid} = subscribe()
 
       {:ok, _} = Producer.publish(%OrderPlaced{order_id: 1})
       assert_receive {:handled, %OrderPlaced{order_id: 1}, _}, 5_000
@@ -144,8 +147,8 @@ defmodule DMEx.Integration.HeartbeatTest do
       assert_receive {:handled, %OrderPlaced{order_id: 2}, _}, 5_000
     end
 
-    test "counts heartbeat bytes as activity, so silence means silence", ctx do
-      {:ok, pid} = subscribe(ctx)
+    test "counts heartbeat bytes as activity, so silence means silence", _ctx do
+      {:ok, pid} = subscribe()
 
       eventually(fn -> :sys.get_state(pid).conn != nil end)
       before = :sys.get_state(pid).last_activity
@@ -155,8 +158,8 @@ defmodule DMEx.Integration.HeartbeatTest do
       eventually(fn -> :sys.get_state(pid).last_activity != before end, 5_000, 50)
     end
 
-    test "adopts the producer's advertised interval as its deadline", ctx do
-      {:ok, pid} = subscribe(ctx)
+    test "adopts the producer's advertised interval as its deadline", _ctx do
+      {:ok, pid} = subscribe()
 
       eventually(fn -> Decoder.retry(:sys.get_state(pid).decoder) != nil end)
 
@@ -173,15 +176,18 @@ defmodule DMEx.Integration.HeartbeatTest do
     test "is dropped and reconnected once the deadline passes" do
       base = Server.start!(plug: SilentPlug)
 
-      start_supervised!({Consumer, name: SilentConsumer, repo: DMEx.Test.IntegrationRepo})
+      start_supervised!(
+        {Consumer,
+         name: SilentConsumer,
+         repo: DMEx.Test.IntegrationRepo,
+         producer: Server.producers(base <> "/stream")}
+      )
 
       ref = :telemetry_test.attach_event_handlers(self(), [[:dmex, :consumer, :reconnect]])
 
       {:ok, _pid} =
-        Consumer.subscribe(base <> "/stream",
+        Consumer.subscribe(Handlers.Echo,
           consumer: SilentConsumer,
-          handler: Handlers.Echo,
-          message_modules: [OrderPlaced],
           missed_heartbeats: 1
         )
 
@@ -195,15 +201,18 @@ defmodule DMEx.Integration.HeartbeatTest do
     test "keeps reconnecting rather than giving up", _ctx do
       base = Server.start!(plug: SilentPlug)
 
-      start_supervised!({Consumer, name: PersistentConsumer, repo: DMEx.Test.IntegrationRepo})
+      start_supervised!(
+        {Consumer,
+         name: PersistentConsumer,
+         repo: DMEx.Test.IntegrationRepo,
+         producer: Server.producers(base <> "/stream")}
+      )
 
       ref = :telemetry_test.attach_event_handlers(self(), [[:dmex, :consumer, :reconnect]])
 
       {:ok, pid} =
-        Consumer.subscribe(base <> "/stream",
+        Consumer.subscribe(Handlers.Echo,
           consumer: PersistentConsumer,
-          handler: Handlers.Echo,
-          message_modules: [OrderPlaced],
           missed_heartbeats: 1,
           reconnect_backoff: 50,
           reconnect_backoff_max: 100
@@ -218,13 +227,8 @@ defmodule DMEx.Integration.HeartbeatTest do
 
   ## Helpers
 
-  defp subscribe(ctx) do
-    Consumer.subscribe(ctx.url,
-      consumer: TestConsumer,
-      handler: Handlers.Echo,
-      message_modules: [OrderPlaced],
-      batch_window: 50
-    )
+  defp subscribe do
+    Consumer.subscribe(Handlers.Echo, consumer: TestConsumer, batch_window: 50)
   end
 
   # A bare Mint client that reads for a while and returns whatever arrived.

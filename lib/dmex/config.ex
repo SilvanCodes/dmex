@@ -88,9 +88,10 @@ defmodule DMEx.Config do
   @doc """
   Builds a validated consumer config from `subscribe/2` options.
 
-  Ignores keys that are not config settings — `:url`, `:handler`,
-  `:message_modules`, `:repo`, `:storage` and `:prefix` belong to the
-  subscription rather than to its pacing. As with `producer!/1`, rejecting a
+  Ignores keys that are not config settings — `:consumer`, `:producer`,
+  `:repo`, `:storage` and `:prefix` belong to the subscription rather than to
+  its pacing, and the producer, id and message types belong to the handler
+  module. As with `producer!/1`, rejecting a
   misspelled key is the caller's job; `DMEx.Consumer.subscribe/2` does it.
   """
   @spec consumer!(keyword()) :: Consumer.t()

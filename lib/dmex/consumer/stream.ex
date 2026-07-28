@@ -80,7 +80,7 @@ defmodule DMEx.Consumer.Stream do
   @spec child_spec(keyword()) :: Supervisor.child_spec()
   def child_spec(opts) do
     %{
-      id: {__MODULE__, Keyword.fetch!(opts, :handler)},
+      id: {__MODULE__, Keyword.fetch!(opts, :subscription)},
       start: {__MODULE__, :start_link, [opts]},
       restart: :permanent
     }
@@ -89,18 +89,23 @@ defmodule DMEx.Consumer.Stream do
   @impl GenServer
   def init(opts) do
     handler = Keyword.fetch!(opts, :handler)
+    subscription = Keyword.fetch!(opts, :subscription)
     url = Keyword.fetch!(opts, :url)
     config = Keyword.fetch!(opts, :config)
 
     # Registering here — before any socket opens — is what enforces one live
-    # subscription per handler module: a second subscribe/2 for the same handler
+    # stream per subscription id: a second subscribe/2 for the same identity
     # fails in init rather than after both have started clobbering one cursor.
-    case register(opts[:registry], handler) do
+    case register(opts[:registry], subscription) do
       {:ok, _} ->
         state = %{
           uri: URI.parse(url),
           url: url,
+          # Both, deliberately. The id is the durable identity everything is
+          # keyed by; the module is what invokes the callback and what a human
+          # reads in a log line.
           handler: handler,
+          subscription: subscription,
           config: config,
           pipeline: Pipeline.build(opts),
           storage: Keyword.fetch!(opts, :storage),
@@ -132,7 +137,7 @@ defmodule DMEx.Consumer.Stream do
         {:ok, state, {:continue, :connect}}
 
       {:error, {:already_registered, _pid}} ->
-        {:stop, {:already_subscribed, handler}}
+        {:stop, {:already_subscribed, subscription}}
     end
   end
 
@@ -225,7 +230,7 @@ defmodule DMEx.Consumer.Stream do
   # `:none` rather than 0 for "never committed anything" — that distinction is
   # what makes `start: :latest` meaningful exactly once.
   defp durable_cursor(state) do
-    case state.storage.last_seen(state.storage_opts, state.handler) do
+    case state.storage.last_seen(state.storage_opts, state.subscription) do
       {:ok, nil} -> {:ok, :none}
       {:ok, cursor} -> {:ok, cursor}
       {:error, reason} -> {:error, reason}
@@ -320,7 +325,7 @@ defmodule DMEx.Consumer.Stream do
         # from falling behind.
         utilization: Meter.utilization(state.meter, now())
       },
-      %{handler: state.handler, url: state.url}
+      %{subscription: state.subscription, handler: state.handler, url: state.url}
     )
   end
 
@@ -338,14 +343,15 @@ defmodule DMEx.Consumer.Stream do
       Backoff.delay(attempt, state.config.reconnect_backoff, state.config.reconnect_backoff_max)
 
     Logger.debug(fn ->
-      "DMEx #{inspect(state.handler)} reconnecting to #{state.url} in #{delay}ms " <>
+      "DMEx #{state.subscription} (#{inspect(state.handler)}) reconnecting to " <>
+        "#{state.url} in #{delay}ms " <>
         "after #{inspect(reason)}"
     end)
 
     :telemetry.execute(
       [:dmex, :consumer, :reconnect],
       %{attempt: attempt, delay: delay},
-      %{handler: state.handler, url: state.url, reason: reason}
+      %{subscription: state.subscription, handler: state.handler, url: state.url, reason: reason}
     )
 
     Process.send_after(self(), :connect, delay)
@@ -450,7 +456,7 @@ defmodule DMEx.Consumer.Stream do
         :telemetry.execute(
           [:dmex, :consumer, :socket],
           %{depth: Queue.depth(state.queue)},
-          %{handler: state.handler, url: state.url, mode: mode}
+          %{subscription: state.subscription, handler: state.handler, url: state.url, mode: mode}
         )
 
         %{state | conn: conn, socket_mode: mode}
@@ -505,7 +511,12 @@ defmodule DMEx.Consumer.Stream do
         max_batch_size: state.requested.max_batch_size,
         depth: Queue.depth(state.queue)
       },
-      %{handler: state.handler, url: state.url, mean_service_ms: Meter.mean(state.meter)}
+      %{
+        subscription: state.subscription,
+        handler: state.handler,
+        url: state.url,
+        mean_service_ms: Meter.mean(state.meter)
+      }
     )
 
     if state.conn, do: Mint.HTTP.close(state.conn)
@@ -567,9 +578,9 @@ defmodule DMEx.Consumer.Stream do
     state.config.missed_heartbeats * interval
   end
 
-  defp register(nil, _handler), do: {:ok, self()}
+  defp register(nil, _subscription), do: {:ok, self()}
 
-  defp register(registry, handler) do
-    Registry.register(registry, {:handler, handler}, nil)
+  defp register(registry, subscription) do
+    Registry.register(registry, {:subscription, subscription}, nil)
   end
 end

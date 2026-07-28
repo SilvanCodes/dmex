@@ -35,7 +35,10 @@ backlog = 20_000
 
 defmodule Bench.CountingHandler do
   @moduledoc false
-  use DMEx.Consumer.Handler
+  use DMEx.Consumer.Handler,
+    producer: :bench,
+    id: :counting,
+    messages: [DMEx.Test.Messages.OrderPlaced]
 
   @impl true
   def handle_message(_message, _metadata) do
@@ -124,16 +127,11 @@ report.("(a) producer -> discard", seen, System.monotonic_time(:microsecond) - s
 :persistent_term.put(:bench_drain_counter, :counters.new(1, [:write_concurrency]))
 counter = :persistent_term.get(:bench_drain_counter)
 
-Helper.start_consumer!(Bench.Consumer)
+Helper.start_consumer!(Bench.Consumer, url)
 
 started = System.monotonic_time(:microsecond)
 
-{:ok, _} =
-  Consumer.subscribe(url,
-    consumer: Bench.Consumer,
-    handler: Bench.CountingHandler,
-    message_modules: [OrderPlaced]
-  )
+{:ok, _} = Consumer.subscribe(Bench.CountingHandler, consumer: Bench.Consumer)
 
 await = fn await, target ->
   if :counters.get(counter, 1) >= target do
@@ -149,19 +147,24 @@ report.("(b) end to end, no-op handler", backlog, System.monotonic_time(:microse
 
 ## (c) End to end where every row is skipped.
 
-defmodule Bench.SkippingHandler do
-  @moduledoc false
-  use DMEx.Consumer.Handler
-
-  @impl true
-  def handle_message(_message, _metadata), do: :ok
-end
-
 defmodule Bench.UnusedMessage do
   @moduledoc false
   @derive JSON.Encoder
   use DMEx.Message
   defstruct [:id]
+end
+
+defmodule Bench.SkippingHandler do
+  @moduledoc false
+  # Declares a type the log does not contain, so every row is a skip: a lookup,
+  # a cursor write and a commit, with no handler.
+  use DMEx.Consumer.Handler,
+    producer: :bench,
+    id: :skipping,
+    messages: [Bench.UnusedMessage]
+
+  @impl true
+  def handle_message(_message, _metadata), do: :ok
 end
 
 skips = :counters.new(1, [:write_concurrency])
@@ -175,14 +178,7 @@ skips = :counters.new(1, [:write_concurrency])
 
 started = System.monotonic_time(:microsecond)
 
-{:ok, _} =
-  Consumer.subscribe(url,
-    consumer: Bench.Consumer,
-    handler: Bench.SkippingHandler,
-    # Declares a type the log does not contain, so every row is a skip: a
-    # lookup, a cursor write and a commit, with no handler.
-    message_modules: [Bench.UnusedMessage]
-  )
+{:ok, _} = Consumer.subscribe(Bench.SkippingHandler, consumer: Bench.Consumer)
 
 await_skips = fn await_skips, target ->
   if :counters.get(skips, 1) >= target do

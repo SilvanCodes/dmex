@@ -5,32 +5,52 @@ defmodule DMEx.Consumer.Cursors do
   DMEx owns `last_seen` and application code never touches it during normal
   operation. These are the operator-facing exceptions: inspecting where a
   subscription has got to, deliberately replaying part of a log, and — the one
-  that actually bites — migrating a cursor across a handler rename.
+  that actually bites — migrating a cursor when a subscription's declared
+  identity changes.
 
-  ## Renaming a handler resets its cursor
+  ## Renaming the handler module is free; changing its declaration is not
 
-  `last_seen` is keyed by handler module, because the handler *is* the
-  subscription's identity. So renaming `MyApp.OrderHandler` to
-  `MyApp.Orders.Handler` does not move that subscription's position: it creates
-  a *new* subscription with no cursor at all, which then replays the producer's
-  log from the beginning.
+  `last_seen` is keyed by the identifier a handler declares —
+  `"orders/order_projection"` for a module with `producer: :orders,
+  id: :order_projection` — not by the module's name. So renaming
+  `MyApp.OrderHandler` to `MyApp.Orders.Handler` costs nothing at all, which is
+  the point: a rename is something a refactoring tool does without asking.
 
-  That is a routine refactor with a decidedly non-routine consequence. Do it in
-  a migration, next to the code change that causes it:
+  What does still reset a cursor is changing the *declaration*: a different
+  `id:`, or a different key for that producer in `DMEx.Consumer`'s `producer:`
+  map. Both are deliberate acts rather than incidental ones, but the effect is
+  the same — a new identity with no cursor, which then replays the producer's
+  log from the beginning. Do it in a migration, next to the code change that
+  causes it:
 
-      defmodule MyApp.Repo.Migrations.RenameOrderHandler do
+      defmodule MyApp.Repo.Migrations.RenameOrderProjection do
         use Ecto.Migration
 
         def up do
-          DMEx.Consumer.Cursors.rename!(MyApp.OrderHandler, MyApp.Orders.Handler,
+          DMEx.Consumer.Cursors.rename!(
+            "orders/order_handler",
+            "orders/order_projection",
             repo: MyApp.Repo
           )
         end
       end
 
+  Note that `rename!/3` takes identifier **strings**, while everything else here
+  takes the handler module. That asymmetry is honest rather than accidental: the
+  old identity is precisely the one no module declares any more, so there is no
+  module to name it with.
+
+  ## Adding a message type does not replay its history
+
+  A handler's `messages:` list is not part of its identity, so appending a type
+  leaves the cursor where it is and the new type is handled from the tip onward.
+  When you want that type's history too, `move!/4` is how you ask for it — and
+  it replays *everything* after the id you name, not only the new type, so
+  handlers must tolerate the redelivery.
+
   ## Options
 
-  All three take `repo:` (required), plus optional `storage:` and `prefix:`,
+  All four take `repo:` (required), plus optional `storage:` and `prefix:`,
   the same as `DMEx.Consumer`.
 
   ## These do not touch a running subscription
@@ -42,9 +62,11 @@ defmodule DMEx.Consumer.Cursors do
   """
 
   alias DMEx.Consumer
+  alias DMEx.Consumer.Handler
 
   @doc """
-  Where `handler` has got to, with the producer it read from and when.
+  Where `handler`'s subscription has got to, with the producer it read from and
+  when.
 
   Returns `nil` if it has never committed a position — which is also the normal
   state for a subscription started with `start: :latest` on a quiet log, since
@@ -56,7 +78,7 @@ defmodule DMEx.Consumer.Cursors do
   def inspect(handler, opts) when is_atom(handler) do
     {storage, storage_opts} = Consumer.storage!(opts)
 
-    storage.cursor(storage_opts, handler)
+    storage.cursor(storage_opts, Handler.subscription_id(handler))
   end
 
   @doc """
@@ -66,15 +88,20 @@ defmodule DMEx.Consumer.Cursors do
   `reset!/2`: a cursor at 0 still exists, so `start:` stays ignored.
 
   Requires the producer URL, because a cursor row records which producer it was
-  reading from and there is nothing sensible to invent when creating one.
+  reading from and there is nothing sensible to invent when creating one. It is
+  passed rather than resolved from a producer map because this runs from a
+  migration or a console, where no consumer need be running.
   """
   @spec move!(module(), non_neg_integer(), String.t(), keyword()) :: :ok
   def move!(handler, id, url, opts)
       when is_atom(handler) and is_integer(id) and id >= 0 and is_binary(url) do
     {storage, storage_opts} = Consumer.storage!(opts)
+    subscription = Handler.subscription_id(handler)
 
     {:ok, :ok} =
-      storage.transaction(storage_opts, fn -> storage.advance(storage_opts, handler, id, url) end)
+      storage.transaction(storage_opts, fn ->
+        storage.advance(storage_opts, subscription, id, url)
+      end)
 
     :ok
   end
@@ -90,22 +117,27 @@ defmodule DMEx.Consumer.Cursors do
   def reset!(handler, opts) when is_atom(handler) do
     {storage, storage_opts} = Consumer.storage!(opts)
 
-    :ok = storage.delete_cursor(storage_opts, handler)
+    :ok = storage.delete_cursor(storage_opts, Handler.subscription_id(handler))
   end
 
   @doc """
-  Carries `from`'s position over to `to` and removes the old row.
+  Carries the position of subscription `from` over to `to` and removes the old
+  row.
 
-  Both happen in one transaction, so a rename cannot half-apply and leave two
-  cursors — or none. Raises if `to` already has a cursor, since silently
+  Both are identifier strings — `"orders/order_handler"`,
+  `"orders/order_projection"` — since `from` is by definition the identity
+  nothing declares any longer.
+
+  Both steps happen in one transaction, so a rename cannot half-apply and leave
+  two cursors — or none. Raises if `to` already has a cursor, since silently
   overwriting one subscription's position with another's is not a thing to do
   quietly.
 
   Returns `:ok` even when `from` has no cursor: there was nothing to carry, and
   the rename is still correctly applied.
   """
-  @spec rename!(module(), module(), keyword()) :: :ok
-  def rename!(from, to, opts) when is_atom(from) and is_atom(to) do
+  @spec rename!(String.t(), String.t(), keyword()) :: :ok
+  def rename!(from, to, opts) when is_binary(from) and is_binary(to) do
     {storage, storage_opts} = Consumer.storage!(opts)
 
     {:ok, :ok} =

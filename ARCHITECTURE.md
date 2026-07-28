@@ -34,7 +34,7 @@ v1: no filters, no per-subscription subsets, and — here or later — no topics
 A consumer that cares about only some message types declares the modules it
 knows and ignores everything else locally (see
 [Consuming API](#consuming-api)). Server-side selection is a real requirement
-and it has a design — the consumer's own `message_modules` list, encoded into a
+and it has a design — the consumer's own declared `messages:` list, encoded into a
 filter carried in the stream path (`GET /stream/<blob>`) and applied as a
 predicate on the producer's read — but it is deliberately not in v1; see
 [Message-Type Selection](ROADMAP.md#message-type-selection).
@@ -316,12 +316,12 @@ end
   [Open Questions](#open-questions) on schema versioning).
 - On the read side, a consumer must be able to turn `message_type` back into
   the same struct. DMEx does this via an explicit module list/registry
-  supplied by the consumer (e.g. `message_modules: [MyApp.Messages.OrderPlaced, ...]`)
+  declared on the consumer's handler (`messages: [MyApp.Messages.OrderPlaced, ...]`)
   rather than dynamically atomizing whatever string the producer sent —
   turning arbitrary attacker-controlled strings into atoms is an
   unbounded-atom-table risk, so the mapping is always consumer-declared, not
   inferred. In v1 that list does double duty: because a subscription is the
-  producer's entire log, `message_modules` is also the consumer's *filter* (see
+  producer's entire log, `messages:` is also the consumer's *filter* (see
   [Consuming API](#consuming-api)) — and it is the same list that would later
   become the wire-level selector sent to the producer, which is why no
   separate grouping concept is needed anywhere (see
@@ -404,8 +404,11 @@ why they lost.
 Sketch, in `DMEx` namespace:
 
 ```elixir
-defmodule MyApp.OrderHandler do
-  use DMEx.Consumer.Handler
+defmodule MyApp.OrderProjection do
+  use DMEx.Consumer.Handler,
+    producer: :orders,                                # a logical name, not a URL
+    id: :order_projection,                            # this subscription's own name
+    messages: [MyApp.Messages.OrderPlaced]
 
   @impl true
   def handle_message(%MyApp.Messages.OrderPlaced{} = message, metadata) do
@@ -416,9 +419,14 @@ end
 ```
 
 ```elixir
-DMEx.Consumer.subscribe(producer_url,
-  message_modules: [MyApp.Messages.OrderPlaced],
-  handler: MyApp.OrderHandler,
+{DMEx.Consumer,
+ repo: MyApp.Repo,
+ producer: %{orders: "https://orders.internal/stream"},   # names bound in one place
+ handlers: [MyApp.OrderProjection]}
+```
+
+```elixir
+DMEx.Consumer.subscribe(MyApp.OrderProjection,
   start: :beginning,       # :beginning (default) | :latest | <id>; first run only
   on_failure: :crash,      # :crash | :skip | :dead_message
   batch_window: 200,       # ms; preferred minimum time between frames
@@ -438,9 +446,30 @@ DMEx.Consumer.subscribe(producer_url,
   pacing (see
   [Batching & framing](#batching--framing-batch_window-max_batch_size)).
   **There is no filter option of any kind**: a v1 subscription is the
-  producer's whole log, and `message_modules` is what narrows it, locally (see
+  producer's whole log, and the handler's `messages:` is what narrows it,
+  locally (see
   [Message-Type Selection](ROADMAP.md#message-type-selection) for how that same list
-  later becomes a server-side selector, without gaining a new option here).
+  later becomes a server-side selector — and because it is now a property of
+  the handler's declaration rather than an argument to this call, that lands
+  without adding an option here at all).
+- **The subscription is declared on the handler module; only the URL binding
+  and pacing live at the call site.** `producer:`, `id:` and `messages:` say
+  what is consumed and from whom, and they say it once, next to the callback
+  that processes it. That makes "a handler subscribed to a message list that
+  does not contain what it matches on" unrepresentable, and it makes the
+  producer a *name* rather than a URL literal repeated at every declaration
+  site. The name→URL map lives on the `DMEx.Consumer` child spec rather than in
+  application config, because DMEx reads no global configuration: two named
+  consumers can bind the same name differently, and a URL only known at runtime
+  can be injected there.
+
+  The map is the only binding between a logical name and a host, and **nothing
+  verifies it against reality**. A `producer:` pointing at the wrong entry, or
+  an entry pointing at the wrong host, yields a subscription that looks
+  perfectly healthy — connected, cursor advancing, every row skipped as an
+  unknown type — while reading the wrong log. Skips are the normal case in v1,
+  so they are not a signal. Catching this needs a producer that advertises its
+  own identity on `/stream`, which is deliberately not in v1.
 - **`batch_window` and `max_batch_size` are a preference, not a setting.**
   They are what the consumer asks for on the *first* connect and what it
   converges back toward when it is keeping up; the producer may clamp them to
@@ -459,24 +488,53 @@ DMEx.Consumer.subscribe(producer_url,
   restarts sends `latest` again and so resolves against a *newer* tip, which
   is the honest meaning of "from now on" rather than a lost-message bug —
   nothing was ever committed to be lost.
-- **`last_seen` is keyed by handler module.** The `handler` is the
-  subscription's identity — `MyApp.OrderHandler` has exactly one cursor,
-  wherever it reads from. This keeps the bookkeeping table trivial (handler
-  module → id) and makes the cursor mean something a developer can reason
-  about: "how far this piece of code has got," not "how far some producer URL
-  has got." Two consequences follow, and both are worth knowing before they
-  bite:
-  - **One live subscription per handler module.** Subscribing the same handler
-    to two producers would have both sharing and clobbering a single cursor.
-    DMEx therefore registers each stream under its handler module and rejects
-    a second `subscribe/2` for a handler that already has one running — a
-    handler per stream is the model, and enforcing it is cheaper than
-    debugging a cursor that jumps around.
-  - **Renaming a handler module resets its cursor**, and the next start
-    therefore replays the producer's log from the beginning. That is a routine
-    refactor with a decidedly non-routine consequence, so a rename wants a
-    deliberate migration of the row (see
-    [Open Questions](#open-questions) on the consumer-side schema).
+- **`last_seen` is keyed by the declared `"producer/id"` pair.**
+  `"orders/order_projection"` is the subscription's identity — an explicit,
+  human-chosen string that lives in the `use` line, not a module name and not a
+  digest. This keeps the bookkeeping table trivial (one text key → id) and
+  makes the cursor mean something a developer can reason about and an operator
+  can read. Both halves are constrained to `[a-z][a-z0-9_]*`, mirroring
+  `DMEx.Producer`'s app key; that charset is what makes `/` an unambiguous
+  separator with no escaping, so two distinct pairs can never render to one
+  string. The cost, accepted: an id cannot be a UUID and cannot contain a dot
+  or a dash. Atoms and strings render identically, so `:orders` and `"orders"`
+  are the same identity. **The format is frozen on first deploy** — it is a
+  text primary key in every deployment's database — and there is a test
+  asserting the exact literal for a known declaration.
+
+  Four consequences follow, and all four are worth knowing before they bite:
+  - **One live subscription per identity.** Two handlers declaring the same
+    pair would share and clobber a single cursor. `DMEx.Consumer.init/1`
+    computes every configured handler's id before any child starts and raises
+    naming both modules; each stream registers under its id, so a dynamic
+    `subscribe/2` for one already live is rejected. Enforcing it is cheaper
+    than debugging a cursor that jumps around.
+  - **Renaming a handler module is free.** Identity is the declaration, not the
+    module name, so the refactor a tool performs without asking no longer
+    replays a producer's whole log. This is the substance of keying on a
+    declared pair.
+  - **The migration surface moved rather than vanished.** Changing `id:`, or a
+    producer's key in the map, mints a new identity and resets that cursor
+    exactly as a rename used to. Both are deliberate acts rather than
+    incidental ones, which is a strict improvement — but "no migration ever" is
+    not on offer, and `DMEx.Consumer.Cursors.rename!/3` survives to serve them,
+    taking id strings rather than modules.
+  - **Fan-in needs two modules.** One handler reads one producer, and that is
+    now structural rather than incidental.
+- **The message list is deliberately *not* part of the identity.** Adding a
+  type to `messages:` keeps the cursor where it is: the new type is handled
+  from the tip onward and its history is not replayed. The rejected
+  alternative — hashing the list into the identity — would make that additive
+  change automatically replay history, which is frequently what you want, but
+  its failure mode is worse: a routine edit silently replays the *entire* log,
+  re-delivering every message of the types already processed (suppression is by
+  cursor, and a fresh identity has no cursor), and silently orphans that
+  handler's dead messages under an id nothing looks up any more. Cheap by
+  default beats safe by default here, and `Cursors.move!/4` is how you ask for
+  the history deliberately. Note this interacts with
+  [Message-Type Selection](ROADMAP.md#message-type-selection): once `messages:`
+  becomes a filter on the wire, "added a type, didn't move the cursor" means
+  the producer never sends that type's history at all.
 - **Reads the SSE socket in `active: :once` (or passive) mode, re-armed only
   while its internal queue has headroom.** This is a hard requirement, not a
   tuning choice: it is what makes the TCP receive window close when the
@@ -494,8 +552,8 @@ DMEx.Consumer.subscribe(producer_url,
 - De-batches the frame's already-decoded `data.messages` list
   (`DMEx.Frame` does that one level of JSON decoding, see
   [Message Envelope](#message-envelope)) and, for each row: looks up
-  `message_type` (**not** the SSE `event:` field) against the supplied
-  `message_modules`, decodes the row's `data` into that module's struct, then
+  `message_type` (**not** the SSE `event:` field) against the handler's
+  declared `messages:`, decodes the row's `data` into that module's struct, then
   invokes `handler.handle_message/2` with that struct and the row's
   `metadata`. **Picking the handler's arguments out of the row is the
   consumer's job**, and the only place it happens — the producer ships rows
@@ -506,8 +564,8 @@ DMEx.Consumer.subscribe(producer_url,
   subscription receives the producer's entire log, so rows the consumer has no
   module for are the normal case, not a fault. Such a row advances `last_seen`
   exactly as a handled one does — it must, or a consumer would wedge on the
-  first message type it doesn't know — and invokes nothing. `message_modules` is
-  therefore the subscription's filter, applied on the consumer after the bytes
+  first message type it doesn't know — and invokes nothing. The handler's
+  `messages:` is therefore the subscription's filter, applied on the consumer after the bytes
   have already crossed the wire; the deferred selection mechanic moves that
   same list to the producer so they never cross it (see
   [Message-Type Selection](ROADMAP.md#message-type-selection)). Skips are worth a
@@ -980,9 +1038,12 @@ because the request *is* the connection — see
   (`DMEx.Consumer.subscribe/2` starts a new child under it).
 - Each `DMEx.Consumer.Stream` process owns exactly one outbound SSE HTTP
   connection to a producer: it holds the connection, parses `DMEx.Frame`
-  chunks off it, decodes them via the subscription's `message_modules`, and
-  processes them one at a time, in order, against the subscription's
-  `handler` module.
+  chunks off it, decodes them via the handler's declared `messages:`, and
+  processes them one at a time, in order, against that `handler` module. It
+  carries both its durable id (`"orders/order_projection"`, what the cursor is
+  keyed by) and the module (what invokes the callback, and what a human reads
+  in a log line); every consumer telemetry event carries both, for the same
+  reason.
 - **Processing a single message** is: begin a local transaction (consumer's
   own storage) → call `handler.handle_message/2` → on success, write the new
   `last_seen` in that same transaction and commit → on the handler raising,
@@ -1034,12 +1095,13 @@ because the request *is* the connection — see
     step further along.
 
     Two columns sit alongside those, and neither is part of the message: the
-    **handler**, because unlike `last_seen` this is **one table shared across
-    all of a consumer's subscriptions** — a single place to see everything
-    anything ever gave up on — and the **producer URL**, because messages carry
-    no `origin` (see [Producer](#producer)) and provenance would otherwise be
-    lost. Identity is `(handler, id)`: a handler has exactly one live
-    subscription, so its own ids cannot collide.
+    **subscription**, because unlike `last_seen` this is **one table shared
+    across all of a consumer's subscriptions** — a single place to see
+    everything anything ever gave up on — and the **producer URL**, because
+    messages carry no `origin` (see [Producer](#producer)) and provenance would
+    otherwise be lost. Identity is `(subscription, id)`, keyed by the same
+    declared `"producer/id"` string `dmex_cursors` uses: a subscription reads
+    exactly one producer's log, so its own ids cannot collide.
 
     **Nothing about the failure is stored.** No exception, no message, no
     attempt count. A failure is an *event*, not a property of the message, so
@@ -1100,7 +1162,7 @@ number the controller reads is in one unit:
   `queue_limit` bound, so unbounded by it, and invisible to the drain
   measurement even though it is real cost the consumer pays for every row.
 - **Every row is admitted, including ones that will be skipped.** The
-  `message_modules` lookup happens in the pipeline too, not at admission — a skip
+  `messages:` lookup happens in the pipeline too, not at admission — a skip
   is a pipeline step rather than a filter, since it still advances `last_seen`
   (see [Consuming API](#consuming-api)). This matters more than it looks: in v1
   a subscription receives the producer's whole log, so most rows may be skips,
@@ -1711,7 +1773,7 @@ bring an index requirement with it.
 
 The same `DMEx.Storage` behaviour (and the same two adapters) is reused on
 the consumer side for its own local bookkeeping — a `last_seen` table keyed by
-handler module and the shared `dead_messages` table (see
+subscription identifier and the shared `dead_messages` table (see
 [Process Architecture](#process-architecture)) — rather than inventing a
 second storage abstraction for that half of DMEx.
 
@@ -1804,17 +1866,25 @@ changing shipped behaviour rather than choosing freely.
   two-int form: a fixed DMEx namespace `classid` keeping its lock space disjoint
   from any other library sharing the database, and `phash2(app_key)` as `objid`.
 
-- **The consumer-side schema.** `dmex_cursors` keys on `handler` as its primary
-  key rather than a surrogate id — the handler *is* the subscription's identity,
-  and that unique index enforces "one live subscription per handler module" in
-  storage as well as in the process registry. `dmex_dead_messages` is keyed on
-  `(handler, id)` rather than the `(producer_url, id)` this document suggested:
-  the table is shared across subscriptions, and two handlers may legitimately
-  give up on the same producer row, so keying without the handler would make the
-  second a spurious conflict — while a handler has exactly one live
-  subscription, so `producer_url` is provenance rather than identity. A handler
-  rename is `DMEx.Consumer.Cursors.rename!/3` called from a migration, not
-  implicit magic.
+- **The consumer-side schema.** `dmex_cursors` keys on `subscription` as its
+  primary key rather than a surrogate id — the declared `"producer/id"` pair
+  *is* the subscription's identity, and that unique index enforces "one cursor
+  per subscription" in storage as well as in the process registry.
+  `dmex_dead_messages` is keyed on `(subscription, id)` rather than the
+  `(producer_url, id)` this document suggested: the table is shared across
+  subscriptions, and two of them may legitimately give up on the same producer
+  row, so keying without the subscription would make the second a spurious
+  conflict — while a subscription reads exactly one producer's log, so
+  `producer_url` is provenance rather than identity, on both tables.
+
+  The key is the *declaration*, not the handler's module name, which is the
+  point: renaming a module is free. Changing `id:` or a producer's map key
+  still mints a new identity, and that is
+  `DMEx.Consumer.Cursors.rename!/3` called from a migration — taking id
+  strings, since the old identity is by definition the one no module declares
+  any more — not implicit magic. Storing an extra `handler_module` column
+  alongside was considered and rejected: the id is readable and greppable, so
+  it would be a second thing to keep in step for no lookup.
 
 - **`message_type` index.** Not shipped. Every v1 read is a bare `id > cursor`
   range scan that the primary key serves directly, so an index would exist
@@ -1831,11 +1901,15 @@ changing shipped behaviour rather than choosing freely.
   crash-loops forever on its own subscription, at a pace that does not hammer a
   different application's database, and its siblings never notice.
 
-- **Where a subscription's cursor is written.** This document's `subscribe/2`
-  sketch names no storage at all. Resolved in three layers with no global
-  config: the `DMEx.Consumer` child spec's `repo:` is the default, a
-  subscription entry may override it, and a bare `subscribe/2` resolves from
-  the running consumer. With none of those it raises and names both fixes.
+- **Where a subscription's cursor is written, and where producer names are
+  bound.** This document's `subscribe/2` sketch names no storage at all. Both
+  are resolved in three layers with no global config: the `DMEx.Consumer` child
+  spec's `repo:`/`producer:` are the defaults, a handler entry may override
+  them, and a bare `subscribe/2` resolves from the running consumer. With none
+  of those it raises and names both fixes. The producer map lives on the child
+  spec rather than in application env specifically so that "DMEx reads no global
+  application config" stays true, two named consumers keep working, and a test
+  can inject a port-0 URL at runtime.
 
 - **The publish and subscribe call sites.** Both forms exist, deliberately:
   `DMEx.Publisher.publish/3` and `MyApp.Producer.publish/2`, and
@@ -2004,7 +2078,7 @@ schema decisions this document once listed here have moved to
   operator-facing controls exist for archiving or pruning old messages, and
   how does that interact with "arbitrarily replayable"?
 - **Server-side selective delivery** — deliberately out of scope for v1, with
-  its intended shape (the consumer's `message_modules` list on the wire as an
+  its intended shape (the consumer's declared `messages:` list on the wire as an
   `message_type` selector) and its own open questions written up in
   [Message-Type Selection](ROADMAP.md#message-type-selection). The
   question that belongs *here* is when to build it: shipping v1 without it
@@ -2116,7 +2190,7 @@ schema decisions this document once listed here have moved to
     no field shapes — and is deliberately scoped so it does not commit DMEx to
     the versioned-schema half.
   - **Loose/dynamic decode fallback** — let a subscription skip
-    `message_modules` entirely and receive the raw decoded JSON `map` plus
+    `messages:` entirely and receive the raw decoded JSON `map` plus
     `message_type` string instead of a typed struct. No shared module needed
     at all, but the consumer loses compile-time struct guarantees and just
     has to know the shape out-of-band (docs, tests) — closer to how most
@@ -2131,10 +2205,10 @@ schema decisions this document once listed here have moved to
   These aren't mutually exclusive — e.g. a schema endpoint could exist
   purely for discovery/tooling while a shared package remains the actual
   runtime dependency for Elixir consumers.
-- **Event-module registry** — consumers currently supply their
-  `message_modules` list by hand per `subscribe/2` call; is there a
-  lighter-weight registration mechanism (e.g. an application-level
-  config/registry) worth adding once there are many message types?
+- **Event-module registry** — consumers currently list their `messages:` by
+  hand on each handler module; is there a lighter-weight registration mechanism
+  (e.g. an application-level config/registry) worth adding once there are many
+  message types?
 - **Cross-node clustering** — if a producer application itself runs as a
   multi-node OTP cluster, how is "the" append-only log, and the
   `LISTEN`/`NOTIFY`-based `DMEx.Dispatcher`, kept single-writer consistent

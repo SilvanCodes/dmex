@@ -69,6 +69,7 @@ defmodule DMEx.Consumer.Pipeline do
           required(:storage) => module(),
           required(:storage_opts) => DMEx.Storage.opts(),
           required(:handler) => module(),
+          required(:subscription) => String.t(),
           required(:modules) => %{String.t() => module()},
           required(:url) => String.t(),
           required(:cursor) => non_neg_integer(),
@@ -134,6 +135,7 @@ defmodule DMEx.Consumer.Pipeline do
   # backoff. Sleeping is a failure mode, not capacity.
   defp attempt(row, id, message, metadata, state, attempt) do
     telemetry = %{
+      subscription: state.subscription,
       handler: state.handler,
       message_type: Map.fetch!(row, "message_type"),
       url: state.url,
@@ -180,6 +182,7 @@ defmodule DMEx.Consumer.Pipeline do
       [:dmex, :consumer, :skip],
       %{id: id},
       %{
+        subscription: state.subscription,
         handler: state.handler,
         message_type: Map.fetch!(row, "message_type"),
         url: state.url
@@ -196,13 +199,19 @@ defmodule DMEx.Consumer.Pipeline do
   end
 
   defp advance!(state, id) do
-    :ok = state.storage.advance(state.storage_opts, state.handler, id, state.url)
+    :ok = state.storage.advance(state.storage_opts, state.subscription, id, state.url)
   end
 
   @doc """
   Builds pipeline state, validating the handler and message modules once.
 
-  Resolving `message_type` per row is a map lookup against this prebuilt
+  The message list comes off the handler's own declaration — this is where the
+  modules it named are first *touched*, deliberately. Checking them inside
+  `use DMEx.Consumer.Handler` would make every handler compile-time dependent on
+  every message module it lists, so editing one struct would recompile all of
+  them. Here they are already loaded and the cost is once per subscription.
+
+  Resolving `message_type` per row is a map lookup against the resulting
   registry — never `String.to_atom/1` on whatever the producer sent, which would
   be an unbounded-atom-table risk on attacker-controlled input.
   """
@@ -216,14 +225,31 @@ defmodule DMEx.Consumer.Pipeline do
               "Add `use DMEx.Consumer.Handler` to it."
     end
 
+    declaration = handler.__dmex__()
+
     %{
       storage: Keyword.fetch!(opts, :storage),
       storage_opts: Keyword.fetch!(opts, :storage_opts),
       handler: handler,
-      modules: opts |> Keyword.fetch!(:message_modules) |> DMEx.Message.registry(),
+      subscription: Keyword.get(opts, :subscription, declaration.id),
+      modules: declaration.messages |> validate_messages!(handler) |> DMEx.Message.registry(),
       url: Keyword.fetch!(opts, :url),
       cursor: Keyword.get(opts, :cursor, 0),
       config: Keyword.get_lazy(opts, :config, fn -> DMEx.Config.consumer!([]) end)
     }
+  end
+
+  defp validate_messages!(messages, handler) do
+    case Enum.reject(messages, &DMEx.Message.message?/1) do
+      [] ->
+        messages
+
+      bad ->
+        raise ArgumentError,
+              "#{inspect(handler)} declares #{inspect(bad)} in `messages:`, which " <>
+                "#{if length(bad) > 1, do: "are not", else: "is not a"} DMEx message " <>
+                "module#{if length(bad) > 1, do: "s"}. Add `use DMEx.Message` to " <>
+                "#{if length(bad) > 1, do: "them", else: "it"}."
+    end
   end
 end
