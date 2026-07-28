@@ -8,9 +8,9 @@ defmodule DMEx.Test.Handlers do
 
   Every one declares `producer: :test`, so `DMEx.Test.Server.producers/1` binds
   the whole file to one runtime URL. Ids are per-module because a subscription
-  id keys the cursor and these run concurrently — and the message list is part
-  of the module rather than the call, so a handler needed with two different
-  lists is two modules.
+  id keys the cursor and these run concurrently — and the message list is now
+  whatever `handle_message/2` matches on, so a handler needed for two different
+  sets of types is two modules.
   """
 
   @key :dmex_test_handler_owner
@@ -39,15 +39,13 @@ defmodule DMEx.Test.Handlers do
 
   defmodule Echo do
     @moduledoc "Reports every message it handles and does nothing else."
-    use DMEx.Consumer.Handler,
-      producer: :test,
-      id: :echo,
-      messages: [DMEx.Test.Messages.OrderPlaced]
+    use DMEx.Consumer.Handler, producer: :test, id: :echo
 
     alias DMEx.Test.Handlers
+    alias DMEx.Test.Messages.OrderPlaced
 
     @impl true
-    def handle_message(message, metadata) do
+    def handle_message(%OrderPlaced{} = message, metadata) do
       send(Handlers.owner(), {:handled, message, metadata})
 
       :ok
@@ -62,15 +60,17 @@ defmodule DMEx.Test.Handlers do
     declaration now: a handler subscribed to a list that does not contain what
     it matches on is unrepresentable, and the price is a module per combination.
     """
-    use DMEx.Consumer.Handler,
-      producer: :test,
-      id: :echo_all,
-      messages: [DMEx.Test.Messages.OrderPlaced, DMEx.Test.Messages.OrderShipped]
+    use DMEx.Consumer.Handler, producer: :test, id: :echo_all
 
     alias DMEx.Test.Handlers
+    alias DMEx.Test.Messages.OrderPlaced
+    alias DMEx.Test.Messages.OrderShipped
 
     @impl true
-    def handle_message(message, metadata) do
+    def handle_message(%OrderPlaced{} = message, metadata), do: report(message, metadata)
+    def handle_message(%OrderShipped{} = message, metadata), do: report(message, metadata)
+
+    defp report(message, metadata) do
       send(Handlers.owner(), {:handled, message, metadata})
 
       :ok
@@ -79,15 +79,13 @@ defmodule DMEx.Test.Handlers do
 
   defmodule Raising do
     @moduledoc "Always raises, for the failure paths."
-    use DMEx.Consumer.Handler,
-      producer: :test,
-      id: :raising,
-      messages: [DMEx.Test.Messages.OrderPlaced]
+    use DMEx.Consumer.Handler, producer: :test, id: :raising
 
     alias DMEx.Test.Handlers
+    alias DMEx.Test.Messages.OrderPlaced
 
     @impl true
-    def handle_message(message, _metadata) do
+    def handle_message(%OrderPlaced{} = message, _metadata) do
       send(Handlers.owner(), {:attempted, message})
 
       raise "handler exploded"
@@ -101,16 +99,14 @@ defmodule DMEx.Test.Handlers do
     The rollback probe: if the row is gone afterwards, the callback and the
     cursor advance really did share one transaction.
     """
-    use DMEx.Consumer.Handler,
-      producer: :test,
-      id: :writes_then_raises,
-      messages: [DMEx.Test.Messages.OrderPlaced]
+    use DMEx.Consumer.Handler, producer: :test, id: :writes_then_raises
 
+    alias DMEx.Test.Messages.OrderPlaced
     alias DMEx.Test.Repo
     alias Ecto.Adapters.SQL
 
     @impl true
-    def handle_message(message, _metadata) do
+    def handle_message(%OrderPlaced{} = message, _metadata) do
       SQL.query!(
         Repo,
         "INSERT INTO dmex_test_scratch (note) VALUES ($1)",
@@ -123,16 +119,14 @@ defmodule DMEx.Test.Handlers do
 
   defmodule ChecksTransaction do
     @moduledoc "Reports whether it was invoked inside a transaction."
-    use DMEx.Consumer.Handler,
-      producer: :test,
-      id: :checks_transaction,
-      messages: [DMEx.Test.Messages.OrderPlaced]
+    use DMEx.Consumer.Handler, producer: :test, id: :checks_transaction
 
     alias DMEx.Test.Handlers
+    alias DMEx.Test.Messages.OrderPlaced
     alias DMEx.Test.Repo
 
     @impl true
-    def handle_message(_message, _metadata) do
+    def handle_message(%OrderPlaced{}, _metadata) do
       send(Handlers.owner(), {:in_transaction?, Repo.in_transaction?()})
 
       :ok
@@ -141,15 +135,13 @@ defmodule DMEx.Test.Handlers do
 
   defmodule Slow do
     @moduledoc "Sleeps before reporting, for tests that need a drain in progress."
-    use DMEx.Consumer.Handler,
-      producer: :test,
-      id: :slow,
-      messages: [DMEx.Test.Messages.OrderPlaced]
+    use DMEx.Consumer.Handler, producer: :test, id: :slow
 
     alias DMEx.Test.Handlers
+    alias DMEx.Test.Messages.OrderPlaced
 
     @impl true
-    def handle_message(message, _metadata) do
+    def handle_message(%OrderPlaced{} = message, _metadata) do
       Process.sleep(50)
       send(Handlers.owner(), {:handled, message})
 
@@ -164,12 +156,10 @@ defmodule DMEx.Test.Handlers do
     The transient failure retries exist for — a deadlock, a blipped downstream —
     as opposed to a handler that is simply broken.
     """
-    use DMEx.Consumer.Handler,
-      producer: :test,
-      id: :fail_times,
-      messages: [DMEx.Test.Messages.OrderPlaced]
+    use DMEx.Consumer.Handler, producer: :test, id: :fail_times
 
     alias DMEx.Test.Handlers
+    alias DMEx.Test.Messages.OrderPlaced
 
     @key :dmex_test_fail_times
 
@@ -188,7 +178,7 @@ defmodule DMEx.Test.Handlers do
     end
 
     @impl true
-    def handle_message(message, _metadata) do
+    def handle_message(%OrderPlaced{} = message, _metadata) do
       remaining = Process.get(@key, 0)
 
       send(Handlers.owner(), {:attempted, message})
@@ -208,22 +198,20 @@ defmodule DMEx.Test.Handlers do
     `FailTimes`' identity with the wrong message list.
 
     Deliberately declares the same `{producer, id}` — so it addresses the very
-    same cursor and dead messages — while listing a type those rows are not. It
-    is how the replay tests reach "a dead row this handler cannot decode"
-    without a `message_modules:` option to pass by hand.
+    same cursor and dead messages — while matching on a type those rows are not.
+    It is how the replay tests reach "a dead row this handler cannot decode",
+    given that the message list is whatever the clauses match on.
 
     Never put this and `FailTimes` in one `handlers:` list; sharing an id is
     exactly what `DMEx.Consumer.init/1` refuses.
     """
-    use DMEx.Consumer.Handler,
-      producer: :test,
-      id: :fail_times,
-      messages: [DMEx.Test.Messages.OrderShipped]
+    use DMEx.Consumer.Handler, producer: :test, id: :fail_times
 
     alias DMEx.Test.Handlers
+    alias DMEx.Test.Messages.OrderShipped
 
     @impl true
-    def handle_message(message, _metadata) do
+    def handle_message(%OrderShipped{} = message, _metadata) do
       send(Handlers.owner(), {:attempted, message})
 
       :ok
@@ -239,15 +227,13 @@ defmodule DMEx.Test.Handlers do
     suppression cannot cover, and the reason delivery is at-least-once rather
     than exactly-once. Killing the stream on receipt lands squarely inside it.
     """
-    use DMEx.Consumer.Handler,
-      producer: :test,
-      id: :slow_commit,
-      messages: [DMEx.Test.Messages.OrderPlaced]
+    use DMEx.Consumer.Handler, producer: :test, id: :slow_commit
 
     alias DMEx.Test.Handlers
+    alias DMEx.Test.Messages.OrderPlaced
 
     @impl true
-    def handle_message(message, metadata) do
+    def handle_message(%OrderPlaced{} = message, metadata) do
       send(Handlers.owner(), {:handled, message, metadata})
       Process.sleep(300)
 

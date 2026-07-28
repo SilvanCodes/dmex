@@ -34,7 +34,7 @@ v1: no filters, no per-subscription subsets, and — here or later — no topics
 A consumer that cares about only some message types declares the modules it
 knows and ignores everything else locally (see
 [Consuming API](#consuming-api)). Server-side selection is a real requirement
-and it has a design — the consumer's own declared `messages:` list, encoded into a
+and it has a design — the consumer's own derived message list, encoded into a
 filter carried in the stream path (`GET /stream/<blob>`) and applied as a
 predicate on the producer's read — but it is deliberately not in v1; see
 [Message-Type Selection](ROADMAP.md#message-type-selection).
@@ -316,12 +316,12 @@ end
   [Open Questions](#open-questions) on schema versioning).
 - On the read side, a consumer must be able to turn `message_type` back into
   the same struct. DMEx does this via an explicit module list/registry
-  declared on the consumer's handler (`messages: [MyApp.Messages.OrderPlaced, ...]`)
+  read off the consumer's handler clauses (`def handle_message(%OrderPlaced{}, _)`)
   rather than dynamically atomizing whatever string the producer sent —
   turning arbitrary attacker-controlled strings into atoms is an
   unbounded-atom-table risk, so the mapping is always consumer-declared, not
   inferred. In v1 that list does double duty: because a subscription is the
-  producer's entire log, `messages:` is also the consumer's *filter* (see
+  producer's entire log, that list is also the consumer's *filter* (see
   [Consuming API](#consuming-api)) — and it is the same list that would later
   become the wire-level selector sent to the producer, which is why no
   separate grouping concept is needed anywhere (see
@@ -406,15 +406,18 @@ Sketch, in `DMEx` namespace:
 ```elixir
 defmodule MyApp.OrderProjection do
   use DMEx.Consumer.Handler,
-    producer: :orders,                                # a logical name, not a URL
-    id: :order_projection,                            # this subscription's own name
-    messages: [MyApp.Messages.OrderPlaced]
+    producer: :orders,          # a logical name, not a URL
+    id: :order_projection       # this subscription's own name
 
+  # The message list is *this* — read at compile time from the structs the
+  # clauses match on, never written down a second time.
   @impl true
   def handle_message(%MyApp.Messages.OrderPlaced{} = message, metadata) do
     # side effects go here; raise (or let something raise) to signal failure
     :ok
   end
+
+  def handle_message(%MyApp.Messages.OrderCancelled{} = message, metadata), do: :ok
 end
 ```
 
@@ -446,19 +449,37 @@ DMEx.Consumer.subscribe(MyApp.OrderProjection,
   pacing (see
   [Batching & framing](#batching--framing-batch_window-max_batch_size)).
   **There is no filter option of any kind**: a v1 subscription is the
-  producer's whole log, and the handler's `messages:` is what narrows it,
+  producer's whole log, and the types the handler matches on are what narrow it,
   locally (see
   [Message-Type Selection](ROADMAP.md#message-type-selection) for how that same list
   later becomes a server-side selector — and because it is now a property of
   the handler's declaration rather than an argument to this call, that lands
   without adding an option here at all).
 - **The subscription is declared on the handler module; only the URL binding
-  and pacing live at the call site.** `producer:`, `id:` and `messages:` say
-  what is consumed and from whom, and they say it once, next to the callback
-  that processes it. That makes "a handler subscribed to a message list that
-  does not contain what it matches on" unrepresentable, and it makes the
-  producer a *name* rather than a URL literal repeated at every declaration
-  site. The name→URL map lives on the `DMEx.Consumer` child spec rather than in
+  and pacing live at the call site.** `producer:` and `id:` say from whom, and
+  the callback's own clauses say what — the message list is **derived at compile
+  time from the structs `handle_message/2` matches on**, and every one of them
+  is checked to be a `DMEx.Message` there. So "a handler subscribed to a type it
+  has no clause for" is not merely discouraged, it is unrepresentable: there is
+  no second list to disagree with the first. It also makes the producer a *name*
+  rather than a URL literal repeated at every declaration site.
+
+  Confirming a matched struct is a message needs `Code.ensure_compiled!/1`,
+  because the parallel compiler resolves a struct pattern *without* loading the
+  module and nothing else makes `type/0` callable. That blocking costs no
+  dependency: the handler→message edge remains an **export** dependency
+  (`mix xref graph --label compile` shows no edge), so recompilation behaves
+  exactly as the pattern match alone would have made it.
+
+  What derivation does not cover is **values**: a clause narrowed to
+  `%OrderPlaced{status: "paid"}` still declares `OrderPlaced`, so an unpaid one
+  arrives and raises exactly as before. Match the struct and branch in the body
+  if every value should be handled.
+
+  A clause whose first argument is not a struct pattern is rejected. A handler
+  written only that way would derive an empty list and silently receive nothing,
+  and as a *fallback* behind struct clauses it would be unreachable — the
+  pipeline only ever delivers the types those clauses declare. The name→URL map lives on the `DMEx.Consumer` child spec rather than in
   application config, because DMEx reads no global configuration: two named
   consumers can bind the same name differently, and a URL only known at runtime
   can be injected there.
@@ -522,7 +543,7 @@ DMEx.Consumer.subscribe(MyApp.OrderProjection,
   - **Fan-in needs two modules.** One handler reads one producer, and that is
     now structural rather than incidental.
 - **The message list is deliberately *not* part of the identity.** Adding a
-  type to `messages:` keeps the cursor where it is: the new type is handled
+  clause for a new type keeps the cursor where it is: it is handled
   from the tip onward and its history is not replayed. The rejected
   alternative — hashing the list into the identity — would make that additive
   change automatically replay history, which is frequently what you want, but
@@ -532,8 +553,8 @@ DMEx.Consumer.subscribe(MyApp.OrderProjection,
   handler's dead messages under an id nothing looks up any more. Cheap by
   default beats safe by default here, and `Cursors.move!/4` is how you ask for
   the history deliberately. Note this interacts with
-  [Message-Type Selection](ROADMAP.md#message-type-selection): once `messages:`
-  becomes a filter on the wire, "added a type, didn't move the cursor" means
+  [Message-Type Selection](ROADMAP.md#message-type-selection): once that list
+  becomes a filter on the wire, "added a clause, didn't move the cursor" means
   the producer never sends that type's history at all.
 - **Reads the SSE socket in `active: :once` (or passive) mode, re-armed only
   while its internal queue has headroom.** This is a hard requirement, not a
@@ -553,7 +574,7 @@ DMEx.Consumer.subscribe(MyApp.OrderProjection,
   (`DMEx.Frame` does that one level of JSON decoding, see
   [Message Envelope](#message-envelope)) and, for each row: looks up
   `message_type` (**not** the SSE `event:` field) against the handler's
-  declared `messages:`, decodes the row's `data` into that module's struct, then
+  derived message list, decodes the row's `data` into that module's struct, then
   invokes `handler.handle_message/2` with that struct and the row's
   `metadata`. **Picking the handler's arguments out of the row is the
   consumer's job**, and the only place it happens — the producer ships rows
@@ -565,7 +586,7 @@ DMEx.Consumer.subscribe(MyApp.OrderProjection,
   module for are the normal case, not a fault. Such a row advances `last_seen`
   exactly as a handled one does — it must, or a consumer would wedge on the
   first message type it doesn't know — and invokes nothing. The handler's
-  `messages:` is therefore the subscription's filter, applied on the consumer after the bytes
+  That list is therefore the subscription's filter, applied on the consumer after the bytes
   have already crossed the wire; the deferred selection mechanic moves that
   same list to the producer so they never cross it (see
   [Message-Type Selection](ROADMAP.md#message-type-selection)). Skips are worth a
@@ -1038,7 +1059,7 @@ because the request *is* the connection — see
   (`DMEx.Consumer.subscribe/2` starts a new child under it).
 - Each `DMEx.Consumer.Stream` process owns exactly one outbound SSE HTTP
   connection to a producer: it holds the connection, parses `DMEx.Frame`
-  chunks off it, decodes them via the handler's declared `messages:`, and
+  chunks off it, decodes them via the handler's derived message list, and
   processes them one at a time, in order, against that `handler` module. It
   carries both its durable id (`"orders/order_projection"`, what the cursor is
   keyed by) and the module (what invokes the callback, and what a human reads
@@ -1162,7 +1183,7 @@ number the controller reads is in one unit:
   `queue_limit` bound, so unbounded by it, and invisible to the drain
   measurement even though it is real cost the consumer pays for every row.
 - **Every row is admitted, including ones that will be skipped.** The
-  `messages:` lookup happens in the pipeline too, not at admission — a skip
+  message-type lookup happens in the pipeline too, not at admission — a skip
   is a pipeline step rather than a filter, since it still advances `last_seen`
   (see [Consuming API](#consuming-api)). This matters more than it looks: in v1
   a subscription receives the producer's whole log, so most rows may be skips,
@@ -2078,7 +2099,7 @@ schema decisions this document once listed here have moved to
   operator-facing controls exist for archiving or pruning old messages, and
   how does that interact with "arbitrarily replayable"?
 - **Server-side selective delivery** — deliberately out of scope for v1, with
-  its intended shape (the consumer's declared `messages:` list on the wire as an
+  its intended shape (the consumer's derived message list on the wire as an
   `message_type` selector) and its own open questions written up in
   [Message-Type Selection](ROADMAP.md#message-type-selection). The
   question that belongs *here* is when to build it: shipping v1 without it
@@ -2190,7 +2211,7 @@ schema decisions this document once listed here have moved to
     no field shapes — and is deliberately scoped so it does not commit DMEx to
     the versioned-schema half.
   - **Loose/dynamic decode fallback** — let a subscription skip
-    `messages:` entirely and receive the raw decoded JSON `map` plus
+    typed structs entirely and receive the raw decoded JSON `map` plus
     `message_type` string instead of a typed struct. No shared module needed
     at all, but the consumer loses compile-time struct guarantees and just
     has to know the shape out-of-band (docs, tests) — closer to how most
@@ -2205,10 +2226,9 @@ schema decisions this document once listed here have moved to
   These aren't mutually exclusive — e.g. a schema endpoint could exist
   purely for discovery/tooling while a shared package remains the actual
   runtime dependency for Elixir consumers.
-- **Event-module registry** — consumers currently list their `messages:` by
-  hand on each handler module; is there a lighter-weight registration mechanism
-  (e.g. an application-level config/registry) worth adding once there are many
-  message types?
+- **Event-module registry** — a consumer's message list is now derived from its
+  handler clauses, so there is nothing to keep in step by hand; is there still a
+  case for an application-level registry once there are many message types?
 - **Cross-node clustering** — if a producer application itself runs as a
   multi-node OTP cluster, how is "the" append-only log, and the
   `LISTEN`/`NOTIFY`-based `DMEx.Dispatcher`, kept single-writer consistent

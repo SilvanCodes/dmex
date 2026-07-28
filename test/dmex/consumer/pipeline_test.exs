@@ -208,26 +208,9 @@ defmodule DMEx.Consumer.PipelineTest do
       assert state(ctx, handler: Handlers.Echo).subscription == "test/echo"
     end
 
-    # Not checked inside `use DMEx.Consumer.Handler`: touching a message module
-    # from the macro would make every handler compile-time dependent on every
-    # type it lists. Here they are loaded already, and it costs once per
-    # subscription.
-    test "rejects a declared module that is not a DMEx message", ctx do
-      defmodule DeclaresNonMessage do
-        @moduledoc false
-        use DMEx.Consumer.Handler,
-          producer: :test,
-          id: :declares_non_message,
-          messages: [DMEx.Test.Handlers.NotAHandler]
-
-        @impl true
-        def handle_message(_message, _metadata), do: :ok
-      end
-
-      assert_raise ArgumentError, ~r/is not a DMEx message module/, fn ->
-        state(ctx, handler: DeclaresNonMessage)
-      end
-    end
+    # No runtime check that the modules are messages, and nothing for one to
+    # catch: the list is derived from the clause patterns and each is verified at
+    # compile time. See DMEx.Consumer.HandlerTest.
   end
 
   describe "telemetry" do

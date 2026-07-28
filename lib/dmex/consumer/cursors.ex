@@ -37,13 +37,14 @@ defmodule DMEx.Consumer.Cursors do
 
   Note that `rename!/3` takes identifier **strings**, while everything else here
   takes the handler module. That asymmetry is honest rather than accidental: the
-  old identity is precisely the one no module declares any more, so there is no
-  module to name it with.
+  old identity is precisely the one no module declares, so there is no module to
+  name it with.
 
   ## Adding a message type does not replay its history
 
-  A handler's `messages:` list is not part of its identity, so appending a type
-  leaves the cursor where it is and the new type is handled from the tip onward.
+  A handler's message list is not part of its identity, so adding a clause for a
+  new type leaves the cursor where it is and that type is handled from the tip
+  onward.
   When you want that type's history too, `move!/4` is how you ask for it — and
   it replays *everything* after the id you name, not only the new type, so
   handlers must tolerate the redelivery.

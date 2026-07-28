@@ -32,11 +32,12 @@ name is a second vocabulary somebody has to define, publish, version, discover,
 and keep in sync with the types it names. Every one of those costs is paid to
 describe something the consumer has already said.
 
-Because it has. A subscription already declares `messages:` — the list of
-message modules it can decode (see
-[Message Specifications](ARCHITECTURE.md#message-specifications)) — and that
-list is not optional: without it a consumer cannot turn an `message_type` back
-into a struct at all. **That list is the selection.** DMEx maps it through each
+Because it has. A subscription already has a message list — the modules it can
+decode (see [Message Specifications](ARCHITECTURE.md#message-specifications)),
+derived at compile time from the structs its `handle_message/2` clauses match
+on — and it is not optional: without it a consumer cannot turn a `message_type`
+back into a struct at all. **That list is the selection**, and nobody wrote it
+down for this purpose or any other. DMEx maps it through each
 module's `type/0`, encodes the resulting `message_type` strings into a compact
 filter, and puts it in the path of the `GET` it opens; the producer resolves
 that filter against its own message types and reads only matching rows. Nothing
@@ -47,7 +48,7 @@ new is declared anywhere, by anyone.
 - **One list, two jobs, no drift.** A separately-defined grouping can always
   disagree with reality — naming a type the consumer cannot decode, or
   omitting one it can, either of which is a silent bug. A selection *derived
-  from* `messages:` is exactly the set of types the handler is equipped
+  from* that list is exactly the set of types the handler is equipped
   for, by construction, and cannot be otherwise.
 - **Arbitrary subsets, no coordination.** Any consumer selects any set of
   types; sets overlap freely between consumers and nobody has to agree on
@@ -64,7 +65,7 @@ new is declared anywhere, by anyone.
   — a producer-side registry of named groupings would have been the first thing
   to chip at it.
 
-One consequence to know before it bites: **adding a module to `messages:`
+One consequence to know before it bites: **adding a clause for a new type
 selects that type from the cursor forward, not from the beginning.** The
 cursor is a single id and only ever moves forward, so historical rows of the
 newly-selected type — everything below `last_seen`, published while the
@@ -90,7 +91,7 @@ set, but with a small enough constant that the size question stops being
 interesting: a thousand message types fit in a couple of kilobytes at xor16.
 
 XOR filters are the right family here rather than Bloom or cuckoo because the
-set is **static**: built once from `messages:` and never added to for a
+set is **static**: built once from the derived list and never added to for a
 connection's lifetime. That is exactly the constraint XOR filters trade
 mutability for, and they are ~15% smaller than a Bloom filter at equal error
 and faster to query (three lookups, no probing loop). Binary fuse filters are
@@ -134,7 +135,7 @@ the right answer rather than merely the consistent one:
   re-negotiates `batch_window`/`max_batch_size` repeatedly *within* one
   subscription's lifetime (see
   [Backpressure & adaptive batching](ARCHITECTURE.md#backpressure--adaptive-batching)),
-  so those in a URL would mint new URLs continuously, while `messages:`
+  so those in a URL would mint new URLs continuously, while the message list
   changes when somebody edits code and ships it. One URL per deployment is
   precisely the stable grouping the rule is protecting.
 
@@ -212,7 +213,7 @@ Apache by default) becomes the ceiling. At xor16 that is on the order of two
 thousand message types, and even a conservative 2 KB budget leaves several
 hundred. Note this is exactly **why the filter is load-bearing**: spelled-out
 module names at 25–40 bytes each would exhaust a 2 KB request line at around
-sixty types, which is an entirely plausible `messages:` list. The filter
+sixty types, which is an entirely plausible handler. The filter
 is what makes the URL viable, and the URL is what makes browser consumers
 viable.
 
@@ -244,8 +245,9 @@ on every message for as long as it stays connected.
 The seams are already in place, and naming them is most of what deferring the
 work is meant to protect:
 
-- **Subscribe** — no new option. `messages:` gains a second role, and
-  `DMEx.Consumer.Stream` derives the wire values from it.
+- **Subscribe** — no new option, and no new declaration: the derived message
+  list gains a second role, and `DMEx.Consumer.Stream` builds the wire values
+  from it.
 - **Transport** — the filter path segment, per the wire form above. Fixed for
   a connection's lifetime, for the same reason pacing is: a consumer wanting a
   different selection reconnects.
@@ -345,7 +347,7 @@ work is meant to protect:
   intermediary — nginx's `large_client_header_buffers` and Apache's
   `LimitRequestLine` are both around 8 KB by default — which at xor16 plus
   base64url puts the practical ceiling in the low thousands of message types.
-  That is far beyond any plausible `messages:` list, but the number should
+  That is far beyond any plausible handler's list, but the number should
   be documented and the limits configured deliberately rather than discovered
   when someone crosses one. At least the failure is loud: a `414` at connect
   time, not a silently truncated selection.
@@ -355,7 +357,7 @@ work is meant to protect:
   protocol one. Open only in that a bounded retry count, and what to do when
   it is exhausted, want specifying — falling back to requesting the bare
   `/stream` (whole-log delivery, i.e. v1) rather than failing the subscription.
-- **Whether selection should be narrowable below `messages:`** — a
+- **Whether selection should be narrowable below the derived list** — a
   consumer that can *decode* twenty types but only *wants* five would
   otherwise have to receive fifteen it discards, or split into two handlers
   and therefore two cursors. Does `subscribe/2` want an explicit override, or

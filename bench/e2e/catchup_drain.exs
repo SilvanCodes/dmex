@@ -35,13 +35,10 @@ backlog = 20_000
 
 defmodule Bench.CountingHandler do
   @moduledoc false
-  use DMEx.Consumer.Handler,
-    producer: :bench,
-    id: :counting,
-    messages: [DMEx.Test.Messages.OrderPlaced]
+  use DMEx.Consumer.Handler, producer: :bench, id: :counting
 
   @impl true
-  def handle_message(_message, _metadata) do
+  def handle_message(%DMEx.Test.Messages.OrderPlaced{}, _metadata) do
     :counters.add(:persistent_term.get(:bench_drain_counter), 1, 1)
 
     :ok
@@ -156,15 +153,12 @@ end
 
 defmodule Bench.SkippingHandler do
   @moduledoc false
-  # Declares a type the log does not contain, so every row is a skip: a lookup,
+  # Matches a type the log does not contain, so every row is a skip: a lookup,
   # a cursor write and a commit, with no handler.
-  use DMEx.Consumer.Handler,
-    producer: :bench,
-    id: :skipping,
-    messages: [Bench.UnusedMessage]
+  use DMEx.Consumer.Handler, producer: :bench, id: :skipping
 
   @impl true
-  def handle_message(_message, _metadata), do: :ok
+  def handle_message(%Bench.UnusedMessage{}, _metadata), do: :ok
 end
 
 skips = :counters.new(1, [:write_concurrency])

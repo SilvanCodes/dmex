@@ -143,8 +143,16 @@ defmodule DMEx.Message do
   Whether `module` was built with `use DMEx.Message`.
 
   The mirror of `DMEx.Consumer.Handler.handler?/1`, and used for the same
-  reason: a handler declaring a module that is not a message should be rejected
-  by name rather than blow up as an `UndefinedFunctionError` on `type/0`.
+  reason: a handler matching on a struct that is not a message should be
+  rejected by name rather than blow up as an `UndefinedFunctionError` on
+  `type/0`.
+
+  `Code.ensure_loaded?/1`, so this answers for a module that is already
+  available and never blocks. `DMEx.Consumer.Handler` calls it at compile time
+  on the structs a handler matches on, and does its own
+  `Code.ensure_compiled!/1` first — the parallel compiler resolves a struct
+  pattern without loading the module, so nothing else would have made `type/0`
+  callable yet.
   """
   @spec message?(module()) :: boolean()
   def message?(module) when is_atom(module) do

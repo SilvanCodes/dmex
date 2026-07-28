@@ -27,7 +27,7 @@ defmodule DMEx.Consumer.HandlerTest do
       refute Handler.handler?(NoSuchModuleAnywhere)
     end
 
-    test "carries the producer, the id, the module and the message list" do
+    test "carries the producer, the id, the module and the derived message list" do
       assert Handlers.EchoAll.__dmex__() == %{
                handler: Handlers.EchoAll,
                producer: "test",
@@ -35,23 +35,47 @@ defmodule DMEx.Consumer.HandlerTest do
                messages: [OrderPlaced, OrderShipped]
              }
     end
+  end
 
-    test "no default handle_message/2 is injected" do
-      # A silently-succeeding default would let a handler that forgot to
-      # implement anything advance its cursor over every message it was given.
-      {result, _} =
-        Code.eval_string("""
-        defmodule DMEx.Consumer.HandlerTest.Empty do
-          use DMEx.Consumer.Handler,
-            producer: :orders,
-            id: :empty,
-            messages: [DMEx.Test.Messages.OrderPlaced]
-        end
-        """)
+  # The substance of deriving rather than declaring: the list cannot disagree
+  # with the clauses, because it *is* the clauses.
+  describe "the message list" do
+    test "is the structs handle_message/2 matches on, in clause order" do
+      assert messages_of("""
+             def handle_message(%DMEx.Test.Messages.OrderShipped{}, _metadata), do: :ok
+             def handle_message(%DMEx.Test.Messages.OrderPlaced{}, _metadata), do: :ok
+             """) == [OrderShipped, OrderPlaced]
+    end
 
-      {:module, module, _, _} = result
+    test "reads through an alias" do
+      assert messages_of("""
+             alias DMEx.Test.Messages.OrderPlaced
 
-      refute function_exported?(module, :handle_message, 2)
+             def handle_message(%OrderPlaced{} = message, _metadata), do: message
+             """) == [OrderPlaced]
+    end
+
+    test "reads a bound struct pattern, either way round" do
+      assert messages_of("""
+             def handle_message(%DMEx.Test.Messages.OrderPlaced{} = m, _metadata), do: m
+             """) == [OrderPlaced]
+
+      assert messages_of("""
+             def handle_message(m = %DMEx.Test.Messages.OrderPlaced{}, _metadata), do: m
+             """) == [OrderPlaced]
+    end
+
+    test "reads a pattern that also matches on fields" do
+      assert messages_of("""
+             def handle_message(%DMEx.Test.Messages.OrderPlaced{order_id: id}, _meta), do: id
+             """) == [OrderPlaced]
+    end
+
+    test "collapses two clauses for one type" do
+      assert messages_of("""
+             def handle_message(%DMEx.Test.Messages.OrderPlaced{order_id: 1}, _meta), do: :one
+             def handle_message(%DMEx.Test.Messages.OrderPlaced{}, _meta), do: :other
+             """) == [OrderPlaced]
     end
   end
 
@@ -85,33 +109,64 @@ defmodule DMEx.Consumer.HandlerTest do
     end
   end
 
-  describe "validation" do
+  describe "validating the clauses" do
+    # A bare variable declares no type at all. Deriving an empty list from it
+    # would give a handler that compiles, subscribes, advances its cursor over
+    # everything and invokes nothing.
+    test "rejects a clause that does not match on a struct" do
+      assert_raise ArgumentError, ~r/does not match on a struct/, fn ->
+        compile("def handle_message(_message, _metadata), do: :ok")
+      end
+    end
+
+    # And it cannot be a fallback either: only declared types are ever
+    # delivered, so a catch-all after the struct clauses is unreachable.
+    test "rejects a catch-all sitting behind a struct clause" do
+      assert_raise ArgumentError, ~r/cannot serve as a fallback/, fn ->
+        compile("""
+        def handle_message(%DMEx.Test.Messages.OrderPlaced{}, _metadata), do: :ok
+        def handle_message(_message, _metadata), do: :ignored
+        """)
+      end
+    end
+
+    test "names the file and line of the offending clause" do
+      assert_raise ArgumentError, ~r/handler_test\.exs:\d+: this handle_message/, fn ->
+        compile("def handle_message(_message, _metadata), do: :ok")
+      end
+    end
+
+    # A struct that is not a message. Caught here rather than as an
+    # UndefinedFunctionError on `type/0` when a live row arrives.
+    test "rejects a struct that is not a DMEx message" do
+      assert_raise ArgumentError, ~r/DateTime, which is not a DMEx message module/, fn ->
+        compile("def handle_message(%DateTime{} = message, _metadata), do: message")
+      end
+    end
+
+    test "rejects a handler with no handle_message/2 at all" do
+      assert_raise ArgumentError, ~r/defines no handle_message\/2/, fn ->
+        compile_raw("producer: :orders, id: :some_id", "")
+      end
+    end
+  end
+
+  describe "validating the options" do
     test "requires :producer" do
       assert_raise ArgumentError, ~r/requires :producer/, fn ->
-        compile(id: :some_id, messages: [OrderPlaced])
+        compile_raw("id: :some_id", clause())
       end
     end
 
     test "requires :id" do
       assert_raise ArgumentError, ~r/requires :id/, fn ->
-        compile(producer: :orders, messages: [OrderPlaced])
-      end
-    end
-
-    test "requires :messages" do
-      assert_raise ArgumentError, ~r/requires :messages/, fn ->
-        compile(producer: :orders, id: :some_id)
+        compile_raw("producer: :orders", clause())
       end
     end
 
     test "rejects an unknown option" do
       assert_raise ArgumentError, ~r/unknown option \[:url\]/, fn ->
-        compile(
-          producer: :orders,
-          id: :some_id,
-          messages: [OrderPlaced],
-          url: "https://example.test/stream"
-        )
+        compile_raw(~s(producer: :orders, id: :some_id, url: "https://x.test"), clause())
       end
     end
 
@@ -126,75 +181,52 @@ defmodule DMEx.Consumer.HandlerTest do
         ] do
       test "rejects #{label} in :id" do
         assert_raise ArgumentError, ~r/must be an atom or a string matching/, fn ->
-          compile_raw(
-            "producer: :orders, id: #{unquote(value)}, messages: [#{inspect(OrderPlaced)}]"
-          )
+          compile_raw("producer: :orders, id: #{unquote(value)}", clause())
         end
       end
     end
 
     test "rejects a non-identifier :producer" do
       assert_raise ArgumentError, ~r/:producer.*must be an atom or a string matching/s, fn ->
-        compile(producer: "Orders", id: :some_id, messages: [OrderPlaced])
+        compile_raw(~s(producer: "Orders", id: :some_id), clause())
       end
-    end
-
-    test "rejects an empty :messages" do
-      assert_raise ArgumentError, ~r/:messages.*the list is empty/s, fn ->
-        compile(producer: :orders, id: :some_id, messages: [])
-      end
-    end
-
-    test "rejects a :messages that is not a list" do
-      assert_raise ArgumentError, ~r/:messages.*non-empty list/s, fn ->
-        compile(producer: :orders, id: :some_id, messages: OrderPlaced)
-      end
-    end
-
-    test "rejects a non-module entry in :messages" do
-      assert_raise ArgumentError, ~r/:messages.*is not a module/s, fn ->
-        compile(producer: :orders, id: :some_id, messages: ["OrderPlaced"])
-      end
-    end
-
-    # Deliberately *not* checked here. Touching a message module from inside the
-    # macro would make every handler compile-time dependent on every type it
-    # lists, so editing one struct would recompile all of them. It is
-    # DMEx.Consumer.Pipeline.build/1 that rejects this, at runtime.
-    test "does not check that the declared modules are messages" do
-      assert compile(producer: :orders, id: :some_id, messages: [NoSuchMessageAnywhere])
     end
   end
 
   ## Helpers
 
+  defp clause do
+    "def handle_message(%DMEx.Test.Messages.OrderPlaced{}, _metadata), do: :ok"
+  end
+
   defp declare(opts) do
     opts
-    |> Keyword.put_new(:messages, [OrderPlaced])
-    |> compile()
+    |> Enum.map_join(", ", fn {key, value} -> "#{key}: #{inspect(value)}" end)
+    |> compile_raw(clause())
     |> Map.fetch!(:id)
   end
 
-  defp compile(opts) do
-    opts
-    |> Enum.map_join(", ", fn {key, value} -> "#{key}: #{inspect(value)}" end)
-    |> compile_raw()
-  end
+  defp compile(body), do: compile_raw("producer: :orders, id: :some_id", body)
+
+  defp messages_of(body), do: body |> compile() |> Map.fetch!(:messages)
 
   # Compiled into a uniquely-named module each time, so nothing here depends on
   # a module name — which is the point of the design under test.
-  defp compile_raw(declaration) do
+  defp compile_raw(declaration, body) do
     name = "DMEx.Consumer.HandlerTest.Generated#{System.unique_integer([:positive])}"
 
     {{:module, module, _, _}, _} =
-      Code.eval_string("""
-      defmodule #{name} do
-        use DMEx.Consumer.Handler, #{declaration}
+      Code.eval_string(
+        """
+        defmodule #{name} do
+          use DMEx.Consumer.Handler, #{declaration}
 
-        @impl true
-        def handle_message(_message, _metadata), do: :ok
-      end
-      """)
+          #{body}
+        end
+        """,
+        [],
+        file: __ENV__.file
+      )
 
     module.__dmex__()
   end

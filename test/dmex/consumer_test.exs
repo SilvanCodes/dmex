@@ -5,6 +5,7 @@ defmodule DMEx.ConsumerTest do
 
   alias DMEx.Consumer
   alias DMEx.Test.Handlers
+  alias DMEx.Test.Messages.OrderPlaced
 
   @moduletag :capture_log
 
@@ -16,35 +17,26 @@ defmodule DMEx.ConsumerTest do
 
   defmodule OtherHandler do
     @moduledoc false
-    use DMEx.Consumer.Handler,
-      producer: :test,
-      id: :other,
-      messages: [DMEx.Test.Messages.OrderPlaced]
+    use DMEx.Consumer.Handler, producer: :test, id: :other
 
     @impl true
-    def handle_message(_message, _metadata), do: :ok
+    def handle_message(%OrderPlaced{}, _metadata), do: :ok
   end
 
   defmodule EchoTwin do
     @moduledoc "Declares Handlers.Echo's identity, for the duplicate check."
-    use DMEx.Consumer.Handler,
-      producer: :test,
-      id: :echo,
-      messages: [DMEx.Test.Messages.OrderPlaced]
+    use DMEx.Consumer.Handler, producer: :test, id: :echo
 
     @impl true
-    def handle_message(_message, _metadata), do: :ok
+    def handle_message(%OrderPlaced{}, _metadata), do: :ok
   end
 
   defmodule ElsewhereHandler do
     @moduledoc "Names a producer nothing binds."
-    use DMEx.Consumer.Handler,
-      producer: :elsewhere,
-      id: :elsewhere,
-      messages: [DMEx.Test.Messages.OrderPlaced]
+    use DMEx.Consumer.Handler, producer: :elsewhere, id: :elsewhere
 
     @impl true
-    def handle_message(_message, _metadata), do: :ok
+    def handle_message(%OrderPlaced{}, _metadata), do: :ok
   end
 
   describe "the child spec" do
@@ -179,15 +171,15 @@ defmodule DMEx.ConsumerTest do
       end
     end
 
-    # The producer, the id and the message types come off the module now, so
-    # passing them here is a mistake rather than an override.
-    test "rejects the options that moved onto the handler" do
-      assert_raise ArgumentError, ~r/unknown subscription option\(s\) \[:message_modules\]/, fn ->
-        subscribe(Handlers.Echo, message_modules: [DMEx.Test.Messages.OrderPlaced])
-      end
-
+    # What is consumed and from whom belongs to the handler module, so naming
+    # either here is a mistake rather than an override.
+    test "rejects an attempt to name the producer or the message types here" do
       assert_raise ArgumentError, ~r/unknown subscription option\(s\) \[:url\]/, fn ->
         subscribe(Handlers.Echo, url: @url)
+      end
+
+      assert_raise ArgumentError, ~r/belong to the handler module, not here/, fn ->
+        subscribe(Handlers.Echo, messages: [OrderPlaced])
       end
     end
 

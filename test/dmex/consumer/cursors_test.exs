@@ -8,24 +8,18 @@ defmodule DMEx.Consumer.CursorsTest do
 
   defmodule Old do
     @moduledoc false
-    use DMEx.Consumer.Handler,
-      producer: :orders,
-      id: :old,
-      messages: [DMEx.Test.Messages.OrderPlaced]
+    use DMEx.Consumer.Handler, producer: :orders, id: :old
 
     @impl true
-    def handle_message(_message, _metadata), do: :ok
+    def handle_message(%DMEx.Test.Messages.OrderPlaced{}, _metadata), do: :ok
   end
 
   defmodule New do
     @moduledoc false
-    use DMEx.Consumer.Handler,
-      producer: :orders,
-      id: :new,
-      messages: [DMEx.Test.Messages.OrderPlaced]
+    use DMEx.Consumer.Handler, producer: :orders, id: :new
 
     @impl true
-    def handle_message(_message, _metadata), do: :ok
+    def handle_message(%DMEx.Test.Messages.OrderPlaced{}, _metadata), do: :ok
   end
 
   @old "orders/old"
@@ -56,13 +50,10 @@ defmodule DMEx.Consumer.CursorsTest do
     # so an ordinary rename carries its cursor with it.
     defmodule Renamed do
       @moduledoc false
-      use DMEx.Consumer.Handler,
-        producer: :orders,
-        id: :old,
-        messages: [DMEx.Test.Messages.OrderPlaced]
+      use DMEx.Consumer.Handler, producer: :orders, id: :old
 
       @impl true
-      def handle_message(_message, _metadata), do: :ok
+      def handle_message(%DMEx.Test.Messages.OrderPlaced{}, _metadata), do: :ok
     end
 
     test "a renamed module reads the same cursor", ctx do
@@ -114,10 +105,10 @@ defmodule DMEx.Consumer.CursorsTest do
   end
 
   describe "rename!/3" do
-    # Not for a module rename any more — that is free. This is for the migration
-    # surface that survived it: changing a handler's `id:`, or a producer's key
-    # in the consumer's map, mints a new identity exactly as a rename used to.
-    # Hence the id strings: the old identity is the one no module declares now.
+    # Not for a module rename — that is free. This is for the migration surface
+    # that remains: changing a handler's `id:`, or a producer's key in the
+    # consumer's map, mints a new identity. Hence the id strings — the old
+    # identity is the one no module declares.
     test "carries the position over and removes the old row", ctx do
       :ok = Postgres.advance(ctx.storage_opts, @old, 4_242, @url)
 

@@ -29,10 +29,7 @@ Helper.section("end_to_end_latency — publish to handler, percentiles")
 
 defmodule Bench.LatencyHandler do
   @moduledoc false
-  use DMEx.Consumer.Handler,
-    producer: :bench,
-    id: :latency,
-    messages: [DMEx.Test.Messages.OrderPlaced]
+  use DMEx.Consumer.Handler, producer: :bench, id: :latency
 
   alias DMEx.Test.Messages.OrderPlaced
 

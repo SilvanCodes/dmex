@@ -23,15 +23,13 @@ defmodule DMEx.Integration.VerticalSliceTest do
 
   defmodule SecondHandler do
     @moduledoc false
-    use DMEx.Consumer.Handler,
-      producer: :test,
-      id: :second,
-      messages: [DMEx.Test.Messages.OrderPlaced]
+    use DMEx.Consumer.Handler, producer: :test, id: :second
 
     alias DMEx.Test.Handlers
+    alias DMEx.Test.Messages.OrderPlaced
 
     @impl true
-    def handle_message(message, _metadata) do
+    def handle_message(%OrderPlaced{} = message, _metadata) do
       send(Handlers.owner(), {:second, message})
 
       :ok
@@ -134,15 +132,13 @@ defmodule DMEx.Integration.VerticalSliceTest do
     # free: the module's name, and the message list.
     defmodule Slice do
       @moduledoc false
-      use DMEx.Consumer.Handler,
-        producer: :test,
-        id: :slice,
-        messages: [DMEx.Test.Messages.OrderPlaced]
+      use DMEx.Consumer.Handler, producer: :test, id: :slice
 
       alias DMEx.Test.Handlers
+      alias DMEx.Test.Messages.OrderPlaced
 
       @impl true
-      def handle_message(message, _metadata) do
+      def handle_message(%OrderPlaced{} = message, _metadata) do
         send(Handlers.owner(), {:sliced, message})
 
         :ok
@@ -151,15 +147,13 @@ defmodule DMEx.Integration.VerticalSliceTest do
 
     defmodule SliceRenamed do
       @moduledoc "Slice after an ordinary module rename — same declaration."
-      use DMEx.Consumer.Handler,
-        producer: :test,
-        id: :slice,
-        messages: [DMEx.Test.Messages.OrderPlaced]
+      use DMEx.Consumer.Handler, producer: :test, id: :slice
 
       alias DMEx.Test.Handlers
+      alias DMEx.Test.Messages.OrderPlaced
 
       @impl true
-      def handle_message(message, _metadata) do
+      def handle_message(%OrderPlaced{} = message, _metadata) do
         send(Handlers.owner(), {:sliced, message})
 
         :ok
@@ -167,16 +161,18 @@ defmodule DMEx.Integration.VerticalSliceTest do
     end
 
     defmodule SliceWidened do
-      @moduledoc "Slice with a type added to `messages:` — same identity."
-      use DMEx.Consumer.Handler,
-        producer: :test,
-        id: :slice,
-        messages: [DMEx.Test.Messages.OrderPlaced, DMEx.Test.Messages.OrderShipped]
+      @moduledoc "Slice with a clause added for a second type — same identity."
+      use DMEx.Consumer.Handler, producer: :test, id: :slice
 
       alias DMEx.Test.Handlers
+      alias DMEx.Test.Messages.OrderPlaced
+      alias DMEx.Test.Messages.OrderShipped
 
       @impl true
-      def handle_message(message, _metadata) do
+      def handle_message(%OrderPlaced{} = message, _metadata), do: report(message)
+      def handle_message(%OrderShipped{} = message, _metadata), do: report(message)
+
+      defp report(message) do
         send(Handlers.owner(), {:sliced, message})
 
         :ok
@@ -234,10 +230,10 @@ defmodule DMEx.Integration.VerticalSliceTest do
       eventually(fn -> cursor_rows() == [["test/slice", id]] end)
     end
 
-    # The trade the design deliberately makes: `messages:` is not part of the
-    # identity, so a widened list is handled from the tip onward and the new
-    # type's history is *not* replayed. Getting it takes Cursors.move!/4.
-    test "adding a message type handles it from the tip, without replaying", _ctx do
+    # The trade the design deliberately makes: the message list is not part of
+    # the identity, so a type gained by adding a clause is handled from the tip
+    # onward and its history is *not* replayed. Getting it takes Cursors.move!/4.
+    test "adding a clause handles that type from the tip, without replaying", _ctx do
       subscribe(Slice)
 
       {:ok, _} = Producer.publish(%OrderShipped{order_id: 1, carrier: "dhl"})

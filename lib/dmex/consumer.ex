@@ -90,8 +90,8 @@ defmodule DMEx.Consumer do
   ## v1 delivers whole logs
 
   There is **no filter option of any kind**. A subscription is the producer's
-  entire log, and the handler's `messages:` list is what narrows it — locally,
-  after the bytes have crossed the wire. A row whose type is not in that list
+  entire log, and the types its handler matches on are what narrow it — locally,
+  after the bytes have crossed the wire. A row whose type is not among them
   advances the cursor and invokes nothing, which is the normal case rather than
   a fault.
   """
@@ -478,9 +478,9 @@ defmodule DMEx.Consumer do
               "unknown subscription option(s) #{inspect(unknown)}. " <>
                 "Known options: #{inspect(Enum.sort(known))}. " <>
                 "Note there is no filter option: a v1 subscription is the " <>
-                "producer's whole log, narrowed locally by the handler's :messages. " <>
-                "The producer, the id and the message types are declared on the " <>
-                "handler module, not passed here."
+                "producer's whole log, narrowed locally by the types the handler " <>
+                "matches on. The producer, the id and the message types belong to " <>
+                "the handler module, not here."
     end
   end
 end

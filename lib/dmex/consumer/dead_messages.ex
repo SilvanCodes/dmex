@@ -125,7 +125,7 @@ defmodule DMEx.Consumer.DeadMessages do
       :error ->
         Logger.warning(
           "DMEx cannot replay dead message #{row.id}: #{inspect(declaration.handler)} " <>
-            "declares no module for #{row.message_type}. Add it to the handler's `messages:`."
+            "has no clause for #{row.message_type}. Add one to handle_message/2."
         )
 
         :error

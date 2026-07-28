@@ -1,8 +1,13 @@
 # Consumer-side producer definition
 
-> Status: **implemented.** This is the design record for the refactor; the code
-> now matches it. Two things landed differently from the text below, both noted
-> in place: `subscribe/2` also accepts `producer:` as a call-site override (the
+> Status: **implemented, plus one follow-up.** This is the design record for the
+> refactor; the code now matches it, except that `messages:` no longer exists —
+> a follow-up removed it and derives the list from the structs
+> `handle_message/2` matches on (see Critique #4). Read every `messages:` below
+> as "the types the handler's clauses match on".
+>
+> Two further things landed differently from the text below, both noted in
+> place: `subscribe/2` also accepts `producer:` as a call-site override (the
 > same escape hatch `repo:` has), and `@subscription_opts` is `[:consumer,
 > :producer]` rather than `[:handler, :consumer]`, since the handler is the
 > positional argument and a stray `handler:` should raise rather than be
@@ -287,6 +292,8 @@ the `README.md` quickstart.
   handlers need `producer:`/`id:`/`messages:`, and because the message list is
   now baked into the module, a handler reused across tests with different lists
   must become several modules. Budget for the file roughly doubling.
+  (The follow-up that removed `messages:` turned this into "each handler matches
+  its structs in the clause head"; the module-per-combination point stands.)
 - **`test/support/server.ex` / `case.ex` / `integration_case.ex`** — Bandit binds
   port 0, so the producer map is built at runtime; add a helper that turns a
   running test server into `%{test: url}`.
@@ -370,14 +377,27 @@ means the producer never sends that type's history at all.
    so they are not a signal. Catching this needs a producer that advertises its
    own identity on `/stream`, which is a producer-side change not in scope here.
 
-4. **The declaration is not checked against the implementation.** A handler
-   declaring `[OrderPlaced, OrderCancelled]` whose only `handle_message/2` clause
-   matches `%OrderPlaced{}` gets a `FunctionClauseError` on the first
-   cancellation, at runtime, on a real message, straight into the
-   retry-then-`on_failure` path. Co-locating the list with the callback makes
-   this *checkable* for the first time — a `@before_compile` comparing declared
-   modules against the structs the clauses match on is possible — and this plan
-   does not do it. Worth its own follow-up.
+4. ~~**The declaration is not checked against the implementation.**~~
+   **Resolved by the follow-up.** This plan shipped a `messages:` list that
+   could disagree with the clauses: a handler declaring
+   `[OrderPlaced, OrderCancelled]` whose only clause matched `%OrderPlaced{}`
+   got a `FunctionClauseError` on the first cancellation, at runtime, straight
+   into the retry-then-`on_failure` path.
+
+   The follow-up went further than the check this section imagined. Rather than
+   comparing a declared list against the matched structs, `messages:` was
+   **removed** and the list is now *derived* in `@before_compile` from the
+   structs `handle_message/2` matches on — so the two cannot disagree, because
+   there is only one of them. Each matched struct is verified to be a
+   `DMEx.Message` at compile time, and a clause that does not match a struct is
+   rejected.
+
+   Two costs it introduced, both accepted: the verification needs
+   `Code.ensure_compiled/1` (the parallel compiler resolves a struct pattern
+   without loading the module), which turns an export dependency into a
+   compile-time one — bounded, since handlers are leaves; and derivation covers
+   types, not values, so a clause narrowed to `%OrderPlaced{status: "paid"}`
+   still declares `OrderPlaced` and still raises on an unpaid one.
 
 5. **Test-seam cost.** Declaring messages on the module is right for production
    code (a handler subscribed to a list not containing what it matches on becomes
@@ -435,8 +455,8 @@ End-to-end check that the identity is what it claims, via
    cursor continues; no replay. This is benefit (b), directly asserted.
 4. **Change the URL** in the producer map to a second server fronting the same
    log, restart → cursor continues. Benefit (a).
-5. Add a message type to `messages:`, restart → cursor continues, new type
-   handled from the tip onward and *not* replayed. Pins the trade in
+5. Add a clause for a second message type, restart → cursor continues, the new
+   type handled from the tip onward and *not* replayed. Pins the trade in
    [Critique](#the-strongest-argument-against-the-choice-we-made).
 6. Two handlers declaring the same `{producer, id}` → `DMEx.Consumer` raises at
    `init/1` naming both modules.
@@ -448,5 +468,8 @@ End-to-end check that the identity is what it claims, via
 - Should `plans/` join `docs: extras` in `mix.exs` alongside
   `guides/deployment.md`? Default answer is no — a working plan is not
   user-facing documentation.
-- The `@before_compile` check in Critique #4 (declared messages vs. matched
-  clauses) is a separate change and not part of this refactor.
+- ~~The `@before_compile` check in Critique #4 (declared messages vs. matched
+  clauses) is a separate change and not part of this refactor.~~ **Done, as a
+  follow-up** — and by deriving the list from the clauses rather than checking a
+  declaration against them, so there is nothing left to disagree. See Critique
+  #4.

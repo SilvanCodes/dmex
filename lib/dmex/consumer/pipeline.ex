@@ -203,13 +203,12 @@ defmodule DMEx.Consumer.Pipeline do
   end
 
   @doc """
-  Builds pipeline state, validating the handler and message modules once.
+  Builds pipeline state from the handler's declaration, once per subscription.
 
-  The message list comes off the handler's own declaration — this is where the
-  modules it named are first *touched*, deliberately. Checking them inside
-  `use DMEx.Consumer.Handler` would make every handler compile-time dependent on
-  every message module it lists, so editing one struct would recompile all of
-  them. Here they are already loaded and the cost is once per subscription.
+  The message list is derived at compile time from the structs the handler's
+  `c:DMEx.Consumer.Handler.handle_message/2` clauses match on, and every one of
+  them was checked to be a `DMEx.Message` there — so there is nothing left for
+  this to validate but the handler itself.
 
   Resolving `message_type` per row is a map lookup against the resulting
   registry — never `String.to_atom/1` on whatever the producer sent, which would
@@ -232,24 +231,10 @@ defmodule DMEx.Consumer.Pipeline do
       storage_opts: Keyword.fetch!(opts, :storage_opts),
       handler: handler,
       subscription: Keyword.get(opts, :subscription, declaration.id),
-      modules: declaration.messages |> validate_messages!(handler) |> DMEx.Message.registry(),
+      modules: DMEx.Message.registry(declaration.messages),
       url: Keyword.fetch!(opts, :url),
       cursor: Keyword.get(opts, :cursor, 0),
       config: Keyword.get_lazy(opts, :config, fn -> DMEx.Config.consumer!([]) end)
     }
-  end
-
-  defp validate_messages!(messages, handler) do
-    case Enum.reject(messages, &DMEx.Message.message?/1) do
-      [] ->
-        messages
-
-      bad ->
-        raise ArgumentError,
-              "#{inspect(handler)} declares #{inspect(bad)} in `messages:`, which " <>
-                "#{if length(bad) > 1, do: "are not", else: "is not a"} DMEx message " <>
-                "module#{if length(bad) > 1, do: "s"}. Add `use DMEx.Message` to " <>
-                "#{if length(bad) > 1, do: "them", else: "it"}."
-    end
   end
 end

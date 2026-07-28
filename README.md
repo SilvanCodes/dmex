@@ -53,10 +53,7 @@ MyApp.Producer.publish(%MyApp.Messages.OrderPlaced{order_id: 7})
 ```elixir
 # consumer
 defmodule MyApp.OrderProjection do
-  use DMEx.Consumer.Handler,
-    producer: :orders,
-    id: :order_projection,
-    messages: [MyApp.Messages.OrderPlaced]
+  use DMEx.Consumer.Handler, producer: :orders, id: :order_projection
 
   @impl true
   def handle_message(%MyApp.Messages.OrderPlaced{} = message, _metadata), do: :ok
@@ -68,12 +65,16 @@ end
  handlers: [MyApp.OrderProjection]}
 ```
 
-The handler module is the whole declaration: which producer, under what name,
-and for which message types. The consumer binds names to URLs, so a URL appears
-once rather than at every subscription site. A subscription's durable identity
-is the declared `"orders/order_projection"` pair rather than the module name —
-so renaming the module is free, and only changing the declaration itself costs a
-cursor migration.
+The handler module is the whole declaration. The message types are not written
+down twice: they are read at compile time from the structs `handle_message/2`
+matches on, and each is checked to be a `DMEx.Message` there — so a handler
+subscribed to a type it has no clause for is unrepresentable rather than a
+runtime `FunctionClauseError`. The consumer binds names to URLs, so a URL
+appears once rather than at every subscription site.
+
+A subscription's durable identity is the declared `"orders/order_projection"`
+pair rather than the module name — so renaming the module is free, and only
+changing the declaration itself costs a cursor migration.
 
 Start with the `DMEx` moduledoc, then `DMEx.Config` for every default and why it
 has the value it does.
