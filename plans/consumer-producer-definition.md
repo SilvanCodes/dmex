@@ -329,9 +329,9 @@ identity has no cursor), and silently orphans that handler's existing dead
 messages under an id nothing looks up any more. But the trade is real, and the
 docs must point at `Cursors.move!/4` from wherever "adding a message type" is
 described. This interacts with the deferred server-side selection
-(ARCHITECTURE.md § Message-Type Selection): once `messages:` becomes a `?filter=`
-on the wire, "added a type, didn't move the cursor" means the producer never
-sends that type's history at all.
+(ROADMAP.md § Message-Type Selection): once `messages:` becomes a
+`/stream/<filter blob>` on the wire, "added a type, didn't move the cursor"
+means the producer never sends that type's history at all.
 
 ### Where this design falls short
 

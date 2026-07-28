@@ -16,7 +16,10 @@ infrastructure between applications.
 
 > **Status: pre-release, under active development.** Not yet published to Hex.
 > See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design and the reasoning
-> behind every decision — it remains the spec of record.
+> behind every decision — it remains the spec of record — and
+> [ROADMAP.md](ROADMAP.md) for what is designed but deliberately not in v1:
+> server-side message-type selection (`GET /stream/<filter blob>`) and a
+> `GET /stream/stats` endpoint describing a log's message types and id ranges.
 
 ## What works today
 
