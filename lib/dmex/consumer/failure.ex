@@ -5,20 +5,48 @@ defmodule DMEx.Consumer.Failure do
   The retry step beforehand is identical in all three modes; only the terminal
   action differs.
 
-  ## `:crash` (the default)
+  ## `:dead_message` (the default)
+
+  Advances past the failing message, but writes it to `dmex_dead_messages`
+  first, **in the same transaction**. That atomicity is the point: a dead
+  message and the cursor that skipped past it commit together or not at all, so
+  there is no state where a message was skipped without being recorded, or
+  recorded without being skipped.
+
+  It is the default because it is the only mode that refuses both bad outcomes.
+  One message a handler cannot process is a bug in that handler or a
+  malformed payload, not a reason for every *later* message to stop arriving —
+  and it is not a reason to lose the failing one either. Recording it and moving
+  on keeps the subscription live and keeps the evidence, and
+  `DMEx.Consumer.DeadMessages` is how you inspect, replay or discard what
+  accumulated.
+
+  **What is stored is the message, and only the message.** The dead-messages
+  table is structurally `dmex_messages` plus the subscription id that says whose
+  row it is, so a stored row *is* a log row — see `DMEx.Consumer.DeadMessages`,
+  where replaying one is feeding it back to a handler with no reshaping in
+  between. Equal as a value rather than byte-for-byte: the payload is re-encoded
+  from the term the frame decoded.
+
+  The exception, its message and the attempt count are **not** stored. A failure
+  is an event, not a property of the message: it goes to the log and to
+  `[:dmex, :consumer, :failed]`. Persisting it would make each row a mixture of
+  a message and an incident, and stop it being replayable as the former.
+
+  ## `:crash`
 
   Re-raises, with the original stacktrace. The stream process dies, its
   supervisor restarts it, and on restart it re-reads its persisted cursor —
   still pointing at the message *before* this one, since that transaction never
   committed — so the producer's ordinary range scan re-streams the very message
-  that killed it.
+  that killed it. A permanently-failing handler crash-loops on it forever.
 
-  A permanently-failing handler therefore crash-loops on the same message
-  forever rather than silently dropping it. That is the intended behaviour: the
-  alternative is losing messages quietly. Reconnect backoff inside
-  `DMEx.Consumer.Stream` is what keeps that loop from hammering the producer's
-  database, and `DMEx.Consumer.Supervisor`'s restart budget is set so the loop
-  cannot take its sibling subscriptions down with it.
+  Choose this when a stuck subscription is the *better* failure: when later
+  messages genuinely must not be processed without this one, or when a loud,
+  impossible-to-ignore alarm beats a growing table nobody is watching. Reconnect
+  backoff inside `DMEx.Consumer.Stream` keeps the loop from hammering the
+  producer's database, and `DMEx.Consumer.Supervisor`'s restart budget is set so
+  it cannot take its sibling subscriptions down with it.
 
   ## `:skip`
 
@@ -27,28 +55,8 @@ defmodule DMEx.Consumer.Failure do
   perspective.
 
   DMEx records nothing durable: the failure is logged and emitted as
-  `[:dmex, :consumer, :failed]`, and that is the only trace. Worth knowing
-  before choosing this mode.
-
-  ## `:dead_message`
-
-  Same advance, but the message is first written to `dmex_dead_messages` **in
-  the same transaction**. That atomicity is the point: a dead message and the
-  cursor that skipped past it commit together or not at all, so there is no
-  state where a message was skipped without being recorded, or recorded without
-  being skipped.
-
-  **What is stored is the message, and only the message.** The dead-messages
-  table is structurally `dmex_messages` plus the subscription id and producer
-  URL that say where the row belongs, so a stored row *is* a log row — see
-  `DMEx.Consumer.DeadMessages`, where replaying one is feeding it back to a
-  handler with no reshaping in between. Equal as a value rather than
-  byte-for-byte: the payload is re-encoded from the term the frame decoded.
-
-  The exception, its message and the attempt count are **not** stored. A failure
-  is an event, not a property of the message: it goes to the log and to
-  `[:dmex, :consumer, :failed]`. Persisting it would make each row a mixture of
-  a message and an incident, and stop it being replayable as the former.
+  `[:dmex, :consumer, :failed]`, and that is the only trace. It is
+  `:dead_message` minus the evidence, which is worth being deliberate about.
   """
 
   alias DMEx.Consumer.Pipeline
@@ -81,7 +89,7 @@ defmodule DMEx.Consumer.Failure do
   defp skip(state, row, id, exception, attempts) do
     {:ok, _} =
       state.storage.transaction(state.storage_opts, fn ->
-        :ok = state.storage.advance(state.storage_opts, state.subscription, id, state.url)
+        :ok = state.storage.advance(state.storage_opts, state.subscription, id)
       end)
 
     report(state, row, id, exception, attempts, :skip)
@@ -97,15 +105,13 @@ defmodule DMEx.Consumer.Failure do
         :ok =
           state.storage.dead_message(state.storage_opts, %{
             subscription: state.subscription,
-            producer_url: state.url,
             id: id,
             message_type: Map.fetch!(row, "message_type"),
             data: encode(Map.get(row, "data")),
-            metadata: encode(Map.get(row, "metadata")),
-            inserted_at: Map.fetch!(row, "inserted_at")
+            metadata: encode(Map.get(row, "metadata"))
           })
 
-        :ok = state.storage.advance(state.storage_opts, state.subscription, id, state.url)
+        :ok = state.storage.advance(state.storage_opts, state.subscription, id)
       end)
 
     report(state, row, id, exception, attempts, :dead_message)
@@ -113,7 +119,7 @@ defmodule DMEx.Consumer.Failure do
     {:ok, id}
   end
 
-  # The row arrived through `DMEx.Frame`, which decodes one level, so `data` and
+  # The row arrived through `DMEx.SSE.Frame`, which decodes one level, so `data` and
   # `metadata` are terms here and the storage adapter wants JSON text.
   defp encode(nil), do: "{}"
   defp encode(value), do: JSON.encode!(value)

@@ -94,8 +94,12 @@ defmodule DMEx.Telemetry do
   `:attempts`. Metadata: `:subscription`, `:handler`, `:message_type`, `:url`,
   `:on_failure` (which terminal action was taken), `:reason`.
 
-  Emitted for `:skip` and `:dead_message`. `:crash` re-raises instead, so the
-  supervisor's own report is the record there.
+  Emitted for `:dead_message` (the default) and `:skip`. `:crash` re-raises
+  instead, so the supervisor's own report is the record there.
+
+  Worth an alert either way: under the default the subscription keeps running,
+  so this event and a growing `dmex_dead_messages` are the only signs that
+  something is being given up on.
 
   ### `[:dmex, :consumer, :lag]`
 

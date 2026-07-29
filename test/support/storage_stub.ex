@@ -129,7 +129,7 @@ defmodule DMEx.Test.Storage do
     Agent.get(store(opts), fn state ->
       case Map.get(state.cursors, subscription) do
         nil -> {:ok, nil}
-        id -> {:ok, %{last_seen: id, producer_url: "stub", updated_at: nil}}
+        id -> {:ok, %{last_seen: id, updated_at: nil}}
       end
     end)
   end
@@ -143,7 +143,7 @@ defmodule DMEx.Test.Storage do
   def transaction(_opts, fun), do: {:ok, fun.()}
 
   @impl DMEx.Storage
-  def advance(opts, subscription, id, _url) when is_binary(subscription) do
+  def advance(opts, subscription, id) when is_binary(subscription) do
     update(opts, &%{&1 | cursors: Map.put(&1.cursors, subscription, id)})
   end
 

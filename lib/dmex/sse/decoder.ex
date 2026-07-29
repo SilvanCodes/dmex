@@ -1,6 +1,6 @@
 defmodule DMEx.SSE.Decoder do
   @moduledoc """
-  Turns a stream of arbitrary byte runs into whole `DMEx.Frame`s.
+  Turns a stream of arbitrary byte runs into whole `DMEx.SSE.Frame`s.
 
   **Chunk boundaries are not frame boundaries.** Chunked transfer encoding and
   TCP both deliver whatever they happen to have, so a frame can span several
@@ -34,7 +34,7 @@ defmodule DMEx.SSE.Decoder do
   characters inside it, so a frame's bytes are newline-free until it ends.
   """
 
-  alias DMEx.Frame
+  alias DMEx.SSE.Frame
 
   # The SSE specification's line terminators are CR, LF and CRLF only, so a
   # blank line is one of exactly these three.

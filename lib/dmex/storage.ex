@@ -37,7 +37,7 @@ defmodule DMEx.Storage do
 
   ### `c:read/3` must return `data` and `metadata` as JSON *text*
 
-  `DMEx.Frame.encode_batch/2` splices those two columns into the wire frame
+  `DMEx.SSE.Frame.encode_batch/2` splices those two columns into the wire frame
   byte-for-byte, without parsing them. An adapter that lets its driver decode
   `jsonb` into an Elixir map hands `Frame` a map where it expects text, and the
   frame it builds is wrong — so the cast belongs in the query (`data::text`),
@@ -73,8 +73,8 @@ defmodule DMEx.Storage do
           optional(:prefix) => String.t() | nil
         }
 
-  @typedoc "A log row, exactly as `DMEx.Frame` expects one."
-  @type row :: DMEx.Frame.row()
+  @typedoc "A log row, exactly as `DMEx.SSE.Frame` expects one."
+  @type row :: DMEx.SSE.Frame.row()
 
   @doc """
   Appends one message and returns its assigned id.
@@ -116,8 +116,8 @@ defmodule DMEx.Storage do
   @doc """
   The log's current highest id, or `0` when the log is empty.
 
-  Used for two things: `DMEx.Dispatcher`'s poll, which broadcasts only when this
-  moves, and resolving a `Last-Event-ID: latest` connect against the tip.
+  Used for two things: `DMEx.Producer.Dispatcher`'s poll, which broadcasts only
+  when this moves, and resolving a `Last-Event-ID: latest` connect against the tip.
   """
   @callback max_id(opts()) :: {:ok, non_neg_integer()} | {:error, term()}
 
@@ -143,14 +143,13 @@ defmodule DMEx.Storage do
   @callback transaction(opts(), (-> result)) :: {:ok, result} | {:error, term()} when result: var
 
   @doc """
-  Moves a subscription's cursor to `id`, recording which producer it read from.
+  Moves a subscription's cursor to `id`.
 
   Always called inside `c:transaction/2`. It does not refuse to move backwards:
   duplicate suppression happens in the pipeline, which is the authority, and an
   operator resetting a cursor deliberately needs this to go both ways.
   """
-  @callback advance(opts(), subscription :: String.t(), id :: pos_integer(), url :: String.t()) ::
-              :ok
+  @callback advance(opts(), subscription :: String.t(), id :: pos_integer()) :: :ok
 
   @doc """
   Records a message its handler gave up on.
@@ -158,10 +157,12 @@ defmodule DMEx.Storage do
   Written in the same transaction as the `last_seen` advance that moves past it,
   so a dead message and the cursor that skipped it commit together or not at all.
 
-  `attrs` carries `:subscription` and `:producer_url` — the table is shared
-  across every subscription in the application, and a log id alone is ambiguous
-  across producers — followed by the log row itself: `:id`, `:message_type`, `:data`,
-  `:metadata` and `:inserted_at`, unchanged from what arrived.
+  `attrs` carries `:subscription` — the table is shared across every
+  subscription in the application, so a row has to say which one owns it —
+  followed by the log row itself: `:id`, `:message_type`, `:data` and
+  `:metadata`, unchanged from what arrived. Not `:inserted_at`: on this table
+  that column records when the row landed here, which is the adapter's to
+  stamp.
 
   **Nothing about the failure is stored.** No exception, no message, no attempt
   count. A failure is an event rather than a property of the message, so it goes
@@ -185,7 +186,7 @@ defmodule DMEx.Storage do
   @doc """
   Removes one dead message, identified the way it is keyed: by subscription and
   log id. A subscription reads exactly one producer's log, so its own ids cannot
-  collide, and `producer_url` is provenance rather than identity.
+  collide.
 
   Called inside `c:transaction/2` by a replay, so that a message is dropped from
   this table exactly when its handler finally accepted it.
@@ -197,9 +198,8 @@ defmodule DMEx.Storage do
   A subscription's full cursor row, or `nil`.
 
   `c:last_seen/2` answers the read path's question — where am I — and returns
-  only the id. This answers an operator's: which producer was this reading
-  from, and when did it last move? Used by `DMEx.Consumer.Cursors`, not by the
-  stream.
+  only the id. This answers an operator's: when did this last move? Used by
+  `DMEx.Consumer.Cursors`, not by the stream.
   """
   @callback cursor(opts(), subscription :: String.t()) ::
               {:ok,
@@ -218,7 +218,7 @@ defmodule DMEx.Storage do
   @doc """
   Processes this adapter needs running alongside a producer.
 
-  Started by the producer's own supervisor, before `DMEx.Dispatcher`. Postgres
+  Started by the producer's own supervisor, before `DMEx.Producer.Dispatcher`. Postgres
   returns a `Postgrex.Notifications` connection here — a `LISTEN` connection
   cannot be shared with the pool, since it must stay checked out for its whole
   life — and an engine with no notification mechanism returns `[]`.
@@ -234,7 +234,7 @@ defmodule DMEx.Storage do
   @doc """
   Subscribes the calling process to this producer's publish notifications.
 
-  Returns the pid to monitor, so `DMEx.Dispatcher` can re-establish the
+  Returns the pid to monitor, so `DMEx.Producer.Dispatcher` can re-establish the
   subscription if it dies. `:unsupported` is the honest answer for an engine
   with no notification mechanism at all — the dispatcher then runs polling-only
   without warning, since nothing is wrong.

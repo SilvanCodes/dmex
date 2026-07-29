@@ -1,4 +1,4 @@
-# Is `DMEx.Frame.encode_batch/2` O(bytes) — a memcpy over iodata — or does it
+# Is `DMEx.SSE.Frame.encode_batch/2` O(bytes) — a memcpy over iodata — or does it
 # carry meaningful per-row overhead?
 #
 # Three things happen per row that are not copying: an `Integer.to_string/1` for
@@ -11,7 +11,7 @@
 # how long the producer spends building the largest frame it will ever send.
 
 alias DMEx.BenchHelper, as: Helper
-alias DMEx.Frame
+alias DMEx.SSE.Frame
 
 Helper.section("frame_encode — producer-side framing cost")
 

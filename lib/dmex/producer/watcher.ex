@@ -3,9 +3,9 @@ defmodule DMEx.Producer.Watcher do
   Reclaims connections that stopped making progress.
 
   One per producer, started by that producer's supervisor. It holds no state
-  about any connection: every sweep reads the live set out of `DMEx.Registry`,
-  compares each connection's armed deadline against the clock, and kills whatever
-  is past it.
+  about any connection: every sweep reads the live set out of
+  `DMEx.Producer.Registry`, compares each connection's armed deadline against the
+  clock, and kills whatever is past it.
 
   ## Why anything is needed at all
 
@@ -131,7 +131,7 @@ defmodule DMEx.Producer.Watcher do
 
     # `each/2` runs here rather than in the registry's own processes, so a sweep
     # costs one atomics read per connection and nothing that can block.
-    DMEx.Registry.each(state.producer, fn pid, status ->
+    DMEx.Producer.Registry.each(state.producer, fn pid, status ->
       if Status.overdue?(status, now) do
         reclaim(state.producer, pid, status, now)
         :counters.add(reclaimed, 1, 1)

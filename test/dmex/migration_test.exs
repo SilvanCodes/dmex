@@ -72,12 +72,19 @@ defmodule DMEx.MigrationTest do
       assert primary_key("dmex_cursors") == ["subscription"]
     end
 
-    test "carries a durable position and the producer it last read from" do
+    test "carries a durable position and when it last moved" do
       assert %{"data_type" => "bigint", "is_nullable" => "NO"} =
                column("dmex_cursors", "last_seen")
 
-      assert %{"data_type" => "text", "is_nullable" => "NO"} =
-               column("dmex_cursors", "producer_url")
+      assert %{"is_nullable" => "NO"} = column("dmex_cursors", "updated_at")
+    end
+
+    # A cursor is a subscription and a position, and nothing else: which host
+    # that subscription's producer name resolves to is the consumer's runtime
+    # configuration, so repointing it is a config change rather than a data
+    # migration.
+    test "records nothing about the producer it read from" do
+      assert column_missing?("dmex_cursors", "producer_url")
     end
   end
 
@@ -91,6 +98,9 @@ defmodule DMEx.MigrationTest do
 
     # This is the property the whole shape exists for: a dead row *is* a log
     # row, so replaying one needs no reshaping and no second decode path.
+    # `inserted_at` is the same column with a different meaning — when the row
+    # landed here rather than when the message was published — so it is asserted
+    # separately below.
     test "carries the message log's columns, with the same types" do
       for name <- ~w(id message_type data metadata inserted_at) do
         dead = column("dmex_dead_messages", name)
@@ -101,9 +111,13 @@ defmodule DMEx.MigrationTest do
       end
     end
 
-    test "records where the message came from, since messages carry no origin" do
-      assert %{"data_type" => "text", "is_nullable" => "NO"} =
-               column("dmex_dead_messages", "producer_url")
+    # Publish time is not recoverable from this table, deliberately: pruning
+    # needs to know how long a row has sat here, and a message published a year
+    # ago but abandoned this morning would look ancient by publish time.
+    test "stamps its own insertion time rather than requiring one" do
+      assert %{"column_default" => default} = column("dmex_dead_messages", "inserted_at")
+
+      assert default =~ "now()"
     end
 
     # A failure is an event, not a property of the message.

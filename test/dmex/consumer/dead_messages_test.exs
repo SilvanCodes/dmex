@@ -135,7 +135,7 @@ defmodule DMEx.Consumer.DeadMessagesTest do
 
     test "does not touch the subscription's cursor", ctx do
       kill(ctx, 1)
-      :ok = Postgres.advance(ctx.storage_opts, @subscription, 500, @url)
+      :ok = Postgres.advance(ctx.storage_opts, @subscription, 500)
       Handlers.FailTimes.set(0)
 
       DeadMessages.replay(@handler, ctx.replay)

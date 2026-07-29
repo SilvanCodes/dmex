@@ -45,7 +45,7 @@ defmodule DMEx.Consumer.Cursors do
   A handler's message list is not part of its identity, so adding a clause for a
   new type leaves the cursor where it is and that type is handled from the tip
   onward.
-  When you want that type's history too, `move!/4` is how you ask for it — and
+  When you want that type's history too, `move!/3` is how you ask for it — and
   it replays *everything* after the id you name, not only the new type, so
   handlers must tolerate the redelivery.
 
@@ -66,15 +66,14 @@ defmodule DMEx.Consumer.Cursors do
   alias DMEx.Consumer.Handler
 
   @doc """
-  Where `handler`'s subscription has got to, with the producer it read from and
-  when.
+  Where `handler`'s subscription has got to, and when it last moved.
 
   Returns `nil` if it has never committed a position — which is also the normal
   state for a subscription started with `start: :latest` on a quiet log, since
   nothing writes a cursor until the first message is handled.
   """
   @spec inspect(module(), keyword()) ::
-          {:ok, %{last_seen: non_neg_integer(), producer_url: String.t()} | nil}
+          {:ok, %{last_seen: non_neg_integer(), updated_at: term()} | nil}
           | {:error, term()}
   def inspect(handler, opts) when is_atom(handler) do
     {storage, storage_opts} = Consumer.storage!(opts)
@@ -88,20 +87,19 @@ defmodule DMEx.Consumer.Cursors do
   `id: 0` replays the producer's whole log. Note this is *not* the same as
   `reset!/2`: a cursor at 0 still exists, so `start:` stays ignored.
 
-  Requires the producer URL, because a cursor row records which producer it was
-  reading from and there is nothing sensible to invent when creating one. It is
-  passed rather than resolved from a producer map because this runs from a
-  migration or a console, where no consumer need be running.
+  A cursor is nothing but a subscription and a position, so this needs no
+  producer — it runs from a migration or a console, with no consumer running and
+  nothing to resolve a producer name against.
   """
-  @spec move!(module(), non_neg_integer(), String.t(), keyword()) :: :ok
-  def move!(handler, id, url, opts)
-      when is_atom(handler) and is_integer(id) and id >= 0 and is_binary(url) do
+  @spec move!(module(), non_neg_integer(), keyword()) :: :ok
+  def move!(handler, id, opts)
+      when is_atom(handler) and is_integer(id) and id >= 0 do
     {storage, storage_opts} = Consumer.storage!(opts)
     subscription = Handler.subscription_id(handler)
 
     {:ok, :ok} =
       storage.transaction(storage_opts, fn ->
-        storage.advance(storage_opts, subscription, id, url)
+        storage.advance(storage_opts, subscription, id)
       end)
 
     :ok
@@ -153,8 +151,8 @@ defmodule DMEx.Consumer.Cursors do
                     "Renaming #{Kernel.inspect(from)} onto it would overwrite that " <>
                     "subscription's position — reset one of them first if that is what you want."
 
-          {{:ok, %{last_seen: id, producer_url: url}}, {:ok, nil}} ->
-            :ok = storage.advance(storage_opts, to, id, url)
+          {{:ok, %{last_seen: id}}, {:ok, nil}} ->
+            :ok = storage.advance(storage_opts, to, id)
             :ok = storage.delete_cursor(storage_opts, from)
         end
       end)

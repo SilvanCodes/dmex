@@ -253,13 +253,18 @@ defmodule DMEx.Consumer.PipelineTest do
 
   ## Helpers
 
+  # `on_failure: :crash` explicitly, because these tests are about what the
+  # pipeline does with an exception rather than about what the default does with
+  # a poison message — the terminal action is `DMEx.Consumer.Failure`'s subject,
+  # and the default is `:dead_message`.
   defp state(ctx, opts) do
     Pipeline.build(
       storage: DMEx.Storage.Postgres,
       storage_opts: ctx.storage_opts,
       handler: Keyword.fetch!(opts, :handler),
       url: @url,
-      cursor: Keyword.get(opts, :cursor, 0)
+      cursor: Keyword.get(opts, :cursor, 0),
+      config: DMEx.Config.consumer!(on_failure: :crash)
     )
   end
 

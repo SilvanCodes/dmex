@@ -22,7 +22,7 @@ defmodule DMEx.Consumer.Queue do
   All three exist so every number the controller reads is in one unit.
 
     * **It holds rows, not frames and not structs.** A row enters exactly as
-      `DMEx.Frame` yielded it; turning its `data` into a message struct happens
+      `DMEx.SSE.Frame` yielded it; turning its `data` into a message struct happens
       in the pipeline, on the way *out*. Decoding on the way in would put per-row
       JSON work on the socket path — above the bound, so unbounded by it, and
       invisible to the drain measurement even though it is real cost.

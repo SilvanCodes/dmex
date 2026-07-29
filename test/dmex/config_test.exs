@@ -101,7 +101,7 @@ defmodule DMEx.ConfigTest do
                max_batch_size: 500,
                queue_limit: nil,
                start: :beginning,
-               on_failure: :crash,
+               on_failure: :dead_message,
                max_attempts: 3,
                retry_backoff: 100,
                retry_backoff_max: 5_000,

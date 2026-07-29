@@ -232,7 +232,7 @@ defmodule DMEx.Integration.VerticalSliceTest do
 
     # The trade the design deliberately makes: the message list is not part of
     # the identity, so a type gained by adding a clause is handled from the tip
-    # onward and its history is *not* replayed. Getting it takes Cursors.move!/4.
+    # onward and its history is *not* replayed. Getting it takes Cursors.move!/3.
     test "adding a clause handles that type from the tip, without replaying", _ctx do
       subscribe(Slice)
 

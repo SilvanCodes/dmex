@@ -5,7 +5,7 @@ defmodule DMEx.Storage.Postgres do
   Raw SQL through `Ecto.Adapters.SQL.query/4` rather than Ecto schemas. Two
   reasons, and the first is not negotiable: `data::text` cannot be expressed as
   a schema load, and the whole point of the read is that `jsonb` comes back as
-  the text `DMEx.Frame` splices verbatim. The second is that there is no schema
+  the text `DMEx.SSE.Frame` splices verbatim. The second is that there is no schema
   to reuse — DMEx owns three tables nothing else queries.
 
   ## No JSON library is ever required
@@ -114,14 +114,14 @@ defmodule DMEx.Storage.Postgres do
     repo = Map.fetch!(opts, :repo)
 
     sql = """
-    SELECT last_seen, producer_url, updated_at
+    SELECT last_seen, updated_at
       FROM #{table(opts, @cursors)}
      WHERE subscription = $1
     """
 
     case SQL.query(repo, sql, [subscription]) do
-      {:ok, %{rows: [[last_seen, url, updated_at]]}} ->
-        {:ok, %{last_seen: last_seen, producer_url: url, updated_at: updated_at}}
+      {:ok, %{rows: [[last_seen, updated_at]]}} ->
+        {:ok, %{last_seen: last_seen, updated_at: updated_at}}
 
       {:ok, %{rows: []}} ->
         {:ok, nil}
@@ -150,19 +150,18 @@ defmodule DMEx.Storage.Postgres do
   end
 
   @impl DMEx.Storage
-  def advance(opts, subscription, id, url) when is_binary(subscription) and is_integer(id) do
+  def advance(opts, subscription, id) when is_binary(subscription) and is_integer(id) do
     repo = Map.fetch!(opts, :repo)
 
     sql = """
-    INSERT INTO #{table(opts, @cursors)} (subscription, last_seen, producer_url, updated_at)
-         VALUES ($1, $2, $3, now())
+    INSERT INTO #{table(opts, @cursors)} (subscription, last_seen, updated_at)
+         VALUES ($1, $2, now())
     ON CONFLICT (subscription)
       DO UPDATE SET last_seen = EXCLUDED.last_seen,
-                    producer_url = EXCLUDED.producer_url,
                     updated_at = now()
     """
 
-    {:ok, _} = SQL.query(repo, sql, [subscription, id, url])
+    {:ok, _} = SQL.query(repo, sql, [subscription, id])
 
     :ok
   end
@@ -171,20 +170,20 @@ defmodule DMEx.Storage.Postgres do
   def dead_message(opts, attrs) when is_map(attrs) do
     repo = Map.fetch!(opts, :repo)
 
+    # `inserted_at` is left to the column default — it records when this row
+    # landed here, not when the message was published.
     sql = """
     INSERT INTO #{table(opts, @dead_messages)}
-           (subscription, producer_url, id, message_type, data, metadata, inserted_at)
-         VALUES ($1, $2, $3, $4, $5::text::jsonb, $6::text::jsonb, $7::text::timestamptz)
+           (subscription, id, message_type, data, metadata)
+         VALUES ($1, $2, $3, $4::text::jsonb, $5::text::jsonb)
     """
 
     params = [
       Map.fetch!(attrs, :subscription),
-      Map.fetch!(attrs, :producer_url),
       Map.fetch!(attrs, :id),
       Map.fetch!(attrs, :message_type),
       Map.fetch!(attrs, :data),
-      Map.get(attrs, :metadata) || "{}",
-      Map.fetch!(attrs, :inserted_at)
+      Map.get(attrs, :metadata) || "{}"
     ]
 
     case SQL.query(repo, sql, params) do

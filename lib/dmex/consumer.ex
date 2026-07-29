@@ -14,7 +14,7 @@ defmodule DMEx.Consumer do
        },
        handlers: [
          MyApp.OrderProjection,
-         {MyApp.OrderEmail, on_failure: :dead_message, max_batch_size: 100}
+         {MyApp.OrderEmail, on_failure: :crash, max_batch_size: 100}
        ]}
 
   or start one later:

@@ -4,9 +4,14 @@ defmodule DMEx.Consumer.DeadMessages do
 
   `dmex_dead_messages` is **structurally a message log**: the stored columns are
   `dmex_messages`' columns — `id`, `message_type`, `data`, `metadata`,
-  `inserted_at` — with the subscription id and producer URL alongside to say
-  where each row belongs. `id` is still the producer's own log id and `inserted_at` is
-  still the original publish time.
+  `inserted_at` — with the subscription id alongside to say whose row it is.
+  `id` is still the producer's own log id.
+
+  One column means something different here: `inserted_at` is when the row
+  landed in *this* table, not when the message was published. That is what makes
+  the table prunable — "abandoned more than 30 days ago" is a question publish
+  time cannot answer — and nothing downstream notices, since a handler is given
+  its struct and the publisher's metadata, never the row's timestamps.
 
   That is the whole reason replay is a few lines rather than a subsystem: a dead
   row *is* a log row, so it can be handed straight back to a handler with no

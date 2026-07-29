@@ -60,10 +60,10 @@ defmodule DMEx.Producer.Plug do
   """
 
   alias DMEx.Config
-  alias DMEx.Frame
   alias DMEx.Producer.Params
   alias DMEx.Producer.Status
   alias DMEx.Producer.Stream, as: SendLoop
+  alias DMEx.SSE.Frame
 
   @behaviour Plug
 
@@ -102,7 +102,7 @@ defmodule DMEx.Producer.Plug do
     # a cursor and sending headers can block exactly as the send loop can.
     # The status comes back with the registration and lives in that entry, so it
     # is cleaned up when this process dies without anything watching for it.
-    {:ok, status} = DMEx.Registry.register(producer, config.stall_timeout)
+    {:ok, status} = DMEx.Producer.Registry.register(producer, config.stall_timeout)
 
     cursor = resolve_cursor(producer, params.cursor)
 

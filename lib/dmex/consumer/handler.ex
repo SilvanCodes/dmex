@@ -141,7 +141,7 @@ defmodule DMEx.Consumer.Handler do
   the entire log and orphan that handler's dead messages.
 
   When you do want the history, ask for it deliberately with
-  `DMEx.Consumer.Cursors.move!/4`.
+  `DMEx.Consumer.Cursors.move!/3`.
   """
 
   @identifier ~r/\A[a-z][a-z0-9_]*\z/

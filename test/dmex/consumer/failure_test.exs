@@ -19,10 +19,12 @@ defmodule DMEx.Consumer.FailureTest do
   end
 
   describe "local retries" do
+    # Deliberately at the default `on_failure`, because the retry step is
+    # identical in all three modes — only the terminal action after them differs.
     test "a failing handler is retried up to max_attempts", ctx do
       state = state(ctx, handler: Handlers.Raising, max_attempts: 3)
 
-      catch_error(Pipeline.run(row(1), state))
+      {:ok, 1} = Pipeline.run(row(1), state)
 
       # The message is still in hand after a rollback, so a retry is just
       # calling the handler again — no refetch, no reconnect.
@@ -32,7 +34,7 @@ defmodule DMEx.Consumer.FailureTest do
     test "max_attempts of 1 means no retry at all", ctx do
       state = state(ctx, handler: Handlers.Raising, max_attempts: 1)
 
-      catch_error(Pipeline.run(row(1), state))
+      {:ok, 1} = Pipeline.run(row(1), state)
 
       assert attempts() == 1
     end
@@ -145,9 +147,9 @@ defmodule DMEx.Consumer.FailureTest do
 
       Pipeline.run(row(1, metadata: %{"trace_id" => "abc"}), state)
 
-      assert [[subscription, url, id, type, data, metadata, inserted_at]] =
+      assert [[subscription, id, type, data, metadata, inserted_at]] =
                query("""
-               SELECT subscription, producer_url, id, message_type,
+               SELECT subscription, id, message_type,
                       data::text, metadata::text, inserted_at
                  FROM dmex_dead_messages
                """)
@@ -155,15 +157,17 @@ defmodule DMEx.Consumer.FailureTest do
       # The declared identity, not the module name — which is what makes
       # renaming the handler free.
       assert subscription == "test/raising"
-      assert url == @url
       # The producer's own log id, not a surrogate — so duplicate suppression
       # still means what it always meant.
       assert id == 1
       assert type == "DMEx.Test.Messages.OrderPlaced"
       assert JSON.decode!(data) == %{"order_id" => 1}
       assert JSON.decode!(metadata) == %{"trace_id" => "abc"}
-      # The original publish time, not the time it died.
-      assert DateTime.to_iso8601(inserted_at) =~ "2026-07-27T10:31:04"
+
+      # The one column that does not mean what it means in the log: when this
+      # row landed here, not when the message was published — which is the axis
+      # anything pruning this table has to work along.
+      assert DateTime.diff(DateTime.utc_now(), inserted_at, :second) < 60
     end
 
     # A failure is an event, not a property of the message. Persisting it would
@@ -181,9 +185,7 @@ defmodule DMEx.Consumer.FailureTest do
                 WHERE table_name = 'dmex_dead_messages'
                """)
 
-      assert columns == [
-               ~w(data id inserted_at message_type metadata producer_url subscription)
-             ]
+      assert columns == [~w(data id inserted_at message_type metadata subscription)]
     end
 
     test "reports the failure through logs and telemetry instead", ctx do
@@ -217,7 +219,7 @@ defmodule DMEx.Consumer.FailureTest do
       # Now rewind the cursor to 1 and feed message 2 again. Its dead-message
       # insert will conflict on (subscription, id), which aborts the transaction
       # the cursor advance is sharing.
-      :ok = Postgres.advance(ctx.storage_opts, "test/raising", 1, @url)
+      :ok = Postgres.advance(ctx.storage_opts, "test/raising", 1)
 
       assert catch_error(Pipeline.run(row(2), %{state | cursor: 1}))
 

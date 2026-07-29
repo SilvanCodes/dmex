@@ -85,16 +85,10 @@ defmodule DMEx.Migration.Postgres do
       # and two distinct pairs can never render to one string.
       add(:subscription, :text, primary_key: true)
       add(:last_seen, :bigint, null: false)
-
-      # Informational: which producer this cursor last read from. Identity is
-      # the subscription string alone, so this is for operators, not lookups —
-      # which is why repointing a producer name at a new host needs no
-      # migration.
-      add(:producer_url, :text, null: false)
       add(:updated_at, :timestamptz, null: false, default: fragment("now()"))
     end
 
-    # **Structurally a message log.** Everything below `producer_url` is
+    # **Structurally a message log.** Everything below `subscription` is
     # `dmex_messages` — the same column names, types and meanings, with `id`
     # still the producer's own log id and `inserted_at` still the original
     # publish time. So a dead row *is* a log row: replaying one needs no
@@ -119,16 +113,24 @@ defmodule DMEx.Migration.Postgres do
       # exactly one producer's log, so its own ids cannot collide.
       add(:subscription, :text, primary_key: true)
 
-      # Provenance rather than identity. Messages carry no origin, so without
-      # this a dead row cannot say which producer it came from.
-      add(:producer_url, :text, null: false)
-
       # From here down, this is dmex_messages.
       add(:id, :bigint, primary_key: true)
       add(:message_type, :text, null: false)
       add(:data, :jsonb, null: false)
       add(:metadata, :jsonb, null: false, default: fragment("'{}'::jsonb"))
-      add(:inserted_at, :timestamptz, null: false)
+
+      # The one column that does *not* mean what it means in the log: when this
+      # row landed here, not when the message was published. Defaulted the same
+      # way, so nothing has to supply it.
+      #
+      # The producer's publish time is genuinely lost, and that is the trade:
+      # this table grows forever like the log does, and pruning it needs an axis
+      # that answers "how long has this been sitting here". Publish time cannot
+      # answer that — a message published a year ago and abandoned this morning
+      # would look ancient. Nothing downstream misses it: a handler is given its
+      # struct and the publisher's metadata, never the row's timestamps, so a
+      # replayed message cannot tell the difference.
+      add(:inserted_at, :timestamptz, null: false, default: fragment("now()"))
     end
 
     :ok

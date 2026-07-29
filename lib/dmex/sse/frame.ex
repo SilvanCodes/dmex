@@ -1,4 +1,4 @@
-defmodule DMEx.Frame do
+defmodule DMEx.SSE.Frame do
   @moduledoc """
   The SSE wire format: one struct per `text/event-stream` chunk.
 

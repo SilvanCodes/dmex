@@ -184,9 +184,9 @@ defmodule DMEx.Producer do
     # and this module has no idea what it is. Postgres puts a LISTEN connection
     # here; an engine without notifications puts nothing.
     children =
-      [DMEx.Registry.child_spec(producer)] ++
+      [DMEx.Producer.Registry.child_spec(producer)] ++
         storage.child_specs(storage_opts) ++
-        [{DMEx.Dispatcher, producer: producer}] ++
+        [{DMEx.Producer.Dispatcher, producer: producer}] ++
         watcher_children(producer, config)
 
     Supervisor.start_link(children,

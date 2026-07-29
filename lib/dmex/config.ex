@@ -39,7 +39,7 @@ defmodule DMEx.Config do
   | `max_batch_size` | `500` | rows; likewise a request, echoed back as whatever the producer actually applied. |
   | `queue_limit` | `nil` | rows; `nil` means derive `2 × max_batch_size`, the smallest bound that distinguishes "a frame landed while the last one drained" from genuine pressure. |
   | `start` | `:beginning` | where a subscription begins when it has no cursor yet. Ignored once one exists. |
-  | `on_failure` | `:crash` | what happens after local retries are exhausted. |
+  | `on_failure` | `:dead_message` | what happens after local retries are exhausted. Recording the message and moving on keeps one poison message from wedging a subscription, and keeps it from vanishing either — `:crash` is there when a stuck subscription is the louder, and therefore better, failure. |
   | `max_attempts` | `3` | total attempts, so the initial call plus two retries — enough to ride out a transient deadlock, few enough that a poison message reaches its terminal action in under a second of backoff. |
   | `retry_backoff` | `100` | ms; base for `100 × 2^(attempt - 1)` with full jitter. |
   | `retry_backoff_max` | `5_000` | ms; cap on that schedule. |

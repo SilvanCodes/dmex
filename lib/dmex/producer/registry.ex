@@ -1,10 +1,12 @@
-defmodule DMEx.Registry do
+defmodule DMEx.Producer.Registry do
   @moduledoc """
   Where a producer's live stream processes register themselves for wakeups.
 
-  One `Registry` per producer, holding one duplicate-key entry per open SSE
-  connection. `DMEx.Dispatcher` broadcasts a bare `:wakeup` across it; nothing
-  else is ever sent.
+  One Elixir `Registry` per producer, holding one duplicate-key entry per open
+  SSE connection. `DMEx.Producer.Dispatcher` broadcasts a bare `:wakeup` across
+  it; nothing else is ever sent. (Unqualified `Registry` in this module's body
+  is the standard library's, not this one — nested modules are not
+  auto-aliased.)
 
   That emptiness is the point. A wakeup is a hint that work may exist, never a
   carrier of work — each stream reads from its own cursor to whatever is there

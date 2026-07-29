@@ -85,22 +85,28 @@ A handler that raises is retried in process a few times with jittered backoff �
 the message is still in hand, so a retry is just calling it again. Once those
 are exhausted, `on_failure` decides:
 
-- `:crash` (default) — the subscription crash-loops on that message rather than
-  losing it, at reconnect-backoff pace, without disturbing its siblings.
-- `:skip` — advance past it; the failure is logged and emitted as telemetry.
-- `:dead_message` — record it first, in the same transaction as the advance.
+- `:dead_message` (default) — record it, in the same transaction as the advance,
+  and carry on. One message a handler cannot process is not a reason for every
+  later message to stop arriving, nor a reason to lose the failing one.
+- `:crash` — the subscription crash-loops on that message instead, at
+  reconnect-backoff pace, without disturbing its siblings. For when a stuck
+  subscription is the better failure.
+- `:skip` — advance past it; the failure is logged and emitted as telemetry, and
+  that is the only trace.
 
 `dmex_dead_messages` is **structurally a message log**: the same `id`,
-`message_type`, `data`, `metadata` and `inserted_at`, with the subscription id
-and producer URL alongside. A dead row *is* a log row, so replay is handing it
-back rather than rebuilding a message from parts:
+`message_type`, `data` and `metadata`, with the subscription id alongside. A
+dead row *is* a log row, so replay is handing it back rather than rebuilding a
+message from parts:
 
     DMEx.Consumer.DeadMessages.list(MyApp.OrderProjection, repo: MyApp.Repo)
     DMEx.Consumer.DeadMessages.replay(MyApp.OrderProjection, repo: MyApp.Repo)
 
 Nothing about the failure is stored — no exception, no attempt count. A failure
 is an event, not a property of the message, so it lives in your logs and in
-`[:dmex, :consumer, :failed]`.
+`[:dmex, :consumer, :failed]`. The one column that differs from the log is
+`inserted_at`: on this table it is when the row landed here, which is the axis
+anything pruning it has to work along.
 
 ### Backpressure
 

@@ -10,6 +10,7 @@ defmodule DMEx.Integration.HeaderNegotiationTest do
 
   use DMEx.IntegrationCase
 
+  alias DMEx.SSE.Frame
   alias DMEx.Test.IntegrationProducer, as: Producer
   alias DMEx.Test.Messages.OrderPlaced
   alias DMEx.Test.Server
@@ -112,7 +113,7 @@ defmodule DMEx.Integration.HeaderNegotiationTest do
       # Still valid JSON, and still the same values — which is all the wire
       # contract promises.
       [_retry, frame | _] = String.split(body, "\n\n", trim: true)
-      {:ok, parsed} = DMEx.Frame.parse(frame)
+      {:ok, parsed} = Frame.parse(frame)
 
       assert Enum.map(parsed.messages, & &1["data"]["order_id"]) == [1, 2, 3, 4, 5]
     end

@@ -150,7 +150,7 @@ defmodule DMEx.Producer.StatusTest do
     end
 
     setup do
-      start_supervised!(DMEx.Registry.child_spec(FakeProducer))
+      start_supervised!(DMEx.Producer.Registry.child_spec(FakeProducer))
 
       :ok
     end
@@ -158,7 +158,7 @@ defmodule DMEx.Producer.StatusTest do
     test "registration hands back the connection's own status, armed" do
       now = System.monotonic_time(:millisecond)
 
-      assert {:ok, ref} = DMEx.Registry.register(FakeProducer, 5_000)
+      assert {:ok, ref} = DMEx.Producer.Registry.register(FakeProducer, 5_000)
 
       refute Status.pending?(ref)
       assert Status.flip(ref)
@@ -166,9 +166,9 @@ defmodule DMEx.Producer.StatusTest do
     end
 
     test "the dispatcher reaches it through the entry" do
-      {:ok, mine} = DMEx.Registry.register(FakeProducer, 5_000)
+      {:ok, mine} = DMEx.Producer.Registry.register(FakeProducer, 5_000)
 
-      DMEx.Registry.each(FakeProducer, fn _pid, status -> Status.flip(status) end)
+      DMEx.Producer.Registry.each(FakeProducer, fn _pid, status -> Status.flip(status) end)
 
       # Same flag, reached from another code path — which is what lets the
       # dispatcher coalesce without any shared table.
@@ -182,20 +182,22 @@ defmodule DMEx.Producer.StatusTest do
 
       pid =
         spawn(fn ->
-          {:ok, _ref} = DMEx.Registry.register(FakeProducer, 5_000)
+          {:ok, _ref} = DMEx.Producer.Registry.register(FakeProducer, 5_000)
           send(parent, :registered)
           Process.sleep(:infinity)
         end)
 
       assert_receive :registered
-      assert DMEx.Registry.count(FakeProducer) == 1
+      assert DMEx.Producer.Registry.count(FakeProducer) == 1
 
       Process.exit(pid, :kill)
 
-      eventually(fn -> DMEx.Registry.count(FakeProducer) == 0 end)
+      eventually(fn -> DMEx.Producer.Registry.count(FakeProducer) == 0 end)
 
       # Nothing left to iterate, so nothing left to leak.
-      DMEx.Registry.each(FakeProducer, fn _pid, _status -> flunk("entry outlived process") end)
+      DMEx.Producer.Registry.each(FakeProducer, fn _pid, _status ->
+        flunk("entry outlived process")
+      end)
     end
   end
 end

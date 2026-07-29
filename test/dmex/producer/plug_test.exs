@@ -2,7 +2,7 @@ defmodule DMEx.Producer.PlugTest do
   use DMEx.Case, async: true
 
   alias DMEx.Producer.Plug, as: ProducerPlug
-  alias DMEx.Registry, as: DMExRegistry
+  alias DMEx.Producer.Registry, as: ProducerRegistry
   alias DMEx.Test.ClosingAdapter
   alias DMEx.Test.Storage, as: Stub
   alias DMEx.Test.StubProducer
@@ -10,7 +10,7 @@ defmodule DMEx.Producer.PlugTest do
   @moduletag :capture_log
 
   setup do
-    start_supervised!(DMExRegistry.child_spec(StubProducer))
+    start_supervised!(ProducerRegistry.child_spec(StubProducer))
 
     %{opts: Stub.new(), plug: ProducerPlug.init(producer: StubProducer)}
   end
@@ -58,7 +58,7 @@ defmodule DMEx.Producer.PlugTest do
       call(opts, plug, [{"last-event-id", "nope"}])
 
       assert Stub.reads(opts) == []
-      assert DMExRegistry.count(StubProducer) == 0
+      assert ProducerRegistry.count(StubProducer) == 0
     end
   end
 
@@ -150,11 +150,11 @@ defmodule DMEx.Producer.PlugTest do
       # request *is* the stream, so the entry lives and dies with the connection.
       pid = start_stream(opts, plug, [], chunks: 5)
 
-      eventually(fn -> DMExRegistry.count(StubProducer) == 1 end)
+      eventually(fn -> ProducerRegistry.count(StubProducer) == 1 end)
 
       Process.exit(pid, :kill)
 
-      eventually(fn -> DMExRegistry.count(StubProducer) == 0 end)
+      eventually(fn -> ProducerRegistry.count(StubProducer) == 0 end)
     end
 
     test "emits a connect event with the resolved cursor", %{opts: opts, plug: plug} do

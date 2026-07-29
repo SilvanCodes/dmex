@@ -85,7 +85,7 @@ own message list becomes a fingerprint the producer filters against.
 ## The wire contract
 
 This is the part a third-party client implements against, so it is spelled out
-here rather than left to the code. `DMEx.Frame` encodes and parses it;
+here rather than left to the code. `DMEx.SSE.Frame` encodes and parses it;
 `DMEx.SSE.Decoder` handles chunk-boundary reassembly.
 
 **`GET /stream`**, mounted by `DMEx.Producer.Plug`. The route is singular and
@@ -203,12 +203,13 @@ configuration, and it reaches the wedges a socket timeout structurally cannot
 see. See [the deployment guide](guides/deployment.md) for sizing and for the
 socket options that tighten it.
 
-**6. A wakeup is a hint, never a carrier of work.** `DMEx.Dispatcher` broadcasts
-a bare atom on `NOTIFY` or on a poll that saw the tip move; each stream reads
-from its own cursor to whatever is there now. Missing one costs latency (bounded
-by the poll interval) and never correctness, so there is no gap-versus-overlap
-reconciliation anywhere in the design. The poll is what makes dispatch robust,
-exactly as Oban's stager polls even with `LISTEN`/`NOTIFY` active.
+**6. A wakeup is a hint, never a carrier of work.** `DMEx.Producer.Dispatcher`
+broadcasts a bare atom on `NOTIFY` or on a poll that saw the tip move; each
+stream reads from its own cursor to whatever is there now. Missing one costs
+latency (bounded by the poll interval) and never correctness, so there is no
+gap-versus-overlap reconciliation anywhere in the design. The poll is what makes
+dispatch robust, exactly as Oban's stager polls even with `LISTEN`/`NOTIFY`
+active.
 
 **7. Dropping a connection is not a delivery event.** The producer holds no
 consumer state, the consumer's `last_seen` is durable, and resumption is the
@@ -257,9 +258,9 @@ each producer supervises.
 
 | module | role |
 | --- | --- |
-| `DMEx.Registry` | one entry per open stream, holding that connection's `DMEx.Producer.Status` — its wakeup flag and deadline. The entry dies with the request process, so nothing has to clean up. |
+| `DMEx.Producer.Registry` | one entry per open stream, holding that connection's `DMEx.Producer.Status` — its wakeup flag and deadline. The entry dies with the request process, so nothing has to clean up. |
 | `DMEx.Storage` children | whatever the adapter needs; Postgres puts its `LISTEN` connection here. |
-| `DMEx.Dispatcher` | holds `LISTEN`, runs the poll timer, broadcasts wakeups. |
+| `DMEx.Producer.Dispatcher` | holds `LISTEN`, runs the poll timer, broadcasts wakeups. |
 | `DMEx.Producer.Watcher` | sweeps deadlines and reclaims connections that stopped making progress. |
 
 None of them ever holds message data on a connection's behalf. The connections
@@ -268,8 +269,9 @@ themselves are web-server request processes running `DMEx.Producer.Stream`.
 **Consumer.** `DMEx.Consumer` supervises one `DMEx.Consumer.Stream` per
 subscription under a `DMEx.Consumer.Supervisor`, each owning one outbound
 connection, its queue, its adaptive controller and its cursor. Restart intensity
-is set never to trip: a poison message crash-loops on its own subscription, at
-a pace set by jittered backoff, and its siblings never notice.
+is set never to trip: a subscription that crash-loops — on a poison message
+under `on_failure: :crash`, or on a repo that is down — does so on its own, at a
+pace set by jittered backoff, and its siblings never notice.
 
 **Storage.** One `DMEx.Storage` behaviour covers both halves — the producer's
 log and the consumer's own `dmex_cursors` and `dmex_dead_messages` — rather than
@@ -374,10 +376,10 @@ it has established so far:
   end-to-end signing of raw payload bytes), or add an exact-bytes column?
 - **Retention / compaction** — logs grow forever. What operator-facing controls
   exist, and how do they interact with "arbitrarily replayable"?
-  `dmex_dead_messages` has the same question with a twist: it carries only the
-  original *publish* time, since storing when a message died would have meant
-  storing something about the failure, so age-since-death is not an available
-  axis to prune by.
+  `dmex_dead_messages` grows the same way and is the easier half: its
+  `inserted_at` is when a row landed there, so "abandoned more than N days ago"
+  is expressible. Whether DMEx should ship the pruning or leave it to a `DELETE`
+  is open.
 - **Whether the adaptive constants are right under real load.** The shape is
   settled and the numbers are in `DMEx.Config`, but they have only been
   exercised against a deliberately slow test handler.

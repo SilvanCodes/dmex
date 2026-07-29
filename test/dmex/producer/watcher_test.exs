@@ -16,7 +16,7 @@ defmodule DMEx.Producer.WatcherTest do
   end
 
   setup do
-    start_supervised!(DMEx.Registry.child_spec(Producer))
+    start_supervised!(DMEx.Producer.Registry.child_spec(Producer))
     start_supervised!({Watcher, producer: Producer})
 
     :ok
@@ -39,7 +39,7 @@ defmodule DMEx.Producer.WatcherTest do
       Process.sleep(100)
 
       assert Process.alive?(pid)
-      assert DMEx.Registry.count(Producer) == 1
+      assert DMEx.Producer.Registry.count(Producer) == 1
     end
 
     # The whole point of budgeting each step separately: a stream parked in its
@@ -88,7 +88,7 @@ defmodule DMEx.Producer.WatcherTest do
 
       pid =
         spawn(fn ->
-          {:ok, status} = DMEx.Registry.register(Producer, 20)
+          {:ok, status} = DMEx.Producer.Registry.register(Producer, 20)
           send(parent, :registered)
 
           SendLoop.loop(ClosingAdapter.conn(parent, 100, state: :chunked), state(opts, status))
@@ -120,7 +120,7 @@ defmodule DMEx.Producer.WatcherTest do
 
     pid =
       spawn(fn ->
-        {:ok, status} = DMEx.Registry.register(Producer, budget(budget))
+        {:ok, status} = DMEx.Producer.Registry.register(Producer, budget(budget))
         send(parent, :registered)
 
         block(status, budget)

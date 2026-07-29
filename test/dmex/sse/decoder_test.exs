@@ -2,8 +2,8 @@ defmodule DMEx.SSE.DecoderTest do
   use DMEx.Case, async: true
   use ExUnitProperties
 
-  alias DMEx.Frame
   alias DMEx.SSE.Decoder
+  alias DMEx.SSE.Frame
   alias DMEx.Test.Storage, as: Stub
 
   describe "whole frames" do

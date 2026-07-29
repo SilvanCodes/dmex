@@ -43,11 +43,12 @@ defmodule DMEx.Producer.Status do
 
   ## Both live in the connection's registry entry
 
-  The reference is created by `DMEx.Registry.register/2` and stored as the value
-  of that entry. The placement does the cleanup for free: the entry dies with the
-  request process, and the status with it. There is no table to own, no process
-  to own it, and no monitor watching for connections that died mid-stall — a
-  connection cannot outlive its own status, or the other way round.
+  The reference is created by `DMEx.Producer.Registry.register/2` and stored as
+  the value of that entry. The placement does the cleanup for free: the entry
+  dies with the request process, and the status with it. There is no table to
+  own, no process to own it, and no monitor watching for connections that died
+  mid-stall — a connection cannot outlive its own status, or the other way
+  round.
 
   The two slots are written by different processes — the dispatcher flips the
   flag, the stream arms its own deadline — and never contend: `:atomics`

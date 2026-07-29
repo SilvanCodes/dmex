@@ -1,10 +1,10 @@
-defmodule DMEx.Dispatcher do
+defmodule DMEx.Producer.Dispatcher do
   @moduledoc """
   Tells a producer's live streams that something was published.
 
   One per producer, started by that producer's supervisor. It does two things
   and nothing else: it holds the `LISTEN` connection, and it runs a poll timer.
-  On either signal it broadcasts a bare `:wakeup` across `DMEx.Registry`.
+  On either signal it broadcasts a bare `:wakeup` across `DMEx.Producer.Registry`.
 
   ## Belt and suspenders
 
@@ -183,7 +183,7 @@ defmodule DMEx.Dispatcher do
     # a queued wakeup is told nothing further, however long it stalls — which
     # is what bounds a stalled connection's mailbox at one wakeup rather than
     # at the publish rate times the stall duration.
-    DMEx.Registry.each(state.producer, fn pid, status ->
+    DMEx.Producer.Registry.each(state.producer, fn pid, status ->
       if Status.flip(status) do
         send(pid, :wakeup)
         :counters.add(woken, 1, 1)
@@ -192,7 +192,7 @@ defmodule DMEx.Dispatcher do
 
     :telemetry.execute(
       [:dmex, :dispatcher, :broadcast],
-      %{streams: DMEx.Registry.count(state.producer), woken: :counters.get(woken, 1)},
+      %{streams: DMEx.Producer.Registry.count(state.producer), woken: :counters.get(woken, 1)},
       %{producer: state.producer}
     )
 

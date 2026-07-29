@@ -79,14 +79,14 @@ defmodule DMEx.Consumer.Pipeline do
   @doc """
   Runs one row through the pipeline and returns the new cursor.
 
-  The row is a decoded log row from a `DMEx.Frame` — string-keyed, with `data`
+  The row is a decoded log row from a `DMEx.SSE.Frame` — string-keyed, with `data`
   and `metadata` already one level decoded.
 
-  Propagates whatever the handler raises. That is the `:crash` behaviour: the
-  stream process dies, its supervisor restarts it, it re-reads its persisted
-  cursor — still pointing at the message before this one, since that transaction
-  never committed — and the producer's ordinary range scan re-streams the same
-  message.
+  Propagates whatever the handler raises, once retries are exhausted and
+  `on_failure` says `:crash`: the stream process dies, its supervisor restarts
+  it, it re-reads its persisted cursor — still pointing at the message before
+  this one, since that transaction never committed — and the producer's ordinary
+  range scan re-streams the same message.
   """
   @spec run(map(), t()) :: {:ok, non_neg_integer()}
   def run(row, state) do
@@ -199,7 +199,7 @@ defmodule DMEx.Consumer.Pipeline do
   end
 
   defp advance!(state, id) do
-    :ok = state.storage.advance(state.storage_opts, state.subscription, id, state.url)
+    :ok = state.storage.advance(state.storage_opts, state.subscription, id)
   end
 
   @doc """

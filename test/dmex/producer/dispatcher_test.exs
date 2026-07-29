@@ -1,11 +1,11 @@
-defmodule DMEx.DispatcherTest do
+defmodule DMEx.Producer.DispatcherTest do
   # Not async: the sandbox has to be in shared mode so the dispatcher's own
   # process sees the rows this test writes.
   use DMEx.Case, async: false, database: true
 
-  alias DMEx.Dispatcher
+  alias DMEx.Producer.Dispatcher
+  alias DMEx.Producer.Registry, as: ProducerRegistry
   alias DMEx.Producer.Status
-  alias DMEx.Registry, as: DMExRegistry
   alias DMEx.Test.Messages.OrderPlaced
 
   # No notifier runs in this suite, so every dispatcher logs its documented
@@ -23,7 +23,7 @@ defmodule DMEx.DispatcherTest do
   end
 
   setup do
-    start_supervised!(DMExRegistry.child_spec(FastProducer))
+    start_supervised!(ProducerRegistry.child_spec(FastProducer))
 
     :ok
   end
@@ -34,7 +34,7 @@ defmodule DMEx.DispatcherTest do
     # real commits and lives in test/integration.
     test "wakes registered streams after a publish" do
       start_dispatcher()
-      {:ok, _status} = DMExRegistry.register(FastProducer, 5_000)
+      {:ok, _status} = ProducerRegistry.register(FastProducer, 5_000)
 
       {:ok, _} = FastProducer.publish(%OrderPlaced{order_id: 1})
 
@@ -46,14 +46,14 @@ defmodule DMEx.DispatcherTest do
     # completely idle log. The guard is that max(id) has to have moved.
     test "an idle log produces no wakeups at all" do
       start_dispatcher()
-      {:ok, _status} = DMExRegistry.register(FastProducer, 5_000)
+      {:ok, _status} = ProducerRegistry.register(FastProducer, 5_000)
 
       refute_receive :wakeup, @poll * 5
     end
 
     test "stops waking once the log stops moving" do
       start_dispatcher()
-      {:ok, _status} = DMExRegistry.register(FastProducer, 5_000)
+      {:ok, _status} = ProducerRegistry.register(FastProducer, 5_000)
 
       {:ok, _} = FastProducer.publish(%OrderPlaced{order_id: 1})
       assert_receive :wakeup, 1_000
@@ -69,14 +69,14 @@ defmodule DMEx.DispatcherTest do
       {:ok, _} = FastProducer.publish(%OrderPlaced{order_id: 1})
 
       start_dispatcher()
-      {:ok, _status} = DMExRegistry.register(FastProducer, 5_000)
+      {:ok, _status} = ProducerRegistry.register(FastProducer, 5_000)
 
       refute_receive :wakeup, @poll * 5
     end
 
     test "coalesces a burst into far fewer broadcasts than publishes" do
       start_dispatcher()
-      {:ok, _status} = DMExRegistry.register(FastProducer, 5_000)
+      {:ok, _status} = ProducerRegistry.register(FastProducer, 5_000)
 
       for n <- 1..20, do: {:ok, _} = FastProducer.publish(%OrderPlaced{order_id: n})
 
@@ -96,7 +96,7 @@ defmodule DMEx.DispatcherTest do
       pids =
         for _ <- 1..3 do
           spawn_link(fn ->
-            {:ok, _status} = DMExRegistry.register(FastProducer, 5_000)
+            {:ok, _status} = ProducerRegistry.register(FastProducer, 5_000)
             send(parent, {:registered, self()})
 
             receive do
@@ -119,7 +119,7 @@ defmodule DMEx.DispatcherTest do
     # registered process here never clears, which is exactly that situation.
     test "a connection that has not cleared its flag is told nothing further" do
       start_dispatcher()
-      {:ok, _status} = DMExRegistry.register(FastProducer, 5_000)
+      {:ok, _status} = ProducerRegistry.register(FastProducer, 5_000)
 
       for n <- 1..10 do
         {:ok, _} = FastProducer.publish(%OrderPlaced{order_id: n})
@@ -132,7 +132,7 @@ defmodule DMEx.DispatcherTest do
 
     test "clearing the flag re-arms the connection for the next publish" do
       start_dispatcher()
-      {:ok, status} = DMExRegistry.register(FastProducer, 5_000)
+      {:ok, status} = ProducerRegistry.register(FastProducer, 5_000)
 
       {:ok, _} = FastProducer.publish(%OrderPlaced{order_id: 1})
       assert_receive :wakeup, 1_000
@@ -150,7 +150,7 @@ defmodule DMEx.DispatcherTest do
       ref = :telemetry_test.attach_event_handlers(self(), [[:dmex, :dispatcher, :broadcast]])
 
       start_dispatcher()
-      {:ok, _status} = DMExRegistry.register(FastProducer, 5_000)
+      {:ok, _status} = ProducerRegistry.register(FastProducer, 5_000)
 
       {:ok, _} = FastProducer.publish(%OrderPlaced{order_id: 1})
 
@@ -167,7 +167,7 @@ defmodule DMEx.DispatcherTest do
     # the SQLite path, where no notification mechanism exists in the first place.
     test "runs polling-only when no notifier is reachable" do
       start_dispatcher()
-      {:ok, _status} = DMExRegistry.register(FastProducer, 5_000)
+      {:ok, _status} = ProducerRegistry.register(FastProducer, 5_000)
 
       {:ok, _} = FastProducer.publish(%OrderPlaced{order_id: 1})
 
@@ -180,7 +180,7 @@ defmodule DMEx.DispatcherTest do
     # correctness. That is what makes it safe to start one after connections
     # already exist.
     test "streams registered before the dispatcher starts still get woken" do
-      {:ok, _status} = DMExRegistry.register(FastProducer, 5_000)
+      {:ok, _status} = ProducerRegistry.register(FastProducer, 5_000)
 
       start_dispatcher()
 

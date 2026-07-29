@@ -5,9 +5,11 @@ defmodule DMEx.Consumer.Supervisor do
   ## Restart intensity is set never to trip, on purpose
 
   `on_failure: :crash` is specified to crash-loop on a poison message forever
-  rather than silently dropping it. A `DynamicSupervisor`'s default budget —
-  three restarts in five seconds — is blown by that in under a second, and when
-  it is, the *supervisor* dies and takes **every other subscription in the
+  rather than silently dropping it, and a subscription can also crash-loop for
+  reasons no failure mode covers — a repo that is down, a producer that answers
+  every connect with garbage. A `DynamicSupervisor`'s default budget — three
+  restarts in five seconds — is blown by either in under a second, and when it
+  is, the *supervisor* dies and takes **every other subscription in the
   application** with it, including healthy ones reading unrelated producers.
 
   So the budget here is effectively infinite, and the rate limiting that

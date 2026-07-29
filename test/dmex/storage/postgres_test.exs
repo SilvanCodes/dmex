@@ -5,8 +5,6 @@ defmodule DMEx.Storage.PostgresTest do
 
   alias DMEx.Storage.Postgres
 
-  @url "https://orders.internal/stream"
-
   # Declared subscription identifiers, the shape DMEx.Consumer.Handler renders.
   @some "orders/some"
   @one "orders/one"
@@ -61,7 +59,7 @@ defmodule DMEx.Storage.PostgresTest do
       assert length(rows) == 4
     end
 
-    test "returns every field DMEx.Frame needs, and nothing else", %{opts: opts} do
+    test "returns every field DMEx.SSE.Frame needs, and nothing else", %{opts: opts} do
       {:ok, id} = append(opts, "MyApp.Messages.OrderPlaced", %{order_id: 7})
 
       assert {:ok, {[row], _}} = Postgres.read(opts, id - 1, 1)
@@ -73,7 +71,7 @@ defmodule DMEx.Storage.PostgresTest do
       assert row.message_type == "MyApp.Messages.OrderPlaced"
     end
 
-    # This is the splice invariant. DMEx.Frame.encode_batch/2 copies these two
+    # This is the splice invariant. DMEx.SSE.Frame.encode_batch/2 copies these two
     # columns into the wire frame byte-for-byte without parsing them, so an
     # adapter that let its driver decode jsonb into a map would hand Frame a map
     # where it expects text and build a wrong frame.
@@ -184,22 +182,22 @@ defmodule DMEx.Storage.PostgresTest do
     end
 
     test "advance/4 sets the cursor and last_seen/2 reads it back", %{opts: opts} do
-      assert :ok = Postgres.advance(opts, @some, 42, @url)
+      assert :ok = Postgres.advance(opts, @some, 42)
 
       assert {:ok, 42} = Postgres.last_seen(opts, @some)
     end
 
     test "advance/4 upserts rather than duplicating", %{opts: opts} do
-      :ok = Postgres.advance(opts, @some, 42, @url)
-      :ok = Postgres.advance(opts, @some, 43, @url)
+      :ok = Postgres.advance(opts, @some, 42)
+      :ok = Postgres.advance(opts, @some, 43)
 
       assert {:ok, 43} = Postgres.last_seen(opts, @some)
       assert count(opts, "dmex_cursors") == 1
     end
 
     test "cursors are keyed per subscription", %{opts: opts} do
-      :ok = Postgres.advance(opts, @one, 10, @url)
-      :ok = Postgres.advance(opts, @two, 20, @url)
+      :ok = Postgres.advance(opts, @one, 10)
+      :ok = Postgres.advance(opts, @two, 20)
 
       assert {:ok, 10} = Postgres.last_seen(opts, @one)
       assert {:ok, 20} = Postgres.last_seen(opts, @two)
@@ -208,8 +206,8 @@ defmodule DMEx.Storage.PostgresTest do
     # Duplicate suppression happens in the pipeline, which is the authority, and
     # an operator resetting a cursor deliberately needs this to go both ways.
     test "advance/4 does not refuse to move backwards", %{opts: opts} do
-      :ok = Postgres.advance(opts, @some, 100, @url)
-      :ok = Postgres.advance(opts, @some, 5, @url)
+      :ok = Postgres.advance(opts, @some, 100)
+      :ok = Postgres.advance(opts, @some, 5)
 
       assert {:ok, 5} = Postgres.last_seen(opts, @some)
     end
@@ -217,7 +215,7 @@ defmodule DMEx.Storage.PostgresTest do
     test "stores the identifier verbatim, with no inspect/1 in the way", %{opts: opts} do
       # The id arrives as a string and goes straight into the query — there is
       # nothing left to render, and nothing that could ever be atomized back.
-      :ok = Postgres.advance(opts, @some, 1, @url)
+      :ok = Postgres.advance(opts, @some, 1)
 
       # inspect/1, not Atom.to_string/1: the stored key is the readable module
       # name an operator would recognise, and nothing ever converts it back.
@@ -266,18 +264,17 @@ defmodule DMEx.Storage.PostgresTest do
   end
 
   describe "dead_message/2" do
-    test "stores the log row verbatim, plus where it belongs", %{opts: opts} do
+    test "stores the log row verbatim, plus whose row it is", %{opts: opts} do
       assert :ok = Postgres.dead_message(opts, dead_attrs())
 
-      assert [[subscription, url, id, type, data, metadata, inserted_at]] =
+      assert [[subscription, id, type, data, metadata, inserted_at]] =
                raw(opts, """
-               SELECT subscription, producer_url, id, message_type,
+               SELECT subscription, id, message_type,
                       data::text, metadata::text, inserted_at
                  FROM dmex_dead_messages
                """)
 
       assert subscription == @some
-      assert url == @url
       assert id == 1042
       assert type == "MyApp.Messages.OrderPlaced"
       assert JSON.decode!(data) == %{"order_id" => 7}
@@ -365,7 +362,6 @@ defmodule DMEx.Storage.PostgresTest do
   defp dead_attrs(overrides \\ []) do
     %{
       subscription: Keyword.get(overrides, :subscription, @some),
-      producer_url: @url,
       id: Keyword.get(overrides, :id, 1042),
       message_type: "MyApp.Messages.OrderPlaced",
       data: ~s({"order_id":7}),

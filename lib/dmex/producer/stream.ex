@@ -50,8 +50,8 @@ defmodule DMEx.Producer.Stream do
   read it was going to issue anyway.
   """
 
-  alias DMEx.Frame
   alias DMEx.Producer.Status
+  alias DMEx.SSE.Frame
 
   require Logger
 
