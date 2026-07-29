@@ -96,7 +96,7 @@ defmodule DMEx.MixProject do
       main: "DMEx",
       source_url: @source_url,
       source_ref: "v#{@version}",
-      extras: ["README.md", "guides/deployment.md", "ARCHITECTURE.md"]
+      extras: ["README.md", "guides/deployment.md", "ARCHITECTURE.md", "ROADMAP.md"]
     ]
   end
 end

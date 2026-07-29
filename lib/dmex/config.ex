@@ -57,12 +57,16 @@ defmodule DMEx.Config do
 
   ## Where these numbers came from
 
-  `ARCHITECTURE.md` specifies the *mechanisms* completely and left every
-  constant as an open question. The values above are this implementation's
-  answers; each row's "why" is the reasoning, and any of them can be overridden
-  per producer or per subscription. Two are not in the document at all and were
-  added because their absence is a hole rather than a default:
-  `batch_window_ceiling` (above) and `max_batch_size_floor`.
+  The design fixes the *mechanisms* and leaves every constant to be chosen. The
+  values above are those choices; each row's "why" is the reasoning, and any of
+  them can be overridden per producer or per subscription. Two exist only
+  because their absence was a hole rather than a default: `batch_window_ceiling`
+  (an unbounded window would let a consumer push its own liveness deadline past
+  every proxy idle timeout) and `max_batch_size_floor` (the adaptive law must
+  always have something legal to converge to).
+
+  Whether they are right *under real load* is still open — most have only been
+  exercised against benchmarks and a deliberately slow test handler.
   """
 
   alias DMEx.Config.Consumer

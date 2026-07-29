@@ -1,15 +1,13 @@
 # DMEx — Roadmap
 
 > Status: design direction, not shipped behaviour. Everything in this document
-> is deliberately **not in v1**. It is recorded so the v1 decisions in
-> [ARCHITECTURE.md](ARCHITECTURE.md) stay compatible with it and so the
-> reasoning isn't rediscovered later. ARCHITECTURE.md remains the spec of
-> record for what DMEx actually does; this file is the spec of intent for what
-> it is expected to grow.
+> is deliberately **not in v1**. It is recorded so the decisions already made
+> stay compatible with it and so the reasoning isn't rediscovered later. The
+> code is what DMEx does and [ARCHITECTURE.md](ARCHITECTURE.md) is the map of
+> it; this file is the spec of intent for what it is expected to grow.
 
-Three things are planned. The first two share a route namespace rather than a
-mechanism; the third shares neither and is about how much a producer will
-serve rather than what:
+Four things are planned. The first two share a route namespace rather than a
+mechanism; the other two share neither:
 
 - **[Message-Type Selection](#message-type-selection)** — server-side selective
   delivery, so a consumer receives the part of a producer's log it can actually
@@ -20,6 +18,8 @@ serve rather than what:
 - **[Global Resource Limits](#global-resource-limits)** — an aggregate
   connection budget and admission control, seated on the watcher that already
   runs per producer.
+- **[Compression](#compression)** — `Content-Encoding: gzip` on the stream,
+  producer-side opt-in with explicitly-sized zlib parameters.
 
 ## Message-Type Selection
 
@@ -27,17 +27,17 @@ Server-side selective delivery — a consumer receiving part of a producer's log
 rather than all of it — is a real requirement, and this is the shape it is
 expected to take. **None of it is in v1.** v1 streams whole logs and filters
 consumer-side (see
-[Consuming API](ARCHITECTURE.md#consuming-api)).
+[the invariants](ARCHITECTURE.md#the-invariants)).
 
-**There are no topics** — not as a column (see
-[Message log](ARCHITECTURE.md#message-log)), and not as a separate named
-mechanic either. A topic is a name standing for a set of message types, and a
-name is a second vocabulary somebody has to define, publish, version, discover,
-and keep in sync with the types it names. Every one of those costs is paid to
-describe something the consumer has already said.
+**It introduces no grouping vocabulary of its own** — nothing stamped on the log
+(see [The log](ARCHITECTURE.md#the-log)) and no named mechanic beside it. A name
+standing for a set of message types is a second vocabulary somebody has to
+define, publish, version, discover, and keep in sync with the types it stands
+for, and every one of those costs is paid to describe something the consumer has
+already said.
 
 Because it has. A subscription already has a message list — the modules it can
-decode (see [Message Specifications](ARCHITECTURE.md#message-specifications)),
+decode (see [The log](ARCHITECTURE.md#the-log)),
 derived at compile time from the structs its `handle_message/2` clauses match
 on — and it is not optional: without it a consumer cannot turn a `message_type`
 back into a struct at all. **That list is the selection**, and nobody wrote it
@@ -65,7 +65,7 @@ new is declared anywhere, by anyone.
   changing under a running consumer.
 - **The producer stays stateless about consumers.** The selection travels on
   the request, per connection, and nothing about it is stored. The
-  ["producer holds nothing"](ARCHITECTURE.md#consumer) property survives intact
+  ["producer holds nothing"](ARCHITECTURE.md#overview) property survives intact
   — a producer-side registry of named groupings would have been the first thing
   to chip at it.
 
@@ -107,7 +107,7 @@ The error direction is what makes any of this acceptable: **no false
 negatives**, so every type the consumer selected is delivered, and a false
 positive only costs an unwanted row crossing the wire to be dropped by the
 skip path v1 already specifies (see
-[Consuming API](ARCHITECTURE.md#consuming-api)).
+[the invariants](ARCHITECTURE.md#the-invariants)).
 
 **Sizing is not about bandwidth percentages, and this is the subtle part.**
 Membership is tested on the *type string*, not per row, so a false positive
@@ -122,7 +122,7 @@ the cost of going to 16-bit fingerprints is 1.23 extra bytes per selected type
 consumers that know their producer's traffic shape.
 
 **Why the URL, and why the rule in
-[Transport](ARCHITECTURE.md#transport-sse-over-http) survives unamended.** That
+[The wire contract](ARCHITECTURE.md#the-wire-contract) survives unamended.** That
 rule puts what a subscription *is* in the URL and how it is *paced* in headers.
 A type selector is identity, so it lands in the URL — and two things make that
 the right answer rather than merely the consistent one:
@@ -138,7 +138,7 @@ the right answer rather than merely the consistent one:
   changes, and that is what separates the two cases: an adaptive consumer
   re-negotiates `batch_window`/`max_batch_size` repeatedly *within* one
   subscription's lifetime (see
-  [Backpressure & adaptive batching](ARCHITECTURE.md#backpressure--adaptive-batching)),
+  [the invariants](ARCHITECTURE.md#the-invariants)),
   so those in a URL would mint new URLs continuously, while the message list
   changes when somebody edits code and ships it. One URL per deployment is
   precisely the stable grouping the rule is protecting.
@@ -154,7 +154,7 @@ is the narrower question of which half of the URL, and four things decide it:
   taken to its conclusion rather than stopped one step short.
 - **It needs no routing change.** The v1 mount is already a prefix forward —
   `forward "/stream", to: DMEx.Producer.Plug` (see
-  [Transport](ARCHITECTURE.md#transport-sse-over-http)) — which matches the
+  [The wire contract](ARCHITECTURE.md#the-wire-contract)) — which matches the
   prefix and hands the remaining segments to the plug, so `/stream/<blob>` is
   routable by the same one-line mount that already exists, in Phoenix,
   `Plug.Router` and a bare Bandit/Cowboy pipeline alike. The plug reads
@@ -223,7 +223,7 @@ viable.
 
 **What a browser still cannot do is pace itself.** `DMEx-Batch-Window` and
 `DMEx-Max-Batch-Size` remain headers, so an `EventSource` takes the producer's
-defaults (see [Transport](ARCHITECTURE.md#transport-sse-over-http)). That
+defaults (see [The wire contract](ARCHITECTURE.md#the-wire-contract)). That
 asymmetry is the rule working rather than an inconsistency in it: pacing is a
 tuning knob whose defaults have to be sane anyway, while selection decides what
 crosses the wire at all, and a client with no way to express it pays for that
@@ -258,13 +258,13 @@ work is meant to protect:
 - **Read path** — the loop's query grows one predicate
   (`WHERE message_type = ANY($1) AND id > $2`), which brings back both the
   composite-index requirement (`(message_type, id)`) and the sparse-cursor
-  question retired in [Producer side](ARCHITECTURE.md#producer-side).
+  question retired in [the invariants](ARCHITECTURE.md#the-invariants).
 - **Wakeups** — the routing key is the published row's own `message_type`, and
   connections register under the types they selected. That is *exact*: a
   publish wakes precisely the connections that asked for that type, with no
   intermediate grouping to be approximate about it. This is the
   read-amplification lever described in
-  [Wakeup fan-out](ARCHITECTURE.md#wakeup-fan-out).
+  [the invariants](ARCHITECTURE.md#the-invariants).
 - **Producer-side validation** — there is none, deliberately. A consumer may
   legitimately name a type the producer has never published (a consumer
   deployed ahead of the producer that will emit it), so the filter is resolved
@@ -272,10 +272,10 @@ work is meant to protect:
   rejecting a filter that matches nothing, and emphatically no atomizing of
   any consumer-supplied string, which is the same unbounded-atom-table risk the
   consumer side already refuses to take (see
-  [Message Specifications](ARCHITECTURE.md#message-specifications)). A name
+  [The log](ARCHITECTURE.md#the-log)). A name
   that matches nothing simply matches nothing.
 - **Consumer** — the skip path in
-  [Consuming API](ARCHITECTURE.md#consuming-api) becomes a defence rather than
+  [the invariants](ARCHITECTURE.md#the-invariants) becomes a defence rather than
   the normal case. A selective stream should only ever carry decodable types,
   so an unknown one now indicates a real mismatch and is worth surfacing rather
   than quietly dropping.
@@ -301,7 +301,7 @@ work is meant to protect:
   over the producer's own compiled message modules has no such gap — that set
   changes only when the producer deploys, and a deploy takes down the web
   server and with it every SSE connection, since the request process *is* the
-  stream (see [Producer side](ARCHITECTURE.md#producer-side)). Every affected
+  stream (see [the invariants](ARCHITECTURE.md#the-invariants)). Every affected
   consumer reconnects and re-expands against the new set, so the repair is
   forced by the same property that makes producer restarts uneventful, with no
   re-expansion machinery to build or get wrong.
@@ -318,7 +318,7 @@ work is meant to protect:
   The one residue is a rolling multi-node deploy, where a connection pinned to
   a node running old code outlives a node running new code that has begun
   publishing the new type. That belongs to the existing cross-node clustering
-  question (see [Open Questions](ARCHITECTURE.md#open-questions)), not to this
+  question (see [Open questions](ARCHITECTURE.md#open-questions)), not to this
   one.
 - **Wakeup routing.** With expansion, routing works exactly as it would for an
   explicit list of types. Without it, the `Dispatcher` must test every
@@ -328,7 +328,7 @@ work is meant to protect:
 - **Whether the producer echoes the resolved type list.** If it expands, it
   already knows exactly which types tested positive, so it can echo them on
   the `200` the same way it echoes the pacing values it actually applied (see
-  [Transport](ARCHITECTURE.md#transport-sse-over-http)). That would hand back
+  [The wire contract](ARCHITECTURE.md#the-wire-contract)). That would hand back
   the observability an opaque filter destroys — an explicit list says what a
   subscription is at a glance in a proxy log, and a base64 blob says nothing
   and cannot be reversed. With an echo a consumer can see its own subscription
@@ -405,7 +405,7 @@ GET /stream/stats
 
 `max_id` at the top level is the log's own latest id — the same number that
 already rides in every frame's `data.metadata` (see
-[Message Envelope](ARCHITECTURE.md#message-envelope)), repeated here so a
+[The wire contract](ARCHITECTURE.md#the-wire-contract)), repeated here so a
 single request answers "how big is this log" as well as "what is in it".
 `message_types` is sorted by `message_type`, so two fetches of an unchanged
 log compare cleanly.
@@ -433,12 +433,12 @@ reading the whole log, and one endpoint answers all of them:
   build a filter at all, and today it learns them out-of-band or not at all.
   Stats is the smallest thing that makes a DMEx producer self-describing, and
   it stops well short of the full schema endpoint discussed under
-  [Open Questions](ARCHITECTURE.md#open-questions) — it says what types exist
+  [Open questions](ARCHITECTURE.md#open-questions) — it says what types exist
   and where they live, never what fields they have.
 - **Whether `start: :latest` is about to skip something.** An operator pointing
   a new consumer at a producer can see how much history exists per type before
   deciding between `:beginning`, `:latest`, and an explicit id (see
-  [Consuming API](ARCHITECTURE.md#consuming-api)).
+  [the invariants](ARCHITECTURE.md#the-invariants)).
 
 **What it is not.** Three limits, and the first is load-bearing:
 
@@ -464,7 +464,7 @@ reading the whole log, and one endpoint answers all of them:
 **Cost, and why it needs deciding rather than assuming.** The query is
 `SELECT message_type, min(id), max(id) FROM dmex_messages GROUP BY
 message_type`. In v1's schema **the primary key is the only index** (see
-[Message log](ARCHITECTURE.md#message-log)), so that is a sequential scan of
+[The log](ARCHITECTURE.md#the-log)), so that is a sequential scan of
 the entire log — on a log big enough to make the endpoint interesting, the most
 expensive query DMEx would issue anywhere, against the same database taking the
 producer's writes. Two things change that, and they are the same two:
@@ -504,7 +504,7 @@ full scan.
   publishing this?"), which is what a human actually wants when choosing a
   rewind point. The counter-argument is that `inserted_at` is explicitly
   observability-only and never an ordering key (see
-  [Message log](ARCHITECTURE.md#message-log)), and putting it in an endpoint
+  [The log](ARCHITECTURE.md#the-log)), and putting it in an endpoint
   whose output feeds cursor decisions invites exactly the confusion that rule
   exists to prevent. If it lands, the ids must stay the operative values and
   the timestamps be plainly labelled as descriptive.
@@ -527,7 +527,7 @@ full scan.
 v1 defends a producer **per connection** and not at all in aggregate. The send
 loop makes unbounded memory growth unrepresentable, and `DMEx.Producer.Watcher`
 reclaims any connection that stops making progress (see
-[Stalled connections](ARCHITECTURE.md#stalled-connections)). What neither
+[the invariants](ARCHITECTURE.md#the-invariants)). What neither
 touches is many individually-healthy connections adding up to more than the
 host application can afford — and the corollary, that a producer under that
 pressure has no way to say no.
@@ -548,7 +548,7 @@ registering. Nothing about v1 has to move to make room.
   free to maintain, and immediately actionable.
 - **`Retry-After` must be jittered per response**, for the same reason
   reconnect backoff is (see
-  [Transport](ARCHITECTURE.md#transport-sse-over-http)). A single advertised
+  [The wire contract](ARCHITECTURE.md#the-wire-contract)). A single advertised
   delay applied literally by every rejected consumer converts a load spike into
   a synchronized retry storm, which is precisely what admission control is
   supposed to prevent.
@@ -568,7 +568,7 @@ registering. Nothing about v1 has to move to make room.
 **Dropping a connection is not a delivery event.** The producer holds no
 consumer state, `last_seen` is durable on the consumer, and resumption is the
 same `id > last_seen` read a cold connect does (see
-[Stalled connections](ARCHITECTURE.md#stalled-connections)). That is what makes
+[the invariants](ARCHITECTURE.md#the-invariants)). That is what makes
 shedding a capacity decision rather than a correctness one, and it is why this
 can be added later without revisiting anything about delivery semantics.
 
@@ -593,3 +593,57 @@ can be added later without revisiting anything about delivery semantics.
   registry count is most of a utilization signal already; whether that wants
   its own periodic telemetry event from the watcher's sweep is a small decision
   worth making deliberately.
+
+## Compression
+
+Designed, not implemented. It is orthogonal to everything else and its cost is
+paid in the same currency as the producer's memory bound, so it lands as its own
+stage rather than riding along with something else.
+
+Negotiated the ordinary HTTP way — the consumer sends `Accept-Encoding: gzip`,
+the producer answers with `Content-Encoding: gzip` and compresses the chunk
+stream. A browser `EventSource` gets it for free, which is notable given how
+little else it can negotiate.
+
+It pays unusually well here, and **batching is why**: a frame holds up to
+`max_batch_size` rows with identical key names, a small set of repeating
+`message_type` strings and near-identical timestamps, so the redundancy is
+*within* the frame and available to the compressor immediately rather than
+depending on cross-frame dictionary state.
+
+Three things have to be got right, and the third decides the default:
+
+- **It must flush per frame.** Left to itself, deflate buffers until it has a
+  block worth emitting, which would hold a frame on the wire until the *next*
+  frame pushed it out — unbounded added latency on a quiet stream, and a
+  heartbeat arriving only once it is no longer needed, which is precisely the
+  failure heartbeats exist to prevent. Every `chunk/2` must end in a sync flush.
+  If the web server compresses automatically, that behaviour has to be verified
+  rather than assumed; if it does not flush per chunk, DMEx compresses itself.
+- **Flushing costs ratio, and that is the trade.** A sync flush ends the block
+  and emits a few bytes of overhead, and small frames compress worse than large
+  ones — so a consumer that has adapted down to tiny batches also gets worse
+  compression. The two degrade together, which is the right direction but worth
+  knowing.
+- **Per-connection compressor state is the catch**, and it lands squarely on the
+  property the producer's send loop was built to have. A zlib deflate stream at
+  defaults (`windowBits` 15, `memLevel` 8) holds on the order of 256 KB for the
+  connection's whole life; at a thousand connections that is ~256 MB, dwarfing
+  "memory per connection is one frame" and quietly reintroducing the
+  unbounded-growth class of failure that property exists to exclude.
+
+So compression would be **producer-side opt-in with explicitly-sized zlib
+parameters** — `windowBits` 12 / `memLevel` 4, about 32 KB per connection — and
+the frame byte cap measured *before* compression, which is simpler and bounds
+the producer's own buffers. The consumer carries an inflate stream too, but one
+per subscription rather than one per connection served, so it is not the same
+question.
+
+Worth recording rather than resolving: compressing a response that mixes
+attacker-influenced content with content the attacker should not learn leaks
+through length (the BREACH/CRIME family). The setting here is unlike the classic
+one — no per-request reflection, no secret to extract token by token — and it
+requires an adversary who can both publish into a producer's log and observe the
+sizes of someone else's stream. That is a question about who may publish and who
+may read, and it belongs with
+[auth](ARCHITECTURE.md#open-questions).

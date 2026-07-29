@@ -1,9 +1,9 @@
 # What does the append lock actually cost?
 #
-# `ARCHITECTURE.md` records this as an open question with no number in it:
-# per-app advisory-locked appends make the reader cursor sound but serialize
+# Per-app advisory-locked appends make the reader cursor sound but serialize
 # every publish in the application. "What publish throughput does that actually
-# cap out at" is the question, and this is the measurement.
+# cap out at" was the open question, and this is the measurement behind the
+# figures `ARCHITECTURE.md` now quotes.
 #
 # Read it two ways:
 #

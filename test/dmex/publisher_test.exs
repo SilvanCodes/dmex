@@ -103,8 +103,8 @@ defmodule DMEx.PublisherTest do
     end
 
     test "an unknown option is rejected rather than ignored" do
-      assert_raise ArgumentError, ~r/unknown publish option\(s\): \[:topic\]/, fn ->
-        Publisher.publish(Producer, %OrderPlaced{order_id: 7}, topic: "orders")
+      assert_raise ArgumentError, ~r/unknown publish option\(s\): \[:priority\]/, fn ->
+        Publisher.publish(Producer, %OrderPlaced{order_id: 7}, priority: :high)
       end
     end
   end

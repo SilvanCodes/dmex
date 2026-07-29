@@ -40,9 +40,9 @@ defmodule DMEx.Migration.Postgres do
       # consumer cursor in the network is denominated in this column.
       add(:id, :bigserial, primary_key: true)
 
-      # The only classification a row carries. It describes what the message
-      # *is*, never who might want to read it — which is why there is no topic
-      # column here and never will be.
+      # The only classification a row carries, and the only one it ever will:
+      # it describes what the message *is*, never who might want to read it.
+      # Who wants what is resolved at read time, by the reader.
       add(:message_type, :text, null: false)
 
       # jsonb so operators can query inside payloads directly. The accepted cost
