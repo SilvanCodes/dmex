@@ -15,7 +15,9 @@ defmodule DMEx.Config.Producer do
             max_batch_size_ceiling: 5_000,
             heartbeat_ms: 15_000,
             poll_interval: 1_000,
-            frame_max_bytes: 1_048_576
+            frame_max_bytes: 1_048_576,
+            stall_timeout: 30_000,
+            stall_check_interval: 1_000
 
   @type t :: %__MODULE__{
           batch_window: pos_integer(),
@@ -26,6 +28,8 @@ defmodule DMEx.Config.Producer do
           max_batch_size_ceiling: pos_integer(),
           heartbeat_ms: pos_integer(),
           poll_interval: pos_integer(),
-          frame_max_bytes: pos_integer()
+          frame_max_bytes: pos_integer(),
+          stall_timeout: pos_integer() | :infinity,
+          stall_check_interval: pos_integer()
         }
 end

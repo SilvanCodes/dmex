@@ -7,8 +7,9 @@
 > record for what DMEx actually does; this file is the spec of intent for what
 > it is expected to grow.
 
-Two things are planned, and they share a route namespace rather than a
-mechanism:
+Three things are planned. The first two share a route namespace rather than a
+mechanism; the third shares neither and is about how much a producer will
+serve rather than what:
 
 - **[Message-Type Selection](#message-type-selection)** — server-side selective
   delivery, so a consumer receives the part of a producer's log it can actually
@@ -16,6 +17,9 @@ mechanism:
 - **[Stream Stats](#stream-stats-get-streamstats)** — `GET /stream/stats`, a
   plain JSON description of the message types a log actually contains and the
   id range each one spans.
+- **[Global Resource Limits](#global-resource-limits)** — an aggregate
+  connection budget and admission control, seated on the watcher that already
+  runs per producer.
 
 ## Message-Type Selection
 
@@ -517,3 +521,75 @@ full scan.
   say so — `Cache-Control: max-age=<ttl>`, an `ETag` over the payload, or
   nothing at all and the caching stays a private detail? An `ETag` is cheap
   here and makes polling by tooling nearly free.
+
+## Global Resource Limits
+
+v1 defends a producer **per connection** and not at all in aggregate. The send
+loop makes unbounded memory growth unrepresentable, and `DMEx.Producer.Watcher`
+reclaims any connection that stops making progress (see
+[Stalled connections](ARCHITECTURE.md#stalled-connections)). What neither
+touches is many individually-healthy connections adding up to more than the
+host application can afford — and the corollary, that a producer under that
+pressure has no way to say no.
+
+The reason this is a roadmap entry rather than a new design is that the seat
+for it already exists. The watcher runs one process per producer, sweeps the
+live set on an interval, and holds every connection's deadline. A budget is a
+counter and a policy on a process that is already there; `DMEx.Producer.Plug`
+is already the single place a connect attempt passes through before
+registering. Nothing about v1 has to move to make room.
+
+### What would land
+
+- **A connection budget.** `max_streams` per producer, checked at connect. The
+  plug asks the watcher for admission before registering; over budget, the
+  answer is a `503` with a `Retry-After` rather than a stream. This is the
+  first thing to build, because a count is the one aggregate that is exact,
+  free to maintain, and immediately actionable.
+- **`Retry-After` must be jittered per response**, for the same reason
+  reconnect backoff is (see
+  [Transport](ARCHITECTURE.md#transport-sse-over-http)). A single advertised
+  delay applied literally by every rejected consumer converts a load spike into
+  a synchronized retry storm, which is precisely what admission control is
+  supposed to prevent.
+- **An aggregate budget beyond count.** Bytes in flight is the honest quantity
+  — frames are capped per connection, so `open × frame_max_bytes` is already a
+  bound, and a budget denominated the same way composes with it. Summing
+  process memory per sweep is the tempting alternative and probably too coarse
+  and too expensive to be worth it.
+- **A shedding policy.** Once there is a budget there has to be an answer to
+  "which connection goes", and the watcher can rank by deadline because it
+  already holds every one — the connection closest to its budget is the one
+  least likely to be doing useful work. Oldest-first and slowest-first are the
+  other candidates.
+
+### What stays true regardless
+
+**Dropping a connection is not a delivery event.** The producer holds no
+consumer state, `last_seen` is durable on the consumer, and resumption is the
+same `id > last_seen` read a cold connect does (see
+[Stalled connections](ARCHITECTURE.md#stalled-connections)). That is what makes
+shedding a capacity decision rather than a correctness one, and it is why this
+can be added later without revisiting anything about delivery semantics.
+
+### Open, if and when it lands
+
+- **Whether admission is per producer or per host.** The budget that actually
+  matters is the application's, and one application may mount several
+  producers. A per-producer cap is the natural fit for where the watcher sits
+  and the wrong denominator for what is being protected.
+- **What a rejected consumer does with a `503`.** DMEx's own client should back
+  off and retry, which is what it already does for any failed connect — but a
+  producer at capacity and a producer that is down are different situations,
+  and it is worth deciding whether the client distinguishes them (a rejection
+  is cheap and instant; a dead producer is neither).
+- **Whether shedding is worth having at all next to admission.** Refusing new
+  connections is simple, predictable, and never surprises an established
+  consumer. Shedding an existing one is a strictly harsher action taken against
+  a client that did nothing wrong, and it may be that a budget enforced only at
+  the door is the whole of what a producer should do.
+- **How an operator sees the ceiling coming.** A budget that is only observable
+  by being hit is a bad budget. `[:dmex, :stream, :connect]` plus a live
+  registry count is most of a utilization signal already; whether that wants
+  its own periodic telemetry event from the watcher's sweep is a small decision
+  worth making deliberately.

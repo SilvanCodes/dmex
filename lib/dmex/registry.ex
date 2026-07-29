@@ -4,7 +4,7 @@ defmodule DMEx.Registry do
 
   One `Registry` per producer, holding one duplicate-key entry per open SSE
   connection. `DMEx.Dispatcher` broadcasts a bare `:wakeup` across it; nothing
-  else is ever sent, and nothing is ever stored against an entry.
+  else is ever sent.
 
   That emptiness is the point. A wakeup is a hint that work may exist, never a
   carrier of work — each stream reads from its own cursor to whatever is there
@@ -12,13 +12,19 @@ defmodule DMEx.Registry do
   means this registry holds no message data on any connection's behalf, which is
   what keeps the one shared per-app process out of the memory story entirely.
 
+  What an entry *does* carry is the connection's `DMEx.Producer.Status`: its
+  wakeup flag and its deadline, two machine words the dispatcher and
+  `DMEx.Producer.Watcher` read without ever messaging the stream process — which
+  matters most exactly when that process is wedged and would not answer.
+
   Entries are registered by the **request process itself**, because on the
   producer side the request *is* the stream. When the connection dies, the
-  process dies, and the registry entry goes with it — there is nothing to clean
-  up and no way for a stale entry to survive its connection.
+  process dies, and the registry entry goes with it — taking the status with it,
+  so there is nothing to clean up and no way for a stale entry or a stale
+  deadline to survive its connection.
   """
 
-  alias DMEx.Producer.Pending
+  alias DMEx.Producer.Status
 
   @key :streams
 
@@ -36,23 +42,24 @@ defmodule DMEx.Registry do
   end
 
   @doc """
-  Registers the calling process to receive this producer's wakeups.
+  Registers the calling process as one of this producer's streams.
 
   Called by the request process serving an SSE connection, before its first
   read — so a publish landing between registration and that read is picked up by
-  the read itself rather than being missed.
+  the read itself rather than being missed — and before its first *write*, so
+  the watcher covers the connect path too.
 
-  Returns the connection's wakeup flag (see `DMEx.Producer.Pending`), which is
-  stored as the entry's value. Keeping it there rather than in a table of its
-  own is what makes cleanup free: the entry dies with this process, and the flag
-  with it.
+  Returns the connection's status (see `DMEx.Producer.Status`), armed for
+  `budget` ms and stored as the entry's value. Keeping it there rather than in a
+  table of its own is what makes cleanup free: the entry dies with this process,
+  and the status with it.
   """
-  @spec register(module()) :: {:ok, Pending.t()} | {:error, term()}
-  def register(producer) when is_atom(producer) do
-    pending = Pending.new()
+  @spec register(module(), Status.budget()) :: {:ok, Status.t()} | {:error, term()}
+  def register(producer, budget) when is_atom(producer) do
+    status = Status.new(budget)
 
-    case Registry.register(name(producer), @key, pending) do
-      {:ok, _owner} -> {:ok, pending}
+    case Registry.register(name(producer), @key, status) do
+      {:ok, _owner} -> {:ok, status}
       {:error, reason} -> {:error, reason}
     end
   end
@@ -65,20 +72,21 @@ defmodule DMEx.Registry do
   """
   @spec broadcast(module(), term()) :: :ok
   def broadcast(producer, message) when is_atom(producer) do
-    each(producer, fn pid, _pending -> send(pid, message) end)
+    each(producer, fn pid, _status -> send(pid, message) end)
   end
 
   @doc """
-  Runs `fun` for every registered stream, with its pid and its wakeup flag.
+  Runs `fun` for every registered stream, with its pid and its status.
 
   The dispatcher uses this rather than `broadcast/2` so it can decide per
-  connection whether a wakeup is worth sending — see `DMEx.Producer.Pending`.
-  `fun` runs in the calling process and must not block.
+  connection whether a wakeup is worth sending, and `DMEx.Producer.Watcher` uses
+  it to read every connection's deadline — see `DMEx.Producer.Status`. `fun` runs
+  in the calling process and must not block.
   """
-  @spec each(module(), (pid(), Pending.t() -> any())) :: :ok
+  @spec each(module(), (pid(), Status.t() -> any())) :: :ok
   def each(producer, fun) when is_atom(producer) and is_function(fun, 2) do
     Registry.dispatch(name(producer), @key, fn entries ->
-      Enum.each(entries, fn {pid, pending} -> fun.(pid, pending) end)
+      Enum.each(entries, fn {pid, status} -> fun.(pid, status) end)
     end)
   end
 

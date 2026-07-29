@@ -6,8 +6,9 @@ defmodule DMEx.Integration.HeartbeatTest do
   nothing for as long as nobody publishes — potentially hours. Heartbeats do
   three jobs: they stop idle-connection timeouts in intermediaries from killing
   a healthy stream, they let a consumer tell "nothing new to send" from
-  "connection is dead but the socket never closed", and they give TCP keepalive
-  something to work against on an otherwise silent connection.
+  "connection is dead but the socket never closed", and they keep unacked data
+  on the wire, which is what bounds how long a peer that vanished without a FIN
+  can go unnoticed — the one stall the producer's watcher cannot see.
   """
 
   use DMEx.IntegrationCase

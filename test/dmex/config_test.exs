@@ -16,7 +16,9 @@ defmodule DMEx.ConfigTest do
                max_batch_size_ceiling: 5_000,
                heartbeat_ms: 15_000,
                poll_interval: 1_000,
-               frame_max_bytes: 1_048_576
+               frame_max_bytes: 1_048_576,
+               stall_timeout: 30_000,
+               stall_check_interval: 1_000
              } = Config.producer!([])
     end
 
@@ -46,6 +48,26 @@ defmodule DMEx.ConfigTest do
 
       assert_raise ArgumentError, ~r/:heartbeat_ms must be a positive integer/, fn ->
         Config.producer!(heartbeat_ms: -1)
+      end
+
+      assert_raise ArgumentError, ~r/:stall_check_interval must be a positive integer/, fn ->
+        Config.producer!(stall_check_interval: 0)
+      end
+    end
+
+    # The one setting that may be switched off rather than tuned, since a
+    # producer whose streams legitimately block for longer than any budget worth
+    # naming would rather have no watcher than a wrong one.
+    test "takes :infinity for the stall timeout, and nothing else non-integer" do
+      assert Config.producer!(stall_timeout: :infinity).stall_timeout == :infinity
+      assert Config.producer!(stall_timeout: 1).stall_timeout == 1
+
+      for value <- [0, -1, :never, "30000"] do
+        assert_raise ArgumentError,
+                     ~r/:stall_timeout must be a positive integer or :infinity/,
+                     fn ->
+                       Config.producer!(stall_timeout: value)
+                     end
       end
     end
 

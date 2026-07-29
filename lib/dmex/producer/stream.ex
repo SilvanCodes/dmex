@@ -30,6 +30,16 @@ defmodule DMEx.Producer.Stream do
       may exist, never a carrier of work. Missing one costs latency and never
       correctness, so there is no gap-versus-overlap reconciliation anywhere.
 
+  ## Every blocking step is taken under a deadline
+
+  What the loop cannot do is reclaim itself: a process blocked in `chunk/2`
+  cannot time itself out, because it is not running. So before each step that can
+  block — the read, either write, the idle wait, the throttle — it arms a
+  deadline in its `DMEx.Producer.Status`, and `DMEx.Producer.Watcher` kills it if
+  the step does not clear in time. Each budget is `stall_timeout` plus however
+  long that particular step is *expected* to take, so a wait that is doing its
+  job is never mistaken for one that is stuck.
+
   ## Pacing
 
   `batch_window` is a hard floor on frame *rate*; `max_batch_size` is a hard cap
@@ -41,7 +51,7 @@ defmodule DMEx.Producer.Stream do
   """
 
   alias DMEx.Frame
-  alias DMEx.Producer.Pending
+  alias DMEx.Producer.Status
 
   require Logger
 
@@ -55,8 +65,9 @@ defmodule DMEx.Producer.Stream do
           required(:max_batch_size) => pos_integer(),
           required(:heartbeat_ms) => pos_integer(),
           required(:frame_max_bytes) => pos_integer(),
+          required(:stall_timeout) => Status.budget(),
           required(:last_sent_at) => integer() | nil,
-          required(:pending) => DMEx.Producer.Pending.t() | nil
+          required(:status) => Status.t() | nil
         }
 
   @doc """
@@ -74,7 +85,7 @@ defmodule DMEx.Producer.Stream do
     # returns immediately. Spurious wakeups are harmless, missed ones would not
     # be, and this ordering makes them impossible.
     drain_wakeups()
-    Pending.clear(state.pending)
+    Status.clear(state.status)
 
     case read_and_send(conn, state) do
       {:sent, conn, state} ->
@@ -89,7 +100,7 @@ defmodule DMEx.Producer.Stream do
         # heartbeat interval expires. Reading *before* this wait is what lets a
         # freshly-connected consumer start draining a backlog immediately
         # instead of waiting out a heartbeat for its first frame.
-        case maybe_heartbeat(conn, state, await_wakeup(state.heartbeat_ms)) do
+        case maybe_heartbeat(conn, state, await_wakeup(state)) do
           {:ok, conn} ->
             throttle(state)
             loop(conn, state)
@@ -105,11 +116,16 @@ defmodule DMEx.Producer.Stream do
 
   # Returns true when the wait expired with no publish — i.e. the stream is
   # genuinely idle and owes the consumer a liveness signal.
-  defp await_wakeup(heartbeat_ms) do
+  #
+  # This is the one step whose whole purpose is to block, so its budget carries
+  # the interval it is waiting out. A stream parked here is idle, not stuck.
+  defp await_wakeup(state) do
+    arm(state, state.heartbeat_ms)
+
     receive do
       :wakeup -> false
     after
-      heartbeat_ms -> true
+      state.heartbeat_ms -> true
     end
   end
 
@@ -118,9 +134,9 @@ defmodule DMEx.Producer.Stream do
           module(),
           DMEx.Producer.Params.t(),
           non_neg_integer(),
-          DMEx.Producer.Pending.t() | nil
+          Status.t() | nil
         ) :: state()
-  def initial_state(producer, params, cursor, pending \\ nil) do
+  def initial_state(producer, params, cursor, status \\ nil) do
     %{storage: storage, storage_opts: storage_opts, config: config} = producer.__dmex__()
 
     %{
@@ -132,14 +148,21 @@ defmodule DMEx.Producer.Stream do
       max_batch_size: params.max_batch_size,
       heartbeat_ms: config.heartbeat_ms,
       frame_max_bytes: config.frame_max_bytes,
+      stall_timeout: config.stall_timeout,
       last_sent_at: nil,
-      pending: pending
+      status: status
     }
   end
 
   ## The loop's steps
 
   defp read_and_send(conn, state) do
+    # A read is a blocking step like any other: a pool checkout that never
+    # returns, or a database that stops answering mid-query, wedges this loop
+    # exactly as a stalled socket does — and unlike a stalled socket, no
+    # transport-level timeout can ever see it.
+    arm(state)
+
     case state.storage.read(state.storage_opts, state.cursor, state.max_batch_size) do
       {:ok, {[], _max_id}} ->
         {:empty, conn, state}
@@ -165,7 +188,7 @@ defmodule DMEx.Producer.Stream do
     frame = Frame.encode_batch(rows, max_id)
     last_id = rows |> List.last() |> Map.fetch!(:id)
 
-    case chunk(conn, frame) do
+    case chunk(conn, state, frame) do
       {:ok, conn} ->
         :telemetry.execute(
           [:dmex, :stream, :frame],
@@ -186,7 +209,7 @@ defmodule DMEx.Producer.Stream do
   defp maybe_heartbeat(conn, _state, false), do: {:ok, conn}
 
   defp maybe_heartbeat(conn, state, true) do
-    case chunk(conn, Frame.encode_heartbeat()) do
+    case chunk(conn, state, Frame.encode_heartbeat()) do
       {:ok, conn} ->
         :telemetry.execute([:dmex, :stream, :heartbeat], %{}, %{producer: state.producer})
 
@@ -213,7 +236,16 @@ defmodule DMEx.Producer.Stream do
   defp throttle(state) do
     remaining = state.last_sent_at + state.batch_window - System.monotonic_time(:millisecond)
 
-    if remaining > 0, do: Process.sleep(remaining), else: :ok
+    if remaining > 0 do
+      # Budgeted for the sleep it is about to take, so the watcher measures the
+      # deadline against what the throttle is *for* rather than against how long
+      # a window happens to be.
+      arm(state, remaining)
+
+      Process.sleep(remaining)
+    else
+      :ok
+    end
   end
 
   defp drain_wakeups do
@@ -227,7 +259,7 @@ defmodule DMEx.Producer.Stream do
   ## Frame byte cap
 
   # `max_batch_size` bounds rows; this bounds bytes, which is what the socket and
-  # `send_timeout` actually see. Truncating is safe because the cursor only ever
+  # `stall_timeout` actually see. Truncating is safe because the cursor only ever
   # advances over what was sent, so the remainder arrives on the next iteration.
   #
   # At least one row always goes out, even if that row alone exceeds the cap:
@@ -264,5 +296,23 @@ defmodule DMEx.Producer.Stream do
     byte_size(row.data) + byte_size(row.metadata) + byte_size(row.message_type) + @row_overhead
   end
 
-  defp chunk(conn, iodata), do: Plug.Conn.chunk(conn, iodata)
+  ## Deadlines
+
+  # Every write goes through here, so every write is made under a deadline the
+  # watcher can see. This is the step the whole mechanism exists for: a consumer
+  # that stops reading closes its receive window, the output buffer fills, and
+  # this call blocks with no way to time itself out.
+  defp chunk(conn, state, iodata) do
+    arm(state)
+
+    Plug.Conn.chunk(conn, iodata)
+  end
+
+  # `stall_timeout` is the budget for the blocking itself; `extra` is however
+  # long the step is legitimately expected to sit there first.
+  defp arm(state, extra \\ 0)
+
+  defp arm(%{stall_timeout: :infinity} = state, _extra), do: Status.arm(state.status, :infinity)
+
+  defp arm(state, extra), do: Status.arm(state.status, state.stall_timeout + extra)
 end

@@ -3,7 +3,7 @@ defmodule DMEx.Integration.AdaptiveTest do
   The backpressure loop, closed through a real socket.
 
   A consumer that cannot keep up would otherwise settle into a reconnect loop:
-  the producer's `send_timeout` closes the stalled socket, the consumer
+  the producer's watcher reclaims the stalled connection, the consumer
   reconnects, is handed frames at the same rate it just failed to drain, and
   stalls again — each cycle costing the producer a fresh catch-up read. The
   slower the consumer, the more often it makes the producer work.

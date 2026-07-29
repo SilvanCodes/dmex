@@ -2,7 +2,7 @@ defmodule DMEx.Producer.StreamTest do
   use DMEx.Case, async: true
 
   alias DMEx.Producer.Params
-  alias DMEx.Producer.Pending
+  alias DMEx.Producer.Status
   alias DMEx.Producer.Stream, as: SendLoop
   alias DMEx.Test.ClosingAdapter
   alias DMEx.Test.Storage, as: Stub
@@ -301,6 +301,56 @@ defmodule DMEx.Producer.StreamTest do
     end
   end
 
+  # A loop that stopped arming would look perfectly healthy in every other test
+  # here and be unreclaimable in production, so the arming is asserted directly
+  # rather than through the watcher.
+  describe "deadlines" do
+    test "a write is made under one", %{opts: opts} do
+      status = Status.new(60_000)
+      Stub.put_rows(opts, 3)
+
+      run(opts, chunks: 1, status: status, stall_timeout: 5_000, batch_window: 1)
+
+      now = System.monotonic_time(:millisecond)
+
+      # Armed for the write, not for the 60 s the status was created with.
+      assert Status.deadline(status) <= now + 5_000 + 1
+      refute Status.overdue?(status, now)
+    end
+
+    test "an idle wait is budgeted for the interval it is waiting out", %{opts: opts} do
+      status = Status.new(1)
+
+      start_loop(opts, status: status, stall_timeout: 5_000, heartbeat_ms: 60_000)
+
+      # A stream parked in `await_wakeup/1` is idle, not stuck: its deadline
+      # covers the heartbeat interval as well as the budget.
+      eventually(fn ->
+        Status.deadline(status) > System.monotonic_time(:millisecond) + 60_000
+      end)
+    end
+
+    test "a read is under one too, which is the case no socket timeout can see", %{opts: opts} do
+      status = Status.new(60_000)
+      Stub.hang(opts, :read)
+
+      start_loop(opts, status: status, stall_timeout: 20, heartbeat_ms: 60_000)
+
+      # The socket is fine; the query never comes back. Nothing but the armed
+      # deadline distinguishes this from a healthy stream.
+      eventually(fn -> Status.overdue?(status, System.monotonic_time(:millisecond)) end)
+    end
+
+    test "a producer with no stall timeout arms nothing", %{opts: opts} do
+      status = Status.new(:infinity)
+      Stub.put_rows(opts, 3)
+
+      run(opts, chunks: 1, status: status, stall_timeout: :infinity)
+
+      refute Status.overdue?(status, System.monotonic_time(:millisecond) + 86_400_000)
+    end
+  end
+
   describe "telemetry" do
     test "reports rows, bytes and how far behind the frame left the consumer", %{opts: opts} do
       ref = :telemetry_test.attach_event_handlers(self(), [[:dmex, :stream, :frame]])
@@ -366,8 +416,9 @@ defmodule DMEx.Producer.StreamTest do
       max_batch_size: params.max_batch_size,
       heartbeat_ms: Keyword.get(test_opts, :heartbeat_ms, 60_000),
       frame_max_bytes: Keyword.get(test_opts, :frame_max_bytes, 1_048_576),
+      stall_timeout: Keyword.get(test_opts, :stall_timeout, 30_000),
       last_sent_at: nil,
-      pending: Pending.new()
+      status: Keyword.get(test_opts, :status) || Status.new(30_000)
     }
   end
 end

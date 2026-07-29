@@ -14,7 +14,7 @@ defmodule DMEx.Test.Storage do
 
   @behaviour DMEx.Storage
 
-  defstruct rows: [], reads: [], appends: [], cursors: %{}, dead: [], fail: nil
+  defstruct rows: [], reads: [], appends: [], cursors: %{}, dead: [], fail: nil, hang: nil
 
   @doc """
   Starts a stub and returns the `t:DMEx.Storage.opts/0` map addressing it.
@@ -70,6 +70,16 @@ defmodule DMEx.Test.Storage do
   @spec fail(DMEx.Storage.opts(), atom(), term()) :: :ok
   def fail(opts, fun, reason \\ :boom), do: update(opts, &%{&1 | fail: {fun, reason}})
 
+  @doc """
+  Makes every subsequent call to `fun` block its caller forever.
+
+  This is the failure no transport-level timeout can see: a query that never
+  comes back, or a pool checkout that never returns, wedges the send loop with a
+  perfectly healthy socket underneath it.
+  """
+  @spec hang(DMEx.Storage.opts(), atom()) :: :ok
+  def hang(opts, fun), do: update(opts, &%{&1 | hang: fun})
+
   ## DMEx.Storage
 
   @impl DMEx.Storage
@@ -85,6 +95,9 @@ defmodule DMEx.Test.Storage do
 
   @impl DMEx.Storage
   def read(opts, cursor, limit) do
+    # Before the agent call, so the caller wedges rather than the stub.
+    maybe_hang(opts, :read)
+
     Agent.get_and_update(store(opts), fn state ->
       do_read(%{state | reads: [{cursor, limit} | state.reads]}, cursor, limit)
     end)
@@ -173,6 +186,12 @@ defmodule DMEx.Test.Storage do
   defp store(%{store: pid}), do: pid
 
   defp get(opts), do: Agent.get(store(opts), & &1)
+
+  defp maybe_hang(opts, fun) do
+    if get(opts).hang == fun, do: Process.sleep(:infinity)
+
+    :ok
+  end
 
   defp update(opts, fun) do
     Agent.update(store(opts), fun)

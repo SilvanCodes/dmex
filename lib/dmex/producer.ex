@@ -112,7 +112,7 @@ defmodule DMEx.Producer do
       def child_spec(opts), do: DMEx.Producer.child_spec(__MODULE__, opts)
 
       @doc """
-      Starts this producer's registry, notification listener and dispatcher.
+      Starts this producer's registry, notification listener, dispatcher and watcher.
 
       Usually called for you by putting `MyApp.Producer` in a supervision tree.
       """
@@ -178,7 +178,7 @@ defmodule DMEx.Producer do
   @doc false
   @spec start_link(module(), keyword()) :: Supervisor.on_start()
   def start_link(producer, opts \\ []) do
-    %{storage: storage, storage_opts: storage_opts} = producer.__dmex__()
+    %{storage: storage, storage_opts: storage_opts, config: config} = producer.__dmex__()
 
     # Whatever the adapter needs sits between the registry and the dispatcher,
     # and this module has no idea what it is. Postgres puts a LISTEN connection
@@ -186,13 +186,20 @@ defmodule DMEx.Producer do
     children =
       [DMEx.Registry.child_spec(producer)] ++
         storage.child_specs(storage_opts) ++
-        [{DMEx.Dispatcher, producer: producer}]
+        [{DMEx.Dispatcher, producer: producer}] ++
+        watcher_children(producer, config)
 
     Supervisor.start_link(children,
       strategy: :one_for_one,
       name: Keyword.get(opts, :name, Module.concat(producer, "Supervisor"))
     )
   end
+
+  # With no stall timeout there is no deadline to enforce, so the watcher is not
+  # started at all rather than started and made a no-op — a process that exists
+  # but never acts is the harder thing to reason about.
+  defp watcher_children(_producer, %{stall_timeout: :infinity}), do: []
+  defp watcher_children(producer, _config), do: [{DMEx.Producer.Watcher, producer: producer}]
 
   ## Compile-time validation
 

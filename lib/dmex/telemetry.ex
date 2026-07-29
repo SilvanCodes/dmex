@@ -37,6 +37,19 @@ defmodule DMEx.Telemetry do
   mainly as a liveness signal for the producer's own monitoring: heartbeats
   stopping while connections remain open means loops are wedged.
 
+  ### `[:dmex, :stream, :reclaim]`
+
+  `DMEx.Producer.Watcher` killed a connection that blew its deadline —
+  a consumer that stopped reading, or a loop wedged in a read that never came
+  back. Measurements: `:overdue_by`, how late it was in ms. Metadata:
+  `:producer`.
+
+  Occasional ones are a slow consumer and cost nothing but a reconnect; a
+  steady rate means either a consumer that cannot keep up or a `stall_timeout`
+  tighter than the links it serves deserve. This is the counterpart to
+  `:heartbeat` above: heartbeats stopping tells you loops are wedged, and this
+  tells you what was done about it.
+
   ### `[:dmex, :dispatcher, :broadcast]`
 
   A publish (or a poll that saw one) woke the connections. Measurements:

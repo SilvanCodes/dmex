@@ -8,7 +8,7 @@ defmodule DMEx.Consumer.Control do
   consumer needs is a way to know what to ask for, and an occasion to ask.
 
   Without this, a consumer that cannot keep up settles into a reconnect loop:
-  the producer's `send_timeout` closes the stalled socket, the consumer
+  the producer's watcher reclaims the stalled connection, the consumer
   reconnects, is handed frames at the same rate it just failed to drain, and
   stalls again. Nothing is lost, but each reconnect costs the producer a fresh
   catch-up read — **the slower the consumer, the more often it makes the
@@ -59,7 +59,7 @@ defmodule DMEx.Consumer.Control do
     * **Adaptation cannot make a handler faster.** If drain rate is below publish
       rate the consumer falls behind permanently, and no framing parameter
       changes that. What it converts is the *symptom*: instead of a reconnect
-      loop driven by `send_timeout`, the subscription runs stably at its own
+      loop driven by repeated reclaims, the subscription runs stably at its own
       speed and falls visibly behind — which the lag telemetry already reports.
       Visible lag is a capacity problem an operator can see; a reconnect loop is
       a capacity problem disguised as a network one.

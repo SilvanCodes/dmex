@@ -19,7 +19,7 @@ defmodule DMEx.RegistryTest do
   end
 
   test "a registered process receives broadcasts" do
-    {:ok, _pending} = DMExRegistry.register(FakeProducer)
+    {:ok, _status} = DMExRegistry.register(FakeProducer, 5_000)
 
     DMExRegistry.broadcast(FakeProducer, :wakeup)
 
@@ -32,7 +32,7 @@ defmodule DMEx.RegistryTest do
     pids =
       for _ <- 1..3 do
         spawn_link(fn ->
-          {:ok, _pending} = DMExRegistry.register(FakeProducer)
+          {:ok, _status} = DMExRegistry.register(FakeProducer, 5_000)
           send(parent, {:registered, self()})
 
           receive do
@@ -51,7 +51,7 @@ defmodule DMEx.RegistryTest do
   test "counts live streams" do
     assert DMExRegistry.count(FakeProducer) == 0
 
-    {:ok, _pending} = DMExRegistry.register(FakeProducer)
+    {:ok, _status} = DMExRegistry.register(FakeProducer, 5_000)
 
     assert DMExRegistry.count(FakeProducer) == 1
   end
@@ -64,7 +64,7 @@ defmodule DMEx.RegistryTest do
 
     pid =
       spawn(fn ->
-        {:ok, _pending} = DMExRegistry.register(FakeProducer)
+        {:ok, _status} = DMExRegistry.register(FakeProducer, 5_000)
         send(parent, :registered)
 
         receive do

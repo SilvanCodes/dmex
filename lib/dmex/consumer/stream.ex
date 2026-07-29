@@ -493,7 +493,7 @@ defmodule DMEx.Consumer.Stream do
   # The order matters, and this is step one: **close the connection first.**
   # That is the immediate relief and it is instant — it stops the inflow and
   # hands the producer back its request process, rather than leaving a stalled
-  # socket for `send_timeout` to reap.
+  # connection for the producer's watcher to reclaim.
   #
   # Step two is draining what is already in hand, which happens through the
   # ordinary `:drain` loop with no connection attached: every queued row goes

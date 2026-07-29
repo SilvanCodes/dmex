@@ -19,9 +19,13 @@ defmodule DMEx.Producer.Plug do
   inline for the life of the connection.
 
   That is deliberate. In both Bandit and Cowboy the connection process owns the
-  socket, so writing chunks from another process is awkward at best — and the
-  socket-level timeouts that reclaim stalled connections act on the connection,
-  so the process blocked in the write needs to be the one that dies with it.
+  socket, so writing chunks from another process is awkward at best — and
+  reclaiming a stalled connection means killing whichever process is blocked in
+  the write, so it had better be the one the connection dies with.
+
+  Registration therefore happens here, before anything that can block: it hands
+  back the connection's `DMEx.Producer.Status`, which is what puts even the
+  connect path under `DMEx.Producer.Watcher`.
 
   ## Response headers
 
@@ -50,12 +54,15 @@ defmodule DMEx.Producer.Plug do
 
   There is no `503`/`Retry-After` admission control: DMEx has no aggregate
   budget to enforce one against, so a producer never turns a connect attempt
-  away for load reasons.
+  away for load reasons. `DMEx.Producer.Watcher` is where one would be enforced
+  if it existed — it already holds the live set — and this is where it would be
+  asked, before registering. See `ROADMAP.md`.
   """
 
   alias DMEx.Config
   alias DMEx.Frame
   alias DMEx.Producer.Params
+  alias DMEx.Producer.Status
   alias DMEx.Producer.Stream, as: SendLoop
 
   @behaviour Plug
@@ -87,20 +94,24 @@ defmodule DMEx.Producer.Plug do
   ## Streaming
 
   defp stream(conn, producer, params, config) do
+    # The request process registers *itself*, which is the whole point of the
+    # request being the stream: when the connection dies the entry goes with it.
+    # Registering before the first read means a publish landing in between is
+    # picked up by that read rather than missed — and registering before the
+    # first *write* puts the connect path under the watcher too, since resolving
+    # a cursor and sending headers can block exactly as the send loop can.
+    # The status comes back with the registration and lives in that entry, so it
+    # is cleaned up when this process dies without anything watching for it.
+    {:ok, status} = DMEx.Registry.register(producer, config.stall_timeout)
+
     cursor = resolve_cursor(producer, params.cursor)
+
+    Status.arm(status, config.stall_timeout)
 
     conn =
       conn
       |> put_stream_headers(params)
       |> Plug.Conn.send_chunked(200)
-
-    # The request process registers *itself*, which is the whole point of the
-    # request being the stream: when the connection dies the entry goes with it.
-    # Registering before the first read means a publish landing in between is
-    # picked up by that read rather than missed.
-    # The flag comes back with the registration and lives in that entry, so it
-    # is cleaned up when this process dies without anything watching for it.
-    {:ok, pending} = DMEx.Registry.register(producer)
 
     :telemetry.execute(
       [:dmex, :stream, :connect],
@@ -112,9 +123,9 @@ defmodule DMEx.Producer.Plug do
       }
     )
 
-    case advertise_retry(conn, config, params) do
+    case advertise_retry(conn, config, params, status) do
       {:ok, conn} ->
-        SendLoop.loop(conn, SendLoop.initial_state(producer, params, cursor, pending))
+        SendLoop.loop(conn, SendLoop.initial_state(producer, params, cursor, status))
 
       {:error, _reason} ->
         conn
@@ -139,8 +150,10 @@ defmodule DMEx.Producer.Plug do
   # dispatches nothing: an SSE parser applies `retry:` the moment it parses the
   # line, while an event is only dispatched if the data buffer is non-empty when
   # the blank line arrives.
-  defp advertise_retry(conn, config, params) do
+  defp advertise_retry(conn, config, params, status) do
     effective = Config.effective_heartbeat(config.heartbeat_ms, params.batch_window)
+
+    Status.arm(status, config.stall_timeout)
 
     Plug.Conn.chunk(conn, Frame.encode_retry(effective))
   end

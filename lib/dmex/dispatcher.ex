@@ -40,7 +40,7 @@ defmodule DMEx.Dispatcher do
 
   use GenServer
 
-  alias DMEx.Producer.Pending
+  alias DMEx.Producer.Status
 
   require Logger
 
@@ -183,8 +183,8 @@ defmodule DMEx.Dispatcher do
     # a queued wakeup is told nothing further, however long it stalls — which
     # is what bounds a stalled connection's mailbox at one wakeup rather than
     # at the publish rate times the stall duration.
-    DMEx.Registry.each(state.producer, fn pid, pending ->
-      if Pending.flip(pending) do
+    DMEx.Registry.each(state.producer, fn pid, status ->
+      if Status.flip(status) do
         send(pid, :wakeup)
         :counters.add(woken, 1, 1)
       end

@@ -129,9 +129,10 @@ wakeups — so SQLite is a new adapter rather than a new seam.
 
 ## Operating it
 
-See [the deployment guide](guides/deployment.md) for the two socket options and
-the proxy settings the stall story depends on, and `DMEx.Telemetry` for every
-event DMEx emits.
+A producer reclaims connections that stop making progress itself — see
+[the deployment guide](guides/deployment.md) for how to size that, the socket
+options that tighten it, and the proxy settings SSE depends on. `DMEx.Telemetry`
+lists every event DMEx emits.
 
 ## Development
 

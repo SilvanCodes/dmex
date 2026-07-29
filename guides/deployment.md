@@ -1,24 +1,68 @@
 # Deploying a DMEx producer
 
 DMEx runs inside your application and uses your web server's listener and your
-database. Three things it therefore **cannot** configure for you, and the stall
-story does not hold without them.
+database. This is what that means for you as an operator: one thing DMEx now
+handles itself and you may want to size, one thing you can tighten if you care
+to, and two it genuinely cannot do for you.
 
 Nothing here applies to consumers. A consumer opens ordinary outbound HTTP
 connections and manages its own timeouts.
 
-## 1. Socket timeouts — reclaiming stalled connections
+## 1. Stuck connections are reclaimed for you
 
 The producer's send loop bounds memory by construction: it holds at most the
 frame it is currently writing, and the next read cannot happen until the
-previous write returns. What it cannot do is reclaim a connection that has
-stopped making progress — **a process blocked in `chunk/2` cannot time itself
-out, because it is not running.**
+previous write returns. What it cannot do is reclaim itself — **a process
+blocked in `chunk/2` cannot time itself out, because it is not running**, and
+neither can one blocked in a read against a database that has stopped
+answering.
 
-That is left entirely to the socket layer, and DMEx runs no watcher process to
-compensate.
+So every blocking step of the loop states a deadline before it enters, and
+`DMEx.Producer.Watcher` — one process per producer, started with it — kills
+whatever is past its deadline. Two settings, on your producer module:
 
-### `send_timeout` — the primary mechanism
+```elixir
+defmodule MyApp.Producer do
+  use DMEx.Producer,
+    repo: MyApp.Repo,
+    stall_timeout: 30_000,       # budget for any one blocking step
+    stall_check_interval: 1_000  # how often the watcher sweeps
+end
+```
+
+A stall is therefore reclaimed within `stall_timeout + stall_check_interval`,
+with no transport configuration whatsoever. A sweep is one atomics read per
+open connection and no query, so leaving the interval at a second costs
+nothing measurable.
+
+**Sizing `stall_timeout`.** The budget covers a single blocking step, and the
+step that matters is a write of at most `frame_max_bytes` (1 MiB by default).
+The default 30 000 ms therefore tolerates a consumer draining a full frame at
+roughly 280 kbit/s. Tighten it if you know your consumers are on fast links and
+want stalls cleared sooner; loosen it, or lower `frame_max_bytes`, if you serve
+consumers on genuinely slow ones. The failure mode of tightening too far is a
+healthy slow consumer being dropped, which costs it a reconnect and costs you a
+fresh catch-up read — survivable, but at scale it is a reconnect storm with no
+admission control to absorb it.
+
+`stall_timeout: :infinity` opts out and starts no watcher at all.
+
+**Dropping a connection is not a delivery event.** Nothing is lost and nothing
+is skipped: the producer holds no consumer state, the consumer's `last_seen` is
+durable, and resumption is the same `id > last_seen` read a cold connect does.
+
+**What to alert on.** Every reclaim emits `[:dmex, :stream, :reclaim]` with an
+`overdue_by` measurement, and logs a warning. Occasional ones are a slow
+consumer; a steady rate is either a consumer that cannot keep up (check whether
+it is adapting its own pacing) or a `stall_timeout` set tighter than your links
+deserve.
+
+## 2. Socket timeouts — optional, and what they add
+
+Neither of these is required. Both make the reclaim tighter than one watcher
+tick, and the second covers a case nothing running inside the VM can see.
+
+### `send_timeout`
 
 ```elixir
 # Bandit
@@ -39,26 +83,16 @@ compensate.
 
 `gen_tcp:send` returns `:ok` once data reaches the kernel buffer, so this
 timeout only engages when the output queue is genuinely full — which is exactly
-the stalled-consumer condition: the peer stops reading, its receive window
-closes, the buffer fills, the write blocks, and after `N` ms it fails and closes
-the socket.
+the stalled-consumer condition. It fires at the socket, without waiting for a
+sweep and without anything needing to be scheduled, so it is strictly faster
+than the watcher on the one failure it can see.
 
-No external observer and no process-state inference, and it fires wherever the
-stall begins — **including in the middle of a data frame, which is both the most
-likely place and the case a heartbeat-based check structurally cannot see.**
+If you set it, `send_timeout_close: true` is not optional: without it the
+timeout leaves the socket in an undefined state. And size it against
+`frame_max_bytes` the same way as `stall_timeout` above — 5 000 ms tolerates a
+consumer draining a 1 MiB frame at roughly 1.6 Mbit/s.
 
-`send_timeout_close: true` is not optional. Without it the timeout leaves the
-socket in an undefined state, and the whole mechanism depends on the request
-process dying with its connection.
-
-**Sizing.** DMEx caps a frame at `frame_max_bytes` (1 MiB by default), so
-5 000 ms tolerates a consumer draining that frame at roughly 1.6 Mbit/s. Raise
-the timeout, or lower the cap, if you serve consumers on genuinely slow links —
-the two are traded against each other, and a `send_timeout` set too tight drops
-healthy slow consumers, which is a reconnect storm with no admission control to
-absorb it.
-
-### TCP keepalive — for the case `send_timeout` cannot reach
+### TCP keepalive — for the case nothing in-process can reach
 
 ```elixir
 transport_options: [
@@ -74,16 +108,19 @@ transport_options: [
 ]
 ```
 
-On a low-traffic log a peer can vanish without sending FIN or RST — power loss,
-a NAT rebind, a dropped flow — leaving an idle connection whose only traffic is
-heartbeats. Those are a few bytes, the buffer never fills, every `send` returns
-`:ok`, so `send_timeout` never engages and the producer holds a request process
-for a peer that no longer exists.
+A peer can vanish without sending FIN or RST — power loss, a NAT rebind, a
+dropped flow. Writes into a socket whose peer is gone keep returning `:ok`
+until the kernel gives up, so deadlines keep being met and the watcher sees a
+perfectly healthy connection. **This is the one stall DMEx structurally cannot
+detect**, and no in-process mechanism could.
 
-**The OS default is useless here**: Linux waits two hours before the first
-probe. Set it to something on the order of the heartbeat interval.
+TCP handles it eventually on its own: heartbeats mean there is always unacked
+data in flight, so retransmission timeouts error the socket after some minutes.
+Keepalive tuned to the order of the heartbeat interval turns "some minutes"
+into seconds. The OS default is useless here — Linux waits two hours before the
+first probe.
 
-## 2. Proxies must not buffer
+## 3. Proxies must not buffer
 
 DMEx sets `X-Accel-Buffering: no` on every stream response, which nginx honours.
 It is a fallback, not a substitute for configuring the proxy properly:
@@ -112,7 +149,7 @@ the wire rather than recomputing it.
 Any other intermediary doing its own response buffering has to be turned off,
 not tuned.
 
-## 3. Database connections
+## 4. Database connections
 
 Every open stream issues its own reads, so `C` connections at publish rate `P`
 cost up to `C x P` reads per second — bounded per connection at one read per
@@ -129,23 +166,28 @@ Two consequences:
   so `DMEx.Storage.Postgres` opens a dedicated `Postgrex.Notifications`
   connection per producer. Budget for it in `max_connections`.
 
+A reclaimed stream returns whatever it had checked out: the pool monitors its
+client, so killing a request process wedged on a query or a checkout hands that
+connection back rather than leaking it.
+
 Measured on a developer machine, 200 concurrent streams showed no pool queueing;
 `bench/e2e/fanout_reads.exs` is there to find where your own ceiling is.
 
 ## What DMEx deliberately does not do
 
-There is no global shedding and no admission control: no sweeper tracking
-per-connection progress, no aggregate memory or connection budget, and no
+There is no aggregate budget and no admission control: no cap on how many
+streams one producer will serve, no aggregate memory budget, and no
 `503`/`Retry-After` path that turns consumers away under load.
 
-The per-connection mechanisms above cover the failure that actually threatens
-the host application — the send loop makes unbounded memory growth
-unrepresentable, and `send_timeout` plus keepalive reclaim connections that stop
-progressing. What is *not* covered is aggregate pressure from many
-individually-healthy connections, and a loop wedged for a non-socket reason such
-as a hung query or a pool checkout that never returns.
+What is covered is per-connection, and covered without asking anything of you:
+the send loop makes unbounded memory growth unrepresentable, and the watcher
+reclaims connections that stop making progress, whatever stopped them. What is
+*not* covered is aggregate pressure from many individually-healthy connections,
+and a consumer that is pathologically slow while still technically progressing —
+which no per-step deadline can ever fire on.
 
 Those are real. The bet is that they only matter past a connection count where a
-producer application has bigger capacity questions anyway, and that the
-machinery is cheaper to add later than to carry unused. Revisit when connection
-counts reach the point where an aggregate budget is a live constraint.
+producer application has bigger capacity questions anyway, and the machinery is
+now cheap to add when they do: the watcher already runs per producer and already
+holds the live set, so a budget is a counter and a policy on a process that
+exists. See [Global Resource Limits](../ROADMAP.md#global-resource-limits).

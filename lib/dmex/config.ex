@@ -26,7 +26,9 @@ defmodule DMEx.Config do
   | `max_batch_size_ceiling` | `5_000` | rows; ten times the default. Bounds one read's memory and one frame's encode time while leaving a fast consumer real headroom for catch-up. |
   | `heartbeat_ms` | `15_000` | ms; half the most common 30 s proxy idle timeout, so two heartbeats fit inside every window. |
   | `poll_interval` | `1_000` | ms; Oban stager parity. This is the worst-case wakeup latency when a `NOTIFY` is lost, and it costs one `max(id)` index descent per app per second. |
-  | `frame_max_bytes` | `1_048_576` | bytes; bounds any single outstanding write so `send_timeout` can be tight without false-positiving on a large frame to a slow-but-alive consumer. |
+  | `frame_max_bytes` | `1_048_576` | bytes; bounds any single outstanding write so `stall_timeout` can be tight without false-positiving on a large frame to a slow-but-alive consumer. |
+  | `stall_timeout` | `30_000` | ms; the budget for any one blocking step of the send loop — a write, a read, or the wait around either. Generous on purpose: this is on by default, and killing a healthy slow consumer costs a reconnect and a fresh catch-up read, where a wedged connection lingering 30 s costs one request process. At the 1 MiB frame cap it tolerates a consumer draining a full frame at ~280 kbit/s. `:infinity` runs no watcher at all. |
+  | `stall_check_interval` | `1_000` | ms; how often `DMEx.Producer.Watcher` sweeps, so a stall is reclaimed within `stall_timeout + stall_check_interval`. A sweep is one atomics read per open connection and no query, so this is cheap enough to leave at a second. |
 
   ## Consumer defaults
 
@@ -193,10 +195,13 @@ defmodule DMEx.Config do
           :max_batch_size_ceiling,
           :heartbeat_ms,
           :poll_interval,
-          :frame_max_bytes
+          :frame_max_bytes,
+          :stall_check_interval
         ] do
       positive_integer!(config, field)
     end
+
+    validate_stall_timeout!(config.stall_timeout)
 
     bounded!(config, :batch_window, :batch_window_floor, :batch_window_ceiling)
     bounded!(config, :max_batch_size, :max_batch_size_floor, :max_batch_size_ceiling)
@@ -234,6 +239,17 @@ defmodule DMEx.Config do
     validate_inclusion!(:adaptive, config.adaptive, [true, false])
 
     config
+  end
+
+  # The one setting that may be switched off rather than tuned: a producer whose
+  # streams legitimately block longer than any budget worth naming would rather
+  # have no watcher than a wrong one, and `:infinity` says so explicitly.
+  defp validate_stall_timeout!(:infinity), do: :ok
+  defp validate_stall_timeout!(value) when is_integer(value) and value > 0, do: :ok
+
+  defp validate_stall_timeout!(value) do
+    raise ArgumentError,
+          ":stall_timeout must be a positive integer or :infinity, got: #{inspect(value)}"
   end
 
   defp positive_integer!(config, field) do

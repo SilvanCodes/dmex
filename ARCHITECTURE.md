@@ -735,7 +735,8 @@ DMEx.Consumer.subscribe(MyApp.OrderProjection,
 - The producer never turns a connect attempt away for load reasons. There is
   no `503`/`Retry-After` admission control, because there is no aggregate
   budget to enforce it against — see
-  [What this deliberately does not do](#what-this-deliberately-does-not-do).
+  [What this deliberately does not do](#what-this-deliberately-does-not-do)
+  for where one would land if there were.
 - The connection is long-lived. If it drops, the consumer reconnects, sending
   whatever `last_seen` it last durably recorded as `Last-Event-ID`. Reconnect
   backoff is owned
@@ -1009,8 +1010,9 @@ Heartbeats do three jobs, and the third is the one that matters most:
 - they give the consumer a liveness signal, so it can distinguish "nothing
   new to send" from "connection is dead but the socket never closed," and
   reconnect on its own after missing several intervals;
-- they give TCP keepalive something to work against on an otherwise silent
-  connection, and bound how long a vanished peer can go unnoticed (see
+- they keep unacked data on the wire on an otherwise silent connection, which
+  is what bounds how long a peer that vanished without a FIN or RST can go
+  unnoticed — the one stall the watcher structurally cannot see (see
   [Stalled connections](#stalled-connections)).
 
 **The interval is advertised, not assumed.** A consumer can only count missed
@@ -1037,7 +1039,9 @@ liveness aid for the *consumer* and for intermediaries. They are **not** a
 producer-side stall detector. A stall that begins mid-data-frame leaves the
 loop blocked inside the write, never reaching the heartbeat branch at all —
 which is both the most likely stall and one no heartbeat-based check could
-ever observe. Detecting that is the socket layer's job, not this one's.
+ever observe. Detecting that is the watcher's job (see
+[Stalled connections](#stalled-connections)), and it is why the deadline is
+armed per step rather than inferred from how long ago a heartbeat went out.
 
 ## Process Architecture
 
@@ -1051,6 +1055,13 @@ Consumer-side connections are owned by a DMEx `DynamicSupervisor`, because
 DMEx starts them. Producer-side connections are owned by the web server,
 because the request *is* the connection — see
 [Producer side](#producer-side).
+
+What a producer *does* supervise is the small shared set behind those
+connections: a `Registry` holding one entry per open stream, whatever the
+storage adapter needs (a `LISTEN` connection, on Postgres), the
+`DMEx.Dispatcher` that broadcasts wakeups, and the `DMEx.Producer.Watcher`
+that reclaims connections which stop making progress. None of them ever holds
+message data on a connection's behalf.
 
 ### Consumer side
 
@@ -1139,8 +1150,9 @@ The producer's loop makes overload unrepresentable *for the producer* (see
 [Producer side](#producer-side)). It does nothing for the consumer, and the
 mechanism that protects the producer is actively hostile to a consumer that
 cannot keep up: the consumer stops reading, its receive window closes, the
-producer's `chunk/2` blocks, and after `send_timeout` the producer **closes the
-connection** (see [Stalled connections](#stalled-connections)). The consumer
+producer's `chunk/2` blocks, and once that write blows its deadline the
+producer's watcher **reclaims the connection** (see
+[Stalled connections](#stalled-connections)). The consumer
 reconnects, is handed frames at the same rate it just failed to drain, and
 stalls again. Nothing is lost — `last_seen` is durable and a drop is not a
 delivery event — but the subscription settles into a reconnect loop, and each
@@ -1375,7 +1387,8 @@ stream's re-read finds nothing.
 
 1. **Close the connection first.** This is the immediate relief and it is
    instant: it stops the inflow and hands the producer back its request
-   process, rather than leaving a stalled socket for `send_timeout` to reap.
+   process, rather than leaving a stalled connection for the producer's watcher
+   to reclaim.
 2. **Drain the queue locally.** Every queued row goes through the ordinary
    pipeline — its own transaction, its own `last_seen` advance — so nothing
    already transferred is re-fetched, and the drain itself refines the
@@ -1408,7 +1421,7 @@ Three limits, stated plainly:
 - **Adaptation cannot make a handler faster.** If drain rate is below publish
   rate, the consumer falls behind permanently, and no framing parameter
   changes that. What it converts is the *symptom*: instead of a reconnect loop
-  driven by `send_timeout`, the subscription runs stably at its own speed and
+  driven by repeated reclaims, the subscription runs stably at its own speed and
   falls visibly behind, which is what the `max_id` diff already reports (see
   [Batching & framing](#batching--framing-batch_window-max_batch_size)).
   Visible lag is a capacity problem an operator can see; a reconnect loop is a
@@ -1447,12 +1460,11 @@ send loop inline, for the life of the connection.
 
 This is deliberate. In both Bandit and Cowboy the **connection process owns
 the socket**; writing chunks from some other process is awkward at best, and
-— critically — the socket-level timeouts DMEx relies on to reclaim stalled
-connections (see [Stalled connections](#stalled-connections)) act on the
-connection, so the process blocked in the write needs to be the one that
-dies with it. Making the request process the stream means `chunk/2` works
-naturally, the socket closes when the process dies, and the web server's own
-supervision covers it.
+— critically — reclaiming a stalled connection means killing whichever process
+is blocked in the write (see [Stalled connections](#stalled-connections)), so
+that had better be the one the connection dies with. Making the request process
+the stream means `chunk/2` works naturally, the socket closes when the process
+dies, and the web server's own supervision covers it.
 
 The loop, per connection — note that `batch_window` and `max_batch_size` are
 per-connection values read from the request's `DMEx-Batch-Window` /
@@ -1462,27 +1474,33 @@ in `state`, not compile-time constants:
 
 ```elixir
 def loop(conn, state) do
+  arm(state, state.heartbeat_ms)           # this wait is budgeted for what it waits out
+
   idle? =
     receive do
       :wakeup -> false
     after
-      state.heartbeat_ms -> true          # nothing published for a whole interval
+      state.heartbeat_ms -> true           # nothing published for a whole interval
     end
 
   drain_mailbox()                          # coalesce every pending wakeup into one pass
-  clear_pending(state)                     # ETS flag, cleared *before* the read
+  clear_pending(state)                     # wakeup flag, cleared *before* the read
 
   state =
-    case {read_and_send(conn, state), idle?} do   # LIMIT max_batch_size
+    case {read_and_send(conn, state), idle?} do   # arms before the read, and before the write
       {{:sent, state}, _} -> state         # the frame's own bytes are the liveness signal
       {{:empty, state}, true} -> heartbeat(conn, state)   # ": hb" comment frame
       {{:empty, state}, false} -> state    # spurious wakeup; nothing to say
     end
 
-  throttle(state.batch_window)
+  throttle(state.batch_window)             # budgeted for the sleep it is about to take
   loop(conn, state)
 end
 ```
+
+Every step that can block arms a deadline first, because none of them can time
+themselves out from the inside — see
+[Stalled connections](#stalled-connections).
 
 Four properties follow from this shape, and they are the whole reason for
 it:
@@ -1568,42 +1586,90 @@ exhausts the host application's memory. See
 #### Stalled connections
 
 The loop bounds memory, but it cannot by itself reclaim a connection that
-has stopped making progress: a process blocked in `chunk/2` cannot time
-itself out, because it is not running. That is left entirely to the socket
-layer. **DMEx runs no watcher process and no global connection budget** —
-see [the scope note](#what-this-deliberately-does-not-do) below for why, and
-for what would change that.
+has stopped making progress: **a process blocked in `chunk/2` cannot time
+itself out, because it is not running.** Neither can one blocked in a read
+against a database that has stopped answering.
 
-Two transport options, both set on the web server's listener:
+So the loop states its budget *before* each step that can block, and
+`DMEx.Producer.Watcher` — one process per producer, in that producer's own
+supervision tree — enforces it from outside. **Nothing in this depends on the
+operator's transport configuration**, which is the property that matters: a
+library cannot make correctness contingent on a listener option it neither
+owns nor can verify, and one that fails silently when it is missing.
 
-- **`{send_timeout, N}` with `{send_timeout_close, true}`** — the primary
-  mechanism. `gen_tcp:send` returns `:ok` once data reaches the driver/kernel
-  buffer, so the timeout only engages when the output queue is genuinely
-  full, which is exactly the stalled-consumer condition: the peer stops
-  reading, its receive window closes, the buffer fills, the write blocks,
-  and after `N` ms it fails with `{:error, :timeout}` and closes the socket.
-  No external observer, no process-state inference, and it fires wherever
-  the stall begins — including in the middle of a data frame, which is the
-  most likely place and the case a heartbeat-based check structurally
-  cannot see (see [Heartbeats](#heartbeats)).
-- **`{keepalive, true}`, with `TCP_KEEPIDLE`/`TCP_KEEPINTVL` tuned** — for
-  the case `send_timeout` cannot reach. On a low-traffic log a peer can
-  vanish without sending FIN or RST (power loss, NAT rebind), leaving an
-  idle connection whose only traffic is heartbeats. Those are a few bytes,
-  the buffer never fills, every `send` returns `:ok` — so `send_timeout`
-  never engages and the producer holds a connection process for a peer that
-  no longer exists. TCP keepalive is what detects this, and **the OS default
-  is useless here** (two hours on Linux); it must be set explicitly, on the
-  order of the heartbeat interval.
+##### Deadlines
+
+Each connection's registry entry carries two `:atomics` slots — its wakeup
+flag (see [Wakeup coalescing](#wakeup-coalescing)) and its **deadline**.
+Before entering a blocking step the loop writes `now + budget`:
+
+| blocking step | budget |
+| --- | --- |
+| the read | `stall_timeout` |
+| `chunk/2`, data frame or heartbeat | `stall_timeout` |
+| the idle wait | `heartbeat_ms + stall_timeout` |
+| the throttle | the remaining window + `stall_timeout` |
+
+Each budget is `stall_timeout` plus however long that particular step is
+*expected* to sit there, so a wait that is doing its job is never confused
+with one that is stuck — and, less obviously, the threshold does not have to
+be derived from `heartbeat_ms` the way a plain last-progress timestamp would
+force it to be. Deadlines are monotonic-clock values, directly comparable
+between the stream that writes one and the watcher that reads it.
+
+Putting them in the registry entry the request process already registers is
+what makes cleanup free: the entry dies with the process and the deadline
+with it. No table, no monitor, and no sweep for connections that died
+mid-stall.
+
+##### The sweep
+
+Every `stall_check_interval` the watcher takes one clock reading, walks the
+producer's registry, and kills whatever is past its deadline. That is one
+atomics read per open connection and no query, so detection lands within
+`stall_timeout + stall_check_interval` at a cost that does not scale with
+publish rate.
+
+**The kill is untrappable — `Process.exit(pid, :kill)` — and that is not
+incidental.** An ordinary exit signal to a process trapping exits becomes a
+message in its mailbox, and the mailbox is precisely what a wedged process is
+not servicing: the signal would be read at the moment it was no longer
+needed. Killing also frees a process suspended on a busy port, which is what
+a blocked `chunk/2` is. What dies with it: its registry entry, the database
+connection it had checked out (the pool monitors its client), and the socket,
+through the web server's own teardown — the same path a client disconnect
+takes.
 
 A frame **byte cap** — independent of `max_batch_size`, which bounds rows
-rather than bytes — belongs alongside these. It keeps any single outstanding
-write bounded, so `send_timeout` can be set tightly without risking a false
-positive on a legitimately large frame to a slow-but-alive consumer. See
-[Open Questions](#open-questions) for sizing.
+rather than bytes — belongs alongside this. It keeps any single outstanding
+write bounded, so `stall_timeout` can be set tightly without risking a false
+positive on a legitimately large frame to a slow-but-alive consumer.
 
-Both mechanisms terminate the connection at the socket, so the request
-process dies with it and nothing else is required.
+##### What this reaches that a socket timeout cannot
+
+A loop wedged for a **non-socket reason**: a hung query, a pool checkout that
+never returns. `send_timeout` is a property of a write, and these never reach
+one — to every transport-level mechanism such a connection looks perfectly
+healthy. The watcher does not distinguish the cases at all, which is the
+point: a missed deadline is a missed deadline, whatever the step was.
+
+##### What it does not reach, and what socket options still add
+
+A peer that **vanished while the kernel still accepts our bytes** — power
+loss, a NAT rebind, a dropped flow. Writes keep returning `:ok`, deadlines
+keep being met, and nothing running inside this VM can tell the difference.
+Heartbeats mean there is always unacked data in flight, so TCP's own
+retransmission timeout eventually errors the socket; `{keepalive, true}` with
+`TCP_KEEPIDLE`/`TCP_KEEPINTVL` tuned to the order of the heartbeat interval
+is what shortens that from many minutes to seconds. **The OS default is
+useless here** — two hours on Linux.
+
+`{send_timeout, N}` with `{send_timeout_close, true}` is still worth setting
+for a different reason: it fires at the socket the moment the output queue is
+genuinely full, which is tighter than one watcher tick and needs nothing to
+be scheduled. Both are **optional refinements now** — DMEx is correct with
+neither, which is the whole reason the watcher exists. See
+[the deployment guide](guides/deployment.md).
 
 **Dropping a connection is not a delivery event.** Nothing is lost and
 nothing is skipped: the producer holds no consumer state, the consumer's
@@ -1624,37 +1690,37 @@ its durable `last_seen`, with jittered backoff (see
 #### What this deliberately does not do
 
 The judgment call, recorded so it can be revisited rather than
-rediscovered: **DMEx does not implement global shedding or admission
-control.** There is no sweeper process tracking per-connection progress, no
-aggregate memory or connection budget, and no `503`/`Retry-After` path that
-turns consumers away when a producer is loaded.
+rediscovered: **DMEx enforces no aggregate budget and no admission control.**
+There is no cap on how many connections one producer will serve, no aggregate
+memory budget, and no `503`/`Retry-After` path that turns consumers away when
+a producer is loaded.
 
-The reasoning is that the per-connection mechanisms above already cover the
-failure that actually threatens the host application. The loop makes
-unbounded memory growth unrepresentable (see
-[Producer side](#producer-side)); `send_timeout` and keepalive reclaim
-connections that stop making progress. What global machinery would add is
-protection against *aggregate* pressure — many individually-healthy
-connections adding up to more than the app can afford — and against a class
-of stall the socket layer cannot see: a loop wedged for a non-socket reason
-(a hung query, a pool checkout that never returns), or a consumer that is
-pathologically slow while still technically progressing, which no
-per-call timeout can ever fire on.
+What *is* covered is per-connection, and it is covered without asking anything
+of the operator: the loop makes unbounded memory growth unrepresentable (see
+[Producer side](#producer-side)), and the watcher reclaims any connection that
+stops making progress, for whatever reason (see
+[Stalled connections](#stalled-connections)). What global machinery would add
+is protection against *aggregate* pressure — many individually-healthy
+connections adding up to more than the app can afford — together with a policy
+for choosing which of them to give up when that happens.
 
-Those are real, and none of them are addressed *by the producer*. The last of
-them is at least approached from the other end — a DMEx consumer that keeps
-falling behind re-parameterizes down to a rate it can actually sustain (see
+One case remains approached only from the other end: a consumer that is
+pathologically slow while still technically progressing, which no per-step
+deadline can ever fire on. A DMEx consumer that keeps falling behind
+re-parameterizes down to a rate it can actually sustain (see
 [Backpressure & adaptive batching](#backpressure--adaptive-batching)) instead
-of living permanently at the edge of `send_timeout`. But that is voluntary and
+of living permanently at the edge of `stall_timeout`. But that is voluntary and
 consumer-side: it is a well-behaved client being well-behaved, not the producer
 defending itself, and it does exactly nothing about a client that declines to
-implement it. The bet is that they
-matter only past a connection count where a producer app has bigger capacity
-questions anyway, and that the machinery is cheaper to add later — one
-sweeper process and a counter — than to carry unused. Revisit when
-connection counts per producer reach the point where aggregate budget is a
-live constraint; that is the same threshold at which admission control
-starts being worth its complexity, and the two should be designed together.
+implement it.
+
+The bet is that aggregate limits matter only past a connection count where a
+producer application has bigger capacity questions anyway. What has changed is
+where they would go, and it is no longer a new component: `DMEx.Producer.Watcher`
+already runs per producer and already holds every connection's deadline, so a
+budget is a counter and a policy on a process that exists — and
+`DMEx.Producer.Plug` already has the one place a connect attempt would have to
+ask. See [Global Resource Limits](ROADMAP.md#global-resource-limits).
 
 ### Live dispatch (wakeups)
 
@@ -1732,16 +1798,16 @@ bound. A stalled connection is blocked in `chunk/2` and therefore cannot
 service its mailbox, while publishes keep arriving — so `:wakeup` messages
 accumulate at the publish rate for as long as the stall lasts.
 
-`send_timeout` (see [Stalled connections](#stalled-connections)) already
-bounds this at `publish_rate × send_timeout` per connection, which is
-survivable but not free: a partition that stalls many connections at once
-multiplies it by the number of stalled connections, right when the producer
-is least able to absorb it. It is also the one bound here that depends on a
-tunable being set correctly rather than on structure.
+The watcher (see [Stalled connections](#stalled-connections)) already bounds
+this at `publish_rate × stall_timeout` per connection, which is survivable but
+not free: a partition that stalls many connections at once multiplies it by the
+number of stalled connections, right when the producer is least able to absorb
+it. It is also the one bound here that depends on a tunable being set correctly
+rather than on structure.
 
 Since a wakeup carries no information, it can be collapsed to **at most one
-pending per connection**. Each stream keeps a row in a shared ETS table
-carrying a single `pending` flag:
+pending per connection**. Each connection's registry entry carries a single
+`pending` flag, alongside the deadline and in the same `:atomics` reference:
 
 - the `Dispatcher` sets the flag and only actually `send/2`s `:wakeup` if it
   flipped from `false` — so a connection with a wakeup already queued gets
@@ -1756,7 +1822,7 @@ carrying a single `pending` flag:
 Mailbox depth per connection is then O(1) rather than O(publish rate ×
 stall duration), regardless of how long a stall lasts or how many
 connections stall together — and, usefully, without depending on
-`send_timeout` being tuned correctly.
+`stall_timeout` being tuned correctly.
 
 The `Dispatcher`'s own mailbox gets the same treatment for the same reason:
 it drains every pending notification before broadcasting, so a burst of
@@ -1870,8 +1936,12 @@ changing shipped behaviour rather than choosing freely.
   `batch_window` 200 ms (floor 50, ceiling 5 000), `max_batch_size` 500 rows
   (floor 1, ceiling 5 000), `heartbeat_ms` 15 000, poll interval 1 000 ms,
   frame byte cap 1 MiB producer-side and 4 MiB consumer-side, three local retry
-  attempts, jittered reconnect backoff from 500 ms capped at 30 s, and `k` = 3
-  missed heartbeats. Two of these are **not in this document**, and were added
+  attempts, jittered reconnect backoff from 500 ms capped at 30 s, `k` = 3
+  missed heartbeats, and — for the watcher — a `stall_timeout` of 30 s swept
+  every second. That budget is deliberately generous rather than tight: it is
+  on by default, so a false positive costs a healthy consumer its connection
+  and the producer a fresh catch-up read, where a wedged connection lingering
+  30 s costs one request process. Two of these are **not in this document**, and were added
   because their absence was a hole rather than a default: a *ceiling* on
   `batch_window` (it sits inside the advertised effective heartbeat, so an
   unbounded window lets a consumer push its own liveness deadline past every
@@ -1941,7 +2011,7 @@ changing shipped behaviour rather than choosing freely.
 - **Telemetry vocabulary**, pinned because renaming it later breaks every
   dashboard: `[:dmex, :publish, :start|:stop|:exception]`,
   `[:dmex, :stream, :connect]`, `[:dmex, :stream, :frame]`,
-  `[:dmex, :dispatcher, :broadcast]`,
+  `[:dmex, :stream, :reclaim]`, `[:dmex, :dispatcher, :broadcast]`,
   `[:dmex, :consumer, :message, :start|:stop|:exception]`,
   `[:dmex, :consumer, :skip]`, `[:dmex, :consumer, :lag]`,
   `[:dmex, :consumer, :reconnect]`.
