@@ -24,7 +24,7 @@ defmodule DMEx.Consumer.FailureTest do
     test "a failing handler is retried up to max_attempts", ctx do
       state = state(ctx, handler: Handlers.Raising, max_attempts: 3)
 
-      {:ok, 1} = Pipeline.run(row(1), state)
+      {:ok, %{cursor: 1}} = Pipeline.run(row(1), state)
 
       # The message is still in hand after a rollback, so a retry is just
       # calling the handler again — no refetch, no reconnect.
@@ -34,7 +34,7 @@ defmodule DMEx.Consumer.FailureTest do
     test "max_attempts of 1 means no retry at all", ctx do
       state = state(ctx, handler: Handlers.Raising, max_attempts: 1)
 
-      {:ok, 1} = Pipeline.run(row(1), state)
+      {:ok, %{cursor: 1}} = Pipeline.run(row(1), state)
 
       assert attempts() == 1
     end
@@ -44,7 +44,7 @@ defmodule DMEx.Consumer.FailureTest do
       Handlers.FailTimes.set(1)
       state = state(ctx, handler: Handlers.FailTimes, max_attempts: 3)
 
-      assert {:ok, 1} = Pipeline.run(row(1), state)
+      assert {:ok, %{cursor: 1}} = Pipeline.run(row(1), state)
       assert {:ok, 1} = Postgres.last_seen(ctx.storage_opts, "test/fail_times")
     end
 
@@ -98,14 +98,14 @@ defmodule DMEx.Consumer.FailureTest do
     test "advances past the failing message and carries on", ctx do
       state = state(ctx, handler: Handlers.Raising, on_failure: :skip)
 
-      assert {:ok, 1} = Pipeline.run(row(1), state)
+      assert {:ok, %{cursor: 1}} = Pipeline.run(row(1), state)
       assert {:ok, 1} = Postgres.last_seen(ctx.storage_opts, "test/raising")
     end
 
     test "does not stop the rest of the batch", ctx do
       state = state(ctx, handler: Handlers.Raising, on_failure: :skip)
 
-      assert {:ok, 3} = Pipeline.run_all([row(1), row(2), row(3)], state)
+      assert {:ok, %{cursor: 3}} = Pipeline.run_all([row(1), row(2), row(3)], state)
     end
 
     # The message is simply gone from this consumer's perspective, and this
@@ -134,7 +134,7 @@ defmodule DMEx.Consumer.FailureTest do
     test "records the message and advances past it", ctx do
       state = state(ctx, handler: Handlers.Raising, on_failure: :dead_message)
 
-      assert {:ok, 1} = Pipeline.run(row(1), state)
+      assert {:ok, %{cursor: 1}} = Pipeline.run(row(1), state)
       assert {:ok, 1} = Postgres.last_seen(ctx.storage_opts, "test/raising")
       assert dead_count() == 1
     end
@@ -213,7 +213,7 @@ defmodule DMEx.Consumer.FailureTest do
       state = state(ctx, handler: Handlers.Raising, on_failure: :dead_message)
 
       # First pass: message 2 dies, is recorded, and the cursor moves to 2.
-      assert {:ok, 2} = Pipeline.run(row(2), state)
+      assert {:ok, %{cursor: 2}} = Pipeline.run(row(2), state)
       assert dead_count() == 1
 
       # Now rewind the cursor to 1 and feed message 2 again. Its dead-message
@@ -234,7 +234,7 @@ defmodule DMEx.Consumer.FailureTest do
     test "does not stop the rest of the batch", ctx do
       state = state(ctx, handler: Handlers.Raising, on_failure: :dead_message)
 
-      assert {:ok, 3} = Pipeline.run_all([row(1), row(2), row(3)], state)
+      assert {:ok, %{cursor: 3}} = Pipeline.run_all([row(1), row(2), row(3)], state)
       assert dead_count() == 3
     end
   end
@@ -243,7 +243,7 @@ defmodule DMEx.Consumer.FailureTest do
     test "a handler that works never reaches any of this", ctx do
       state = state(ctx, handler: Handlers.Echo, on_failure: :dead_message)
 
-      assert {:ok, 1} = Pipeline.run(row(1), state)
+      assert {:ok, %{cursor: 1}} = Pipeline.run(row(1), state)
 
       assert_received {:handled, %OrderPlaced{order_id: 1}, _}
       assert dead_count() == 0

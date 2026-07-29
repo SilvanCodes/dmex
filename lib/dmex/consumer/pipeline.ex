@@ -31,6 +31,34 @@ defmodule DMEx.Consumer.Pipeline do
   stream and a consumer silently discarding the one type it wanted look
   identical otherwise.
 
+  ## 2a. A skip's advance is coalesced; a handled message's is not
+
+  A skip runs no handler, so its cursor advance is atomic with *nothing* — there
+  is no side effect for it to commit alongside. Paying a transaction and a
+  `last_seen` write per skipped row therefore buys nothing, and on a mostly-
+  skipped stream it is the entire cost of consuming: measured at ~250 rows/s
+  against ~2 400 rows/s for the same bytes read and discarded.
+
+  So a skip advances `:cursor`, sets the `:pending` flag, and returns without
+  touching the database. The run is persisted by `flush/1` — driven by
+  `DMEx.Consumer.Stream` on a `checkpoint_interval` timer, and before anything
+  that re-reads the durable cursor. There is no separate pending *position* to
+  write: the cursor already is one, and a coalesced run is only ever settled at
+  its head.
+
+  **A handled message still commits immediately, and needs no flush of its
+  own.** `c:DMEx.Storage.advance/3` sets `last_seen` absolutely rather than
+  incrementally, so advancing to a handled row's id *subsumes* every pending
+  skip below it — skips at 5, 6, 7 followed by a handled 8 leave the cursor at
+  8 whether or not those skips were ever written. Clearing `:pending` is the
+  whole of it. That is why coalescing costs the handler/cursor guarantee in
+  section 5 nothing at all.
+
+  What a crash with a pending run costs is re-reading those rows and skipping
+  them again, bounded by `checkpoint_interval`. Nothing is lost and nothing is
+  handled twice, because the rows in a pending run are by definition rows no
+  code ran for.
+
   ## 3. Decoding happens outside the transaction
 
   `c:DMEx.Message.cast/1` is CPU work, not IO. Holding a database connection
@@ -64,7 +92,18 @@ defmodule DMEx.Consumer.Pipeline do
   alias DMEx.Consumer.Failure
   alias DMEx.Consumer.Handler
 
-  @typedoc "Everything processing a row needs, built once per subscription."
+  @typedoc """
+  Everything processing a row needs, built once per subscription.
+
+  `:cursor` is the in-memory read position — the authority for duplicate
+  suppression, and always at or ahead of the durable one. `:pending` says
+  whether it has been written yet; see section 2a.
+
+  A flag rather than a position, because a position would be a second copy of
+  `:cursor`: a skip is the only thing that sets it, and it sets both in the same
+  update. Nothing can advance the cursor and leave a stale pending id behind if
+  there is no pending id to go stale.
+  """
   @type t :: %{
           required(:storage) => module(),
           required(:storage_opts) => DMEx.Storage.opts(),
@@ -73,14 +112,18 @@ defmodule DMEx.Consumer.Pipeline do
           required(:modules) => %{String.t() => module()},
           required(:url) => String.t(),
           required(:cursor) => non_neg_integer(),
+          required(:pending) => boolean(),
           required(:config) => DMEx.Config.Consumer.t()
         }
 
   @doc """
-  Runs one row through the pipeline and returns the new cursor.
+  Runs one row through the pipeline and returns the updated state.
 
   The row is a decoded log row from a `DMEx.SSE.Frame` — string-keyed, with `data`
   and `metadata` already one level decoded.
+
+  Read `:cursor` off the result for the new read position, and `:pending` for
+  whether it is waiting on `flush/1` to be written.
 
   Propagates whatever the handler raises, once retries are exhausted and
   `on_failure` says `:crash`: the stream process dies, its supervisor restarts
@@ -88,12 +131,12 @@ defmodule DMEx.Consumer.Pipeline do
   this one, since that transaction never committed — and the producer's ordinary
   range scan re-streams the same message.
   """
-  @spec run(map(), t()) :: {:ok, non_neg_integer()}
+  @spec run(map(), t()) :: {:ok, t()}
   def run(row, state) do
     id = Map.fetch!(row, "id")
 
     if id <= state.cursor do
-      {:ok, state.cursor}
+      {:ok, state}
     else
       dispatch(row, id, state)
     end
@@ -102,15 +145,40 @@ defmodule DMEx.Consumer.Pipeline do
   @doc """
   Runs a list of rows in order, stopping at the first that raises.
 
-  Returns the cursor reached. Rows are processed strictly one at a time: a batch
-  is a wire-framing convenience and never a processing unit, so a mid-batch
-  failure only ever rolls back that one message.
+  Rows are processed strictly one at a time: a batch is a wire-framing
+  convenience and never a processing unit, so a mid-batch failure only ever
+  rolls back that one message.
+
+  Does **not** flush: a run ending on a skip leaves `:pending` set, and it is
+  the caller's job to decide when that is written. `DMEx.Consumer.Stream` drains
+  row by row rather than through this, so this is the path for a caller holding
+  a whole batch already.
   """
-  @spec run_all([map()], t()) :: {:ok, non_neg_integer()}
+  @spec run_all([map()], t()) :: {:ok, t()}
   def run_all(rows, state) do
-    Enum.reduce(rows, {:ok, state.cursor}, fn row, {:ok, cursor} ->
-      run(row, %{state | cursor: cursor})
-    end)
+    Enum.reduce(rows, {:ok, state}, fn row, {:ok, state} -> run(row, state) end)
+  end
+
+  @doc """
+  Persists a coalesced run of skips, if there is one.
+
+  A no-op when nothing is pending, which is the common case — any handled
+  message clears the marker on its way past, since its own advance already
+  covered the skips below it.
+  """
+  @spec flush(t()) :: {:ok, t()}
+  def flush(%{pending: false} = state), do: {:ok, state}
+
+  def flush(%{pending: true, cursor: cursor} = state) do
+    commit!(state, fn -> advance!(state, cursor) end)
+
+    :telemetry.execute(
+      [:dmex, :consumer, :checkpoint],
+      %{id: cursor},
+      %{subscription: state.subscription, handler: state.handler, url: state.url}
+    )
+
+    {:ok, %{state | pending: false}}
   end
 
   ## Internals
@@ -153,7 +221,9 @@ defmodule DMEx.Consumer.Pipeline do
         advance!(state, id)
       end)
 
-      {{:ok, id}, telemetry}
+      # `pending` is cleared rather than flushed: the advance just committed is
+      # absolute, so it already carried every skip below this row with it.
+      {{:ok, %{state | cursor: id, pending: false}}, telemetry}
     end)
   rescue
     exception ->
@@ -175,9 +245,9 @@ defmodule DMEx.Consumer.Pipeline do
       end
   end
 
+  # No transaction and no write. The advance is deferred into `:pending` and
+  # settled by `flush/1` or by the next handled message — see section 2a.
   defp skip(row, id, state) do
-    commit!(state, fn -> advance!(state, id) end)
-
     :telemetry.execute(
       [:dmex, :consumer, :skip],
       %{id: id},
@@ -189,7 +259,7 @@ defmodule DMEx.Consumer.Pipeline do
       }
     )
 
-    {:ok, id}
+    {:ok, %{state | cursor: id, pending: true}}
   end
 
   defp commit!(state, fun) do
@@ -234,6 +304,7 @@ defmodule DMEx.Consumer.Pipeline do
       modules: DMEx.Message.registry(declaration.messages),
       url: Keyword.fetch!(opts, :url),
       cursor: Keyword.get(opts, :cursor, 0),
+      pending: false,
       config: Keyword.get_lazy(opts, :config, fn -> DMEx.Config.consumer!([]) end)
     }
   end

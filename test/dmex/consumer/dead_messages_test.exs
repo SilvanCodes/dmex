@@ -185,7 +185,7 @@ defmodule DMEx.Consumer.DeadMessagesTest do
         config: Config.consumer!(on_failure: :dead_message, max_attempts: 1)
       )
 
-    {:ok, ^id} =
+    {:ok, %{cursor: ^id}} =
       Pipeline.run(
         %{
           "id" => id,

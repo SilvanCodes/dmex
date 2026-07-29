@@ -25,7 +25,7 @@ defmodule DMEx.Consumer.PipelineTest do
     test "drops rows at or below the cursor and runs only what is new", ctx do
       state = state(ctx, handler: Handlers.Echo, cursor: 5)
 
-      assert {:ok, 7} = Pipeline.run_all(rows(3..7), state)
+      assert {:ok, %{cursor: 7}} = Pipeline.run_all(rows(3..7), state)
 
       assert_received {:handled, %OrderPlaced{order_id: 6}, _}
       assert_received {:handled, %OrderPlaced{order_id: 7}, _}
@@ -36,7 +36,7 @@ defmodule DMEx.Consumer.PipelineTest do
     test "a duplicate opens no transaction at all", ctx do
       state = state(ctx, handler: Handlers.Echo, cursor: 10)
 
-      assert {:ok, 10} = Pipeline.run(row(3), state)
+      assert {:ok, %{cursor: 10, pending: false}} = Pipeline.run(row(3), state)
 
       # The cursor was never written, so nothing was committed for it either.
       assert {:ok, nil} = Postgres.last_seen(ctx.storage_opts, "test/echo")
@@ -45,8 +45,8 @@ defmodule DMEx.Consumer.PipelineTest do
     test "makes a replayed frame harmless", ctx do
       state = state(ctx, handler: Handlers.Echo, cursor: 0)
 
-      {:ok, cursor} = Pipeline.run_all(rows(1..3), state)
-      {:ok, ^cursor} = Pipeline.run_all(rows(1..3), %{state | cursor: cursor})
+      {:ok, %{cursor: cursor} = state} = Pipeline.run_all(rows(1..3), state)
+      {:ok, %{cursor: ^cursor}} = Pipeline.run_all(rows(1..3), state)
 
       for id <- 1..3, do: assert_received({:handled, %OrderPlaced{order_id: ^id}, _})
       refute_received {:handled, _, _}
@@ -60,9 +60,15 @@ defmodule DMEx.Consumer.PipelineTest do
     test "invokes nothing but still advances the cursor", ctx do
       state = state(ctx, handler: Handlers.Echo, cursor: 0)
 
-      assert {:ok, 1} = Pipeline.run(unknown_row(1), state)
+      assert {:ok, %{cursor: 1, pending: true} = state} = Pipeline.run(unknown_row(1), state)
 
       refute_received {:handled, _, _}
+
+      # Deferred, not written: a skip runs no handler, so its advance is atomic
+      # with nothing and there is nothing to be in a transaction with.
+      assert {:ok, nil} = Postgres.last_seen(ctx.storage_opts, "test/echo")
+
+      assert {:ok, %{pending: false}} = Pipeline.flush(state)
       assert {:ok, 1} = Postgres.last_seen(ctx.storage_opts, "test/echo")
     end
 
@@ -71,10 +77,14 @@ defmodule DMEx.Consumer.PipelineTest do
     test "does not wedge the subscription behind it", ctx do
       state = state(ctx, handler: Handlers.Echo, cursor: 0)
 
-      assert {:ok, 3} = Pipeline.run_all([unknown_row(1), row(2), unknown_row(3)], state)
+      assert {:ok, %{cursor: 3}} =
+               Pipeline.run_all([unknown_row(1), row(2), unknown_row(3)], state)
 
       assert_received {:handled, %OrderPlaced{order_id: 2}, _}
-      assert {:ok, 3} = Postgres.last_seen(ctx.storage_opts, "test/echo")
+
+      # Only row 2 committed, and it committed an advance to 2 — which subsumed
+      # the skip at 1. Row 3 is still pending.
+      assert {:ok, 2} = Postgres.last_seen(ctx.storage_opts, "test/echo")
     end
 
     # A consumer silently discarding most of a stream and one silently
@@ -93,11 +103,82 @@ defmodule DMEx.Consumer.PipelineTest do
     end
   end
 
+  describe "coalescing skipped rows" do
+    # The measured motivation: a mostly-skipped stream was spending everything
+    # it had on commits for rows nothing was done with.
+    test "a run of skips costs one write, not one per row", ctx do
+      state = state(ctx, handler: Handlers.Echo, cursor: 0)
+
+      {:ok, state} = Pipeline.run_all(Enum.map(1..50, &unknown_row/1), state)
+
+      assert state.pending
+      assert state.cursor == 50
+      assert {:ok, nil} = Postgres.last_seen(ctx.storage_opts, "test/echo")
+
+      assert {:ok, %{pending: false}} = Pipeline.flush(state)
+      assert {:ok, 50} = Postgres.last_seen(ctx.storage_opts, "test/echo")
+    end
+
+    # `advance/3` sets last_seen absolutely, so a handled row's own transaction
+    # already carries every skip below it. That is what keeps "flush handled
+    # messages immediately" from costing a second write.
+    test "a handled message subsumes the pending run rather than adding a write", ctx do
+      state = state(ctx, handler: Handlers.Echo, cursor: 0)
+
+      rows = [unknown_row(1), unknown_row(2), unknown_row(3), row(4)]
+      {:ok, state} = Pipeline.run_all(rows, state)
+
+      refute state.pending
+      assert {:ok, 4} = Postgres.last_seen(ctx.storage_opts, "test/echo")
+
+      # And the flush that follows is a no-op, not a redundant second write.
+      assert {:ok, ^state} = Pipeline.flush(state)
+    end
+
+    test "flushing with nothing pending writes nothing at all", ctx do
+      state = state(ctx, handler: Handlers.Echo, cursor: 0)
+
+      assert {:ok, ^state} = Pipeline.flush(state)
+      assert {:ok, nil} = Postgres.last_seen(ctx.storage_opts, "test/echo")
+    end
+
+    # A pending run is rows no code ran for, so losing it costs re-skipping and
+    # never a lost or twice-handled message.
+    test "a crash mid-run loses only the skipping, and it is redone", ctx do
+      state = state(ctx, handler: Handlers.Echo, cursor: 0)
+
+      {:ok, crashed} = Pipeline.run_all(Enum.map(1..5, &unknown_row/1), state)
+      assert crashed.pending
+      assert crashed.cursor == 5
+
+      # Restart: the durable cursor is the authority, and it never moved.
+      assert {:ok, nil} = Postgres.last_seen(ctx.storage_opts, "test/echo")
+
+      {:ok, resumed} = Pipeline.run_all(Enum.map(1..5, &unknown_row/1), state)
+      {:ok, resumed} = Pipeline.flush(resumed)
+
+      assert resumed.cursor == 5
+      assert {:ok, 5} = Postgres.last_seen(ctx.storage_opts, "test/echo")
+      refute_received {:handled, _, _}
+    end
+
+    test "emits a checkpoint event carrying the position persisted", ctx do
+      ref = :telemetry_test.attach_event_handlers(self(), [[:dmex, :consumer, :checkpoint]])
+      state = state(ctx, handler: Handlers.Echo, cursor: 0)
+
+      {:ok, state} = Pipeline.run_all([unknown_row(1), unknown_row(2)], state)
+      Pipeline.flush(state)
+
+      assert_receive {[:dmex, :consumer, :checkpoint], ^ref, %{id: 2},
+                      %{handler: Handlers.Echo, subscription: "test/echo"}}
+    end
+  end
+
   describe "a successful handler" do
     test "advances the cursor exactly once", ctx do
       state = state(ctx, handler: Handlers.Echo, cursor: 0)
 
-      assert {:ok, 1} = Pipeline.run(row(1), state)
+      assert {:ok, %{cursor: 1, pending: false}} = Pipeline.run(row(1), state)
 
       assert {:ok, 1} = Postgres.last_seen(ctx.storage_opts, "test/echo")
     end

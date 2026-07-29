@@ -66,8 +66,17 @@ defmodule DMEx.Consumer.Failure do
   @doc """
   Resolves a message that has exhausted its retries.
 
-  Returns the new cursor for `:skip` and `:dead_message`; re-raises for
-  `:crash`.
+  Returns the updated pipeline state for `:skip` and `:dead_message`; re-raises
+  for `:crash`.
+
+  Both terminal actions commit an absolute advance to this row's id, which
+  carries any coalesced run of skips below it (see `DMEx.Consumer.Pipeline`,
+  section 2a) — so `:pending` is cleared rather than flushed separately, and
+  the dead-message row stays atomic with the advance that moved past it.
+
+  `:crash` re-raises without advancing, so a pending run is simply dropped: the
+  rows in it are re-read and re-skipped after the restart, which is what a
+  pending run always costs.
   """
   @spec resolve(
           Pipeline.t(),
@@ -77,7 +86,7 @@ defmodule DMEx.Consumer.Failure do
           Exception.stacktrace(),
           pos_integer()
         ) ::
-          {:ok, pos_integer()}
+          {:ok, Pipeline.t()}
   def resolve(state, row, id, exception, stacktrace, attempts) do
     case state.config.on_failure do
       :crash -> reraise(exception, stacktrace)
@@ -94,7 +103,7 @@ defmodule DMEx.Consumer.Failure do
 
     report(state, row, id, exception, attempts, :skip)
 
-    {:ok, id}
+    {:ok, %{state | cursor: id, pending: false}}
   end
 
   defp dead_message(state, row, id, exception, attempts) do
@@ -116,7 +125,7 @@ defmodule DMEx.Consumer.Failure do
 
     report(state, row, id, exception, attempts, :dead_message)
 
-    {:ok, id}
+    {:ok, %{state | cursor: id, pending: false}}
   end
 
   # The row arrived through `DMEx.SSE.Frame`, which decodes one level, so `data` and

@@ -45,6 +45,16 @@ defmodule DMEx.Consumer.Stream do
   Silence means *no bytes at all*, not no messages. A heartbeat comment is
   bytes, so a caught-up stream on an idle log stays healthy indefinitely.
 
+  ## Skips are checkpointed on a timer, not per row
+
+  A skipped row runs no handler, so `DMEx.Consumer.Pipeline` defers its cursor
+  advance instead of committing one per row. This process owns settling that:
+  a `checkpoint_interval` timer, armed for the process's whole life rather than
+  per connection, plus a flush before each of the three points that re-read the
+  durable cursor — a reconnect, the end of a re-parameterization's local drain,
+  and `terminate/2`. Without those a run of skips would be re-read and
+  re-skipped for nothing on the next connect.
+
   ## Backpressure in Stage 1
 
   Rows are processed inline as frames arrive. `Mint.HTTP.stream/2` re-arms
@@ -131,10 +141,14 @@ defmodule DMEx.Consumer.Stream do
           socket_mode: :active,
           draining?: false,
           reparameterizing?: false,
+          checkpoint_timer: nil,
           attempt: 0
         }
 
-        {:ok, state, {:continue, :connect}}
+        # Armed once for the process's whole life rather than per connection: a
+        # pending run of skips outlives a disconnect, and the local drain during
+        # a re-parameterization runs with no connection at all.
+        {:ok, schedule_checkpoint(state), {:continue, :connect}}
 
       {:error, {:already_registered, _pid}} ->
         {:stop, {:already_subscribed, subscription}}
@@ -149,6 +163,11 @@ defmodule DMEx.Consumer.Stream do
 
   @impl GenServer
   def handle_info(:drain, state), do: {:noreply, drain(state)}
+
+  @impl GenServer
+  def handle_info(:checkpoint, state) do
+    {:noreply, state |> flush() |> schedule_checkpoint()}
+  end
 
   @impl GenServer
   def handle_info(:liveness, %{conn: nil} = state), do: {:noreply, state}
@@ -183,14 +202,22 @@ defmodule DMEx.Consumer.Stream do
   @impl GenServer
   def handle_info(_message, state), do: {:noreply, state}
 
+  # A clean stop — an `unsubscribe/2`, a supervisor shutdown — should not throw
+  # away skips already made. Rescued because the repo's pool may already be on
+  # its way down, and re-skipping is the ordinary cost of a pending run rather
+  # than something worth a noisy shutdown crash.
   @impl GenServer
-  def terminate(_reason, %{conn: conn}) when not is_nil(conn) do
-    Mint.HTTP.close(conn)
+  def terminate(_reason, state) do
+    try do
+      flush(state)
+    rescue
+      _ -> :ok
+    end
+
+    if state.conn, do: Mint.HTTP.close(state.conn)
 
     :ok
   end
-
-  def terminate(_reason, _state), do: :ok
 
   ## Connecting
 
@@ -204,6 +231,10 @@ defmodule DMEx.Consumer.Stream do
          | conn: conn,
            ref: ref,
            cursor: cursor,
+           # The durable cursor just read is the authority, so anything still
+           # marked pending was either already written or is about to be
+           # re-delivered and re-skipped. Either way it is not owed a write.
+           pipeline: %{state.pipeline | pending: false},
            decoder: Decoder.new(state.config.max_frame_bytes),
            socket_mode: :active,
            reparameterizing?: false,
@@ -334,6 +365,10 @@ defmodule DMEx.Consumer.Stream do
   ## Reconnecting
 
   defp reconnect(state, reason) do
+    # Before anything else: the next connect resumes from the *durable* cursor,
+    # so an unwritten run of skips would be re-read and re-skipped for nothing.
+    state = flush(state)
+
     if state.conn, do: Mint.HTTP.close(state.conn)
     if state.liveness_timer, do: Process.cancel_timer(state.liveness_timer)
 
@@ -375,12 +410,11 @@ defmodule DMEx.Consumer.Stream do
         advance(%{state | draining?: false})
 
       {:ok, row, queue} ->
-        cursor = cursor_of(state)
-        {:ok, cursor} = Pipeline.run(row, %{state.pipeline | cursor: cursor})
+        {:ok, pipeline} = Pipeline.run(row, %{state.pipeline | cursor: cursor_of(state)})
 
         elapsed = (System.monotonic_time(:microsecond) - started) / 1000
 
-        %{state | queue: queue, cursor: cursor, draining?: false}
+        %{state | queue: queue, pipeline: pipeline, cursor: pipeline.cursor, draining?: false}
         |> sample(elapsed)
         |> observe()
         |> gate_socket()
@@ -530,11 +564,31 @@ defmodule DMEx.Consumer.Stream do
   # because a producer restart re-pacing every consumer at once is a
   # synchronized storm with nothing to absorb it.
   defp finish_reparameterize(state) do
+    # "The cursor is exactly current by now" is only true once the local drain's
+    # pending skips are written — the reconnect below resolves the durable one.
+    state = flush(state)
+
     delay = Backoff.delay(1, state.config.reconnect_backoff, state.config.reconnect_backoff_max)
 
     Process.send_after(self(), :connect, delay)
 
     %{state | reparameterizing?: false}
+  end
+
+  ## Checkpointing
+
+  # Settles a coalesced run of skips. A no-op unless one is outstanding, so the
+  # timer costs nothing on a stream whose rows are all handled.
+  defp flush(state) do
+    {:ok, pipeline} = Pipeline.flush(state.pipeline)
+
+    %{state | pipeline: pipeline}
+  end
+
+  defp schedule_checkpoint(state) do
+    timer = Process.send_after(self(), :checkpoint, state.config.checkpoint_interval)
+
+    %{state | checkpoint_timer: timer}
   end
 
   defp now, do: System.monotonic_time(:millisecond)

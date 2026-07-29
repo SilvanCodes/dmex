@@ -162,11 +162,21 @@ defmodule Bench.SkippingHandler do
 end
 
 skips = :counters.new(1, [:write_concurrency])
+checkpoints = :counters.new(1, [:write_concurrency])
 
 :telemetry.attach(
   "bench-skips",
   [:dmex, :consumer, :skip],
   fn _e, _m, _meta, _c -> :counters.add(skips, 1, 1) end,
+  nil
+)
+
+# The mechanism, counted rather than assumed: skips per checkpoint is how many
+# cursor writes coalescing actually removed.
+:telemetry.attach(
+  "bench-checkpoints",
+  [:dmex, :consumer, :checkpoint],
+  fn _e, _m, _meta, _c -> :counters.add(checkpoints, 1, 1) end,
   nil
 )
 
@@ -191,11 +201,23 @@ report.(
   System.monotonic_time(:microsecond) - started
 )
 
+written = :counters.get(checkpoints, 1)
+
+IO.puts(
+  "  #{String.pad_trailing("    cursor writes for those skips", 34)} " <>
+    "#{written}  (#{Float.round(backlog / max(written, 1), 1)} rows per write)"
+)
+
 :telemetry.detach("bench-skips")
+:telemetry.detach("bench-checkpoints")
 
 IO.puts("""
 
   (a) vs (b) is what the consumer pipeline costs on top of the producer.
-  (b) vs (c) is the per-row-commit question: if they are close, a mostly-skipped
-  stream is commit-bound and coalescing consecutive skips would pay for itself.
+  (b) vs (c) was the per-row-commit question, and it is now answered rather than
+  open: skips are coalesced into one cursor write per `checkpoint_interval`, so
+  (c) should sit near (a) — a skipped row costs a map lookup and a telemetry
+  event, and no database work at all. (b) is unchanged by design: a handled
+  message still commits its own advance, because that transaction is the
+  handler/cursor guarantee.
 """)

@@ -88,6 +88,18 @@ defmodule DMEx.Telemetry do
   silently discarding most of a stream and one silently discarding the single
   type it wanted look identical without this.
 
+  ### `[:dmex, :consumer, :checkpoint]`
+
+  A coalesced run of skipped rows was written to `dmex_cursors`. Measurements:
+  `:id`, the position persisted. Metadata: `:subscription`, `:handler`, `:url`.
+
+  Emitted only when a run was actually outstanding, so on a stream whose rows
+  are all handled this never fires — a handled message's own advance is
+  absolute and carries the skips below it, so there is nothing left to write.
+  The rate against `[:dmex, :consumer, :skip]` is the coalescing ratio: one
+  checkpoint per thousand skips is the mechanism working, one per skip means
+  runs are being broken up by handled rows and the stream is paying full price.
+
   ### `[:dmex, :consumer, :failed]`
 
   A message that exhausted its local retries. Measurements: `:id`,

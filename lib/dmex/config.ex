@@ -39,6 +39,7 @@ defmodule DMEx.Config do
   | `max_batch_size` | `500` | rows; likewise a request, echoed back as whatever the producer actually applied. |
   | `queue_limit` | `nil` | rows; `nil` means derive `2 × max_batch_size`, the smallest bound that distinguishes "a frame landed while the last one drained" from genuine pressure. |
   | `start` | `:beginning` | where a subscription begins when it has no cursor yet. Ignored once one exists. |
+  | `checkpoint_interval` | `1_000` | ms; the longest a coalesced run of *skipped* rows may go unpersisted. Skips run no handler, so their advance is atomic with nothing and batching it is invisible — this bounds only how much re-skipping a crash costs. A handled message still commits its own advance immediately, so this never weakens the handler/cursor guarantee. |
   | `on_failure` | `:dead_message` | what happens after local retries are exhausted. Recording the message and moving on keeps one poison message from wedging a subscription, and keeps it from vanishing either — `:crash` is there when a stuck subscription is the louder, and therefore better, failure. |
   | `max_attempts` | `3` | total attempts, so the initial call plus two retries — enough to ride out a transient deadlock, few enough that a poison message reaches its terminal action in under a second of backoff. |
   | `retry_backoff` | `100` | ms; base for `100 × 2^(attempt - 1)` with full jitter. |
@@ -225,6 +226,7 @@ defmodule DMEx.Config do
           :reconnect_backoff_max,
           :max_frame_bytes,
           :missed_heartbeats,
+          :checkpoint_interval,
           :min_samples,
           :sample_staleness,
           :recovery_windows,

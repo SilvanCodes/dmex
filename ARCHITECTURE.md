@@ -341,12 +341,18 @@ it has established so far:
   the thundering-herd guard working.
 - **No pool queueing appeared at 200 concurrent streams** on a developer
   machine, so the read-amplification ceiling is somewhere above that.
-- **The consumer is commit-bound, and it is the bottleneck.** A client that
-  reads and discards sustains ~2 400 rows/s; a real consumer with a no-op
-  handler manages ~155 rows/s, and one skipping *every* row only ~250 rows/s.
-  Both are paying for one transaction commit per row. At ~155 rows/s a
-  million-row log takes roughly two hours to replay, which is the figure the
-  "arbitrarily replayable" claim should be quoted with.
+- **The consumer is commit-bound on the rows it *handles*, and no longer on the
+  rows it skips.** A client that reads and discards sustains ~2 500 rows/s. A
+  real consumer with a no-op handler manages ~265 rows/s, and that is the
+  transaction it shares with the handler — the guarantee, not overhead. A
+  consumer skipping *every* row used to manage ~260 rows/s, paying the same
+  commit for rows nothing was done with; coalescing those advances took it to
+  ~2 515 rows/s, which is (a) — the skip path now has no measurable cost beyond
+  the wire. 20 000 skipped rows cost 7 cursor writes rather than 20 000.
+
+  At ~265 rows/s a million-row log of entirely handled messages takes roughly an
+  hour to replay, and that is the figure the "arbitrarily replayable" claim
+  should be quoted with. A mostly-skipped log replays at wire speed.
 
 ## Open questions
 
@@ -383,13 +389,19 @@ it has established so far:
 - **Whether the adaptive constants are right under real load.** The shape is
   settled and the numbers are in `DMEx.Config`, but they have only been
   exercised against a deliberately slow test handler.
-- **Coalescing consecutive skips into one cursor advance.** The measurement
-  above says a mostly-skipped stream is commit-bound on rows nothing was done
-  with. It is safe on its face — no handler ran — but it makes `last_seen`
-  advance in variable-size jumps, and it is the first place a batch would mean
-  something to processing rather than only to framing. Note that
-  [Message-Type Selection](ROADMAP.md#message-type-selection) removes the
-  motivation entirely, so the real question is which lands first.
+- ~~**Coalescing consecutive skips into one cursor advance.**~~ **Settled, and
+  built.** A skip runs no handler, so its advance is atomic with nothing;
+  deferring it into a pending marker and writing it on a `checkpoint_interval`
+  timer costs a crash only the re-skipping of rows no code ran for. `last_seen`
+  does now advance in variable-size jumps, which was the stated reservation —
+  in practice nothing reads it as a per-row counter, and the two paths that
+  could have drifted (a re-parameterization's local drain and a reconnect) both
+  flush first. A handled message needs no flush of its own because
+  `advance/3` is absolute and subsumes the pending run below it, so the
+  handler/cursor transaction is untouched. See `DMEx.Consumer.Pipeline`,
+  section 2a. [Message-Type Selection](ROADMAP.md#message-type-selection) would
+  have removed the motivation; this landed first, and cheaply enough that it is
+  worth keeping either way.
 - **Where the read-amplification ceiling actually is**, and whether the pool
   wants partitioning so stream reads cannot starve publish writes.
 - **Adaptation-induced reconnect churn** — every re-parameterization is a
