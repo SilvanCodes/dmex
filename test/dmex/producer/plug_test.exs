@@ -179,7 +179,7 @@ defmodule DMEx.Producer.PlugTest do
 
       stream(opts, plug)
 
-      assert [{0, _} | _] = Stub.reads(opts)
+      assert [{0, _, :all} | _] = Stub.reads(opts)
     end
 
     test "an id resumes after it", %{opts: opts, plug: plug} do
@@ -187,7 +187,7 @@ defmodule DMEx.Producer.PlugTest do
 
       stream(opts, plug, [{"last-event-id", "3"}])
 
-      assert [{3, _} | _] = Stub.reads(opts)
+      assert [{3, _, :all} | _] = Stub.reads(opts)
     end
 
     # This is how a consumer that only cares about what happens from now on
@@ -202,7 +202,7 @@ defmodule DMEx.Producer.PlugTest do
 
       # It starts at the tip, so the first read finds nothing and no data frame
       # is ever sent for the ten rows of history.
-      assert [{10, _} | _] = Stub.reads(opts)
+      assert [{10, _, :all} | _] = Stub.reads(opts)
       refute_receive {:chunk, "id: " <> _}, 50
 
       Process.exit(pid, :kill)
@@ -213,7 +213,7 @@ defmodule DMEx.Producer.PlugTest do
 
       eventually(fn -> Stub.reads(opts) != [] end)
 
-      assert [{0, _} | _] = Stub.reads(opts)
+      assert [{0, _, :all} | _] = Stub.reads(opts)
 
       Process.exit(pid, :kill)
     end

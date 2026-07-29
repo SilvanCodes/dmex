@@ -24,8 +24,10 @@ defmodule DMEx.MixProject do
     ]
   end
 
+  # `:crypto` for `DMEx.Fingerprint`, which hashes message-type strings with
+  # SHA-256. Both are OTP applications, so neither is a dependency.
   def application do
-    [extra_applications: [:logger]]
+    [extra_applications: [:logger, :crypto]]
   end
 
   # Without this, `mix test.integration` runs in :dev — the alias expands to
@@ -36,7 +38,8 @@ defmodule DMEx.MixProject do
         "test.integration": :test,
         "test.all": :test,
         "bench.micro": :test,
-        "bench.e2e": :test
+        "bench.e2e": :test,
+        "bench.fingerprint": :test
       ]
     ]
   end
@@ -80,7 +83,11 @@ defmodule DMEx.MixProject do
       # They run in :test so test/support — repos, message modules, the storage
       # stub — is on the path.
       "bench.micro": ["run bench/micro.exs"],
-      "bench.e2e": ["run bench/e2e.exs"]
+      "bench.e2e": ["run bench/e2e.exs"],
+      # Not a benchmark but the same kind of thing: a one-off sweep answering
+      # what the selection filter's error rate and size actually are, rather
+      # than what they are claimed to be.
+      "bench.fingerprint": ["run bench/fingerprint_sweep.exs"]
     ]
   end
 
@@ -96,7 +103,13 @@ defmodule DMEx.MixProject do
       main: "DMEx",
       source_url: @source_url,
       source_ref: "v#{@version}",
-      extras: ["README.md", "guides/deployment.md", "ARCHITECTURE.md", "ROADMAP.md"]
+      extras: [
+        "README.md",
+        "guides/deployment.md",
+        "guides/fingerprint-spec.md",
+        "ARCHITECTURE.md",
+        "ROADMAP.md"
+      ]
     ]
   end
 end

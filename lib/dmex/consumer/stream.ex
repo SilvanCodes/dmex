@@ -26,12 +26,20 @@ defmodule DMEx.Consumer.Stream do
   database — so an un-backed-off crash-loop is something DMEx would be
   inflicting on someone else.
 
-  ## A 4xx is fatal; everything else is retried
+  ## A 4xx is fatal, with one exception; everything else is retried
 
   A `400` means this client sent something the producer could not parse, and
   reconnecting cannot fix it — so the process stops with a descriptive reason
   rather than hammering the producer with the same bad request. A `5xx`, a
   dropped socket, or a connect failure are all transient and get the backoff.
+
+  A **`404` is retried**, and it is the one 4xx that is not this client's fault:
+  it means the selection matched none of the producer's message types. The same
+  request becomes valid the moment the producer deploys them, which is exactly
+  the position a consumer shipped ahead of its producer is in — so stopping
+  would turn an ordering choice into a permanently dead subscription. It is
+  logged at warning level, because the other cause of a `404` is a subscription
+  pointed at the wrong producer, and those look identical from here.
 
   ## Liveness
 
@@ -117,6 +125,11 @@ defmodule DMEx.Consumer.Stream do
           handler: handler,
           subscription: subscription,
           config: config,
+          # Compiled into the handler by `DMEx.Consumer.Handler`, so this is a
+          # constant lookup rather than a construction — and it is fixed for the
+          # process's whole life, for the same reason pacing is fixed for a
+          # connection's: a different selection is a different resource.
+          fingerprint: Keyword.get(opts, :fingerprint),
           pipeline: Pipeline.build(opts),
           storage: Keyword.fetch!(opts, :storage),
           storage_opts: Keyword.fetch!(opts, :storage_opts),
@@ -255,7 +268,7 @@ defmodule DMEx.Consumer.Stream do
   defp request(conn, state, cursor) do
     headers = Request.headers(state.requested, cursor, state.config)
 
-    Mint.HTTP.request(conn, "GET", Request.path(state.uri), headers, nil)
+    Mint.HTTP.request(conn, "GET", Request.path(state.uri, state.fingerprint), headers, nil)
   end
 
   # `:none` rather than 0 for "never committed anything" — that distinction is
@@ -276,6 +289,23 @@ defmodule DMEx.Consumer.Stream do
     cond do
       status in 200..299 ->
         handle_responses(rest, state)
+
+      # The one 4xx that is not this client's fault, and the one that can become
+      # valid without anything here changing: the selection matched none of the
+      # producer's message types. A consumer deployed ahead of the producer that
+      # will emit them is legitimately in this state, and the repair is the
+      # producer's deploy, so it retries. Loud, because the other cause — a
+      # subscription pointed at the wrong producer entirely — looks identical
+      # and is a real bug.
+      status == 404 ->
+        Logger.warning(
+          "DMEx #{state.subscription} (#{inspect(state.handler)}) got 404 from " <>
+            "#{state.url}: its message types match nothing this producer knows. Either the " <>
+            "producer has not deployed them yet, or this subscription is pointed at the " <>
+            "wrong producer. Retrying."
+        )
+
+        {:noreply, reconnect(state, {:no_matching_types, state.url})}
 
       status in 400..499 ->
         # This client sent something the producer could not parse. Reconnecting
@@ -301,11 +331,11 @@ defmodule DMEx.Consumer.Stream do
     # Any bytes at all, including a heartbeat comment, mean the connection is
     # alive. Silence is what this measures, not idleness.
     state = touch(state)
-    advertised = Decoder.retry(state.decoder)
+    previous = Decoder.retry(state.decoder)
 
     case Decoder.push(state.decoder, chunk) do
       {:ok, frames, decoder} ->
-        state = adopt_interval(%{state | decoder: decoder}, advertised)
+        state = adopt_interval(%{state | decoder: decoder}, previous)
         state = Enum.reduce(frames, state, &process_frame/2)
 
         handle_responses(rest, state |> observe() |> gate_socket() |> advance())
@@ -612,8 +642,8 @@ defmodule DMEx.Consumer.Stream do
   # notice anything. As soon as `retry:` arrives, re-arm against the real
   # figure. Without this the advertised interval would not take effect until the
   # first tick, which is the very tick it was supposed to size.
-  defp adopt_interval(state, advertised) do
-    if Decoder.retry(state.decoder) == advertised do
+  defp adopt_interval(state, previous) do
+    if Decoder.retry(state.decoder) == previous do
       state
     else
       if state.liveness_timer, do: Process.cancel_timer(state.liveness_timer)

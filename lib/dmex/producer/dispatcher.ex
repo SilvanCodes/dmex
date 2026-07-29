@@ -21,21 +21,37 @@ defmodule DMEx.Producer.Dispatcher do
   itself, bounded by its own `max_batch_size`, so this one shared per-app
   process never holds message data on any connection's behalf.
 
-  A notification carries **no payload at all — never a range, an id, or a row.**
-  The loop reads from its own cursor to whatever is there now, so anything in
-  the payload would be information nothing consumes. The cursor in each stream
-  is the authority; this is only ever a hint that work may exist. Missing a hint
-  costs latency, never correctness, which is why the producer's send loop stays
-  correct even with this process down.
+  A notification carries **a routing key and nothing else — never a range, an
+  id, or a row.** The `message_type` says which connections could possibly care;
+  it never says what to do about it. Each loop still reads from its own cursor
+  to whatever is there now, the cursor in each stream is still the sole
+  authority, and this is still only ever a hint that work may exist. Missing a
+  hint costs latency, never correctness, which is why the producer's send loop
+  stays correct even with this process down.
 
   ## The poll must not wake connections for nothing
 
   A poll that unconditionally broadcasts re-creates a thundering herd: at a
   thousand connections and a one-second interval, a thousand reads per second on
-  a completely idle log. So the poll reads `max(id)`, compares it against the
-  highest id already announced, and broadcasts only if it moved. One cheap query
-  per interval per *app* — a single index descent — and zero wakeups when
-  nothing was published.
+  a completely idle log. So the poll asks what has been published since the
+  highest id already announced, and broadcasts only if that moved. One cheap
+  query per interval per *app*, and zero wakeups when nothing was published.
+
+  ## Both signals route, and they have to
+
+  A wakeup goes only to connections whose selection contains the published type
+  (`DMEx.Producer.Registry`); a whole-log subscription matches everything.
+
+  That is why the poll asks for the distinct types and not just `max(id)`. The
+  notification path does not advance `last_announced` — it cannot, since it is
+  handed no id — so on any log publishing more than once per interval the poll
+  independently sees movement and broadcasts too. Were that broadcast unrouted,
+  it would wake every connection every second regardless of selection, and the
+  routing would buy nothing on exactly the busy logs where it matters. Both
+  paths route, or neither does.
+
+  Duplicate wakeups across the two paths are fine and always were: a spurious
+  wakeup costs one read that finds nothing.
   """
 
   use GenServer
@@ -96,13 +112,13 @@ defmodule DMEx.Producer.Dispatcher do
   end
 
   @impl GenServer
-  def handle_info({:notification, _pid, _ref, _channel, _payload}, state) do
-    # Collapse a burst of publishes into one broadcast pass. Each notification
-    # says the same contentless thing, so N of them and one of them are the same
-    # instruction to every stream.
-    drain_notifications()
+  def handle_info({:notification, _pid, _ref, _channel, payload}, state) do
+    # Collapse a burst of publishes into one broadcast pass. The payloads are
+    # accumulated rather than discarded, because the union of the types in a
+    # burst is exactly the routing key set for the one pass that replaces it.
+    types = drain_notifications([payload])
 
-    {:noreply, broadcast(state)}
+    {:noreply, broadcast(state, types)}
   end
 
   @impl GenServer
@@ -112,12 +128,16 @@ defmodule DMEx.Producer.Dispatcher do
     # The poll doubles as the retry for LISTEN, so no second timer is needed and
     # a notifier that starts late or restarts is picked up within one interval.
     state = ensure_listening(state)
-    max_id = current_max_id(state)
 
-    if max_id > state.last_announced do
-      {:noreply, broadcast(%{state | last_announced: max_id})}
-    else
-      {:noreply, state}
+    case published_since(state) do
+      {nil, _types} ->
+        {:noreply, state}
+
+      {max_id, types} when max_id > state.last_announced ->
+        {:noreply, broadcast(%{state | last_announced: max_id}, types)}
+
+      _ ->
+        {:noreply, state}
     end
   end
 
@@ -168,23 +188,24 @@ defmodule DMEx.Producer.Dispatcher do
     %{state | warned?: true}
   end
 
-  defp drain_notifications do
+  defp drain_notifications(types) do
     receive do
-      {:notification, _pid, _ref, _channel, _payload} -> drain_notifications()
+      {:notification, _pid, _ref, _channel, payload} -> drain_notifications([payload | types])
     after
-      0 -> :ok
+      0 -> Enum.uniq(types)
     end
   end
 
-  defp broadcast(state) do
+  defp broadcast(state, types) do
     woken = :counters.new(1, [])
 
-    # Only connections whose flag was clear get a message. One already holding
-    # a queued wakeup is told nothing further, however long it stalls — which
-    # is what bounds a stalled connection's mailbox at one wakeup rather than
-    # at the publish rate times the stall duration.
-    DMEx.Producer.Registry.each(state.producer, fn pid, status ->
-      if Status.flip(status) do
+    # Two gates, and they answer different questions. `concerns?/2` asks whether
+    # this publish is any of this connection's business at all; `Status.flip/1`
+    # asks whether it already has a wakeup queued. The second is what bounds a
+    # stalled connection's mailbox at one wakeup rather than at the publish rate
+    # times the stall duration, however long it stalls.
+    DMEx.Producer.Registry.each(state.producer, fn pid, status, selection ->
+      if concerns?(selection, types) and Status.flip(status) do
         send(pid, :wakeup)
         :counters.add(woken, 1, 1)
       end
@@ -193,10 +214,26 @@ defmodule DMEx.Producer.Dispatcher do
     :telemetry.execute(
       [:dmex, :dispatcher, :broadcast],
       %{streams: DMEx.Producer.Registry.count(state.producer), woken: :counters.get(woken, 1)},
-      %{producer: state.producer}
+      %{producer: state.producer, types: length(types)}
     )
 
     state
+  end
+
+  # A whole-log subscription is concerned with every publish, which is what
+  # keeps a bare `EventSource` working exactly as it did before routing existed.
+  defp concerns?(:all, _types), do: true
+  defp concerns?(selection, types), do: Enum.any?(types, &MapSet.member?(selection, &1))
+
+  # `{nil, []}` on an empty window, and on an error: a storage engine that
+  # cannot answer must not be reported as "nothing was published", but it also
+  # must not take the dispatcher down. Leaving `last_announced` untouched means
+  # the next poll asks the same question over the same window.
+  defp published_since(%{storage: storage, storage_opts: opts, last_announced: last}) do
+    case storage.published_since(opts, last) do
+      {:ok, {max_id, types}} -> {max_id, types}
+      {:error, _reason} -> {nil, []}
+    end
   end
 
   defp current_max_id(%{storage: storage, storage_opts: opts, last_announced: last}) do

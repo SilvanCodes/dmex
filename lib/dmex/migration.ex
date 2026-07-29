@@ -27,19 +27,28 @@ defmodule DMEx.Migration do
     * `:prefix` — a Postgres schema to create the tables in. Also creates the
       schema itself if it does not exist.
 
-  ## What is deliberately absent
+  ## The two indexes, and why each exists
 
-  **There is no index on `message_type`.** Every read DMEx issues is an
-  `id > cursor` range scan, which the primary key serves directly, so a
-  `message_type` index would exist purely for operators querying the log by
-  hand — and it is not free: appends are serialized per app, so index
-  maintenance sits on the one write path that cannot be parallelized away. Add
-  one yourself if you query the log that way:
+  **The primary key on `id`** serves every whole-log read directly: those are
+  `id > cursor` range scans and nothing else.
 
-      create index(:dmex_messages, [:message_type])
+  **`(message_type, id)`** serves a selective subscription's
+  `WHERE id > $1 AND message_type = ANY($2) ORDER BY id`, and the planner takes
+  it **when the selection is rare**. Measured on a 500k-row skewed log: a type
+  making up 0.1% of rows uses the index; at 1% and above Postgres prefers
+  walking the primary key in id order and filtering, which is genuinely the
+  cheaper plan — that scan stops as soon as it has a batch, so the more of a log
+  a subscription selects the less it examines per row returned.
 
-  That calculus changes if server-side message-type selection ever lands, at
-  which point `(message_type, id)` becomes required rather than optional.
+  That is the behaviour you want rather than a shortfall. The index earns its
+  keep exactly where a scan would walk thousands of rows to return one, and
+  stays out of the way where it would be the slower plan.
+
+  It is not free. Appends are serialized per app, so index maintenance sits on
+  the one write path that cannot be parallelized away. The cost is one index
+  entry per publish, paid by every producer whether or not anyone selects
+  against it; it is accepted because the alternative is that server-side
+  selection saves bandwidth and no database work at all.
   """
 
   alias DMEx.Migration.Postgres

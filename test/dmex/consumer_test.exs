@@ -166,8 +166,17 @@ defmodule DMEx.ConsumerTest do
     end
 
     test "rejects an unknown option, and says there is no filter" do
-      assert_raise ArgumentError, ~r/unknown subscription option.*no filter option/s, fn ->
-        subscribe(Handlers.Echo, filter: ["Some.Type"])
+      assert_raise ArgumentError,
+                   ~r/unknown subscription option.*no filter or selection option here/s,
+                   fn -> subscribe(Handlers.Echo, filter: ["Some.Type"]) end
+    end
+
+    # Both belong to the handler module: it is the complete declaration of what
+    # the subscription *is*, and a call site able to vary that could disagree
+    # with it.
+    test "rejects `selective:` here, since it belongs on the handler" do
+      assert_raise ArgumentError, ~r/\[:selective\].*belong to the handler module/s, fn ->
+        subscribe(Handlers.Echo, selective: false)
       end
     end
 

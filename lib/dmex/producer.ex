@@ -35,6 +35,9 @@ defmodule DMEx.Producer do
     * `:app` — the app key (see below). Defaults to a name derived from this
       module.
     * `:prefix` — a Postgres schema the DMEx tables live in.
+    * `:otp_app` — the application whose modules are scanned for message types,
+      which is what a consumer's selection filter is resolved against. Defaults
+      to the Mix application being compiled; see `DMEx.Producer.Messages`.
 
   Any `DMEx.Config` producer setting may also be given here — `batch_window:`,
   `max_batch_size:`, `heartbeat_ms:`, `poll_interval:` and the clamp bounds. An
@@ -77,8 +80,9 @@ defmodule DMEx.Producer do
   """
 
   alias DMEx.Config
+  alias DMEx.Producer.Messages
 
-  @producer_opts [:repo, :storage, :app, :prefix]
+  @producer_opts [:repo, :storage, :app, :prefix, :otp_app]
   @app_key_format ~r/\A[a-z][a-z0-9_]*\z/
   @app_key_max_bytes 58
 
@@ -126,6 +130,7 @@ defmodule DMEx.Producer do
           producer: module(),
           repo: module(),
           storage: module(),
+          otp_app: atom(),
           app_key: String.t(),
           channel: String.t(),
           lock: {integer(), integer()},
@@ -150,6 +155,7 @@ defmodule DMEx.Producer do
       producer: module,
       repo: repo,
       storage: Keyword.get(opts, :storage, DMEx.Storage.Postgres),
+      otp_app: otp_app!(module, opts),
       app_key: app_key,
       channel: channel,
       lock: lock,
@@ -179,6 +185,12 @@ defmodule DMEx.Producer do
   @spec start_link(module(), keyword()) :: Supervisor.on_start()
   def start_link(producer, opts \\ []) do
     %{storage: storage, storage_opts: storage_opts, config: config} = producer.__dmex__()
+
+    # Before any connection can ask for it. Writing a `:persistent_term` forces
+    # a global GC scan, so it happens once here rather than per connect — and
+    # the set is immutable for the life of the node anyway, since the modules
+    # compiled into a release do not change while it runs.
+    Messages.refresh(producer)
 
     # Whatever the adapter needs sits between the registry and the dispatcher,
     # and this module has no idea what it is. Postgres puts a LISTEN connection
@@ -254,6 +266,32 @@ defmodule DMEx.Producer do
     end
 
     key
+  end
+
+  # Which OTP application this producer's message modules live in — the root of
+  # the scan `DMEx.Producer.Messages` runs to answer "what can this producer
+  # publish". Resolved from Mix at compile time, which is where the answer is
+  # known: `:application.get_application/1` reads it off a *loaded* module, and
+  # nothing is loaded while it is still being defined.
+  defp otp_app!(module, opts) do
+    case Keyword.get(opts, :otp_app) do
+      nil -> derive_otp_app!(module)
+      app when is_atom(app) and not is_nil(app) -> app
+      other -> raise ArgumentError, ":otp_app must be an atom, got: #{inspect(other)}"
+    end
+  end
+
+  defp derive_otp_app!(module) do
+    with true <- Code.ensure_loaded?(Mix.Project),
+         app when not is_nil(app) <- Mix.Project.config()[:app] do
+      app
+    else
+      _ ->
+        raise ArgumentError,
+              "DMEx could not work out which OTP application #{inspect(module)} belongs to, " <>
+                "which is what it scans for message modules. Pass it explicitly: " <>
+                "`use DMEx.Producer, repo: MyApp.Repo, otp_app: :my_app`."
+    end
   end
 
   # MyApp.Producer -> "my_app/producer" -> "my_app_producer"

@@ -190,7 +190,79 @@ defmodule DMEx.Producer.DispatcherTest do
     end
   end
 
+  # The read-amplification lever. Without routing, every publish wakes every
+  # connection and each one issues a read that finds nothing — so a log with a
+  # hundred types costs a selective consumer a hundred times the reads it needs.
+  #
+  # These exercise the *poll* path, which is what this suite can reach: the
+  # sandbox never commits, so LISTEN/NOTIFY never fires. That makes them the
+  # important half to pin here, because the poll is the path that had no way to
+  # name a type at all until `published_since/2` — and an unrouted poll would
+  # silently undo the routing on any log busier than one publish per interval.
+  describe "routing by selection" do
+    test "a publish wakes only the connections that selected its type" do
+      start_dispatcher()
+
+      wanted = spawn_stream(MapSet.new(["DMEx.Test.Messages.OrderPlaced"]))
+      unwanted = spawn_stream(MapSet.new(["DMEx.Test.Messages.OrderShipped"]))
+
+      {:ok, _} = FastProducer.publish(%OrderPlaced{order_id: 1})
+
+      assert_receive {:woken, ^wanted}, 1_000
+      refute_receive {:woken, ^unwanted}, @poll * 4
+    end
+
+    test "a whole-log subscription is woken by everything" do
+      # Which is what keeps a bare EventSource working exactly as it did before
+      # routing existed.
+      start_dispatcher()
+
+      everything = spawn_stream(:all)
+
+      {:ok, _} = FastProducer.publish(%OrderPlaced{order_id: 1})
+
+      assert_receive {:woken, ^everything}, 1_000
+    end
+
+    test "a selection matching nothing published is never woken at all" do
+      start_dispatcher()
+
+      nobody = spawn_stream(MapSet.new(["Some.Other.App.Message"]))
+
+      {:ok, _} = FastProducer.publish(%OrderPlaced{order_id: 1})
+
+      refute_receive {:woken, ^nobody}, @poll * 5
+    end
+  end
+
   ## Helpers
+
+  # A stand-in for a request process: registers with a selection and reports
+  # each wakeup back, so a test can tell *which* connections were woken rather
+  # than only that something was.
+  defp spawn_stream(selection) do
+    parent = self()
+
+    pid =
+      spawn_link(fn ->
+        {:ok, _status} = ProducerRegistry.register(FastProducer, 5_000, selection)
+        send(parent, :registered)
+
+        forward(parent)
+      end)
+
+    assert_receive :registered, 1_000
+
+    pid
+  end
+
+  defp forward(parent) do
+    receive do
+      :wakeup ->
+        send(parent, {:woken, self()})
+        forward(parent)
+    end
+  end
 
   defp start_dispatcher do
     start_supervised!({Dispatcher, producer: FastProducer})

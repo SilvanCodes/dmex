@@ -63,7 +63,28 @@ defmodule DMEx.Migration.Postgres do
       add(:inserted_at, :timestamptz, null: false, default: fragment("now()"))
     end
 
-    # No secondary index, deliberately. See DMEx.Migration's module docs.
+    # The one secondary index, for exactly one query shape: a selective
+    # subscription's `WHERE id > $1 AND message_type = ANY($2) ORDER BY id`.
+    #
+    # The planner uses it **when the selection is rare and not otherwise**, and
+    # that is the right behaviour rather than a limitation. Measured on a 500k
+    # skewed log: selecting a type that is 0.1% of rows takes the index; at 1%
+    # and above it prefers walking the primary key in id order and filtering,
+    # which is genuinely cheaper — the scan stops as soon as it has a batch, so
+    # the more of the log you select the less it examines per row returned.
+    #
+    # So this index earns its keep at the selectivity where a scan would have to
+    # walk thousands of rows per row returned, and stays out of the way at the
+    # selectivity where it would be the slower plan. Both branches are correct;
+    # nothing forces the choice.
+    #
+    # It costs an index write per publish, paid by every producer whether or not
+    # anyone selects against it, and it is the reason a whole-log read is issued
+    # as a *separate statement* — see `DMEx.Storage.Postgres.read/4`. Folding
+    # both into one query with a nullable predicate would defeat this index and
+    # the primary key at once.
+    create_if_not_exists(index(:dmex_messages, [:message_type, :id], prefix: prefix))
+
     :ok
   end
 

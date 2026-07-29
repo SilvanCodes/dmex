@@ -25,6 +25,37 @@ defmodule DMEx.Consumer.Handler do
   is no option for it, because there is nothing an option could say that the
   clauses do not already say.
 
+  ## That same list is the server-side selection
+
+  It does two jobs. It resolves a row's `message_type` back to a module on the
+  way in, and — encoded as a `DMEx.Fingerprint` blob at compile time — it is
+  what the producer reads only matching rows against. **Nothing new is declared
+  anywhere, by anyone**: no grouping vocabulary to define, publish, version,
+  discover and keep in sync, because a name standing for a set of message types
+  can only ever describe what these clauses already say, and the two can
+  disagree.
+
+  Deriving it means they cannot. The selection is exactly the set of types this
+  handler is equipped for, by construction, and any consumer selects any set
+  with no producer-side curation and nobody to coordinate with.
+
+  The blob is a **compile-time constant** on `__dmex__/0`, so connecting builds
+  nothing, and it is a pure function of the message list — the same handler
+  compiles to the same URL on every machine, and reordering these clauses does
+  not change it.
+
+  Two consequences worth knowing before they bite:
+
+    * **Inclusion is heuristic in one direction only.** There are no false
+      negatives, so every type you match on is delivered. A false positive
+      admits one extra type, which arrives and is skipped exactly as an unknown
+      type always was — see `DMEx.Consumer.Pipeline`.
+    * **A filter matching none of the producer's types is a `404`.** That is a
+      real signal (usually a consumer pointed at the wrong producer) but not
+      necessarily an error — a consumer deployed ahead of the producer that will
+      emit its types is legitimately in this state, so it retries rather than
+      giving up.
+
   A separate list could only ever *describe* the clauses, and the two could
   disagree: a subscription naming a type its handler has no clause for is an
   ordinary typo, and it surfaces as a `FunctionClauseError` on a real message,
@@ -74,6 +105,21 @@ defmodule DMEx.Consumer.Handler do
       an atom or a string. Resolved against the `producer:` map on
       `DMEx.Consumer`, never against a URL written here.
     * `:id` — required; this subscription's own name, as an atom or a string.
+    * `:selective` — whether the producer narrows the stream to this handler's
+      message types. Defaults to `true`.
+
+  `selective: false` requests the producer's whole log and filters it here
+  instead, which is how delivery worked before server-side selection existed.
+  It is an escape hatch rather than a tuning knob: what it is for is telling two
+  failures apart when a subscription receives nothing — a producer or encoding
+  mismatch, which whole-log delivery fixes immediately, from a producer that has
+  genuinely published nothing, which it does not. Correctness is identical
+  either way, since these clauses still decide which rows run.
+
+  It lives here rather than on `DMEx.Consumer.subscribe/2` for the same reason
+  everything else about the subscription does: this module is the complete
+  declaration, and nothing at a call site should be able to vary what a
+  subscription *is*.
 
   ## The subscription id is the durable identity
 
@@ -140,25 +186,42 @@ defmodule DMEx.Consumer.Handler do
   identity per message list — makes a routine additive change silently replay
   the entire log and orphan that handler's dead messages.
 
+  Server-side selection sharpens this rather than changing it. The cursor is a
+  single id and only ever moves forward, so historical rows of the newly-selected
+  type — everything below `last_seen`, published while this subscription was not
+  asking for it — were never sent and are not revisited.
+
   When you do want the history, ask for it deliberately with
   `DMEx.Consumer.Cursors.move!/3`.
+
+  Changing what a subscription receives is therefore editing these clauses: the
+  same edit that makes it *able* to handle a new type is the one that selects
+  it. An ordinary code change, an ordinary deploy, an ordinary reconnect — and
+  no remote definition changing under a running consumer.
   """
 
   @identifier ~r/\A[a-z][a-z0-9_]*\z/
-  @handler_opts [:producer, :id]
+  @handler_opts [:producer, :id, :selective]
 
   @typedoc """
   A handler's compile-time declaration, as returned by its `__dmex__/0`.
 
   `:id` is the full composite identifier — `"orders/order_projection"` — not the
   `id:` half that was declared. `:messages` is derived from the callback's
-  clauses, in the order they were written.
+  clauses, in the order they were written. `:fingerprint` is those messages'
+  wire types encoded as a `DMEx.Fingerprint` blob — the path segment this
+  subscription requests — or `nil` when `selective: false` asked for the whole
+  log, in which case there is no segment to request.
+
+  There is no separate `:selective` field: a `nil` fingerprint is exactly that
+  answer, and carrying both would be two values that can disagree.
   """
   @type declaration :: %{
           handler: module(),
           producer: String.t(),
           id: String.t(),
-          messages: [module(), ...]
+          messages: [module(), ...],
+          fingerprint: String.t() | nil
         }
 
   @doc """
@@ -176,10 +239,11 @@ defmodule DMEx.Consumer.Handler do
     quote bind_quoted: [opts: opts] do
       @behaviour DMEx.Consumer.Handler
 
-      # Only the two halves of the identity are given here. The message list is
-      # read off the callback's own clauses, which cannot happen until they all
-      # exist — hence @before_compile rather than an attribute set right here.
-      @dmex_identity DMEx.Consumer.Handler.__identity__(__MODULE__, opts)
+      # Only what was written at the `use` site. The message list is read off
+      # the callback's own clauses, which cannot happen until they all exist —
+      # hence @before_compile rather than an attribute set right here, and hence
+      # carrying these across in an attribute so they are still in hand then.
+      @dmex_declared DMEx.Consumer.Handler.__declared__(__MODULE__, opts)
 
       @before_compile DMEx.Consumer.Handler
     end
@@ -203,21 +267,45 @@ defmodule DMEx.Consumer.Handler do
   end
 
   @doc false
-  @spec __identity__(module(), keyword()) :: %{producer: String.t(), id: String.t()}
-  def __identity__(module, opts) do
+  @spec __declared__(module(), keyword()) :: %{
+          producer: String.t(),
+          id: String.t(),
+          selective: boolean()
+        }
+  def __declared__(module, opts) do
     validate_keys!(module, opts)
 
     producer = identifier!(module, opts, :producer)
 
-    %{producer: producer, id: producer <> "/" <> identifier!(module, opts, :id)}
+    %{
+      producer: producer,
+      id: producer <> "/" <> identifier!(module, opts, :id),
+      selective: selective!(module, opts)
+    }
   end
 
   @doc false
   @spec __declaration__(Macro.Env.t()) :: declaration()
   def __declaration__(env) do
-    %{producer: producer, id: id} = Module.get_attribute(env.module, :dmex_identity)
+    %{producer: producer, id: id, selective: selective} =
+      Module.get_attribute(env.module, :dmex_declared)
 
-    %{handler: env.module, producer: producer, id: id, messages: messages!(env)}
+    messages = messages!(env)
+
+    %{
+      handler: env.module,
+      producer: producer,
+      id: id,
+      messages: messages,
+      # `selective:` is not carried through — a `nil` fingerprint *is* the
+      # answer, and the two together could only ever disagree. The option
+      # exists to decide whether this gets built; nothing downstream asks the
+      # question a second way, and `DMEx.Consumer` just passes what is here.
+      #
+      # A non-selective handler also never risks the compile error an
+      # unbuildable fingerprint would raise, since it never builds one.
+      fingerprint: if(selective, do: fingerprint!(env, messages))
+    }
   end
 
   @doc "Whether `module` was built with `use DMEx.Consumer.Handler`."
@@ -241,6 +329,37 @@ defmodule DMEx.Consumer.Handler do
     end
 
     handler.__dmex__().id
+  end
+
+  ## Encoding the selection
+
+  # Built here and nowhere else, for two reasons that happen to coincide.
+  #
+  # This is the first point at which it *can* be: `messages!/1` above has just
+  # run `Code.ensure_compiled!/1` on every matched module, which is what makes
+  # `type/0` callable at all — a clause head resolves a struct through the
+  # parallel compiler without putting the module in the code server.
+  #
+  # And it is the right point for it, because the result is then a constant. The
+  # blob is compiled into `__dmex__/0`, so no connect, no reconnect and no
+  # subscription ever builds one, and a fingerprint that cannot be constructed
+  # is a compile error rather than a runtime fallback path somebody has to
+  # specify. It also makes "one URL per deployment" literal rather than
+  # approximate.
+  defp fingerprint!(env, messages) do
+    types = Enum.map(messages, & &1.type())
+
+    case DMEx.Fingerprint.build(types) do
+      {:ok, fingerprint} ->
+        DMEx.Fingerprint.encode(fingerprint)
+
+      {:error, reason} ->
+        raise ArgumentError,
+              "#{inspect(env.module)} could not encode its #{length(types)} message " <>
+                "type(s) into a selection fingerprint (#{inspect(reason)}). This is a DMEx " <>
+                "bug rather than a mistake in this module — please report it with the " <>
+                "list: #{inspect(types)}."
+    end
   end
 
   ## Deriving the message list
@@ -373,6 +492,19 @@ defmodule DMEx.Consumer.Handler do
     raise ArgumentError,
           "`use DMEx.Consumer.Handler` requires #{inspect(key)} in #{inspect(module)}, e.g. " <>
             "`use DMEx.Consumer.Handler, producer: :orders, id: :order_projection`"
+  end
+
+  defp selective!(module, opts) do
+    case Keyword.get(opts, :selective, true) do
+      value when is_boolean(value) ->
+        value
+
+      other ->
+        raise ArgumentError,
+              ":selective in #{inspect(module)} must be true (the default — this " <>
+                "subscription's message types are selected server-side) or false (the " <>
+                "producer's whole log, narrowed locally), got: #{inspect(other)}"
+    end
   end
 
   defp raise_identifier(module, key, value) do

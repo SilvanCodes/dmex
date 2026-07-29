@@ -51,9 +51,11 @@ defmodule DMEx.Storage.Postgres do
         id = insert!(repo, opts, type, data, metadata)
 
         # Postgres delivers notifications at COMMIT, so a row is never announced
-        # before it is visible. The payload is deliberately empty: a wakeup is a
-        # hint that work may exist, never a carrier of work.
-        notify!(repo, opts)
+        # before it is visible. The payload is the `message_type` and nothing
+        # else: a routing key, never a carrier of work — no id, no range, no
+        # row, because each stream reads from its own cursor to whatever is
+        # there now and would consume none of it.
+        notify!(repo, opts, type)
 
         id
       end)
@@ -65,21 +67,42 @@ defmodule DMEx.Storage.Postgres do
   end
 
   @impl DMEx.Storage
-  def read(opts, cursor, limit)
+  def read(opts, cursor, limit, types \\ :all)
+
+  def read(opts, cursor, limit, :all)
       when is_integer(cursor) and cursor >= 0 and is_integer(limit) and limit > 0 do
-    repo = Map.fetch!(opts, :repo)
+    query(opts, read_sql(opts, ""), [cursor, limit])
+  end
+
+  def read(opts, cursor, limit, types)
+      when is_integer(cursor) and cursor >= 0 and is_integer(limit) and limit > 0 and
+             is_list(types) do
+    # A separate statement rather than `($3 IS NULL OR message_type = ANY($3))`
+    # on the one above. The nullable form is a correct query and a ruinous plan:
+    # Postgres cannot use either index through it, so the unfiltered read would
+    # regress to pay for a predicate it never uses.
+    query(opts, read_sql(opts, "AND message_type = ANY($3)"), [cursor, limit, types])
+  end
+
+  # `max_id` is the tip of the *whole* log even on a filtered read, and that is
+  # load-bearing rather than an oversight: it is what keeps a selective
+  # subscription's cursor denominated in the same id space as every other
+  # consumer's, so a sparse subset never becomes a space of its own.
+  defp read_sql(opts, predicate) do
     table = table(opts, @messages)
 
-    sql = """
+    """
     SELECT id, message_type, data::text, metadata::text, inserted_at,
            (SELECT max(id) FROM #{table}) AS max_id
       FROM #{table}
-     WHERE id > $1
+     WHERE id > $1 #{predicate}
      ORDER BY id
      LIMIT $2
     """
+  end
 
-    case SQL.query(repo, sql, [cursor, limit]) do
+  defp query(opts, sql, params) do
+    case SQL.query(Map.fetch!(opts, :repo), sql, params) do
       {:ok, %{rows: []}} -> {:ok, {[], nil}}
       {:ok, %{rows: rows}} -> {:ok, {Enum.map(rows, &to_row/1), max_id_of(rows)}}
       {:error, reason} -> {:error, reason}
@@ -93,6 +116,28 @@ defmodule DMEx.Storage.Postgres do
 
     case SQL.query(repo, sql, []) do
       {:ok, %{rows: [[max_id]]}} -> {:ok, max_id}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @impl DMEx.Storage
+  def published_since(opts, cursor) when is_integer(cursor) and cursor >= 0 do
+    repo = Map.fetch!(opts, :repo)
+
+    # One statement for both halves the poll needs. `array_agg(DISTINCT ...)`
+    # over a window bounded by one poll interval of publishes is a range scan on
+    # the primary key, and on an idle log — the case that has to stay cheap,
+    # since this runs once per interval per app — it touches nothing and both
+    # columns come back NULL.
+    sql = """
+    SELECT max(id), coalesce(array_agg(DISTINCT message_type), '{}')
+      FROM #{table(opts, @messages)}
+     WHERE id > $1
+    """
+
+    case SQL.query(repo, sql, [cursor]) do
+      {:ok, %{rows: [[nil, _types]]}} -> {:ok, {nil, []}}
+      {:ok, %{rows: [[max_id, types]]}} -> {:ok, {max_id, types}}
       {:error, reason} -> {:error, reason}
     end
   end
@@ -196,7 +241,7 @@ defmodule DMEx.Storage.Postgres do
   def dead_messages(opts, subscription) when is_binary(subscription) do
     repo = Map.fetch!(opts, :repo)
 
-    # The same projection `read/3` uses, because the columns are the same
+    # The same projection `read/4` uses, because the columns are the same
     # columns — which is the whole point of the table's shape.
     sql = """
     SELECT id, message_type, data::text, metadata::text, inserted_at
@@ -297,12 +342,16 @@ defmodule DMEx.Storage.Postgres do
     id
   end
 
-  # pg_notify/2 rather than `NOTIFY <channel>`, so a derived channel name needs
-  # no identifier quoting and cannot be an injection site.
-  defp notify!(repo, opts) do
+  # pg_notify/2 rather than `NOTIFY <channel>`, so neither a derived channel
+  # name nor a message type needs identifier quoting or can be an injection
+  # site. Both go in as ordinary parameters.
+  #
+  # Postgres caps a notification payload at 8000 bytes. A `message_type` is a
+  # module name, so this is not a limit anything can reach.
+  defp notify!(repo, opts, type) do
     channel = Map.fetch!(opts, :channel)
 
-    {:ok, _} = SQL.query(repo, "SELECT pg_notify($1, '')", [channel])
+    {:ok, _} = SQL.query(repo, "SELECT pg_notify($1, $2)", [channel, type])
   end
 
   ## Row shaping

@@ -88,10 +88,29 @@ defmodule DMEx.Consumer.Request do
     end)
   end
 
-  @doc "The path to request, defaulting to the root."
-  @spec path(URI.t()) :: String.t()
-  def path(%URI{path: nil}), do: "/"
-  def path(%URI{path: path}), do: path
+  @doc """
+  The path to request: the producer's stream URL, plus the selection segment.
+
+  `fingerprint` is `nil` for a whole-log subscription, which requests the bare
+  `/stream` — what a browser `EventSource` pointed at the plain URL sends, and
+  what a handler declared `selective: false` asks for. Otherwise it is the
+  handler's compile-time `DMEx.Fingerprint` blob, appended as a path segment.
+
+  A path segment rather than `?filter=`, and the reason is not aesthetic: caches
+  and proxies routinely drop, reorder or key-strip query strings and nothing
+  does that to a path. Losing the selection would silently convert a selective
+  subscription back into a whole-log one, which is a bandwidth incident rather
+  than an error. base64url needs no percent-encoding in a path either, so the
+  placement costs nothing.
+  """
+  @spec path(URI.t(), String.t() | nil) :: String.t()
+  def path(uri, fingerprint \\ nil)
+
+  def path(%URI{path: nil}, fingerprint), do: join("/", fingerprint)
+  def path(%URI{path: path}, fingerprint), do: join(path, fingerprint)
+
+  defp join(path, nil), do: path
+  defp join(path, fingerprint), do: String.trim_trailing(path, "/") <> "/" <> fingerprint
 
   @doc "The scheme Mint should connect with."
   @spec scheme(URI.t()) :: :http | :https

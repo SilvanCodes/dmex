@@ -8,6 +8,13 @@ defmodule DMEx.Producer.Stream do
   reads. A consumer far behind the tip simply finds a full `max_batch_size` on
   every read and sends full frames back-to-back until it drains.
 
+  A selective connection is not a distinct mode either. Its read carries one
+  extra predicate — the type list `DMEx.Producer.Plug` expanded from its filter
+  at connect — and everything else about the loop is identical. What it sees is
+  a *sparse subset of the same id space*, never a space of its own: `max_id`
+  stays the tip of the whole log, so every consumer's cursor stays directly
+  comparable with every other's regardless of what it selected.
+
   ## Four properties, and they are the whole reason for this shape
 
     * **Memory per connection is one batch.** There is no accumulator. The
@@ -67,7 +74,8 @@ defmodule DMEx.Producer.Stream do
           required(:frame_max_bytes) => pos_integer(),
           required(:stall_timeout) => Status.budget(),
           required(:last_sent_at) => integer() | nil,
-          required(:status) => Status.t() | nil
+          required(:status) => Status.t() | nil,
+          required(:types) => :all | [String.t()]
         }
 
   @doc """
@@ -134,9 +142,10 @@ defmodule DMEx.Producer.Stream do
           module(),
           DMEx.Producer.Params.t(),
           non_neg_integer(),
-          Status.t() | nil
+          Status.t() | nil,
+          DMEx.Producer.Registry.selection()
         ) :: state()
-  def initial_state(producer, params, cursor, status \\ nil) do
+  def initial_state(producer, params, cursor, status \\ nil, selection \\ :all) do
     %{storage: storage, storage_opts: storage_opts, config: config} = producer.__dmex__()
 
     %{
@@ -150,9 +159,17 @@ defmodule DMEx.Producer.Stream do
       frame_max_bytes: config.frame_max_bytes,
       stall_timeout: config.stall_timeout,
       last_sent_at: nil,
-      status: status
+      status: status,
+      # Expanded once at connect and fixed for the connection's lifetime, for
+      # the same reason pacing is: a consumer wanting a different selection
+      # reconnects. As a list rather than the registry's `MapSet`, because this
+      # is a query parameter now, not a membership test.
+      types: types(selection)
     }
   end
+
+  defp types(:all), do: :all
+  defp types(selection), do: MapSet.to_list(selection)
 
   ## The loop's steps
 
@@ -163,7 +180,7 @@ defmodule DMEx.Producer.Stream do
     # transport-level timeout can ever see it.
     arm(state)
 
-    case state.storage.read(state.storage_opts, state.cursor, state.max_batch_size) do
+    case state.storage.read(state.storage_opts, state.cursor, state.max_batch_size, state.types) do
       {:ok, {[], _max_id}} ->
         {:empty, conn, state}
 

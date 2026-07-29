@@ -52,13 +52,25 @@ defmodule DMEx.MigrationTest do
                column("dmex_messages", "inserted_at")
     end
 
-    test "the primary key is the only index" do
-      # Every producer read is a bare `id > cursor` range scan, which the
-      # primary key serves directly. An index on message_type would exist purely
-      # for ad-hoc operator queries, and it is not free: appends are serialized
-      # per app, so its maintenance sits on the one write path that cannot be
-      # parallelized away.
-      assert indexes("dmex_messages") == ["dmex_messages_pkey"]
+    test "two indexes, one per read shape" do
+      # The primary key serves a whole-log read — a bare `id > cursor` range
+      # scan — directly.
+      #
+      # `(message_type, id)` serves a selective one. Leading on `message_type`
+      # is what lets the planner seek per selected type and merge, so a consumer
+      # selecting a slice of a busy log reads that slice rather than scanning
+      # everything and discarding; without it, resolving a filter server-side
+      # would save bandwidth and no database work at all.
+      #
+      # It is not free: appends are serialized per app, so this index's
+      # maintenance sits on the one write path that cannot be parallelized away,
+      # and every producer pays it whether or not anyone selects against it.
+      assert indexes("dmex_messages") == [
+               "dmex_messages_message_type_id_index",
+               "dmex_messages_pkey"
+             ]
+
+      assert index_columns("dmex_messages_message_type_id_index") == ["message_type", "id"]
     end
   end
 
@@ -180,15 +192,20 @@ defmodule DMEx.MigrationTest do
     rows == []
   end
 
-  defp unique_index_columns(index) do
+  # Column *order* is the whole point for `(message_type, id)` — the same two
+  # columns the other way round would not serve a selective read — so this
+  # unnests `indkey` with ordinality rather than taking whatever order the
+  # catalog join happens to produce.
+  defp index_columns(index) do
     %{rows: rows} =
       query(
         """
         SELECT a.attname
           FROM pg_index i
-          JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
-         WHERE i.indexrelid = $1::text::regclass AND i.indisunique
-         ORDER BY array_position(i.indkey, a.attnum)
+          JOIN LATERAL unnest(i.indkey::int2[]) WITH ORDINALITY AS k(attnum, ord) ON true
+          JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.attnum
+         WHERE i.indexrelid = $1::text::regclass
+         ORDER BY k.ord
         """,
         [index]
       )

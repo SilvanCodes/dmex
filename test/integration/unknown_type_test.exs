@@ -1,11 +1,18 @@
 defmodule DMEx.Integration.UnknownTypeTest do
   @moduledoc """
-  v1's filter is the consumer's own module list, applied after the bytes arrive.
+  What reaches a consumer, and what happens to what it cannot decode.
 
-  A subscription is the producer's entire log, so rows the consumer has no
-  module for are the normal case rather than a fault. They advance the cursor
-  and invoke nothing — which is the only thing that keeps a consumer from
-  wedging on the first message type it does not know.
+  A subscription's message list does two jobs: it is the selection the producer
+  resolves its filter against, so undecodable rows mostly never cross the wire
+  at all — and it is what resolves a `message_type` back to a module for the
+  ones that do.
+
+  Both halves are tested here, because **the skip path is still load-bearing**.
+  Filter inclusion is heuristic: there are no false negatives, but a false
+  positive admits one extra type for the life of a connection, and a handler
+  declared `selective: false` asks for the whole log deliberately. A row the consumer has no module
+  for must still advance the cursor and invoke nothing, or a consumer would
+  wedge on the first one.
   """
 
   use DMEx.IntegrationCase
@@ -38,10 +45,10 @@ defmodule DMEx.Integration.UnknownTypeTest do
     %{url: url}
   end
 
-  test "a type the consumer cannot decode is passed over, and the rest arrive", _ctx do
+  test "a type the consumer did not select never arrives, and the rest do", _ctx do
     subscribe(Handlers.Echo)
 
-    # Interleaved deliberately: an unknown type first, so a consumer that
+    # Interleaved deliberately: an unselected type first, so a consumer that
     # wedged on it would never deliver anything at all.
     {:ok, _} = Producer.publish(%OrderShipped{order_id: 1, carrier: "dhl"})
     {:ok, _} = Producer.publish(%OrderPlaced{order_id: 2})
@@ -52,30 +59,50 @@ defmodule DMEx.Integration.UnknownTypeTest do
     assert_receive {:handled, %OrderPlaced{order_id: 4}, _}, 5_000
     refute_receive {:handled, %OrderShipped{}, _}, 200
 
-    # The cursor passed over the skipped rows rather than stopping at them.
+    # The cursor is at the last *selected* row, which here is also the log's
+    # tip. It moved straight over ids 1 and 3 without those rows ever being
+    # sent — a selective stream sees a sparse subset of one id space, not a
+    # space of its own.
     eventually(fn -> cursor() == {:ok, id} end)
   end
 
-  test "a stream a consumer understands none of still advances", _ctx do
+  test "selecting nothing that was published receives nothing, and that is not a stall", _ctx do
     subscribe(Handlers.Echo)
 
     for n <- 1..5, do: {:ok, _} = Producer.publish(%OrderShipped{order_id: n, carrier: "dhl"})
-    {:ok, id} = Postgres.max_id(Producer.__dmex__().storage_opts)
 
-    eventually(fn -> cursor() == {:ok, id} end)
-    refute_received {:handled, _, _}
+    # Nothing matched, so nothing was sent and there is nothing for the cursor
+    # to advance over: it stays unset rather than tracking the log's tip. That
+    # is the visible consequence of selection — `last_seen` is the last id
+    # *delivered*, and on a selective subscription it lags the log by however
+    # much of it went to somebody else.
+    #
+    # It costs nothing to catch up from. `(message_type, id)` makes the next
+    # read an index seek, which is the same price whether the next matching row
+    # is one id away or ten million.
+    refute_receive {:handled, _, _}, 500
+    assert cursor() == {:ok, nil}
   end
 
-  test "skips are reported, since silence looks identical to a broken filter", _ctx do
+  test "the whole log still arrives, and still skips, with selective: false", _ctx do
+    # The escape hatch, and the reason the skip path cannot be deleted: this is
+    # v1's delivery model, on demand, for telling "pointed at the wrong
+    # producer" apart from "producer has published nothing".
     ref = :telemetry_test.attach_event_handlers(self(), [[:dmex, :consumer, :skip]])
 
-    subscribe(Handlers.Echo)
+    subscribe(Handlers.EchoWholeLog)
 
     {:ok, _} = Producer.publish(%OrderShipped{order_id: 1, carrier: "dhl"})
+    {:ok, id} = Producer.publish(%OrderPlaced{order_id: 2})
 
+    # The undecodable row crossed the wire, invoked nothing, and did not wedge
+    # the stream behind it.
     assert_receive {[:dmex, :consumer, :skip], ^ref, _measurements, metadata}, 5_000
     assert metadata.message_type == "DMEx.Test.Messages.OrderShipped"
-    assert metadata.handler == Handlers.Echo
+    assert metadata.handler == Handlers.EchoWholeLog
+
+    assert_receive {:handled, %OrderPlaced{order_id: 2}, _}, 5_000
+    eventually(fn -> cursor("test/echo_whole_log") == {:ok, id} end)
   end
 
   test "declaring both modules delivers both", _ctx do
@@ -97,7 +124,7 @@ defmodule DMEx.Integration.UnknownTypeTest do
     {:ok, _} = Consumer.subscribe(handler, consumer: TestConsumer, batch_window: 50)
   end
 
-  defp cursor do
-    Postgres.last_seen(%{repo: DMEx.Test.IntegrationRepo, prefix: nil}, "test/echo")
+  defp cursor(subscription \\ "test/echo") do
+    Postgres.last_seen(%{repo: DMEx.Test.IntegrationRepo, prefix: nil}, subscription)
   end
 end

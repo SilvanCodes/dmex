@@ -87,13 +87,23 @@ defmodule DMEx.Consumer do
   registry rejects a dynamic `subscribe/2` for an id already live with
   `{:error, {:already_subscribed, id}}`.
 
-  ## v1 delivers whole logs
+  ## Selection is not configured here at all
 
-  There is **no filter option of any kind**. A subscription is the producer's
-  entire log, and the types its handler matches on are what narrow it — locally,
-  after the bytes have crossed the wire. A row whose type is not among them
-  advances the cursor and invokes nothing, which is the normal case rather than
-  a fault.
+  There is **no filter option and no selection option**. Which message types a
+  subscription receives is derived from the structs its handler's
+  `handle_message/2` clauses match on, encoded at compile time, and sent in the
+  request path — and whether it selects at all is `selective:` on the handler.
+  Both live on the module because the module is the complete declaration of what
+  a subscription *is*; nothing at this call site can disagree with it, because
+  nothing here says anything about it.
+
+  What this call site does vary is legitimate: pacing, where the cursor is
+  written, and which consumer to attach to. Those are properties of *running*
+  the subscription rather than of what it is.
+
+  A row whose type the handler has no clause for advances the cursor and invokes
+  nothing. With selection on that should be rare, but it is not a fault: filter
+  inclusion is heuristic, so an occasional extra type is expected.
   """
 
   use Supervisor
@@ -195,7 +205,7 @@ defmodule DMEx.Consumer do
       [
         handler: handler,
         subscription: declaration.id,
-        messages: declaration.messages,
+        fingerprint: declaration.fingerprint,
         url: resolve_url!(declaration, opts, consumer),
         registry: registry(consumer),
         config: Config.consumer!(opts)
@@ -477,10 +487,10 @@ defmodule DMEx.Consumer do
         raise ArgumentError,
               "unknown subscription option(s) #{inspect(unknown)}. " <>
                 "Known options: #{inspect(Enum.sort(known))}. " <>
-                "Note there is no filter option: a v1 subscription is the " <>
-                "producer's whole log, narrowed locally by the types the handler " <>
-                "matches on. The producer, the id and the message types belong to " <>
-                "the handler module, not here."
+                "Note there is no filter or selection option here: a subscription selects " <>
+                "the message types its handler's clauses match on, encoded at compile time " <>
+                "and sent in the request path. The producer, the id, the message types and " <>
+                "`selective:` all belong to the handler module, not here."
     end
   end
 end

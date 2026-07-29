@@ -131,7 +131,9 @@ defmodule DMEx.Producer.Watcher do
 
     # `each/2` runs here rather than in the registry's own processes, so a sweep
     # costs one atomics read per connection and nothing that can block.
-    DMEx.Producer.Registry.each(state.producer, fn pid, status ->
+    # A deadline is a deadline whatever the connection selected, so the
+    # selection is the one thing this pass has no opinion about.
+    DMEx.Producer.Registry.each(state.producer, fn pid, status, _selection ->
       if Status.overdue?(status, now) do
         reclaim(state.producer, pid, status, now)
         :counters.add(reclaimed, 1, 1)

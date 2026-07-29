@@ -168,7 +168,9 @@ defmodule DMEx.Producer.StatusTest do
     test "the dispatcher reaches it through the entry" do
       {:ok, mine} = DMEx.Producer.Registry.register(FakeProducer, 5_000)
 
-      DMEx.Producer.Registry.each(FakeProducer, fn _pid, status -> Status.flip(status) end)
+      DMEx.Producer.Registry.each(FakeProducer, fn _pid, status, _selection ->
+        Status.flip(status)
+      end)
 
       # Same flag, reached from another code path — which is what lets the
       # dispatcher coalesce without any shared table.
@@ -195,7 +197,7 @@ defmodule DMEx.Producer.StatusTest do
       eventually(fn -> DMEx.Producer.Registry.count(FakeProducer) == 0 end)
 
       # Nothing left to iterate, so nothing left to leak.
-      DMEx.Producer.Registry.each(FakeProducer, fn _pid, _status ->
+      DMEx.Producer.Registry.each(FakeProducer, fn _pid, _status, _selection ->
         flunk("entry outlived process")
       end)
     end

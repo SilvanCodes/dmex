@@ -55,7 +55,9 @@ defmodule DMEx.Test.Storage do
   def add_rows(opts, rows), do: update(opts, &%{&1 | rows: &1.rows ++ rows})
 
   @doc "Every `{cursor, limit}` pair `read/3` has been called with, oldest first."
-  @spec reads(DMEx.Storage.opts()) :: [{non_neg_integer(), pos_integer()}]
+  @spec reads(DMEx.Storage.opts()) :: [
+          {non_neg_integer(), pos_integer(), :all | [String.t()]}
+        ]
   def reads(opts), do: opts |> get() |> Map.fetch!(:reads) |> Enum.reverse()
 
   @doc "Every `{type, data, metadata}` triple `append/4` has been called with."
@@ -94,29 +96,49 @@ defmodule DMEx.Test.Storage do
   end
 
   @impl DMEx.Storage
-  def read(opts, cursor, limit) do
+  def read(opts, cursor, limit, types \\ :all) do
     # Before the agent call, so the caller wedges rather than the stub.
     maybe_hang(opts, :read)
 
     Agent.get_and_update(store(opts), fn state ->
-      do_read(%{state | reads: [{cursor, limit} | state.reads]}, cursor, limit)
+      do_read(%{state | reads: [{cursor, limit, types} | state.reads]}, cursor, limit, types)
     end)
   end
 
-  defp do_read(%{fail: {:read, reason}} = state, _cursor, _limit) do
+  defp do_read(%{fail: {:read, reason}} = state, _cursor, _limit, _types) do
     {{:error, reason}, %{state | fail: nil}}
   end
 
-  defp do_read(state, cursor, limit) do
-    rows = state.rows |> Enum.filter(&(&1.id > cursor)) |> Enum.take(limit)
+  defp do_read(state, cursor, limit, types) do
+    rows =
+      state.rows
+      |> Enum.filter(&(&1.id > cursor and selected?(&1, types)))
+      |> Enum.take(limit)
+
+    # The tip of the *whole* log even on a filtered read, matching the real
+    # adapter: a selective stream sees a sparse subset of one id space, never a
+    # space of its own.
     max_id = if rows == [], do: nil, else: max_id_of(state.rows)
 
     {{:ok, {rows, max_id}}, state}
   end
 
+  defp selected?(_row, :all), do: true
+  defp selected?(row, types), do: row.message_type in types
+
   @impl DMEx.Storage
   def max_id(opts) do
     Agent.get(store(opts), fn state -> {:ok, max_id_of(state.rows)} end)
+  end
+
+  @impl DMEx.Storage
+  def published_since(opts, cursor) do
+    Agent.get(store(opts), fn state ->
+      case Enum.filter(state.rows, &(&1.id > cursor)) do
+        [] -> {:ok, {nil, []}}
+        rows -> {:ok, {max_id_of(rows), rows |> Enum.map(& &1.message_type) |> Enum.uniq()}}
+      end
+    end)
   end
 
   @impl DMEx.Storage

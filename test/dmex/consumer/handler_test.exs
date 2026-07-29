@@ -28,12 +28,53 @@ defmodule DMEx.Consumer.HandlerTest do
     end
 
     test "carries the producer, the id, the module and the derived message list" do
-      assert Handlers.EchoAll.__dmex__() == %{
+      assert %{
                handler: Handlers.EchoAll,
                producer: "test",
                id: "test/echo_all",
                messages: [OrderPlaced, OrderShipped]
-             }
+             } = Handlers.EchoAll.__dmex__()
+    end
+
+    # The message list's second job. Built here rather than at connect because
+    # this is the first point `type/0` is callable — `Code.ensure_compiled!/1`
+    # has just run on every matched module — and because a constant is what
+    # makes "one URL per deployment" literal.
+    test "carries the message list encoded as a selection fingerprint" do
+      %{fingerprint: fingerprint, messages: messages} = Handlers.EchoAll.__dmex__()
+
+      assert is_binary(fingerprint)
+      assert {:ok, decoded} = DMEx.Fingerprint.decode(fingerprint)
+
+      # No false negatives is the whole guarantee, so it is worth asserting on
+      # the real handler rather than only in the property test.
+      for message <- messages do
+        assert DMEx.Fingerprint.member?(decoded, message.type())
+      end
+    end
+
+    test "selection defaults to on" do
+      assert %{fingerprint: fingerprint} = Handlers.Echo.__dmex__()
+      assert is_binary(fingerprint)
+    end
+
+    test "`selective: false` is carried as a nil fingerprint" do
+      # No separate boolean: a nil fingerprint *is* that answer, and two fields
+      # saying the same thing could only ever disagree. `DMEx.Consumer` passes
+      # whatever is here with no decision of its own.
+      declaration = Handlers.EchoWholeLog.__dmex__()
+
+      assert declaration.fingerprint == nil
+    end
+
+    test "`selective:` must be a boolean" do
+      assert_raise ArgumentError, ~r/:selective in .* must be true .* or false/s, fn ->
+        defmodule NotABoolean do
+          use DMEx.Consumer.Handler, producer: :test, id: :not_a_boolean, selective: :sometimes
+
+          def handle_message(%OrderPlaced{}, _metadata), do: :ok
+        end
+      end
     end
   end
 

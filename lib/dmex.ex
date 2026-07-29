@@ -88,11 +88,15 @@ defmodule DMEx do
 
   ## Three things worth knowing before you build on it
 
-    * **A v1 subscription is the producer's whole log.** There is no filter
-      option of any kind. The types a handler matches on narrow it, locally, after
-      the bytes have crossed the wire — a row whose type is not in that list
-      advances the cursor and invokes nothing. Server-side selection has a
-      design and is deliberately not in v1.
+    * **A subscription receives the types its handler matches on, and there is
+      still no filter option.** The selection is *derived* from the
+      `handle_message/2` clauses, encoded into the request path at compile time,
+      and resolved by the producer against its own message modules — so nothing
+      is declared anywhere to make it happen, and no separate list can drift
+      from the clauses. Inclusion is heuristic in one direction only: never a
+      false negative, and an occasional extra type arrives and is skipped
+      exactly as an unknown type always was. See `DMEx.Fingerprint` and
+      `guides/fingerprint-spec.md`.
 
     * **Delivery is at-least-once.** The handler call and the cursor advance
       share one transaction, so side effects that go through the consumer's own

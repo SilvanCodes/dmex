@@ -135,7 +135,7 @@ defmodule DMEx.Consumer.RequestTest do
     test "everything this sends, DMEx.Producer.Params parses" do
       headers = Request.headers(pacing(300, 250), 42, config())
 
-      assert {:ok, params} = Params.parse(headers, Config.producer!([]))
+      assert {:ok, params} = Params.parse([], headers, Config.producer!([]))
 
       assert params.cursor == 42
       assert params.batch_window == 300
@@ -145,6 +145,7 @@ defmodule DMEx.Consumer.RequestTest do
     test "and what it echoes back, this adopts" do
       {:ok, params} =
         Params.parse(
+          [],
           Request.headers(pacing(1, 999_999), :none, config()),
           Config.producer!([])
         )
@@ -159,13 +160,13 @@ defmodule DMEx.Consumer.RequestTest do
     test "start: :beginning round-trips as the whole log" do
       headers = Request.headers(pacing(), :none, config(start: :beginning))
 
-      assert {:ok, %{cursor: 0}} = Params.parse(headers, Config.producer!([]))
+      assert {:ok, %{cursor: 0}} = Params.parse([], headers, Config.producer!([]))
     end
 
     test "start: :latest round-trips as the tip" do
       headers = Request.headers(pacing(), :none, config(start: :latest))
 
-      assert {:ok, %{cursor: :latest}} = Params.parse(headers, Config.producer!([]))
+      assert {:ok, %{cursor: :latest}} = Params.parse([], headers, Config.producer!([]))
     end
   end
 end

@@ -5,7 +5,7 @@
 > the design rests on, and where each of them lives. The reasoning behind any
 > individual mechanism lives in that module's own documentation, and this file
 > points at it rather than repeating it. See [ROADMAP.md](ROADMAP.md) for what
-> is designed but deliberately not in v1.
+> is designed but deliberately not built yet.
 
 ## Overview
 
@@ -24,12 +24,16 @@ Server-Sent Events.
 - **Persistent, arbitrarily replayable streams** — consumption never removes
   anything. Any consumer can start, or restart, from any point in history.
 
-**Scope for v1.** A producer streams its whole log, and every subscription
-receives every message on it. There is no server-side selective delivery: no
-filters and no per-subscription subsets. A consumer that cares about only some
-message types declares the modules it knows and ignores the rest locally.
-Server-side selection is a real requirement with a design, deliberately
-deferred; see [Message-Type Selection](ROADMAP.md#message-type-selection).
+**Scope.** A producer streams its log, and a subscription receives the message
+types its handler can decode — resolved server-side, so unselected rows are
+never read, framed or sent. That selection introduces **no grouping vocabulary
+of its own**: nothing is stamped on the log, nothing is named beside it, and a
+consumer declares nothing it had not already declared. The modules its
+`handle_message/2` clauses match on are the selection, encoded at compile time
+into the request path. See [Message-type selection](#message-type-selection).
+
+A bare `GET /stream` still streams the whole log, which is what a browser
+`EventSource`, `curl`, or anything written before selection existed asks for.
 
 ### Prior art
 
@@ -67,8 +71,12 @@ CREATE TABLE dmex_messages (
 - `data` and `metadata` are JSON. `metadata` is entirely publisher-owned; DMEx
   writes nothing of its own into it, so there are no reserved keys.
 - `inserted_at` is observability only and never an ordering key.
-- **The primary key is the only index.** Every read is an `id > cursor` range
-  scan, which it serves directly.
+- **Two indexes, one per read shape.** The primary key serves a whole-log read —
+  an `id > cursor` range scan — directly. `(message_type, id)` serves a
+  selective one, and the planner takes it when the selection is rare enough to
+  be worth it (measured: at 0.1% of a log yes, at 1% and above it prefers the
+  primary key, which is the cheaper plan there). Both branches are correct and
+  nothing forces the choice.
 
 **A row says what a message *is*, never who might want it — and that restraint
 is load-bearing.** The table is immutable, so any grouping stamped into a row at
@@ -78,9 +86,87 @@ decision, made by and for whoever reads the log, welded into the *record of what
 happened*, and the two have different lifetimes.
 
 So `message_type` is the only classification a row carries, and which messages a
-given reader wants is resolved at **read time**, by that reader. See
-[Message-Type Selection](ROADMAP.md#message-type-selection), where a consumer's
-own message list becomes a fingerprint the producer filters against.
+given reader wants is resolved at **read time**, by that reader — see
+[Message-type selection](#message-type-selection), where a consumer's own
+message list becomes a fingerprint the producer resolves against its own types.
+
+## Message-type selection
+
+A subscription receives the message types its handler can decode, and nothing
+new is declared anywhere to make that happen.
+
+**The selection is the handler's clauses.** `DMEx.Consumer.Handler` already
+derives a subscription's message list at compile time from the structs
+`handle_message/2` matches on — it has to, or a consumer could not turn a
+`message_type` back into a struct at all. That list gains a second job. A name
+standing for a set of types would be a second vocabulary somebody has to define,
+publish, version, discover and keep in sync, and every one of those costs is
+paid to describe something the consumer has already said. Worse, the two can
+disagree: naming a type the handler cannot decode, or omitting one it can, both
+silently. Derived, that state is unrepresentable.
+
+**It travels as an XOR filter in the path.** Module names run 25–40 bytes each,
+so spelling them out exhausts a conservative request line at around sixty types.
+A 16-bit XOR filter encodes the same set at ~2.5 bytes per type, which puts the
+ceiling near 2 400. The blob is built at compile time and is a pure function of
+the message list, so it is a constant on `__dmex__/0` and the same handler
+compiles to the same URL everywhere. `guides/fingerprint-spec.md` is the
+normative encoding; `DMEx.Fingerprint` implements it.
+
+The path rather than a header, because a browser `EventSource` sets no request
+headers but owns its URL entirely — that is what gives a bare `EventSource` real
+server-side selection with no client library. The path rather than `?filter=`,
+because caches and proxies routinely drop or key-strip query strings and nothing
+does that to a path; losing the selection silently converts a selective
+subscription into a whole-log one, which is a bandwidth incident rather than an
+error.
+
+**Errors point one way, and that is the whole reason it works.** There are no
+false negatives, so every selected type is delivered. A false positive admits
+one extra type, which the consumer's ordinary skip path drops — so the skip path
+is a defence rather than dead code. Measured over 45 660 membership tests: zero
+false negatives, and a false-positive rate of 14.65 ± 1.85 per million against
+2⁻¹⁶'s expected 15.26.
+
+**The producer resolves it against its own compiled modules**, not against what
+its log contains. `SELECT DISTINCT message_type` goes stale silently — a
+producer can know a type it has not yet emitted, and first emission involves no
+restart and no reconnect — while the module set changes only on deploy, and a
+deploy takes every SSE connection with it. `DMEx.Producer.Messages` scans the
+producer's OTP application and every loaded application depending on `:dmex`,
+which is exactly the set whose modules could contain a `use DMEx.Message`. The
+result only has to be a *superset* of what the producer publishes: an extra type
+never matches, a missing one is silent loss.
+
+**Not a partitioning.** There is still one totally-ordered log and one id
+sequence. A selective subscription sees a sparse subset of that same id space —
+`max_id` stays the tip of the whole log — so every consumer's `last_seen` is
+directly comparable with every other's regardless of what it selected. The
+visible consequence is that a selective cursor lags the log by however much of
+it went to somebody else, which costs nothing to resume from: `(message_type,
+id)` makes the next read an index seek, the same price whether the next matching
+row is one id away or ten million.
+
+**Publishing is untouched.** `publish/3` keeps its signature and writes the same
+columns; message modules still take no options. A publisher does not know, and
+does not need to know, who is selecting its types.
+
+**The escape hatch is on the handler, not the call site.** `selective: false` in
+`use DMEx.Consumer.Handler` requests the whole log and filters locally, the way
+delivery worked before this existed. It is there to tell two failures apart when
+a subscription receives nothing — a producer or encoding mismatch, which
+whole-log delivery fixes immediately, from a producer that has published nothing,
+which it does not. It lives on the module for the same reason the producer, the
+id and the message list do: the module is the complete declaration of what a
+subscription *is*, and nothing at a `subscribe/2` call site should be able to
+vary that.
+
+**A filter matching nothing is a `404`.** An empty expansion is
+indistinguishable on the wire from a healthy stream on a quiet log, so the
+alternative is a connection that opens and says nothing forever. It is not proof
+of a client bug — a consumer deployed ahead of the producer that will emit its
+types is legitimately in that state — so DMEx's consumer retries it rather than
+stopping the way it stops on a `400`.
 
 ## The wire contract
 
@@ -88,11 +174,17 @@ This is the part a third-party client implements against, so it is spelled out
 here rather than left to the code. `DMEx.SSE.Frame` encodes and parses it;
 `DMEx.SSE.Decoder` handles chunk-boundary reassembly.
 
-**`GET /stream`**, mounted by `DMEx.Producer.Plug`. The route is singular and
-carries no application segment and no query string: a producer owns exactly one
-log and v1 streams all of it, and the hostname already identifies the app. (The
-post-v1 filter segment, `/stream/<blob>`, is the one thing that will ever hang
-off this URL, which is why the mount is a prefix `forward`.)
+**`GET /stream`** and **`GET /stream/<blob>`**, both mounted by
+`DMEx.Producer.Plug` through one prefix `forward`. The bare form is the whole
+log; the blob narrows it to the message types a consumer's filter admits (see
+[Message-type selection](#message-type-selection) and
+`guides/fingerprint-spec.md`). There is still no application segment and no
+query string: a producer owns exactly one log, and the hostname already
+identifies the app.
+
+`/stream/...` is a namespace with a closed reserved list matched *before* any
+blob decode. `stats` is reserved and not yet implemented, answered `404`. A
+segment that is neither reserved nor decodable is a `400`.
 
 **Request headers** — validated and clamped by `DMEx.Producer.Params`:
 
@@ -111,10 +203,27 @@ up" from "my request never took effect". Keeping pacing out of the URL means one
 stable URL per subscription across every reconnect, which matters because an
 adaptive consumer re-negotiates repeatedly over its lifetime.
 
-A browser `EventSource` sets no request headers beyond `Last-Event-ID` and so
-gets the defaults. That is the deliberate trade: pacing is a tuning knob whose
-defaults must be sane anyway, resumption is a correctness mechanism — and
-resumption is the one the spec gave a header to.
+The selection is in the URL for the same rule's sake — it is identity, not
+pacing — and it is the half of the rule that survives contact with a browser: an
+`EventSource` sets no request headers but owns its URL entirely, so it can
+select even though it cannot pace itself. The asymmetry is the rule working
+rather than an inconsistency in it. Pacing is a tuning knob whose defaults must
+be sane anyway; selection decides what crosses the wire at all, and a client
+with no way to express it pays for that on every message for as long as it stays
+connected.
+
+Selection also changes at deploy cadence rather than connection cadence, which
+is what makes it safe in a URL where pacing would not be: an adaptive consumer
+re-negotiates pacing repeatedly *within* one subscription's lifetime and would
+mint new URLs continuously, while a message list changes when somebody ships
+code. One URL per deployment is precisely the stable grouping the rule protects.
+
+On a selective stream the `200` additionally carries
+**`DMEx-Matched-Messages`**, the count of the producer's own types the filter
+admitted. The blob is opaque and cannot be reversed, so this is the one thing
+that makes a subscription legible from outside — a count of `0` where ten types
+were selected is an encoding mismatch, visible at connect rather than through
+silence.
 
 **The response** is `text/event-stream` with `Cache-Control: no-cache`,
 `X-Accel-Buffering: no` (nginx buffers by default, which would swallow both
@@ -311,11 +420,13 @@ if a producer's database is down, that producer's stream is unavailable exactly
 as any other data that application owns would be. HA for one stream is the same
 problem as HA for that application's database, and out of scope here.
 
-## What v1 deliberately does not do
+## What DMEx deliberately does not do
 
-- **No server-side selection** — every subscription receives the whole log and
-  filters locally. See
-  [Message-Type Selection](ROADMAP.md#message-type-selection).
+- **No narrowing a selection below the handler's message list** — a consumer
+  that can decode twenty types but only wants five receives fifteen it
+  discards, or splits into two handlers and therefore two cursors. "Your module
+  list is your subscription" is the simpler rule; the override is an open
+  question, not a missing feature.
 - **No aggregate budget or admission control** — no cap on open connections, no
   `503`/`Retry-After`. Per-connection protection is complete (invariants 2, 3
   and 5); aggregate pressure from many individually-healthy connections is not
@@ -353,6 +464,31 @@ it has established so far:
   At ~265 rows/s a million-row log of entirely handled messages takes roughly an
   hour to replay, and that is the figure the "arbitrarily replayable" claim
   should be quoted with. A mostly-skipped log replays at wire speed.
+- **The selection filter behaves as the design assumes it does.**
+  `mix bench.fingerprint` sweeps 86 set sizes over 1–2000:
+  **zero false negatives** across 45 660 membership tests, a false-positive rate
+  of **14.65 ± 1.85 per million** against 2⁻¹⁶'s expected 15.26, and
+  **2.49 bytes per type** raw (3.33 after base64url) against the 2.46 the sizing
+  argument claims. `recovered / encoded` is a flat 1.0 at 84 of 86 points
+  against a producer knowing 10× the types selected, worst case 1.00069.
+
+  That flatness is the evidence for 16-bit fingerprints rather than 8. Since
+  membership is tested per *type* and not per row, a false positive admits one
+  entire message type for the life of a connection — at 8 bits the same universe
+  would admit a spurious type at roughly every other point, and one unlucky draw
+  is a connection receiving all of the highest-volume type in the system.
+
+  It also puts a number on the request-line ceiling the URL placement depends
+  on: **~2 400 message types** at an 8 KB limit.
+- **The `(message_type, id)` index is taken exactly when it pays.** `EXPLAIN` on
+  a 500k-row skewed log (one type at 98.9%, one at 1%, one at 0.1%): selecting
+  the 0.1% type uses the index; selecting the 1% type or anything larger uses
+  the primary key and filters, at fewer buffers than the index plan would have
+  cost. A hand-written per-type `LATERAL` seek — the usual loose-index-scan
+  workaround — was measured against it and is *worse* everywhere except the
+  most extreme selectivity, because each branch fetches a whole `LIMIT` per type
+  and discards the surplus. So the plain `message_type = ANY($1)` is the right
+  query and the planner is left to choose.
 
 ## Open questions
 
@@ -399,11 +535,15 @@ it has established so far:
   flush first. A handled message needs no flush of its own because
   `advance/3` is absolute and subsumes the pending run below it, so the
   handler/cursor transaction is untouched. See `DMEx.Consumer.Pipeline`,
-  section 2a. [Message-Type Selection](ROADMAP.md#message-type-selection) would
-  have removed the motivation; this landed first, and cheaply enough that it is
-  worth keeping either way.
+  section 2a. Server-side selection has since removed most of the motivation —
+  a selective stream carries few rows it does not want — but the skip path is
+  still live for filter false positives and `selective: false` handlers, so this stays
+  worth having.
 - **Where the read-amplification ceiling actually is**, and whether the pool
-  wants partitioning so stream reads cannot starve publish writes.
+  wants partitioning so stream reads cannot starve publish writes. Type-routed
+  wakeups moved the ceiling rather than settling it: a publish now wakes only
+  the connections that selected its type, so the amplification is per-type
+  rather than per-connection, and where *that* binds has not been measured.
 - **Adaptation-induced reconnect churn** — every re-parameterization is a
   reconnect, and a correlated event (a producer deploy slowing every consumer at
   once) is damped only by jitter. Should adaptation be rate-limited over a
@@ -416,11 +556,31 @@ it has established so far:
   client. Any SSE-capable client can consume a stream, and one that bounds
   neither its socket nor its queue is indistinguishable to the producer from a
   genuinely fast one. Documented compatibility caveat, or something detectable?
-- **When to build server-side selection**, and what triggers reopening
-  [aggregate limits](ROADMAP.md#global-resource-limits) — a connection-count
+- **What triggers reopening
+  [aggregate limits](ROADMAP.md#global-resource-limits)** — a connection-count
   threshold, an observed incident, or memory pressure the per-connection bounds
   demonstrably failed to contain? Worth deciding the tripwire before
   rediscovering the need in production.
+- **Whether a selection should be narrowable below the handler's message list.**
+  A handler that can decode twenty types but only wants five must either receive
+  fifteen it discards or split into two handlers and two cursors. "Your module
+  list is your subscription" is the simpler rule and it is what ships; an
+  explicit override on `subscribe/2` is the escape hatch for a decode vocabulary
+  genuinely wider than its interest.
+- **Whether a selective cursor wants a second cursor**, and it is probably
+  answered by the index rather than open. With a sparse subset the last-*sent*
+  id no longer implies the rows in between were examined and rejected, so
+  `last_seen` lags the log tip by however much of it went to somebody else.
+  `(message_type, id)` makes resuming from it an index seek costing the same
+  whether the next matching row is one id away or ten million — so the lag is
+  visible but not expensive. Worth revisiting only if a real deployment shows
+  otherwise.
+- **A rolling multi-node producer deploy.** Expansion is refreshed at connect
+  and the module set changes only on deploy, which is safe because a deploy
+  takes every connection with it — on one node. A connection pinned to a node
+  running old code can outlive a node running new code that has begun
+  publishing a type the old node's expansion does not know. That belongs to the
+  cross-node clustering question above, not to selection.
 - **`:skip` visibility** — `:skip` drops a message with no DMEx-side record
   beyond telemetry, unlike `:dead_message`. Intentional as a "bring your own
   observability" mode, or should it always leave a trace?

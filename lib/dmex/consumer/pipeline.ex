@@ -21,9 +21,14 @@ defmodule DMEx.Consumer.Pipeline do
 
   ## 2. An unknown message type is skipped, not an error
 
-  This is the direct consequence of v1 having no server-side selection: a
-  subscription receives the producer's entire log, so rows the consumer has no
-  module for are the normal case, not a fault.
+  Server-side selection makes this rare rather than obsolete, and the difference
+  matters. **Filter inclusion is heuristic in one direction**: there are no
+  false negatives, so every selected type arrives — but a false positive admits
+  one entire message type for the whole life of a connection (see
+  `DMEx.Fingerprint`). A handler declared `selective: false` asks for the
+  whole log outright. Either way an undecodable row can arrive, so this path is a live
+  defence rather than dead code, and an unknown type is **not** a fault to
+  surface.
 
   **Such a row advances the cursor exactly as a handled one does.** It must, or
   a consumer would wedge forever on the first message type it does not know.

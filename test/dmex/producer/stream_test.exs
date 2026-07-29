@@ -84,7 +84,7 @@ defmodule DMEx.Producer.StreamTest do
 
       run(opts, chunks: 3, max_batch_size: 7)
 
-      assert Enum.all?(Stub.reads(opts), fn {_cursor, limit} -> limit == 7 end)
+      assert Enum.all?(Stub.reads(opts), fn {_cursor, limit, _types} -> limit == 7 end)
 
       for _ <- 1..3 do
         assert_received {:chunk, frame}
@@ -98,7 +98,7 @@ defmodule DMEx.Producer.StreamTest do
       run(opts, chunks: 3, max_batch_size: 4)
 
       # Reads walk the log rather than re-reading it: 0 -> 4 -> 8.
-      assert Stub.reads(opts) == [{0, 4}, {4, 4}, {8, 4}]
+      assert Stub.reads(opts) == [{0, 4, :all}, {4, 4, :all}, {8, 4, :all}]
     end
 
     test "starts from the cursor it was given", %{opts: opts} do
@@ -106,7 +106,7 @@ defmodule DMEx.Producer.StreamTest do
 
       run(opts, chunks: 1, cursor: 6)
 
-      assert [{6, _limit}] = Stub.reads(opts)
+      assert [{6, _limit, :all}] = Stub.reads(opts)
       assert_received {:chunk, frame}
       assert frame =~ ~s("id":7)
       refute frame =~ ~s("id":6)
@@ -269,7 +269,7 @@ defmodule DMEx.Producer.StreamTest do
       # The cursor only advanced over what was sent, so the next read picks up
       # exactly where the truncated frame stopped — nothing lost, nothing
       # repeated.
-      [{first_cursor, _}, {second_cursor, _}] = Stub.reads(opts)
+      [{first_cursor, _, _}, {second_cursor, _, _}] = Stub.reads(opts)
       assert first_cursor == 0
       assert second_cursor > 0
       assert second_cursor < 10
@@ -418,7 +418,8 @@ defmodule DMEx.Producer.StreamTest do
       frame_max_bytes: Keyword.get(test_opts, :frame_max_bytes, 1_048_576),
       stall_timeout: Keyword.get(test_opts, :stall_timeout, 30_000),
       last_sent_at: nil,
-      status: Keyword.get(test_opts, :status) || Status.new(30_000)
+      status: Keyword.get(test_opts, :status) || Status.new(30_000),
+      types: Keyword.get(test_opts, :types, :all)
     }
   end
 end

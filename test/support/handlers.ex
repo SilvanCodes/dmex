@@ -52,6 +52,27 @@ defmodule DMEx.Test.Handlers do
     end
   end
 
+  defmodule EchoWholeLog do
+    @moduledoc """
+    `Echo` with server-side selection turned off.
+
+    A second module rather than a `subscribe/2` option, for the same reason the
+    message list is: the handler module is the complete declaration of what the
+    subscription *is*, and a call site that could vary it could disagree with it.
+    """
+    use DMEx.Consumer.Handler, producer: :test, id: :echo_whole_log, selective: false
+
+    alias DMEx.Test.Handlers
+    alias DMEx.Test.Messages.OrderPlaced
+
+    @impl true
+    def handle_message(%OrderPlaced{} = message, metadata) do
+      send(Handlers.owner(), {:handled, message, metadata})
+
+      :ok
+    end
+  end
+
   defmodule EchoAll do
     @moduledoc """
     `Echo` with a wider message list.

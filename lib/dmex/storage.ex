@@ -35,7 +35,7 @@ defmodule DMEx.Storage do
   `pg_advisory_xact_lock`, never `pg_advisory_lock`, and it must never be
   released explicitly.
 
-  ### `c:read/3` must return `data` and `metadata` as JSON *text*
+  ### `c:read/4` must return `data` and `metadata` as JSON *text*
 
   `DMEx.SSE.Frame.encode_batch/2` splices those two columns into the wire frame
   byte-for-byte, without parsing them. An adapter that lets its driver decode
@@ -95,7 +95,8 @@ defmodule DMEx.Storage do
               {:ok, pos_integer()} | {:error, term()}
 
   @doc """
-  Reads up to `limit` rows with `id > cursor`, in ascending id order.
+  Reads up to `limit` rows with `id > cursor`, in ascending id order, optionally
+  narrowed to a set of message types.
 
   Returns the rows together with the log's current `max_id` as of the same
   round trip — a correlated scalar subquery, not a second query. On the primary
@@ -106,20 +107,49 @@ defmodule DMEx.Storage do
   `max_id` is `nil` when the read returns no rows, which is legal: a zero-row
   read sends no frame, so there is nothing for it to stamp.
 
-  This is the only read shape the producer ever issues. It takes no predicate
-  but the cursor, so the primary key serves it directly and v1 needs no
-  secondary index at all.
+  `types` is `:all` for a whole-log subscription — the primary key serves that
+  directly, exactly as it always did — or an explicit list, already expanded
+  from a consumer's filter by `DMEx.Producer.Plug`. An adapter must issue these
+  as **two different statements** rather than one with a nullable predicate: a
+  `($3 IS NULL OR message_type = ANY($3))` shape is a correct query and a
+  ruinous plan, since it defeats the index on both branches.
+
+  `max_id` is deliberately **unfiltered** in both cases. It is the tip of the
+  whole log, which is what makes a selective subscription's `last_seen`
+  comparable with every other consumer's — a selective stream sees a sparse
+  subset of one id space, never a space of its own.
   """
-  @callback read(opts(), cursor :: non_neg_integer(), limit :: pos_integer()) ::
+  @callback read(
+              opts(),
+              cursor :: non_neg_integer(),
+              limit :: pos_integer(),
+              types :: :all | [String.t()]
+            ) ::
               {:ok, {[row()], non_neg_integer() | nil}} | {:error, term()}
 
   @doc """
   The log's current highest id, or `0` when the log is empty.
 
-  Used for two things: `DMEx.Producer.Dispatcher`'s poll, which broadcasts only
-  when this moves, and resolving a `Last-Event-ID: latest` connect against the tip.
+  Used for resolving a `Last-Event-ID: latest` connect against the tip.
   """
   @callback max_id(opts()) :: {:ok, non_neg_integer()} | {:error, term()}
+
+  @doc """
+  What has been published since `cursor`: the new highest id, and the distinct
+  message types among those rows.
+
+  `DMEx.Producer.Dispatcher`'s poll, which broadcasts only when the id moves and
+  needs the types to route that broadcast. Returns `{nil, []}` when nothing has
+  been published since — which is the common case on an idle log and must stay
+  cheap, since it runs once per poll interval per application.
+
+  The types are what make the poll route as precisely as the notification path
+  does. Without them the poll would have to wake every connection on any log
+  publishing more than once per interval, which is exactly the amplification the
+  routing exists to remove.
+  """
+  @callback published_since(opts(), cursor :: non_neg_integer()) ::
+              {:ok, {non_neg_integer() | nil, [String.t()]}} | {:error, term()}
 
   @doc """
   The durable read position for a subscription, or `nil` if it has never
@@ -175,7 +205,7 @@ defmodule DMEx.Storage do
   Every message `subscription` has given up on, oldest first, as ordinary log
   rows.
 
-  The rows come back in `t:row/0` shape — the same shape `c:read/3` returns and
+  The rows come back in `t:row/0` shape — the same shape `c:read/4` returns and
   the same shape the consumer pipeline consumes — because the stored columns are
   the log's columns. Replaying a dead message is therefore feeding a row back to
   a handler, with no reshaping in between.

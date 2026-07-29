@@ -17,15 +17,21 @@ infrastructure between applications.
 > **Status: pre-release, under active development.** Not yet published to Hex.
 > See [ARCHITECTURE.md](ARCHITECTURE.md) for the design — the wire contract, the
 > invariants everything rests on, and where each one lives in the code — and
-> [ROADMAP.md](ROADMAP.md) for what is designed but deliberately not in v1:
-> server-side message-type selection (`GET /stream/<filter blob>`), a
-> `GET /stream/stats` endpoint, aggregate resource limits, and compression.
+> [ROADMAP.md](ROADMAP.md) for what is designed but deliberately not built yet:
+> a `GET /stream/stats` endpoint, aggregate resource limits, and compression.
 
 ## What works today
 
 Publish → `LISTEN`/`NOTIFY` → SSE frame → decode → handler → durable cursor,
 with resumption, duplicate suppression, catch-up, heartbeats, bounded retries
 and all three failure modes — covered end to end over a real socket.
+
+Delivery is **selective server-side**: a subscription receives the message types
+its handler's `handle_message/2` clauses match on, and nothing else is read,
+framed or sent. Nothing is declared to make that happen — the clauses are the
+selection, encoded into the request path at compile time. See
+[guides/fingerprint-spec.md](guides/fingerprint-spec.md) for the wire encoding,
+which a non-Elixir consumer can implement against.
 
 ```elixir
 # migration
