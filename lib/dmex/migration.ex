@@ -169,7 +169,7 @@ defmodule DMEx.Migration do
     #
     # It costs an index write per publish, paid by every producer whether or not
     # anyone selects against it, and it is the reason a whole-log read is issued
-    # as a *separate statement* — see `DMEx.Storage.Postgres.read/4`. Folding
+    # as a *separate statement* — see `DMEx.Storage.Postgres.read/5`. Folding
     # both into one query with a nullable predicate would defeat this index and
     # the primary key at once.
     create_if_not_exists(index(:dmex_messages, [:message_type, :id], prefix: prefix))

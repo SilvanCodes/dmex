@@ -39,7 +39,7 @@ defmodule DMEx.Producer do
       which is what a consumer's selection filter is resolved against. Defaults
       to the Mix application being compiled; see `DMEx.Producer.Messages`.
 
-  Any `DMEx.Config` producer setting may also be given here — `batch_window:`,
+  Any `DMEx.Config` producer setting may also be given here — `max_batch_frequency:`,
   `max_batch_size:`, `heartbeat_ms:`, `poll_interval:` and the rest. An
   unrecognised option raises at compile time rather than being ignored.
 

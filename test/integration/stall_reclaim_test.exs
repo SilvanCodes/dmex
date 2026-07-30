@@ -24,7 +24,7 @@ defmodule DMEx.Integration.StallReclaimTest do
       repo: DMEx.Test.IntegrationRepo,
       app: :dmex_stall,
       heartbeat_ms: 60_000,
-      write_max_bytes: 16_384,
+      max_batch_bytes: 16_384,
       stall_timeout: 300,
       stall_check_interval: 50
   end

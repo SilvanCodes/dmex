@@ -58,7 +58,8 @@ defmodule DMEx.SSE.Decoder do
   @doc """
   The producer's advertised reconnect/heartbeat interval, in ms, or `nil`.
 
-  Carries `heartbeat_ms + batch_window` — the real upper bound on silence — so a
+  Carries `heartbeat_ms` plus one batch interval — the real upper bound on
+  silence — so a
   consumer reads it as "expect a frame or a comment within this window".
   """
   @spec retry(t()) :: pos_integer() | nil

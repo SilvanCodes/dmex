@@ -28,7 +28,7 @@ defmodule DMEx.Telemetry do
 
   One write to one connection — a whole read's rows, encoded as one frame each
   and handed to `chunk/2` together. Measurements: `:rows` and `:bytes`.
-  Metadata: `:producer`, `:truncated` (whether `write_max_bytes` cut the batch
+  Metadata: `:producer`, `:truncated` (whether `max_batch_bytes` cut the batch
   short, which is `false` for a lone oversized row that went out whole).
 
   `:rows` sitting at `max_batch_size` write after write is a connection reading

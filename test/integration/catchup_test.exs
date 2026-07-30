@@ -84,7 +84,53 @@ defmodule DMEx.Integration.CatchupTest do
     assert metadata.subscription == "test/echo"
   end
 
+  # The producer's memory bound, over a real socket. `max_batch_size` alone is
+  # not one: 500 rows is half a megabyte at 1 KB each and half a gigabyte at
+  # 1 MB each, and the difference is entirely the payloads a publisher happens
+  # to send.
+  test "a log of large payloads is read in byte-bounded batches, not row-bounded ones", _ctx do
+    ref = :telemetry_test.attach_event_handlers(self(), [[:dmex, :stream, :write]])
+
+    # 8 KB each, so the default 500-row limit would be a 4 MB read and the
+    # 1 MiB byte budget is what has to bind instead.
+    seed_large(200, 8_192)
+
+    {:ok, _} = Consumer.subscribe(Handlers.Echo, consumer: TestConsumer)
+
+    # Drain the small backlog and then the large rows behind it.
+    for _ <- 1..(@backlog + 200), do: assert_receive({:handled, %OrderPlaced{}, _}, 30_000)
+
+    writes = collect_writes(ref)
+    budget = DMEx.Config.producer!([]).max_batch_bytes
+    rows_limit = DMEx.Config.producer!([]).max_batch_size
+
+    # The claim, over every write the connection made: payload bytes never
+    # exceed the budget. The slack is SSE framing, which the storage bound does
+    # not count because framing is not storage's business.
+    assert writes != []
+    assert Enum.all?(writes, fn w -> w.bytes <= budget + w.rows * 200 end)
+
+    # And the bound was not vacuous: at least one write stopped on bytes rather
+    # than on the row limit, which is only possible because the *read* was
+    # bounded — 500 rows of 8 KB would have been a 4 MB batch.
+    assert Enum.any?(writes, fn w -> w.rows < rows_limit and w.bytes > div(budget, 2) end)
+  end
+
   ## Helpers
+
+  defp seed_large(count, payload_bytes) do
+    note = String.duplicate("x", payload_bytes)
+
+    SQL.query!(
+      Repo,
+      """
+      INSERT INTO dmex_messages (message_type, data, metadata)
+      SELECT $1, json_build_object('order_id', n, 'note', $3::text)::text::jsonb, '{}'::jsonb
+        FROM generate_series(1, $2) AS n
+      """,
+      ["DMEx.Test.Messages.OrderPlaced", count, note]
+    )
+  end
 
   # Seeded with one statement rather than @backlog publishes: this test is about
   # the read path, and appends are deliberately serialized.
@@ -105,6 +151,15 @@ defmodule DMEx.Integration.CatchupTest do
       {[:dmex, :stream, :write], ^ref, %{rows: rows}, _} -> collect_write_sizes(ref, [rows | acc])
     after
       0 -> acc
+    end
+  end
+
+  defp collect_writes(ref, acc \\ []) do
+    receive do
+      {[:dmex, :stream, :write], ^ref, measurements, _} ->
+        collect_writes(ref, [measurements | acc])
+    after
+      100 -> Enum.reverse(acc)
     end
   end
 end

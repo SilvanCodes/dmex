@@ -66,35 +66,87 @@ defmodule DMEx.Storage.Postgres do
     end
   end
 
-  # No default for `types`: a default here defines a `read/3` that is not in the
+  # No default for `types`: a default here defines a `read/4` that is not in the
   # behaviour, so `@impl` would be silently vouching for an arity nothing
   # implements.
   @impl DMEx.Storage
-  def read(opts, cursor, limit, :all)
-      when is_integer(cursor) and cursor >= 0 and is_integer(limit) and limit > 0 do
-    query(opts, read_sql(opts, ""), [cursor, limit])
+  def read(opts, cursor, limit, max_bytes, :all)
+      when is_integer(cursor) and cursor >= 0 and is_integer(limit) and limit > 0 and
+             is_integer(max_bytes) and max_bytes > 0 do
+    query(opts, read_sql(opts, ""), [cursor, limit, max_bytes])
   end
 
-  def read(opts, cursor, limit, types)
+  def read(opts, cursor, limit, max_bytes, types)
       when is_integer(cursor) and cursor >= 0 and is_integer(limit) and limit > 0 and
-             is_list(types) do
-    # A separate statement rather than `($3 IS NULL OR message_type = ANY($3))`
+             is_integer(max_bytes) and max_bytes > 0 and is_list(types) do
+    # A separate statement rather than `($4 IS NULL OR message_type = ANY($4))`
     # on the one above. The nullable form is a correct query and a ruinous plan:
     # Postgres cannot use either index through it, so the unfiltered read would
     # regress to pay for a predicate it never uses.
-    query(opts, read_sql(opts, "AND message_type = ANY($3)"), [cursor, limit, types])
+    query(opts, read_sql(opts, "AND message_type = ANY($4)"), [cursor, limit, max_bytes, types])
   end
 
-  # Five columns, and nothing else: the wire carries no `max_id`, so the
-  # correlated `(SELECT max(id) ...)` subquery this used to fold in has nothing
-  # left to feed and every read is now a plain range scan.
+  # Public only so `DMEx.Storage.PostgresTest` can EXPLAIN the real statement:
+  # the plan shape is load-bearing (see `read_sql/2` below) and a test that
+  # restated the SQL would prove nothing about it.
+  @doc false
+  def __read_sql__(opts, predicate), do: read_sql(opts, predicate)
+
+  # Four nested levels, and each one is load-bearing.
+  #
+  # **`page`** applies the row limit against the index, so everything above it
+  # works on at most `$2` rows rather than on the whole log after the cursor.
+  # That nesting is not stylistic: within one SELECT, Postgres computes window
+  # functions *before* LIMIT, so a window in the same query level as the LIMIT
+  # would run the running sum over every matching row in the log. The `::text`
+  # casts happen here, once.
+  #
+  # **`sized`** gives each row its own byte count, off the already-cast text
+  # columns so nothing is cast twice.
+  #
+  # **`measured`** adds the *exclusive* prefix sum — the bytes of the rows
+  # strictly before this one. `sum()` over an empty frame is NULL, hence the
+  # coalesce, and that NULL-to-zero is exactly the first row.
+  #
+  # **The outer filter** is where the bound is. `prefix_bytes + bytes <= $3` is
+  # inclusive, so the rows that come back never total more than the budget —
+  # an exclusive `prefix_bytes < $3` would admit a row whose own size pushes the
+  # total past it, which is a bound that does not bound.
+  #
+  # `OR prefix_bytes = 0` is the one deliberate exception, and it is what stops
+  # a single row larger than the whole budget from wedging the subscription
+  # forever. It identifies the first row exactly: `message_type` is `NOT NULL`
+  # and constrained to one or more characters, so every row contributes at least
+  # one byte and no later row can have a zero prefix.
+  #
+  # The ORDER BY is repeated at the top because a filter over a subquery does not
+  # contractually preserve its ordering, and ordering here is a delivery
+  # guarantee rather than a convenience.
   defp read_sql(opts, predicate) do
     """
-    SELECT id, message_type, data::text, metadata::text, inserted_at
-      FROM #{table(opts, @messages)}
-     WHERE id > $1 #{predicate}
+    SELECT id, message_type, data, metadata, inserted_at
+      FROM (
+        SELECT id, message_type, data, metadata, inserted_at, bytes,
+               coalesce(
+                 sum(bytes) OVER (ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),
+                 0
+               ) AS prefix_bytes
+          FROM (
+            SELECT id, message_type, data, metadata, inserted_at,
+                   octet_length(data) + octet_length(metadata) + octet_length(message_type)
+                     AS bytes
+              FROM (
+                SELECT id, message_type, data::text AS data, metadata::text AS metadata,
+                       inserted_at
+                  FROM #{table(opts, @messages)}
+                 WHERE id > $1 #{predicate}
+                 ORDER BY id
+                 LIMIT $2
+              ) page
+          ) sized
+      ) measured
+     WHERE prefix_bytes + bytes <= $3 OR prefix_bytes = 0
      ORDER BY id
-     LIMIT $2
     """
   end
 
@@ -237,7 +289,7 @@ defmodule DMEx.Storage.Postgres do
   def dead_messages(opts, subscription) when is_binary(subscription) do
     repo = Map.fetch!(opts, :repo)
 
-    # The same projection `read/4` uses, because the columns are the same
+    # The same projection `read/5` uses, because the columns are the same
     # columns — which is the whole point of the table's shape.
     sql = """
     SELECT id, message_type, data::text, metadata::text, inserted_at

@@ -8,8 +8,8 @@
 #
 # Three things to read off it:
 #
-#   * **`batch_window` really caps each connection at one read per window**,
-#     however fast the log is written. Reads/s should track `C / batch_window`,
+#   * **`max_batch_frequency` really caps each connection's query rate**,
+#     however fast the log is written. Reads/s should track `C x frequency`,
 #     not `C x P`, once P exceeds the window rate.
 #   * **An idle log costs one query per poll interval per *app***, not per
 #     connection. The dispatcher only broadcasts when `max(id)` moved, so the
@@ -107,7 +107,7 @@ for connections <- [10, 50, 200], publish_rate <- [0, 100] do
 
   IO.puts(
     "  per connection:   #{Float.round(frames / connections / 5, 2)} frames/s " <>
-      "(batch_window caps this at #{Float.round(1000 / 200, 1)}/s)"
+      "(max_batch_frequency caps this at 5.0/s)"
   )
 
   if publisher, do: Process.exit(publisher, :kill)

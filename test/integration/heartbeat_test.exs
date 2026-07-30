@@ -99,7 +99,7 @@ defmodule DMEx.Integration.HeartbeatTest do
     test "the advertised retry: is the effective interval, not the raw one", ctx do
       body = collect(ctx, 300)
 
-      # heartbeat_ms + batch_window, because the loop's throttle runs after the
+      # heartbeat_ms + one batch interval, because the loop's throttle runs after the
       # heartbeat branch — that sum is the real upper bound on silence, and a
       # consumer measuring against heartbeat_ms alone would disconnect a healthy
       # producer.
@@ -165,7 +165,7 @@ defmodule DMEx.Integration.HeartbeatTest do
       eventually(fn -> Decoder.retry(:sys.get_state(pid).decoder) != nil end)
 
       # Read off the wire rather than assumed: the producer's own heartbeat plus
-      # its own batch_window, neither of which this consumer had any say in.
+      # its own batch interval, neither of which this consumer had any say in.
       assert Decoder.retry(:sys.get_state(pid).decoder) == @heartbeat + 200
     end
   end

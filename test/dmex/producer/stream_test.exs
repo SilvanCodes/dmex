@@ -177,11 +177,11 @@ defmodule DMEx.Producer.StreamTest do
     # Regression, found by bench/e2e/end_to_end_latency.exs: with the window
     # measured from the top of the iteration, the time parked in await_wakeup/1
     # counted toward it *and* the full window was slept anyway — so a message on
-    # a quiet stream waited a whole `batch_window` after the wakeup announcing
+    # a quiet stream waited a whole batch interval after the wakeup announcing
     # it. End-to-end p50 was 201ms against a 200ms window, where the design
     # expects about half of one.
     test "a wakeup on a long-idle stream is not delayed by the batch window", %{opts: opts} do
-      pid = start_loop(opts, chunks: 1, heartbeat_ms: 60_000, batch_window: 2_000)
+      pid = start_loop(opts, chunks: 1, heartbeat_ms: 60_000, batch_interval: 2_000)
 
       # Let the loop do its connect read and park with nothing to send.
       eventually(fn -> Stub.reads(opts) != [] end)
@@ -204,7 +204,7 @@ defmodule DMEx.Producer.StreamTest do
       Stub.put_rows(opts, 10)
 
       started = System.monotonic_time(:millisecond)
-      start_loop(opts, chunks: 3, max_batch_size: 1, batch_window: 100)
+      start_loop(opts, chunks: 3, max_batch_size: 1, batch_interval: 100)
 
       assert_receive {:done, _}, 2_000
 
@@ -215,7 +215,7 @@ defmodule DMEx.Producer.StreamTest do
     test "many queued wakeups cost one read, not one read each", %{opts: opts} do
       # An empty log and a minute-long heartbeat, so once the loop is parked in
       # await_wakeup/1 a wakeup is the *only* thing that can cause another read.
-      pid = start_loop(opts, chunks: 1, heartbeat_ms: 60_000, batch_window: 100)
+      pid = start_loop(opts, chunks: 1, heartbeat_ms: 60_000, batch_interval: 100)
 
       # The loop always reads once on connect — that is what lets a consumer
       # with a backlog start draining immediately — so wait it out and measure
@@ -255,65 +255,47 @@ defmodule DMEx.Producer.StreamTest do
     end
   end
 
-  describe "the write byte cap" do
-    test "truncates a write that would exceed it, keeping the rest for next time", %{opts: opts} do
+  # The bound the loop relies on is enforced in the *read*, not here — see
+  # `c:DMEx.Storage.read/5`. What these assert is that the loop passes it down
+  # and behaves correctly on a short batch.
+  describe "the byte bound" do
+    test "a batch cut short by bytes leaves the rest for the next read", %{opts: opts} do
       big = String.duplicate("x", 400)
       rows = for id <- 1..10, do: Stub.row(id, data: ~s({"note":"#{big}"}))
       Stub.put_rows(opts, rows)
 
-      run(opts, chunks: 2, write_max_bytes: 1_000)
+      run(opts, chunks: 2, max_batch_bytes: 1_000)
 
       assert_received {:chunk, first}
       assert byte_size(first) < 2_000
 
-      # The cursor only advanced over what was sent, so the next read picks up
-      # exactly where the truncated frame stopped — nothing lost, nothing
-      # repeated.
+      # The cursor only advanced over what was read, so the next read picks up
+      # exactly where the first stopped — nothing lost, nothing repeated.
       [{first_cursor, _, _}, {second_cursor, _, _}] = Stub.reads(opts)
       assert first_cursor == 0
       assert second_cursor > 0
       assert second_cursor < 10
     end
 
-    test "always sends at least one row, even one larger than the cap", %{opts: opts} do
+    test "the loop passes its configured budget to the read", %{opts: opts} do
+      Stub.put_rows(opts, 3)
+
+      run(opts, chunks: 1, max_batch_bytes: 4_242)
+
+      assert [{_cursor, _limit, _types} | _] = Stub.reads(opts)
+      assert Stub.read_bytes(opts) == [4_242]
+    end
+
+    test "always sends at least one row, even one larger than the budget", %{opts: opts} do
       # Refusing it would wedge the stream on that row permanently, which is a
       # worse failure than one oversized write.
       huge = String.duplicate("x", 5_000)
       Stub.put_rows(opts, [Stub.row(1, data: ~s({"note":"#{huge}"}))])
 
-      run(opts, chunks: 1, write_max_bytes: 100)
+      run(opts, chunks: 1, max_batch_bytes: 100)
 
       assert_received {:chunk, write}
       assert byte_size(write) > 5_000
-    end
-
-    test "reports truncation in telemetry", %{opts: opts} do
-      ref = :telemetry_test.attach_event_handlers(self(), [[:dmex, :stream, :write]])
-
-      big = String.duplicate("x", 400)
-      Stub.put_rows(opts, for(id <- 1..10, do: Stub.row(id, data: ~s({"note":"#{big}"}))))
-
-      run(opts, chunks: 2, write_max_bytes: 1_000)
-
-      assert_received {[:dmex, :stream, :write], ^ref, measurements, %{truncated: true}}
-      assert measurements.rows < 10
-      assert measurements.bytes > 0
-    end
-
-    # A lone oversized row overshoots the cap without anything having been cut,
-    # and reporting that as truncation would fire the alert on a write that went
-    # out whole.
-    test "does not report truncation when nothing was cut", %{opts: opts} do
-      ref = :telemetry_test.attach_event_handlers(self(), [[:dmex, :stream, :write]])
-
-      huge = String.duplicate("x", 5_000)
-      Stub.put_rows(opts, [Stub.row(1, data: ~s({"note":"#{huge}"}))])
-
-      # Two chunks, because the first write only *completes* — and so only
-      # reports — if the adapter has not closed on it.
-      run(opts, chunks: 2, write_max_bytes: 100, heartbeat_ms: 10)
-
-      assert_received {[:dmex, :stream, :write], ^ref, _measurements, %{truncated: false}}
     end
   end
 
@@ -325,7 +307,7 @@ defmodule DMEx.Producer.StreamTest do
       status = Status.new(60_000)
       Stub.put_rows(opts, 3)
 
-      run(opts, chunks: 1, status: status, stall_timeout: 5_000, batch_window: 1)
+      run(opts, chunks: 1, status: status, stall_timeout: 5_000, batch_interval: 1)
 
       now = System.monotonic_time(:millisecond)
 
@@ -379,9 +361,27 @@ defmodule DMEx.Producer.StreamTest do
       # handlers are global, so an async sibling's write event can land in this
       # mailbox first and assert_receive scans for a match rather than taking
       # the head.
-      assert_receive {[:dmex, :stream, :write], ^ref, measurements, %{truncated: false}}
+      assert_receive {[:dmex, :stream, :write], ^ref, measurements, %{producer: _}}
                      when measurements.rows == 4
 
+      assert measurements.bytes > 0
+    end
+
+    # There is no `truncated` flag any more, because the byte bound is applied
+    # in the read rather than by trimming a batch already in hand — and `rows`
+    # against `max_batch_size` says the same thing more precisely. A write
+    # carrying fewer rows than the limit, with `bytes` near `max_batch_bytes`,
+    # is a stream whose byte budget is what binds.
+    test "a byte-bounded write reports fewer rows than the row limit", %{opts: opts} do
+      ref = :telemetry_test.attach_event_handlers(self(), [[:dmex, :stream, :write]])
+
+      big = String.duplicate("x", 400)
+      Stub.put_rows(opts, for(id <- 1..10, do: Stub.row(id, data: ~s({"note":"#{big}"}))))
+
+      run(opts, chunks: 2, max_batch_size: 10, max_batch_bytes: 1_000)
+
+      assert_receive {[:dmex, :stream, :write], ^ref, measurements, _metadata}
+      assert measurements.rows < 10
       assert measurements.bytes > 0
     end
   end
@@ -425,10 +425,10 @@ defmodule DMEx.Producer.StreamTest do
       storage: Stub,
       storage_opts: opts,
       cursor: Keyword.get(test_opts, :cursor, 0),
-      batch_window: Keyword.get(test_opts, :batch_window, 1),
+      batch_interval: Keyword.get(test_opts, :batch_interval, 1),
       max_batch_size: Keyword.get(test_opts, :max_batch_size, 500),
       heartbeat_ms: Keyword.get(test_opts, :heartbeat_ms, 60_000),
-      write_max_bytes: Keyword.get(test_opts, :write_max_bytes, 1_048_576),
+      max_batch_bytes: Keyword.get(test_opts, :max_batch_bytes, 1_048_576),
       stall_timeout: Keyword.get(test_opts, :stall_timeout, 30_000),
       last_sent_at: nil,
       status: Keyword.get(test_opts, :status) || Status.new(30_000),

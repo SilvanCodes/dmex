@@ -193,8 +193,8 @@ segment that is neither reserved nor decodable is a `400`.
 | `Last-Event-ID` | resume position: an integer id, the literal `latest` (start from the tip), or absent (the whole log). Anything else is a `400`. |
 
 **That is the whole list. DMEx defines no request headers of its own.** Pacing
-is producer configuration — `batch_window` and `max_batch_size` on the producer
-module — so there is nothing for a consumer to ask for, nothing to clamp, and
+is producer configuration — `max_batch_frequency`, `max_batch_size` and
+`max_batch_bytes` on the producer module — so there is nothing for a consumer to ask for, nothing to clamp, and
 nothing to echo back. The direct consequence is that **DMEx's own consumer and a
 browser's `EventSource` send byte-identical requests** for the same
 subscription, and everything that distinguishes one subscription from another is
@@ -271,7 +271,7 @@ on its own line.
 
 **Heartbeats** are SSE comment frames (`: hb`) on an idle interval — ignored by
 every spec-compliant client. `retry:` is sent at stream open carrying the
-**effective** interval, `heartbeat_ms + batch_window`, because the send loop's
+**effective** interval, `heartbeat_ms` plus one batch interval, because the send loop's
 throttle runs after the heartbeat branch and that sum is the real upper bound on
 silence. Both halves are producer configuration, so every connection to one
 producer is told the same number. A generic client reads it as a reconnect
@@ -295,9 +295,24 @@ app (`DMEx.Storage.Postgres`). The cost is publish concurrency; the purchase is
 a reader model with no gap-detection logic anywhere in it. (SQLite is
 single-writer already.)
 
-**2. The producer's memory per connection is one frame.** The send loop in
-`DMEx.Producer.Stream` holds at most the frame it is writing. There is no
-accumulator anywhere, and the frame itself is capped in bytes as well as rows.
+**2. The producer's memory per connection is one batch, bounded in rows *and*
+bytes.** The send loop in `DMEx.Producer.Stream` holds at most the rows it is
+writing, and there is no accumulator anywhere. Two bounds rather than one,
+because a row costs heap in two independent ways: its payload, which
+`max_batch_bytes` counts, and a fixed cost of roughly a kilobyte for the map,
+the `%DateTime{}`, the frame's iodata cells and the timestamp binary — which no
+budget expressed in database octets can see. At a 1 KB payload the byte bound
+binds and the fixed cost is around a megabyte; at a 50-byte payload the same
+1 MiB budget admits about twenty-one thousand rows whose fixed cost alone is
+~22 MB, and `max_batch_size` is what closes that end.
+
+**Both bounds are applied inside the query** (`c:DMEx.Storage.read/5`), which is
+the whole point: a read that returns `max_batch_size` rows and lets the caller
+trim them has already spent the memory the bound exists to cap. The Postgres
+adapter carries a running sum over the *limited* batch and keeps rows while the
+inclusive total stays under budget, with one deliberate exception — a single row
+larger than the whole budget is still returned alone, because refusing it would
+wedge the subscription on it forever.
 
 **3. Reads are gated on sends completing.** This is the key inversion. If reads
 were driven by the publisher's rate, they would be decoupled from the consumer's
@@ -352,15 +367,23 @@ nothing to bound and no depth to observe — which is also why there is no
 consumer-side controller. The window closing *is* the signal, and the producer's
 loop is already gated on it (invariant 3).
 
-**9. Pacing has exactly one owner.** `batch_window` and `max_batch_size` are the
-producer's configuration and appear nowhere else — not in a request, not in a
-response, not in a subscription's options. What that buys is the absence of a
-whole class of question: there is no "requested" value to drift from an
-"effective" one, no clamping, no echo to interpret, and no state machine
-re-negotiating anything mid-subscription. The producer is the party whose
-database and request processes pacing protects, so it is the party that chooses
-it. See [the deployment guide](guides/deployment.md) for the one sizing rule
-that ties a producer's `max_batch_size` to consumers it does not control.
+**9. Pacing has exactly one owner, and it is stated as a rate.**
+`max_batch_frequency`, `max_batch_size` and `max_batch_bytes` are the producer's
+configuration and appear nowhere else — not in a request, not in a response, not
+in a subscription's options. What that buys is the absence of a whole class of
+question: there is no "requested" value to drift from an "effective" one, no
+clamping, no echo to interpret, and no state machine re-negotiating anything
+mid-subscription.
+
+`max_batch_frequency` is **how hard one connection may hammer the database**,
+and it is a ceiling rather than a reaction to load: a hundred connections at the
+default five reads per second is five hundred short range scans a second against
+the pool, whatever the publish rate is doing. That number is knowable in advance
+precisely because it does not depend on how much anyone publishes. The producer
+is the party whose database, memory and request processes all three settings
+protect, so it is the party that chooses them. See
+[the deployment guide](guides/deployment.md) for the one sizing rule that ties a
+producer's `max_batch_size` to consumers it does not control.
 
 **10. Batching is a write batch, never a processing unit.** The producer encodes
 a read's rows as one frame each and writes them together; the consumer sees a
@@ -589,6 +612,10 @@ it has established so far:
   threshold, an observed incident, or memory pressure the per-connection bounds
   demonstrably failed to contain? Worth deciding the tripwire before
   rediscovering the need in production.
+- **Whether `max_batch_bytes` wants to be adaptive per connection.** It is a
+  producer-wide constant, so one connection serving a consumer on a slow link
+  gets the same budget as one on a fast one. That is the same "one owner" trade
+  invariant 9 makes deliberately, and the same question would reopen it.
 - **Whether a selection should be narrowable below the handler's message list.**
   A handler that can decode twenty types but only wants five must either receive
   fifteen it discards or split into two handlers and two cursors. "Your module

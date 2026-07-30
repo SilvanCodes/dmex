@@ -37,32 +37,32 @@ defmodule DMEx.Storage.PostgresTest do
     end
   end
 
-  describe "read/4" do
+  describe "read/5" do
     test "returns rows in ascending id order", %{opts: opts} do
       ids = for n <- 1..5, do: elem(append(opts, "A", %{n: n}), 1)
 
-      assert {:ok, rows} = Postgres.read(opts, 0, 100, :all)
+      assert {:ok, rows} = Postgres.read(opts, 0, 100, 1_048_576, :all)
       assert Enum.map(rows, & &1.id) == Enum.sort(ids)
     end
 
     test "is exclusive on the cursor", %{opts: opts} do
       [_first, second, third] = for n <- 1..3, do: elem(append(opts, "A", %{n: n}), 1)
 
-      assert {:ok, rows} = Postgres.read(opts, second, 100, :all)
+      assert {:ok, rows} = Postgres.read(opts, second, 100, 1_048_576, :all)
       assert Enum.map(rows, & &1.id) == [third]
     end
 
     test "honours the limit", %{opts: opts} do
       for n <- 1..10, do: append(opts, "A", %{n: n})
 
-      assert {:ok, rows} = Postgres.read(opts, 0, 4, :all)
+      assert {:ok, rows} = Postgres.read(opts, 0, 4, 1_048_576, :all)
       assert length(rows) == 4
     end
 
     test "returns every field DMEx.SSE.Frame needs, and nothing else", %{opts: opts} do
       {:ok, id} = append(opts, "MyApp.Messages.OrderPlaced", %{order_id: 7})
 
-      assert {:ok, [row]} = Postgres.read(opts, id - 1, 1, :all)
+      assert {:ok, [row]} = Postgres.read(opts, id - 1, 1, 1_048_576, :all)
 
       assert Map.keys(row) |> Enum.sort() ==
                [:data, :id, :inserted_at, :message_type, :metadata]
@@ -78,7 +78,7 @@ defmodule DMEx.Storage.PostgresTest do
     test "returns data and metadata as JSON text, never as decoded maps", %{opts: opts} do
       {:ok, id} = append(opts, "A", %{order_id: 7, total: 1999}, %{trace_id: "abc"})
 
-      assert {:ok, [row]} = Postgres.read(opts, id - 1, 1, :all)
+      assert {:ok, [row]} = Postgres.read(opts, id - 1, 1, 1_048_576, :all)
 
       assert is_binary(row.data)
       assert is_binary(row.metadata)
@@ -89,7 +89,7 @@ defmodule DMEx.Storage.PostgresTest do
     test "returns inserted_at as a DateTime, so the wire keeps its UTC suffix", %{opts: opts} do
       {:ok, id} = append(opts, "A", %{n: 1})
 
-      assert {:ok, [row]} = Postgres.read(opts, id - 1, 1, :all)
+      assert {:ok, [row]} = Postgres.read(opts, id - 1, 1, 1_048_576, :all)
 
       # timestamptz -> %DateTime{}; a plain `timestamp` column would come back
       # as %NaiveDateTime{} and silently drop the trailing Z from every frame.
@@ -100,7 +100,81 @@ defmodule DMEx.Storage.PostgresTest do
     # The wire carries no `max_id`, so a read returns rows and nothing else: no
     # correlated subquery folded in, and no tuple to unwrap.
     test "an empty read is an empty list, not a tuple with a nil tip", %{opts: opts} do
-      assert {:ok, []} = Postgres.read(opts, 0, 10, :all)
+      assert {:ok, []} = Postgres.read(opts, 0, 10, 1_048_576, :all)
+    end
+  end
+
+  # The bound that makes the producer's "memory per connection is one batch"
+  # claim true in bytes and not only in rows. It has to hold *in the query*: a
+  # read that returns `limit` rows and lets the caller trim them has already
+  # spent the memory the bound exists to cap.
+  describe "read/5 byte bound" do
+    setup %{opts: opts} do
+      # 1 KB of payload per row, so the arithmetic is easy to state exactly.
+      big = String.duplicate("x", 1_000)
+
+      ids = for n <- 1..20, do: elem(append(opts, "A", %{n: n, note: big}), 1)
+
+      %{ids: ids, row_bytes: row_bytes(opts, hd(ids))}
+    end
+
+    test "stops before the budget is exceeded", %{opts: opts, row_bytes: row_bytes} do
+      # Room for four rows and not a fifth.
+      budget = row_bytes * 4 + 1
+
+      assert {:ok, rows} = Postgres.read(opts, 0, 100, budget, :all)
+
+      assert length(rows) == 4
+      assert payload_bytes(rows) <= budget
+    end
+
+    test "the row limit still applies, whichever binds first", %{opts: opts} do
+      assert {:ok, rows} = Postgres.read(opts, 0, 2, 10_000_000, :all)
+
+      assert length(rows) == 2
+    end
+
+    test "returns rows in id order, contiguous from the cursor", %{opts: opts, ids: ids} do
+      {:ok, rows} = Postgres.read(opts, 0, 100, 4_000, :all)
+
+      assert Enum.map(rows, & &1.id) == Enum.take(ids, length(rows))
+    end
+
+    # Refusing it would wedge the subscription on that row permanently, and a
+    # stuck stream is a worse failure than one oversized read. This falls out of
+    # comparing each row against the bytes *before* it, which is zero for the
+    # first.
+    test "always returns one row, even one larger than the whole budget", %{opts: opts} do
+      assert {:ok, [row]} = Postgres.read(opts, 0, 100, 1, :all)
+
+      assert byte_size(row.data) > 1_000
+    end
+
+    test "the bound applies to a selective read too", %{opts: opts, row_bytes: row_bytes} do
+      {:ok, _} = append(opts, "B", %{n: 1})
+
+      assert {:ok, rows} = Postgres.read(opts, 0, 100, row_bytes * 3 + 1, ["A"])
+
+      assert length(rows) == 3
+      assert Enum.all?(rows, &(&1.message_type == "A"))
+    end
+
+    # The window function has to run over the *limited* batch, not over every
+    # row after the cursor — in one SELECT, Postgres computes window functions
+    # before LIMIT, so the naive shape would scan the whole log to answer a
+    # bounded read. Asserted through the plan rather than through a stopwatch.
+    test "the running sum is computed over the limited batch, not the whole log",
+         %{opts: opts} do
+      plan = explain(opts, 0, 3, 10_000_000, :all)
+
+      # The index scan feeding the window carries the row limit with it.
+      assert plan =~ ~r/Limit/
+      assert plan =~ ~r/WindowAgg/
+
+      # And the limit is below the window, not above it: the scan stops at three
+      # rows rather than the window running over all twenty.
+      [_above, below] = String.split(plan, "WindowAgg", parts: 2)
+      assert below =~ ~r/Limit/
     end
   end
 
@@ -288,8 +362,8 @@ defmodule DMEx.Storage.PostgresTest do
 
   describe "dead_messages/2 and delete_dead_message/3" do
     # The point of the table's shape: what comes back is a log row, in exactly
-    # the shape read/4 returns and the pipeline consumes.
-    test "reads back rows in the same shape read/4 returns", %{opts: opts} do
+    # the shape read/5 returns and the pipeline consumes.
+    test "reads back rows in the same shape read/5 returns", %{opts: opts} do
       :ok = Postgres.dead_message(opts, dead_attrs())
 
       assert {:ok, [row]} = Postgres.dead_messages(opts, @some)
@@ -337,11 +411,39 @@ defmodule DMEx.Storage.PostgresTest do
   end
 
   defp fetch!(opts, id) do
-    {:ok, [row]} = Postgres.read(opts, id - 1, 1, :all)
+    {:ok, [row]} = Postgres.read(opts, id - 1, 1, 1_048_576, :all)
     row
   end
 
   defp raw(%{repo: repo}, sql), do: SQL.query!(repo, sql, []).rows
+
+  # What the byte bound counts: payload plus the type, matching the adapter's
+  # `octet_length(data) + octet_length(metadata) + octet_length(message_type)`.
+  defp payload_bytes(rows) do
+    Enum.reduce(rows, 0, fn row, total ->
+      total + byte_size(row.data) + byte_size(row.metadata) + byte_size(row.message_type)
+    end)
+  end
+
+  defp row_bytes(opts, id) do
+    {:ok, [row]} = Postgres.read(opts, id - 1, 1, 10_000_000, :all)
+
+    payload_bytes([row])
+  end
+
+  # The read's own SQL, run through EXPLAIN, so the plan shape is asserted
+  # rather than assumed. Reaches into the adapter's private query builder
+  # deliberately: what is under test is that statement and no restatement of it
+  # would prove anything.
+  defp explain(%{repo: repo} = opts, cursor, limit, max_bytes, :all) do
+    sql = :erlang.apply(Postgres, :__read_sql__, [opts, ""])
+
+    repo
+    |> SQL.query!("EXPLAIN " <> sql, [cursor, limit, max_bytes])
+    |> Map.fetch!(:rows)
+    |> List.flatten()
+    |> Enum.join("\n")
+  end
 
   defp count(opts, table) do
     [[count]] = raw(opts, "SELECT count(*) FROM #{table}")

@@ -53,7 +53,7 @@ defmodule DMEx.Integration.WireContractTest do
     test "opens the stream with a retry: frame carrying the effective heartbeat", ctx do
       {200, _headers, body} = request(ctx, [])
 
-      # heartbeat_ms + batch_window, since the throttle runs after the heartbeat
+      # heartbeat_ms + one batch interval, since the throttle runs after the heartbeat
       # branch and the sum is the real upper bound on silence. Both are producer
       # configuration, so this number is the same for every client.
       assert body =~ "retry: 15010"

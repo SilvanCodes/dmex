@@ -14,7 +14,14 @@ defmodule DMEx.Test.Storage do
 
   @behaviour DMEx.Storage
 
-  defstruct rows: [], reads: [], appends: [], cursors: %{}, dead: [], fail: nil, hang: nil
+  defstruct rows: [],
+            reads: [],
+            read_bytes: [],
+            appends: [],
+            cursors: %{},
+            dead: [],
+            fail: nil,
+            hang: nil
 
   @doc """
   Starts a stub and returns the `t:DMEx.Storage.opts/0` map addressing it.
@@ -60,6 +67,10 @@ defmodule DMEx.Test.Storage do
         ]
   def reads(opts), do: opts |> get() |> Map.fetch!(:reads) |> Enum.reverse()
 
+  @doc "The byte budget each read was given, oldest first."
+  @spec read_bytes(DMEx.Storage.opts()) :: [pos_integer()]
+  def read_bytes(opts), do: opts |> get() |> Map.fetch!(:read_bytes) |> Enum.reverse()
+
   @doc "Every `{type, data, metadata}` triple `append/4` has been called with."
   @spec appends(DMEx.Storage.opts()) :: [{String.t(), binary(), binary()}]
   def appends(opts), do: opts |> get() |> Map.fetch!(:appends) |> Enum.reverse()
@@ -96,26 +107,52 @@ defmodule DMEx.Test.Storage do
   end
 
   @impl DMEx.Storage
-  def read(opts, cursor, limit, types) do
+  def read(opts, cursor, limit, max_bytes, types) do
     # Before the agent call, so the caller wedges rather than the stub.
     maybe_hang(opts, :read)
 
     Agent.get_and_update(store(opts), fn state ->
-      do_read(%{state | reads: [{cursor, limit, types} | state.reads]}, cursor, limit, types)
+      state = %{
+        state
+        | reads: [{cursor, limit, types} | state.reads],
+          read_bytes: [max_bytes | state.read_bytes]
+      }
+
+      do_read(state, cursor, limit, max_bytes, types)
     end)
   end
 
-  defp do_read(%{fail: {:read, reason}} = state, _cursor, _limit, _types) do
+  defp do_read(%{fail: {:read, reason}} = state, _cursor, _limit, _max_bytes, _types) do
     {{:error, reason}, %{state | fail: nil}}
   end
 
-  defp do_read(state, cursor, limit, types) do
+  defp do_read(state, cursor, limit, max_bytes, types) do
     rows =
       state.rows
       |> Enum.filter(&(&1.id > cursor and selected?(&1, types)))
       |> Enum.take(limit)
+      |> cap_bytes(max_bytes)
 
     {{:ok, rows}, state}
+  end
+
+  # The real adapter enforces this inside the query; a stub over a list does it
+  # here, under the same rule — inclusive, so the total never exceeds the
+  # budget, except that the first row always goes out however large it is.
+  defp cap_bytes(rows, max_bytes) do
+    rows
+    |> Enum.reduce_while({[], 0}, fn row, {kept, prefix} ->
+      if prefix == 0 or prefix + row_bytes(row) <= max_bytes do
+        {:cont, {[row | kept], prefix + row_bytes(row)}}
+      else
+        {:halt, {kept, prefix}}
+      end
+    end)
+    |> then(fn {kept, _prefix} -> Enum.reverse(kept) end)
+  end
+
+  defp row_bytes(row) do
+    byte_size(row.data) + byte_size(row.metadata) + byte_size(row.message_type)
   end
 
   defp selected?(_row, :all), do: true

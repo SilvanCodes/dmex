@@ -36,10 +36,12 @@ open connection and no query, so leaving the interval at a second costs
 nothing measurable.
 
 **Sizing `stall_timeout`.** The budget covers a single blocking step, and the
-step that matters is a write of at most `write_max_bytes` (1 MiB by default).
+step that matters is a write of at most `max_batch_bytes` (1 MiB by default) —
+a real ceiling, because that bound is applied in the read rather than by
+trimming a batch already in memory.
 The default 30 000 ms therefore tolerates a consumer draining a full write at
 roughly 280 kbit/s. Tighten it if you know your consumers are on fast links and
-want stalls cleared sooner; loosen it, or lower `write_max_bytes`, if you serve
+want stalls cleared sooner; loosen it, or lower `max_batch_bytes`, if you serve
 consumers on genuinely slow ones. The failure mode of tightening too far is a
 healthy slow consumer being dropped, which costs it a reconnect and costs you a
 fresh catch-up read — survivable, but at scale it is a reconnect storm with no
@@ -56,7 +58,26 @@ durable, and resumption is the same `id > last_seen` read a cold connect does.
 consumer; a steady rate is either a consumer that cannot keep up or a
 `stall_timeout` set tighter than your links deserve.
 
-## 1a. Sizing `max_batch_size` against `stall_timeout`
+## 1a. Two bounds on a read, and why both exist
+
+`max_batch_size` (500 rows) and `max_batch_bytes` (1 MiB of payload) bound the
+same read from different directions, and whichever is reached first ends it.
+
+The row count is what binds on ordinary payloads. **The byte budget is the
+memory bound**, and it is the one that matters if your publishers ever emit
+large messages: 500 rows is half a megabyte at 1 KB each and half a gigabyte at
+1 MB each, and nothing about a row count notices the difference. Both are
+enforced inside the query, so an oversized batch is never materialised and then
+trimmed.
+
+One row larger than the whole budget is still delivered, on its own — refusing
+it would wedge that subscription on it permanently.
+
+To size it: this is the per-open-stream memory ceiling, so multiply by the
+connections you expect to serve. 200 streams at the 1 MiB default is 200 MiB of
+worst-case transient read memory, on top of your application's own.
+
+## 1b. Sizing `max_batch_size` against `stall_timeout`
 
 A consumer processes rows **inline, as they arrive**, so the producer's write
 does not complete until the consumer has drained it through its handler. That
@@ -110,7 +131,7 @@ than the watcher on the one failure it can see.
 
 If you set it, `send_timeout_close: true` is not optional: without it the
 timeout leaves the socket in an undefined state. And size it against
-`write_max_bytes` the same way as `stall_timeout` above — 5 000 ms tolerates a
+`max_batch_bytes` the same way as `stall_timeout` above — 5 000 ms tolerates a
 consumer draining a 1 MiB write at roughly 1.6 Mbit/s.
 
 ### TCP keepalive — for the case nothing in-process can reach
@@ -150,20 +171,20 @@ It is a fallback, not a substitute for configuring the proxy properly:
 location /stream {
     proxy_pass http://app;
     proxy_buffering off;        # the important one
-    proxy_read_timeout 300s;    # must exceed heartbeat_ms + batch_window
+    proxy_read_timeout 300s;    # must exceed heartbeat_ms + one batch interval
     proxy_http_version 1.1;
 }
 ```
 
 nginx buffers responses by default, holding bytes until its buffer fills or the
-response ends. On an SSE stream that converts `batch_window` pacing into
+response ends. On an SSE stream that converts `max_batch_frequency` pacing into
 "whenever the buffer happens to fill" and swallows heartbeats entirely — so a
 perfectly healthy stream looks dead to both the consumer's liveness check and
 the proxy's own idle timeout.
 
 `proxy_read_timeout` must comfortably exceed the producer's **effective**
-heartbeat interval, which is `heartbeat_ms + batch_window` — 15 200 ms with the
-defaults — because the loop's throttle runs after the heartbeat branch. The
+heartbeat interval, which is `heartbeat_ms` plus one batch interval — 15 200 ms
+with the defaults — because the loop's throttle runs after the heartbeat branch. The
 producer advertises that same figure as SSE's `retry:`, so you can read it off
 the wire rather than recomputing it.
 
@@ -172,18 +193,26 @@ not tuned.
 
 ## 4. Database connections
 
-Every open stream issues its own reads, so `C` connections at publish rate `P`
-cost up to `C x P` reads per second — bounded per connection at one read per
-`batch_window`, so really `C / batch_window`. The binding constraint in practice
-is **pool contention**, not raw query load.
+Every open stream issues its own reads, and `max_batch_frequency` is exactly the
+knob that bounds it:
+
+```
+worst-case reads per second  =  open streams x max_batch_frequency
+```
+
+**That figure does not depend on your publish rate.** A connection reads at most
+`max_batch_frequency` times a second whether the log is idle or saturated, which
+is what makes the ceiling knowable before you hit it rather than after. The
+binding constraint in practice is **pool contention**, not raw query load.
 
 Two consequences:
 
-- **Size the pool for streams as well as for requests.** A producer serving 200
-  streams at the default 200 ms window issues about 1 000 reads/s, each a short
-  primary-key range scan, on top of whatever else the application does. Raising
-  `batch_window` is the lever, and it is entirely yours: consumers do not ask
-  for pacing and cannot override it.
+- **Size the pool for streams as well as for requests.** 200 streams at the
+  default 5 reads/s is about 1 000 reads/s, each a short primary-key range scan,
+  on top of whatever else the application does. If that is more than your pool
+  wants, lower `max_batch_frequency` — the cost is latency, which rises to about
+  `1 / (2 x max_batch_frequency)` on average. It is entirely your call:
+  consumers do not ask for pacing and cannot override it.
 - **The producer needs one extra connection beyond the pool.** `LISTEN` cannot
   share a pooled connection, since it must stay checked out for its whole life,
   so `DMEx.Storage.Postgres` opens a dedicated `Postgrex.Notifications`

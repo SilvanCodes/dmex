@@ -60,7 +60,7 @@ defmodule DMEx.Producer.Plug do
 
     * **`x-accel-buffering: no`** — nginx proxies with `proxy_buffering on` by
       default, which holds response bytes until its buffer fills. On an SSE
-      stream that converts `batch_window` pacing into "whenever the buffer
+      stream that converts `max_batch_frequency` pacing into "whenever the buffer
       happens to fill" and swallows heartbeats entirely, so a healthy stream
       looks dead to both the consumer and the proxy's idle timeout. The header
       is nginx-specific and ignored elsewhere, and it is the difference between

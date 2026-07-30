@@ -53,7 +53,7 @@ defmodule DMEx.SSE.Frame do
   one `data:` line with no base64 and no escaping pass.
   """
 
-  @typedoc "A log row on the producer's side, as `c:DMEx.Storage.read/4` returns it."
+  @typedoc "A log row on the producer's side, as `c:DMEx.Storage.read/5` returns it."
   @type row :: %{
           required(:id) => pos_integer(),
           required(:message_type) => String.t(),

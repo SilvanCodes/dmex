@@ -35,7 +35,7 @@ defmodule DMEx.Storage do
   `pg_advisory_xact_lock`, never `pg_advisory_lock`, and it must never be
   released explicitly.
 
-  ### `c:read/4` must return `data` and `metadata` as JSON *text*
+  ### `c:read/5` must return `data` and `metadata` as JSON *text*
 
   `DMEx.SSE.Frame.encode_row/1` splices those two columns into the wire frame
   byte-for-byte, without parsing them. An adapter that lets its driver decode
@@ -94,14 +94,68 @@ defmodule DMEx.Storage do
               {:ok, pos_integer()} | {:error, term()}
 
   @doc """
-  Reads up to `limit` rows with `id > cursor`, in ascending id order, optionally
-  narrowed to a set of message types.
+  Reads rows with `id > cursor` in ascending id order, bounded by **both** a row
+  count and a byte budget, optionally narrowed to a set of message types.
+
+  ## The byte bound is the adapter's job, not the caller's
+
+  `max_bytes` caps `octet_length(data) + octet_length(metadata) +
+  octet_length(message_type)` summed across the returned rows, and it must be
+  enforced **inside the query**. Reading `limit` rows and discarding the surplus
+  afterwards satisfies the letter of this and defeats the purpose: `limit` rows
+  of large payloads are fully materialised in the caller's memory before
+  anything trims them, which is precisely the unbounded-growth failure the
+  producer's send loop is built to exclude. Only the database can bound that
+  before it is spent.
+
+  ### `limit` is not redundant, and an adapter must not treat it as advisory
+
+  `max_bytes` bounds payload; `limit` bounds the fixed per-row cost of turning a
+  row into terms, which is around a kilobyte and which no byte budget expressed
+  in database octets can see. On small messages that fixed cost is two orders of
+  magnitude larger than the payload, so a byte bound on its own is not a memory
+  bound at all.
+
+  `limit` is also what makes `max_bytes` *cheap*. A byte bound is a running sum
+  over the batch, and a running sum needs a bounded input — without a `LIMIT`
+  beneath it, the sum has to visit every row after the cursor to find out where
+  to stop, which turns a bounded read into a scan of the log's tail. An adapter
+  that drops the row limit has not simplified the query, it has made it
+  unbounded.
+
+  The bound is **inclusive**: the rows that come back never total more than
+  `max_bytes`. A predicate that admits a row while the rows *before* it fit is
+  off by one row's size and is not a bound at all — it caps at `max_bytes` plus
+  whatever the last row happened to be, which on a log with one 40 MB payload is
+  not a cap.
+
+  **The single exception is that at least one row must always come back**, even
+  one on its own larger than `max_bytes`. Refusing it would wedge the
+  subscription on that row forever, and a stuck stream is a worse failure than
+  one oversized read. So the guarantee is precisely: *at most `max_bytes`,
+  unless that would mean returning nothing.*
+
+  The bound is on payload bytes, not on encoded frame bytes: framing is
+  `DMEx.SSE.Frame`'s concern and a storage adapter should not know about it. A
+  caller wanting a wire figure adds its own per-row constant — roughly 130 bytes
+  of SSE scaffolding and ISO 8601 timestamp per row, at the time of writing.
+
+  ## Writing another adapter
+
+  `octet_length/1` is Postgres's spelling. SQLite's is
+  `length(CAST(x AS BLOB))` — `length/1` on a text value counts characters, so
+  the cast is what makes it count bytes. Both support window functions, so the
+  running-sum shape carries over directly; what does not carry over is putting
+  the window in the same query level as the `LIMIT`, since that computes it
+  over every matching row before the limit applies.
+
+  ## Everything else
 
   `types` is `:all` for a whole-log subscription — the primary key serves that
   directly — or an explicit list, already expanded from a consumer's filter by
   `DMEx.Producer.Plug`. An adapter must issue these as **two different
   statements** rather than one with a nullable predicate: a
-  `($3 IS NULL OR message_type = ANY($3))` shape is a correct query and a
+  `($4 IS NULL OR message_type = ANY($4))` shape is a correct query and a
   ruinous plan, since it defeats the index on both branches.
 
   Nothing about the log's tip comes back with the rows. The wire carries no
@@ -113,6 +167,7 @@ defmodule DMEx.Storage do
               opts(),
               cursor :: non_neg_integer(),
               limit :: pos_integer(),
+              max_bytes :: pos_integer(),
               types :: :all | [String.t()]
             ) :: {:ok, [row()]} | {:error, term()}
 
@@ -194,7 +249,7 @@ defmodule DMEx.Storage do
   Every message `subscription` has given up on, oldest first, as ordinary log
   rows.
 
-  The rows come back in `t:row/0` shape — the same shape `c:read/4` returns and
+  The rows come back in `t:row/0` shape — the same shape `c:read/5` returns and
   the same shape the consumer pipeline consumes — because the stored columns are
   the log's columns. Replaying a dead message is therefore feeding a row back to
   a handler, with no reshaping in between.

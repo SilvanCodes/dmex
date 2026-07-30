@@ -13,7 +13,7 @@ defmodule DMEx.ProducerTest do
                channel: "dmex_dm_ex_test_producer",
                lock: {classid, objid},
                prefix: nil,
-               config: %{batch_window: 200},
+               config: %{max_batch_frequency: 5},
                storage_opts: storage_opts
              } = Producer.__dmex__()
 
@@ -115,14 +115,14 @@ defmodule DMEx.ProducerTest do
     end
 
     test "carries DMEx.Config overrides through" do
-      config = define!("WithConfig", "repo: DMEx.Test.Repo, batch_window: 500").config
+      config = define!("WithConfig", "repo: DMEx.Test.Repo, max_batch_frequency: 50").config
 
-      assert config.batch_window == 500
+      assert config.max_batch_frequency == 50
     end
 
     test "validates config overrides at compile time" do
-      assert_raise ArgumentError, ~r/:batch_window must be a positive integer/, fn ->
-        define!("BadConfig", "repo: DMEx.Test.Repo, batch_window: 0")
+      assert_raise ArgumentError, ~r/:max_batch_frequency must be a positive number/, fn ->
+        define!("BadConfig", "repo: DMEx.Test.Repo, max_batch_frequency: 0")
       end
     end
 

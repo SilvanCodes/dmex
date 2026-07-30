@@ -128,9 +128,19 @@ connection and nothing else. It reads no more rows, allocates no more memory,
 and issues no more queries.
 
 There is nothing to configure on the consumer side, because there is nothing to
-size. How fast a stream is fed is `batch_window` and `max_batch_size` on the
-**producer** — the party whose database and request processes that protects —
-and consumers neither ask for pacing nor are told what it is.
+size. How fast a stream is fed is `max_batch_frequency`, `max_batch_size` and
+`max_batch_bytes` on the **producer** — the party whose database, memory and
+request processes those protect — and consumers neither ask for pacing nor are
+told what any of them is.
+
+`max_batch_frequency` is how hard one connection may hammer the database, in
+reads per second. It is a ceiling rather than a reaction to load, so a producer
+can multiply it by its connection count and know its own worst case in advance.
+
+The byte budget is the one worth setting deliberately. A row count is not a
+memory bound when payloads vary, and it is applied *in the read* rather than by
+trimming a batch already in memory, so `open streams × max_batch_bytes` is a
+real ceiling rather than an aspiration.
 
 ### Not yet built
 

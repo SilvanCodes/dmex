@@ -1,6 +1,6 @@
 # Publish-to-handler latency, and the one number that reveals a broken wakeup path.
 #
-# End to end this composes: NOTIFY delivery, the producer's `batch_window`, one
+# End to end this composes: NOTIFY delivery, the producer's batch interval, one
 # read, frame encode, the wire, frame parse, cast, and the consumer's per-message
 # transaction commit.
 #
@@ -12,11 +12,11 @@
 #   * near the *poll interval* (1 s by default) means the notification path is
 #     not working and the poller is silently covering for it, which this design
 #     could otherwise ship with unnoticed because everything still arrives;
-#   * near a whole `batch_window` means the throttle is being measured from the
+#   * near a whole batch interval means the throttle is being measured from the
 #     wrong instant, charging an idle stream a full window for the very wakeup
 #     that ended its idleness. That was a real defect this benchmark caught.
 #
-# The busy case should then average about `batch_window / 2` and peak at one
+# The busy case should then average about half a batch interval and peak at one
 # whole window, because a message waits for the next frame boundary and those
 # are uniformly distributed relative to publishes.
 
@@ -99,10 +99,10 @@ end
 #
 # Measuring a busy stream with a synchronous publish/await loop measures the
 # wrong thing: every publish would land immediately after the frame that
-# delivered its predecessor, so every message would wait a full `batch_window`
-# and the answer would always be `batch_window`, whatever the code did. Firing
+# delivered its predecessor, so every message would wait a full interval and the
+# answer would always be that interval, whatever the code did. Firing
 # them independently spreads publishes across the window the way real traffic
-# does, which is what makes the expected average `batch_window / 2`.
+# does, which is what makes the expected average half an interval.
 #
 # The rate is also deliberately kept *below* what the consumer can drain. Push
 # past that and this stops measuring framing and starts measuring backlog: at
@@ -131,7 +131,7 @@ IO.puts("""
 
   Quiet is wakeup latency: NOTIFY, one read, encode, the wire, and the
   consumer's commit — the batch window owes an idle stream nothing.
-  Busy should average about batch_window/2, since a message waits for the next
+  Busy should average about half a batch interval, since a message waits for the next
   frame boundary and those are uniformly distributed relative to publishes. If
   it comes out far higher, the publish rate has exceeded what the consumer can
   drain and the number is queueing delay rather than framing delay — check it

@@ -100,7 +100,7 @@ defmodule DMEx.Producer.PlugTest do
       assert get_header(conn, "cache-control") == "no-cache"
     end
 
-    # nginx buffers responses by default, which converts batch_window pacing
+    # nginx buffers responses by default, which converts max_batch_frequency pacing
     # into "whenever the buffer happens to fill" and swallows heartbeats — so a
     # healthy stream looks dead to both the consumer and the proxy's own idle
     # timeout. The header is ignored by everything else.
@@ -131,7 +131,7 @@ defmodule DMEx.Producer.PlugTest do
 
       stream(opts, plug)
 
-      # heartbeat_ms + batch_window, because the loop's throttle runs after the
+      # heartbeat_ms + one batch interval, because the loop's throttle runs after the
       # heartbeat branch — the sum is the real upper bound on silence. Both are
       # producer configuration, so every connection is told the same number.
       assert_received {:chunk, "retry: 15200\n\n"}

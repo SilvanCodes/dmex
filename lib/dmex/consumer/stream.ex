@@ -468,10 +468,10 @@ defmodule DMEx.Consumer.Stream do
     end
   end
 
-  # The producer advertises `heartbeat_ms + batch_window` as `retry:`, which is
-  # the real upper bound on silence — the throttle runs after the heartbeat
-  # branch. Until that arrives, assume a generous interval rather than risk
-  # dropping a healthy connection from a producer that paces itself slowly.
+  # The producer advertises `heartbeat_ms` plus one batch interval as `retry:`,
+  # which is the real upper bound on silence — the throttle runs after the
+  # heartbeat branch. Until that arrives, assume a generous interval rather than
+  # risk dropping a healthy connection from a producer that paces itself slowly.
   defp deadline(state) do
     interval = Decoder.retry(state.decoder) || @assumed_retry
 

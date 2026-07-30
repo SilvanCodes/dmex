@@ -267,8 +267,8 @@ registering. Nothing about v1 has to move to make room.
   a synchronized retry storm, which is precisely what admission control is
   supposed to prevent.
 - **An aggregate budget beyond count.** Bytes in flight is the honest quantity
-  — frames are capped per connection, so `open × write_max_bytes` is already a
-  bound, and a budget denominated the same way composes with it. Summing
+  — reads are capped in bytes per connection, so `open × max_batch_bytes` is
+  already a bound, and a budget denominated the same way composes with it. Summing
   process memory per sweep is the tempting alternative and probably too coarse
   and too expensive to be worth it.
 - **A shedding policy.** Once there is a budget there has to be an answer to
@@ -356,7 +356,7 @@ Three things have to be got right, and the third decides the default:
 
 So compression would be **producer-side opt-in with explicitly-sized zlib
 parameters** — `windowBits` 12 / `memLevel` 4, about 32 KB per connection — and
-`write_max_bytes` measured *before* compression, which is simpler and bounds
+`max_batch_bytes` measured *before* compression, which is simpler and bounds
 the producer's own buffers. The consumer carries an inflate stream too, but one
 per subscription rather than one per connection served, so it is not the same
 question.
