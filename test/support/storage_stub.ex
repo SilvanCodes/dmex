@@ -46,6 +46,9 @@ defmodule DMEx.Test.Storage do
   def row(id, opts \\ []) do
     %{
       id: id,
+      # `read/5` overwrites this with the real predecessor in the delivered
+      # sequence; a row built directly is assumed to follow the one before it.
+      previous_id: Keyword.get(opts, :previous_id, id - 1),
       message_type: Keyword.get(opts, :message_type, "DMEx.Test.Messages.OrderPlaced"),
       data: Keyword.get(opts, :data, ~s({"order_id":#{id}})),
       metadata: Keyword.get(opts, :metadata, "{}"),
@@ -132,8 +135,21 @@ defmodule DMEx.Test.Storage do
       |> Enum.filter(&(&1.id > cursor and selected?(&1, types)))
       |> Enum.take(limit)
       |> cap_bytes(max_bytes)
+      |> chain(cursor)
 
     {{:ok, rows}, state}
+  end
+
+  # What the adapter's `lag(id, 1, cursor)` does: each row states the id of the
+  # row before it *in what this read returned*, and the first links back to the
+  # cursor. Selective reads therefore chain over the delivered subsequence
+  # rather than over the log's id space.
+  defp chain(rows, cursor) do
+    rows
+    |> Enum.map_reduce(cursor, fn row, previous ->
+      {%{row | previous_id: previous}, row.id}
+    end)
+    |> elem(0)
   end
 
   # The real adapter enforces this inside the query; a stub over a list does it

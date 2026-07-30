@@ -67,8 +67,19 @@ defmodule DMEx.Producer.StreamTest do
       run(opts, chunks: 1)
 
       assert_received {:chunk, write}
-      assert write =~ "id: 1\nevent: "
-      assert write =~ "id: 3\nevent: "
+      assert ids(write) == [1, 2, 3]
+    end
+
+    # The link a consumer checks to notice a frame that never arrived. The first
+    # of a read points at the cursor it was issued against, so the chain also
+    # proves the producer resumed where it was asked to.
+    test "each frame states its predecessor, back to the cursor", %{opts: opts} do
+      Stub.put_rows(opts, 3)
+
+      run(opts, chunks: 1, cursor: 0)
+
+      assert_received {:chunk, write}
+      assert previous_ids(write) == [0, 1, 2]
     end
 
     test "the message type is the event name", %{opts: opts} do
@@ -110,6 +121,9 @@ defmodule DMEx.Producer.StreamTest do
       assert [{6, _limit, :all}] = Stub.reads(opts)
       assert_received {:chunk, write}
       assert hd(ids(write)) == 7
+
+      # ...and links back to that cursor rather than to id 6, which it never sent.
+      assert hd(previous_ids(write)) == 6
     end
   end
 
@@ -390,7 +404,12 @@ defmodule DMEx.Producer.StreamTest do
 
   # The ids of every frame in one write, in order.
   defp ids(write) do
-    Regex.scan(~r/^id: (\d+)$/m, write) |> Enum.map(fn [_, id] -> String.to_integer(id) end)
+    Regex.scan(~r{^id: \d+/(\d+)$}m, write) |> Enum.map(fn [_, id] -> String.to_integer(id) end)
+  end
+
+  # Each frame's stated predecessor, in order.
+  defp previous_ids(write) do
+    Regex.scan(~r{^id: (\d+)/\d+$}m, write) |> Enum.map(fn [_, id] -> String.to_integer(id) end)
   end
 
   # The loop only returns when the connection closes, and an idle stream never

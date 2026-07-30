@@ -190,7 +190,7 @@ segment that is neither reserved nor decodable is a `400`.
 
 | header | meaning |
 | --- | --- |
-| `Last-Event-ID` | resume position: an integer id, the literal `latest` (start from the tip), or absent (the whole log). Anything else is a `400`. |
+| `Last-Event-ID` | resume position: `previous/current` as echoed from a frame's `id:`, a bare integer id, the literal `latest` (start from the tip), or absent (the whole log). Anything else is a `400`. Only `current` is used — the predecessor is a consumer-side check and means nothing to a producer. |
 
 **That is the whole list. DMEx defines no request headers of its own.** Pacing
 is producer configuration — `max_batch_frequency`, `max_batch_size` and
@@ -231,7 +231,7 @@ pacing and heartbeats), and `Connection: keep-alive` on HTTP/1.1.
 SSE frame has five slots, so the mapping is direct and there is no envelope:
 
 ```
-id: 1042
+id: 1041/1042
 event: MyApp.Messages.OrderShipped
 data: {"data":{"order_id":7},"metadata":{"trace_id":"abc"},"inserted_at":"2026-07-27T10:31:04.884Z"}
 
@@ -239,7 +239,7 @@ data: {"data":{"order_id":7},"metadata":{"trace_id":"abc"},"inserted_at":"2026-0
 
 | column | goes to | why there |
 | --- | --- | --- |
-| `id` | `id:` | it *is* the resume position, so a generic client's `Last-Event-ID` works with no DMEx knowledge |
+| `id` | `id:`, as `previous/current` | it *is* the resume position, so a generic client's `Last-Event-ID` works with no DMEx knowledge — and the predecessor makes a *missing* frame detectable |
 | `message_type` | `event:` | it *is* the event name, so `addEventListener("MyApp.Messages.OrderShipped", …)` works in a browser |
 | `data` | inside `data:` | the publisher's payload, verbatim |
 | `metadata` | inside `data:` | the publisher's metadata, verbatim |
@@ -262,6 +262,13 @@ data: {"data":{"order_id":7},"metadata":{"trace_id":"abc"},"inserted_at":"2026-0
 - **How far behind is `now - inserted_at`**, in milliseconds, rather than an id
   difference against a tip the wire no longer carries. It compares two machines'
   clocks, so it is an NTP-accurate seconds-scale signal and not a finer one.
+- **`id:` is a link, not a number.** `1041/1042` reads "the row before me was
+  1041, I am 1042", and a consumer refuses a frame that does not claim the row
+  it last saw. It cannot be inferred as `id - 1`, because a selective stream's
+  ids are legitimately sparse and only the producer knows which gaps it made on
+  purpose. The first frame of a connection links back to the cursor the read was
+  issued against, so the chain also proves the producer resumed where it was
+  asked to. See [invariant 13](#the-invariants).
 
 The cost of putting the type on `event:` is that a browser's
 `EventSource.onmessage` stops firing — named events need `addEventListener` —
@@ -397,7 +404,23 @@ No id, no `message_type`, no frame. A handler is a plain function of its domain
 data plus whatever context the publisher attached, testable by constructing a
 struct and a map.
 
-**12. A subscription's identity is its declaration, not its module name.** The
+**12. A gap in delivery is detected, never stepped over.** Every frame states
+its predecessor and `DMEx.Consumer.Stream` refuses one that does not claim the
+row it last saw, before duplicate suppression gets a chance to hide it. Without
+this the cursor model has a hole it cannot see: the cursor is the only record of
+what was processed, so a message lost between two that arrived would have its id
+put permanently behind the cursor by the next row's advance — never re-read,
+never recorded, and indistinguishable from never having been published.
+
+TCP does not silently drop bytes mid-stream, so what this actually defends
+against is a mangling intermediary, a third-party producer whose read skips
+rows, and DMEx's own decoder, which discards any frame block missing `id:`,
+`event:` or `data:`. A break drops the connection and re-reads from the durable
+cursor: transport damage repairs itself, and a producer that really does skip
+rows becomes a visible reconnect loop making no progress, which is the correct
+failure where silently advancing was not.
+
+**13. A subscription's identity is its declaration, not its module name.** The
 `"producer/id"` pair in `use DMEx.Consumer.Handler` keys the cursor, so renaming
 a module is free and only changing the declaration costs a migration
 (`DMEx.Consumer.Cursors`). The message list is deliberately *not* part of it:
@@ -454,6 +477,13 @@ would have recorded them. Effects that leave it — an HTTP call, a write to
 another database — must be idempotent on something in the message or its
 metadata, since the log id is deliberately not exposed. A local write plus a
 separate outbox is the pattern that stays correct.
+
+**No-loss is checked, not assumed.** At-least-once is only meaningful if
+"at least once" is verifiable, and the cursor cannot verify it: a message lost
+between two that arrived leaves no trace, because the next row's advance puts
+its id behind the cursor forever. So each frame states its predecessor and the
+consumer refuses a stream that skips one (invariant 12). That converts the one
+silent, permanent loss in the design into a loud reconnect loop.
 
 **Ordering** holds within one app's stream and never across streams.
 **Retention** is unbounded: nothing is deleted as a side effect of consumption.

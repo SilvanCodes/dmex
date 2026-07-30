@@ -5,13 +5,13 @@ defmodule DMEx.SSE.Frame do
   A `dmex_messages` row has five columns and an SSE frame has five slots, so the
   mapping is direct and there is no envelope:
 
-      id: 1042
+      id: 1041/1042
       event: MyApp.Messages.OrderPlaced
       data: {"data":{"order_id":7},"metadata":{"trace_id":"abc"},"inserted_at":"2026-07-27T10:31:04.221Z"}
 
   | column | goes to | why there |
   | --- | --- | --- |
-  | `id` | `id:` | it *is* the resume position, so a generic client's `Last-Event-ID` works with no DMEx knowledge |
+  | `id` | `id:`, as `previous/current` | it *is* the resume position, so a generic client's `Last-Event-ID` works with no DMEx knowledge — and the predecessor makes a *missing* frame detectable |
   | `message_type` | `event:` | it *is* the event name, so `addEventListener("MyApp.Messages.OrderPlaced", …)` works in a browser |
   | `data` | inside `data:` | the publisher's payload, verbatim |
   | `metadata` | inside `data:` | the publisher's metadata, verbatim |
@@ -23,6 +23,26 @@ defmodule DMEx.SSE.Frame do
   side has to know it happened. That is what lets `id:` be the row's own id
   rather than "the highest id in this frame", and what makes the frame's meaning
   identical whether one row or five hundred went out together.
+
+  ## `id:` is a link, not a number
+
+  `id: 1041/1042` reads "the row before me was 1041, I am 1042". The pair is
+  what makes a **missing** frame detectable: a consumer holds the last id it
+  saw and refuses a frame that does not claim it as its predecessor, so a row
+  that never arrives breaks the chain instead of being silently stepped over.
+  Without it a dropped frame is invisible — the next row's cursor advance
+  commits straight past the gap and the message is gone for good.
+
+  It has to be a stated link rather than `id - 1`, because a selective stream's
+  ids are legitimately sparse: the producer skips the types this subscription
+  did not ask for, and only the producer knows which gaps are deliberate.
+
+  The first frame of a connection carries the cursor the read was issued
+  against, so the chain also proves the producer resumed where it was asked to.
+
+  **`Last-Event-ID` therefore carries the pair too.** A generic client stores
+  whatever was in `id:` and echoes it back verbatim, so a producer must accept
+  `1041/1042` and resume after `1042`. See `DMEx.Producer.Params`.
 
   ## `event:` carries the message type, and the type is constrained for it
 
@@ -53,9 +73,16 @@ defmodule DMEx.SSE.Frame do
   one `data:` line with no base64 and no escaping pass.
   """
 
-  @typedoc "A log row on the producer's side, as `c:DMEx.Storage.read/5` returns it."
+  @typedoc """
+  A log row on the producer's side, as `c:DMEx.Storage.read/5` returns it.
+
+  `:previous_id` is not a column — it is the id of the row before this one in
+  the *delivered* sequence, which only the read knows. `nil` where there is no
+  sequence to speak of, as when replaying a dead message.
+  """
   @type row :: %{
           required(:id) => pos_integer(),
+          required(:previous_id) => non_neg_integer() | nil,
           required(:message_type) => String.t(),
           required(:data) => iodata(),
           required(:metadata) => iodata(),
@@ -90,11 +117,16 @@ defmodule DMEx.SSE.Frame do
   JSON text. `:message_type` goes on the `event:` line unescaped, which the
   log's CHECK constraint is what makes safe; `:inserted_at` is run through the
   JSON encoder.
+
+  `id:` carries `previous_id/id`. A `nil` predecessor renders as `0`, which is
+  the same thing a read from the very beginning of a log says.
   """
   @spec encode_row(row()) :: iodata()
   def encode_row(row) do
     [
       "id: ",
+      Integer.to_string(row.previous_id || 0),
+      ?/,
       Integer.to_string(row.id),
       "\nevent: ",
       row.message_type,
@@ -141,6 +173,14 @@ defmodule DMEx.SSE.Frame do
   per the SSE specification an event is dispatched only when the data buffer is
   non-empty, and a producer is free to send comments and bare fields.
 
+  That `:ignore` is precisely why the id chain exists. A block this drops is a
+  message the consumer never sees, and without the chain it would be
+  indistinguishable from a message that was never sent — see the moduledoc.
+
+  `id:` parses in both forms. `1041/1042` yields `"previous_id" => 1041`; a bare
+  `1042` yields `nil`, which is what a producer that predates the chain sends
+  and what a consumer refuses to accept.
+
   Decoding goes exactly one level. The `data:` payload becomes the row's `data`,
   `metadata` and `inserted_at`; turning `data` into a struct happens later, in
   the consumer's pipeline.
@@ -166,10 +206,12 @@ defmodule DMEx.SSE.Frame do
     end
   end
 
-  defp decode_row(payload, id, event) do
+  defp decode_row(payload, {previous_id, id}, event) do
     case JSON.decode(payload) do
       {:ok, %{"data" => _} = decoded} ->
-        {:ok, {:message, Map.merge(decoded, %{"id" => id, "message_type" => event})}}
+        row = %{"id" => id, "previous_id" => previous_id, "message_type" => event}
+
+        {:ok, {:message, Map.merge(decoded, row)}}
 
       {:ok, other} ->
         {:error, {:invalid_data_shape, other}}
@@ -187,7 +229,7 @@ defmodule DMEx.SSE.Frame do
   defp collect_field(line, acc) do
     case parse_line(line) do
       {"data", value} -> Map.update!(acc, :data, &[value | &1])
-      {"id", value} -> put_integer(acc, :id, value)
+      {"id", value} -> put_id(acc, value)
       {"retry", value} -> put_integer(acc, :retry, value)
       {"event", value} -> Map.put(acc, :event, value)
       _other -> acc
@@ -205,6 +247,28 @@ defmodule DMEx.SSE.Frame do
       [field, value] -> {field, value}
       [""] -> :blank
       [field] -> {field, ""}
+    end
+  end
+
+  # `previous/current`, or a bare `current` from anything that does not chain.
+  # Anything else is not an id, and a block with no id is not a message.
+  defp put_id(acc, value) do
+    case String.split(value, "/", parts: 2) do
+      [current] ->
+        put_pair(acc, nil, current)
+
+      [previous, current] ->
+        case Integer.parse(previous) do
+          {previous, ""} -> put_pair(acc, previous, current)
+          _ -> acc
+        end
+    end
+  end
+
+  defp put_pair(acc, previous, current) do
+    case Integer.parse(current) do
+      {id, ""} -> Map.put(acc, :id, {previous, id})
+      _ -> acc
     end
   end
 

@@ -104,9 +104,17 @@ defmodule DMEx.Storage.Postgres do
   # **`sized`** gives each row its own byte count, off the already-cast text
   # columns so nothing is cast twice.
   #
-  # **`measured`** adds the *exclusive* prefix sum — the bytes of the rows
-  # strictly before this one. `sum()` over an empty frame is NULL, hence the
-  # coalesce, and that NULL-to-zero is exactly the first row.
+  # **`measured`** adds two things over the same ordering. The *exclusive* prefix
+  # sum — the bytes of the rows strictly before this one; `sum()` over an empty
+  # frame is NULL, hence the coalesce, and that NULL-to-zero is exactly the first
+  # row. And `previous_id`, the id of the row before this one *in the delivered
+  # sequence*, defaulting to the cursor so the first row of a page links back to
+  # what the caller asked to resume after.
+  #
+  # `previous_id` is what lets a consumer prove nothing went missing between two
+  # rows. It cannot be `id - 1`: a selective read returns a sparse subset of the
+  # id space, so consecutive delivered rows are routinely far apart, and only the
+  # producer knows which gaps it created on purpose. `lag/3` states it.
   #
   # **The outer filter** is where the bound is. `prefix_bytes + bytes <= $3` is
   # inclusive, so the rows that come back never total more than the budget —
@@ -124,9 +132,10 @@ defmodule DMEx.Storage.Postgres do
   # guarantee rather than a convenience.
   defp read_sql(opts, predicate) do
     """
-    SELECT id, message_type, data, metadata, inserted_at
+    SELECT id, previous_id, message_type, data, metadata, inserted_at
       FROM (
         SELECT id, message_type, data, metadata, inserted_at, bytes,
+               lag(id, 1, $1) OVER (ORDER BY id) AS previous_id,
                coalesce(
                  sum(bytes) OVER (ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),
                  0
@@ -404,14 +413,22 @@ defmodule DMEx.Storage.Postgres do
 
   ## Row shaping
 
-  defp to_row([id, message_type, data, metadata, inserted_at]) do
+  defp to_row([id, previous_id, message_type, data, metadata, inserted_at]) do
     %{
       id: id,
+      previous_id: previous_id,
       message_type: message_type,
       data: data,
       metadata: metadata,
       inserted_at: inserted_at
     }
+  end
+
+  # `dead_messages/2` reads a table with no delivered-sequence to chain over —
+  # a replayed row is handed straight to a handler, never framed — so it gets a
+  # nil predecessor rather than a meaningless one.
+  defp to_row([id, message_type, data, metadata, inserted_at]) do
+    to_row([id, nil, message_type, data, metadata, inserted_at])
   end
 
   ## Naming

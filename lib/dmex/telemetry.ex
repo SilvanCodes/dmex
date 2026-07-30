@@ -149,5 +149,14 @@ defmodule DMEx.Telemetry do
   A steadily climbing `:attempt` is a subscription that cannot connect;
   `:reason` distinguishes a producer restart from a poison message crash-looping
   from a stream dropped for silence.
+
+  **Two reasons deserve an alert of their own.**
+  `{:sequence_gap, expected, got}` means a frame named a predecessor this
+  subscription never received — a message went missing on the wire, and the
+  connection was dropped rather than allowed to step over it. It repairs itself
+  if the cause was transport damage; a steady rate of it means the producer is
+  genuinely skipping rows, and the subscription is making no progress.
+  `{:unchained_frame, id}` means a frame arrived with no predecessor at all, so
+  the stream cannot be checked for gaps and is refused rather than trusted.
   """
 end

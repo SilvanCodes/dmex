@@ -149,6 +149,23 @@ defmodule DMEx.Storage do
   the window in the same query level as the `LIMIT`, since that computes it
   over every matching row before the limit applies.
 
+  ## Every row states its predecessor
+
+  Each returned row carries `:previous_id` — the id of the row before it **in
+  this delivered sequence**, with the first row of a read carrying `cursor`
+  itself. That is what lets a consumer prove nothing went missing between two
+  rows it received.
+
+  It cannot be inferred as `id - 1`. A selective read returns a sparse subset of
+  the id space, so consecutive delivered rows are routinely far apart, and only
+  the producer knows which of those gaps it created on purpose. Stating the link
+  explicitly is what makes a *deliberate* gap and a *lost* row distinguishable
+  at all.
+
+  The chain is over the rows the read returns, so truncating a batch on
+  `max_bytes` or `limit` cannot break it: both cut the tail, and the next read
+  resumes with `cursor` set to the last id delivered.
+
   ## Everything else
 
   `types` is `:all` for a whole-log subscription — the primary key serves that

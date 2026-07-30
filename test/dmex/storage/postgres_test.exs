@@ -65,7 +65,7 @@ defmodule DMEx.Storage.PostgresTest do
       assert {:ok, [row]} = Postgres.read(opts, id - 1, 1, 1_048_576, :all)
 
       assert Map.keys(row) |> Enum.sort() ==
-               [:data, :id, :inserted_at, :message_type, :metadata]
+               [:data, :id, :inserted_at, :message_type, :metadata, :previous_id]
 
       assert row.id == id
       assert row.message_type == "MyApp.Messages.OrderPlaced"
@@ -101,6 +101,70 @@ defmodule DMEx.Storage.PostgresTest do
     # correlated subquery folded in, and no tuple to unwrap.
     test "an empty read is an empty list, not a tuple with a nil tip", %{opts: opts} do
       assert {:ok, []} = Postgres.read(opts, 0, 10, 1_048_576, :all)
+    end
+  end
+
+  # Every row states the id of the row before it *in what this read returned*.
+  # It is what lets a consumer prove nothing went missing between two frames,
+  # and it cannot be `id - 1` — a selective read is sparse by design.
+  describe "read/5 predecessor chain" do
+    test "links each row to the one before it, back to the cursor", %{opts: opts} do
+      ids = for n <- 1..5, do: elem(append(opts, "A", %{n: n}), 1)
+
+      assert {:ok, rows} = Postgres.read(opts, 0, 100, 1_048_576, :all)
+
+      assert Enum.map(rows, & &1.previous_id) == [0 | Enum.take(ids, 4)]
+      assert chained?(rows, 0)
+    end
+
+    test "the first row of a resumed read links back to the cursor it was given",
+         %{opts: opts} do
+      [_first, second, _third] = for n <- 1..3, do: elem(append(opts, "A", %{n: n}), 1)
+
+      assert {:ok, [row | _]} = Postgres.read(opts, second, 100, 1_048_576, :all)
+
+      # Not `row.id - 1`, and not the log's first id: exactly what was asked for,
+      # which is what proves the producer resumed where the consumer said.
+      assert row.previous_id == second
+    end
+
+    # The case that makes a stated link necessary rather than merely convenient:
+    # here the delivered ids are 1, 3, 5 and every gap is deliberate.
+    test "a selective read chains over the delivered subsequence, not the id space",
+         %{opts: opts} do
+      for n <- 1..6 do
+        type = if rem(n, 2) == 1, do: "A", else: "B"
+        append(opts, type, %{n: n})
+      end
+
+      assert {:ok, rows} = Postgres.read(opts, 0, 100, 1_048_576, ["A"])
+
+      assert length(rows) == 3
+      assert chained?(rows, 0)
+      # Each link skips the interleaved "B" row rather than pointing at it.
+      assert Enum.zip(rows, tl(rows)) |> Enum.all?(fn {a, b} -> b.id - a.id == 2 end)
+    end
+
+    test "a batch cut short by bytes is still contiguous", %{opts: opts} do
+      big = String.duplicate("x", 1_000)
+      for n <- 1..20, do: append(opts, "A", %{n: n, note: big})
+
+      assert {:ok, rows} = Postgres.read(opts, 0, 100, 4_000, :all)
+
+      # Truncation only ever removes the tail, so what came back still chains.
+      assert length(rows) < 20
+      assert chained?(rows, 0)
+    end
+
+    test "successive reads chain across the boundary between them", %{opts: opts} do
+      for n <- 1..10, do: append(opts, "A", %{n: n})
+
+      {:ok, first} = Postgres.read(opts, 0, 4, 1_048_576, :all)
+      last_id = List.last(first).id
+      {:ok, second} = Postgres.read(opts, last_id, 4, 1_048_576, :all)
+
+      assert chained?(first, 0)
+      assert chained?(second, last_id)
     end
   end
 
@@ -369,7 +433,7 @@ defmodule DMEx.Storage.PostgresTest do
       assert {:ok, [row]} = Postgres.dead_messages(opts, @some)
 
       assert Map.keys(row) |> Enum.sort() ==
-               [:data, :id, :inserted_at, :message_type, :metadata]
+               [:data, :id, :inserted_at, :message_type, :metadata, :previous_id]
 
       assert row.id == 1042
       assert is_binary(row.data)
@@ -416,6 +480,15 @@ defmodule DMEx.Storage.PostgresTest do
   end
 
   defp raw(%{repo: repo}, sql), do: SQL.query!(repo, sql, []).rows
+
+  # Every row claims the one before it, and the first claims `from`.
+  defp chained?(rows, from) do
+    rows
+    |> Enum.reduce_while(from, fn row, previous ->
+      if row.previous_id == previous, do: {:cont, row.id}, else: {:halt, :broken}
+    end)
+    |> Kernel.!=(:broken)
+  end
 
   # What the byte bound counts: payload plus the type, matching the adapter's
   # `octet_length(data) + octet_length(metadata) + octet_length(message_type)`.

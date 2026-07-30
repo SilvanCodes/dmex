@@ -8,7 +8,7 @@ defmodule DMEx.Producer.Params do
   | carried in | meaning | absent | invalid |
   | --- | --- | --- | --- |
   | the path segment | which message types | the whole log | `400` |
-  | `last-event-id` | resume position | from the beginning | `400` |
+  | `last-event-id` | resume position, as `previous/current` or a bare id | from the beginning | `400` |
 
   **There are no DMEx request headers.** Pacing is producer configuration, so a
   connect request carries nothing about it — which means DMEx's own consumer and
@@ -55,16 +55,22 @@ defmodule DMEx.Producer.Params do
   The SSE specification puts no numeric constraint on the header, so the
   producer accepts a small vocabulary and rejects everything else:
 
-    * **an integer id** — resume after it, the ordinary case;
+    * **`<previous>/<current>`** — the ordinary case, because that is what a
+      frame's `id:` field carries and what any SSE client echoes back verbatim.
+      Only `current` is used; the predecessor is a consumer-side integrity check
+      (see `DMEx.SSE.Frame`) and means nothing to a producer, which resumes from
+      a position rather than verifying one.
+    * **an integer id** — resume after it. What a client constructs by hand, and
+      what everything sent before the chain existed looks like.
     * **`latest`** — start from the tip, resolved against the log's current
       `max(id)`. This is how a consumer that only cares about what happens from
       now on skips history, with no preflight request and no second parameter;
     * **absent** — from id 0, the whole log, which is also what a fresh
       browser `EventSource` sends.
 
-  Validation is deliberately strict: `~r/\\A\\d+\\z/` rather than
-  `Integer.parse/1`, which would accept `"5abc"` and `"+5"`. A vocabulary of two
-  forms plus absent is small enough to validate exactly.
+  Validation is deliberately strict — `~r/\\A\\d+\\z/` per half rather than
+  `Integer.parse/1`, which would accept `"5abc"` and `"+5"`. A vocabulary this
+  small is worth validating exactly.
   """
 
   alias DMEx.Fingerprint
@@ -182,8 +188,23 @@ defmodule DMEx.Producer.Params do
     case fetch(req_headers, @last_event_id) do
       :error -> {:ok, 0}
       {:ok, "latest"} -> {:ok, :latest}
-      {:ok, value} -> integer(value, @last_event_id)
+      {:ok, value} -> resume_position(value)
       {:error, value} -> {:error, {:invalid, @last_event_id, value}}
+    end
+  end
+
+  # A frame's `id:` is `previous/current`, and a client echoes it back whole. The
+  # predecessor is the consumer's own integrity check and carries nothing a
+  # producer needs, so it is validated and discarded.
+  defp resume_position(value) do
+    case String.split(value, "/", parts: 2) do
+      [current] ->
+        integer(current, @last_event_id)
+
+      [previous, current] ->
+        with {:ok, _previous} <- integer(previous, @last_event_id) do
+          integer(current, @last_event_id)
+        end
     end
   end
 

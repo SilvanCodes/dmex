@@ -52,7 +52,7 @@ defmodule DMEx.Consumer.DeadMessagesTest do
 
       # Exactly what read/3 returns and what the pipeline consumes.
       assert Map.keys(row) |> Enum.sort() ==
-               [:data, :id, :inserted_at, :message_type, :metadata]
+               [:data, :id, :inserted_at, :message_type, :metadata, :previous_id]
     end
   end
 

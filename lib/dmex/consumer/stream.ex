@@ -66,6 +66,27 @@ defmodule DMEx.Consumer.Stream do
   non-trapping child of a `DynamicSupervisor` is killed outright by
   `terminate_child/2`, and the callback never runs.
 
+  ## A gap in the stream is detected, not stepped over
+
+  Every frame states the id of the frame before it, and this process refuses one
+  that does not claim the row it last saw. That closes a hole the cursor model
+  cannot see on its own: a message that goes missing between two that arrive
+  would otherwise have its id stepped straight over by the next row's advance,
+  and the cursor is the only record of what was processed — so the loss would be
+  permanent, silent, and indistinguishable from the message never having been
+  published.
+
+  The check runs **before** duplicate suppression, because suppression drops
+  rows at or below the cursor and would otherwise hide the very gap this is
+  looking for.
+
+  A break drops the connection and reconnects from the durable cursor rather
+  than crashing. If the gap was transport damage the re-read repairs it and
+  nothing is lost; if it is a producer that genuinely skips rows, the same gap
+  recurs and the subscription becomes a visible reconnect loop making no
+  progress — which is the correct failure, and a loud one, where silently
+  advancing was neither.
+
   ## Backpressure is the absence of a buffer
 
   Rows are run through the pipeline **inline, on the socket path**, one at a
@@ -154,6 +175,11 @@ defmodule DMEx.Consumer.Stream do
           liveness_timer: nil,
           decoder: Decoder.new(config.max_frame_bytes),
           cursor: nil,
+          # The id the next frame must claim as its predecessor. `:unknown`
+          # until the first frame of a `start: :latest` connection, which is the
+          # one case where the consumer cannot know what its own resume token
+          # resolved to.
+          expected_previous: :unknown,
           checkpoint_timer: nil,
           attempt: 0
         }
@@ -245,6 +271,11 @@ defmodule DMEx.Consumer.Stream do
            # re-delivered and re-skipped. Either way it is not owed a write.
            pipeline: %{state.pipeline | pending: false},
            decoder: Decoder.new(state.config.max_frame_bytes),
+           # The producer's first frame links back to the position it was asked
+           # to resume after, so this also proves it honoured the request. With
+           # `latest` there is nothing to compare against: the tip is resolved
+           # producer-side and this end never learns the number.
+           expected_previous: expected_previous(state, cursor),
            attempt: 0
        }
        |> touch()
@@ -323,7 +354,10 @@ defmodule DMEx.Consumer.Stream do
 
         report_lag(rows, state)
 
-        handle_responses(rest, Enum.reduce(rows, state, &run/2))
+        case verify_chain(rows, state) do
+          {:ok, state} -> handle_responses(rest, Enum.reduce(rows, state, &run/2))
+          {:error, reason} -> {:noreply, reconnect(state, reason)}
+        end
 
       {:error, reason, _decoder} ->
         # Dropping and reconnecting from the durable cursor costs only a
@@ -354,6 +388,63 @@ defmodule DMEx.Consumer.Stream do
 
   defp cursor_of(%{cursor: :none}), do: 0
   defp cursor_of(%{cursor: cursor}), do: cursor
+
+  ## The id chain
+
+  # `start: :latest` resolves to the log's tip on the *producer*, and the
+  # resolved number never comes back over the wire, so the first frame's claim
+  # has nothing to be checked against. Every other resume position is one this
+  # end chose and can therefore verify.
+  defp expected_previous(%{config: %{start: :latest}}, :none), do: :unknown
+  defp expected_previous(_state, :none), do: 0
+  defp expected_previous(_state, cursor), do: cursor
+
+  # Walked before anything is processed, so a break is caught while the rows are
+  # still just rows. Returns the state with `expected_previous` advanced to the
+  # last id in the run.
+  defp verify_chain(rows, state) do
+    Enum.reduce_while(rows, {:ok, state}, fn row, {:ok, state} ->
+      case check_link(row, state.expected_previous) do
+        :ok ->
+          {:cont, {:ok, %{state | expected_previous: Map.fetch!(row, "id")}}}
+
+        {:error, reason} ->
+          log_gap(state, reason)
+
+          {:halt, {:error, reason}}
+      end
+    end)
+  end
+
+  # A producer that does not chain at all is refused rather than trusted: the
+  # whole point is that an unverifiable stream and a verified one must not look
+  # the same from here.
+  defp check_link(row, expected) do
+    case Map.get(row, "previous_id") do
+      nil -> {:error, {:unchained_frame, Map.fetch!(row, "id")}}
+      _previous when expected == :unknown -> :ok
+      ^expected -> :ok
+      previous -> {:error, {:sequence_gap, expected, previous}}
+    end
+  end
+
+  defp log_gap(state, {:sequence_gap, expected, got}) do
+    Logger.error(
+      "DMEx #{state.subscription} (#{inspect(state.handler)}) saw a gap in #{state.url}: the " <>
+        "next frame claims #{got} as its predecessor, but the last row this subscription " <>
+        "received was #{expected}. A message went missing between them. Dropping the " <>
+        "connection and re-reading from the durable cursor; if this repeats, the producer is " <>
+        "skipping rows rather than the transport losing them."
+    )
+  end
+
+  defp log_gap(state, {:unchained_frame, id}) do
+    Logger.error(
+      "DMEx #{state.subscription} (#{inspect(state.handler)}) received frame #{id} from " <>
+        "#{state.url} with no predecessor in its `id:` field. A stream whose frames cannot be " <>
+        "linked cannot be checked for gaps, so it is refused rather than trusted."
+    )
+  end
 
   # How far behind the tip this consumer is, in ms rather than in ids. The wire
   # carries no `max_id` to subtract from, and `inserted_at` answers the question
