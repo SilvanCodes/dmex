@@ -23,23 +23,23 @@ for n <- 1..1_000 do
   """)
 end
 
-modules = fn count -> Enum.map(1..count, &Module.concat(Bench.Messages, :"M#{&1}")) end
+modules = fn count -> MapSet.new(1..count, &Module.concat(Bench.Messages, :"M#{&1}")) end
 
 inputs =
   for count <- [10, 100, 1_000], into: %{} do
-    list = modules.(count)
-    registry = Message.registry(list)
+    set = modules.(count)
+    registry = Message.registry(set)
     # Look up the last one, so a linear implementation would show.
-    type = List.last(list).type()
+    type = set |> Enum.max() |> then(& &1.type())
 
-    {"#{count} modules", {list, registry, type}}
+    {"#{count} modules", {set, registry, type}}
   end
 
 Benchee.run(
   %{
-    "lookup (per row)" => fn {_list, registry, type} -> Map.fetch!(registry, type) end,
-    "registry build (per subscription)" => fn {list, _registry, _type} ->
-      Message.registry(list)
+    "lookup (per row)" => fn {_set, registry, type} -> Map.fetch!(registry, type) end,
+    "registry build (per subscription)" => fn {set, _registry, _type} ->
+      Message.registry(set)
     end
   },
   Helper.opts(inputs: inputs)

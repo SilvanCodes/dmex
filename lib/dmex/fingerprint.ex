@@ -1,6 +1,6 @@
 defmodule DMEx.Fingerprint do
   @moduledoc """
-  A consumer's message list, encoded as an XOR filter for the request path.
+  A consumer's message set, encoded as an XOR filter for the request path.
 
   This is the whole of the selection wire format. A consumer builds one at
   compile time from the modules its handler matches on, encodes it into the path
@@ -351,7 +351,7 @@ defmodule DMEx.Fingerprint do
   ## Encoding
 
   # The seed is derived from the sorted type list rather than drawn at random,
-  # so the blob is a pure function of the message list: the same handler
+  # so the blob is a pure function of the message set: the same handler
   # compiles to the same URL on every machine and every build, which is what
   # makes it diffable, cacheable and correlatable in a proxy log. Sorted, so
   # reordering a handler's clauses cannot mint a new URL.

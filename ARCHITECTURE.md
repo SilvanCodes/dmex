@@ -88,7 +88,7 @@ happened*, and the two have different lifetimes.
 So `message_type` is the only classification a row carries, and which messages a
 given reader wants is resolved at **read time**, by that reader — see
 [Message-type selection](#message-type-selection), where a consumer's own
-message list becomes a fingerprint the producer resolves against its own types.
+message set becomes a fingerprint the producer resolves against its own types.
 
 ## Message-type selection
 
@@ -96,9 +96,9 @@ A subscription receives the message types its handler can decode, and nothing
 new is declared anywhere to make that happen.
 
 **The selection is the handler's clauses.** `DMEx.Consumer.Handler` already
-derives a subscription's message list at compile time from the structs
+derives a subscription's message set at compile time from the structs
 `handle_message/2` matches on — it has to, or a consumer could not turn a
-`message_type` back into a struct at all. That list gains a second job. A name
+`message_type` back into a struct at all. That set gains a second job. A name
 standing for a set of types would be a second vocabulary somebody has to define,
 publish, version, discover and keep in sync, and every one of those costs is
 paid to describe something the consumer has already said. Worse, the two can
@@ -109,7 +109,7 @@ silently. Derived, that state is unrepresentable.
 so spelling them out exhausts a conservative request line at around sixty types.
 A 16-bit XOR filter encodes the same set at ~2.5 bytes per type, which puts the
 ceiling near 2 400. The blob is built at compile time and is a pure function of
-the message list, so it is a constant on `__dmex__/0` and the same handler
+the message set, so it is a constant on `__dmex__/0` and the same handler
 compiles to the same URL everywhere. `guides/fingerprint-spec.md` is the
 normative encoding; `DMEx.Fingerprint` implements it.
 
@@ -157,7 +157,7 @@ delivery worked before this existed. It is there to tell two failures apart when
 a subscription receives nothing — a producer or encoding mismatch, which
 whole-log delivery fixes immediately, from a producer that has published nothing,
 which it does not. It lives on the module for the same reason the producer, the
-id and the message list do: the module is the complete declaration of what a
+id and the message set do: the module is the complete declaration of what a
 subscription *is*, and nothing at a `subscribe/2` call site should be able to
 vary that.
 
@@ -211,7 +211,7 @@ three things follow:
   strings; nothing does that to a path. Losing a selection silently converts a
   selective subscription into a whole-log one — a bandwidth incident rather than
   an error.
-- **A selection is stable, so the URL is stable.** A message list changes when
+- **A selection is stable, so the URL is stable.** A message set changes when
   somebody ships code, so one URL per deployment is a grouping that survives
   long enough to be worth having in a proxy log, a cache key or a dashboard.
 
@@ -423,7 +423,7 @@ failure where silently advancing was not.
 **13. A subscription's identity is its declaration, not its module name.** The
 `"producer/id"` pair in `use DMEx.Consumer.Handler` keys the cursor, so renaming
 a module is free and only changing the declaration costs a migration
-(`DMEx.Consumer.Cursors`). The message list is deliberately *not* part of it:
+(`DMEx.Consumer.Cursors`). The message set is deliberately *not* part of it:
 adding a clause for a new type handles it from the tip onward rather than
 silently replaying the entire log.
 
@@ -499,7 +499,7 @@ problem as HA for that application's database, and out of scope here.
 
 ## What DMEx deliberately does not do
 
-- **No narrowing a selection below the handler's message list** — a consumer
+- **No narrowing a selection below the handler's message set** — a consumer
   that can decode twenty types but only wants five receives fifteen it
   discards, or splits into two handlers and therefore two cursors. "Your module
   list is your subscription" is the simpler rule; the override is an open
@@ -646,7 +646,7 @@ it has established so far:
   producer-wide constant, so one connection serving a consumer on a slow link
   gets the same budget as one on a fast one. That is the same "one owner" trade
   invariant 9 makes deliberately, and the same question would reopen it.
-- **Whether a selection should be narrowable below the handler's message list.**
+- **Whether a selection should be narrowable below the handler's message set.**
   A handler that can decode twenty types but only wants five must either receive
   fifteen it discards or split into two handlers and two cursors. "Your module
   list is your subscription" is the simpler rule and it is what ships; an

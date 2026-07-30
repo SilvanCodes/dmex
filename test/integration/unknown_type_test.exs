@@ -2,7 +2,7 @@ defmodule DMEx.Integration.UnknownTypeTest do
   @moduledoc """
   What reaches a consumer, and what happens to what it cannot decode.
 
-  A subscription's message list does two jobs: it is the selection the producer
+  A subscription's message set does two jobs: it is the selection the producer
   resolves its filter against, so undecodable rows mostly never cross the wire
   at all — and it is what resolves a `message_type` back to a module for the
   ones that do.
@@ -144,7 +144,7 @@ defmodule DMEx.Integration.UnknownTypeTest do
     assert_receive {:handled, %OrderShipped{order_id: 2, carrier: "dhl"}, _}, 5_000
   end
 
-  # The message list is part of the module now, so "the same handler with a
+  # The message set is part of the module now, so "the same handler with a
   # different list" is a different module.
   defp subscribe(handler) do
     {:ok, _} = Consumer.subscribe(handler, consumer: TestConsumer)

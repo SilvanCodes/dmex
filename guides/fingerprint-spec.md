@@ -171,7 +171,7 @@ Duplicate types must be removed before step 1.
 **A producer reads the seed out of the blob and never derives one**, so an
 implementation may choose seeds however it likes. What follows is what DMEx's
 own consumer does, and it is recorded so that two DMEx consumers with the same
-message list produce byte-identical URLs.
+message set produce byte-identical URLs.
 
 ```
 seed_0     = key_hash(sorted(types) joined with "\n")

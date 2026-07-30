@@ -34,7 +34,7 @@ defmodule DMEx.Producer.Params do
       query strings; nothing does that to a path. Losing the selection silently
       converts a selective subscription back into a whole-log one, which is a
       bandwidth incident rather than an error.
-    * **A selection is stable, so the URL is stable.** A message list changes
+    * **A selection is stable, so the URL is stable.** A message set changes
       when somebody ships code, so one URL per deployment is a grouping that
       survives long enough to be worth having in a proxy log, a cache key or a
       dashboard.

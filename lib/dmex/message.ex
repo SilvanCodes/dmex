@@ -161,22 +161,25 @@ defmodule DMEx.Message do
   end
 
   @doc """
-  Builds a `message_type => module` lookup from a list of message modules.
+  Builds a `message_type => module` lookup from a set of message modules.
 
   This is how a consumer resolves the `message_type` on a row back to a module.
-  The mapping is always built from a consumer-declared list — never inferred by
-  atomizing whatever string the producer sent.
+  The mapping is always built from the consumer's own declared set — never
+  inferred by atomizing whatever string the producer sent.
 
-  Raises if two modules claim the same type, which can only happen if `c:type/0`
-  has been overridden, since the default derives from the module name.
+  Takes the `MapSet` a handler's `:messages` already is (see
+  `t:DMEx.Consumer.Handler.declaration/0`), so the only collision left to report
+  is the real one: two *different* modules claiming one type, which can only
+  happen if `c:type/0` has been overridden, since the default derives from the
+  module name.
   """
-  @spec registry([module()]) :: %{String.t() => module()}
-  def registry(modules) when is_list(modules) do
+  @spec registry(MapSet.t(module())) :: %{String.t() => module()}
+  def registry(modules) when is_struct(modules, MapSet) do
     Enum.reduce(modules, %{}, fn module, acc ->
       type = module.type()
 
       case acc do
-        %{^type => already} when already != module ->
+        %{^type => already} ->
           raise ArgumentError,
                 "message type #{inspect(type)} is claimed by both " <>
                   "#{inspect(already)} and #{inspect(module)}"

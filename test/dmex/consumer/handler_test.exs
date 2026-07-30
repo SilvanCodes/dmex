@@ -27,20 +27,22 @@ defmodule DMEx.Consumer.HandlerTest do
       refute Handler.handler?(NoSuchModuleAnywhere)
     end
 
-    test "carries the producer, the id, the module and the derived message list" do
+    test "carries the producer, the id, the module and the derived message set" do
       assert %{
                handler: Handlers.EchoAll,
                producer: "test",
                id: "test/echo_all",
-               messages: [OrderPlaced, OrderShipped]
+               messages: messages
              } = Handlers.EchoAll.__dmex__()
+
+      assert messages == MapSet.new([OrderPlaced, OrderShipped])
     end
 
-    # The message list's second job. Built here rather than at connect because
+    # The message set's second job. Built here rather than at connect because
     # this is the first point `type/0` is callable — `Code.ensure_compiled!/1`
     # has just run on every matched module — and because a constant is what
     # makes "one URL per deployment" literal.
-    test "carries the message list encoded as a selection fingerprint" do
+    test "carries the message set encoded as a selection fingerprint" do
       %{fingerprint: fingerprint, messages: messages} = Handlers.EchoAll.__dmex__()
 
       assert is_binary(fingerprint)
@@ -78,14 +80,33 @@ defmodule DMEx.Consumer.HandlerTest do
     end
   end
 
-  # The substance of deriving rather than declaring: the list cannot disagree
+  # The substance of deriving rather than declaring: the set cannot disagree
   # with the clauses, because it *is* the clauses.
-  describe "the message list" do
-    test "is the structs handle_message/2 matches on, in clause order" do
+  describe "the message set" do
+    test "is the structs handle_message/2 matches on" do
       assert messages_of("""
              def handle_message(%DMEx.Test.Messages.OrderShipped{}, _metadata), do: :ok
              def handle_message(%DMEx.Test.Messages.OrderPlaced{}, _metadata), do: :ok
-             """) == [OrderShipped, OrderPlaced]
+             """) == MapSet.new([OrderPlaced, OrderShipped])
+    end
+
+    test "is a MapSet, so clause order carries no information" do
+      # The fingerprint is already order-independent; this makes the declaration
+      # itself say so, rather than leaving a list whose order means nothing.
+      forward =
+        messages_of("""
+        def handle_message(%DMEx.Test.Messages.OrderPlaced{}, _metadata), do: :ok
+        def handle_message(%DMEx.Test.Messages.OrderShipped{}, _metadata), do: :ok
+        """)
+
+      reversed =
+        messages_of("""
+        def handle_message(%DMEx.Test.Messages.OrderShipped{}, _metadata), do: :ok
+        def handle_message(%DMEx.Test.Messages.OrderPlaced{}, _metadata), do: :ok
+        """)
+
+      assert %MapSet{} = forward
+      assert forward == reversed
     end
 
     test "reads through an alias" do
@@ -93,30 +114,30 @@ defmodule DMEx.Consumer.HandlerTest do
              alias DMEx.Test.Messages.OrderPlaced
 
              def handle_message(%OrderPlaced{} = message, _metadata), do: message
-             """) == [OrderPlaced]
+             """) == MapSet.new([OrderPlaced])
     end
 
     test "reads a bound struct pattern, either way round" do
       assert messages_of("""
              def handle_message(%DMEx.Test.Messages.OrderPlaced{} = m, _metadata), do: m
-             """) == [OrderPlaced]
+             """) == MapSet.new([OrderPlaced])
 
       assert messages_of("""
              def handle_message(m = %DMEx.Test.Messages.OrderPlaced{}, _metadata), do: m
-             """) == [OrderPlaced]
+             """) == MapSet.new([OrderPlaced])
     end
 
     test "reads a pattern that also matches on fields" do
       assert messages_of("""
              def handle_message(%DMEx.Test.Messages.OrderPlaced{order_id: id}, _meta), do: id
-             """) == [OrderPlaced]
+             """) == MapSet.new([OrderPlaced])
     end
 
     test "collapses two clauses for one type" do
       assert messages_of("""
              def handle_message(%DMEx.Test.Messages.OrderPlaced{order_id: 1}, _meta), do: :one
              def handle_message(%DMEx.Test.Messages.OrderPlaced{}, _meta), do: :other
-             """) == [OrderPlaced]
+             """) == MapSet.new([OrderPlaced])
     end
   end
 

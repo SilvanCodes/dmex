@@ -387,7 +387,7 @@ defmodule DMEx.Consumer.Pipeline do
   @doc """
   Builds pipeline state from the handler's declaration, once per subscription.
 
-  The message list is derived at compile time from the structs the handler's
+  The message set is derived at compile time from the structs the handler's
   `c:DMEx.Consumer.Handler.handle_message/2` clauses match on, and every one of
   them was checked to be a `DMEx.Message` there — so there is nothing left for
   this to validate but the handler itself.

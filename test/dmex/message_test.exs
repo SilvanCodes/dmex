@@ -1,6 +1,7 @@
 defmodule DMEx.MessageTest do
   use DMEx.Case, async: true
 
+  alias DMEx.Test.Handlers
   alias DMEx.Test.Messages.OrderPlaced
   alias DMEx.Test.Messages.OrderShipped
   alias DMEx.Test.Messages.WithCustomCast
@@ -113,19 +114,23 @@ defmodule DMEx.MessageTest do
 
   describe "registry/1" do
     test "maps each module's type to the module" do
-      assert DMEx.Message.registry([OrderPlaced, OrderShipped]) == %{
+      assert DMEx.Message.registry(MapSet.new([OrderPlaced, OrderShipped])) == %{
                "DMEx.Test.Messages.OrderPlaced" => OrderPlaced,
                "DMEx.Test.Messages.OrderShipped" => OrderShipped
              }
     end
 
-    test "an empty list yields an empty registry" do
-      assert DMEx.Message.registry([]) == %{}
+    test "an empty set yields an empty registry" do
+      assert DMEx.Message.registry(MapSet.new()) == %{}
     end
 
-    test "listing the same module twice is not an error" do
-      assert DMEx.Message.registry([OrderPlaced, OrderPlaced]) == %{
-               "DMEx.Test.Messages.OrderPlaced" => OrderPlaced
+    test "takes the set a handler's declaration already carries" do
+      # Not a list: the same module twice is unrepresentable in the input rather
+      # than tolerated by the reduce, which is why the collision check below can
+      # be unconditional.
+      assert DMEx.Message.registry(Handlers.EchoAll.__dmex__().messages) == %{
+               "DMEx.Test.Messages.OrderPlaced" => OrderPlaced,
+               "DMEx.Test.Messages.OrderShipped" => OrderShipped
              }
     end
 
@@ -148,7 +153,7 @@ defmodule DMEx.MessageTest do
       end
 
       assert_raise ArgumentError, ~r/claimed by both/, fn ->
-        DMEx.Message.registry([OrderPlaced, Impostor])
+        DMEx.Message.registry(MapSet.new([OrderPlaced, Impostor]))
       end
     end
   end

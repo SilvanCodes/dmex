@@ -129,7 +129,7 @@ defmodule DMEx.Integration.VerticalSliceTest do
   describe "the subscription's durable identity" do
     # All three declare `producer: :test, id: :slice`, so all three *are* the
     # same subscription. They differ only in the ways the design promises are
-    # free: the module's name, and the message list.
+    # free: the module's name, and the message set.
     defmodule Slice do
       @moduledoc false
       use DMEx.Consumer.Handler, producer: :test, id: :slice
@@ -226,7 +226,7 @@ defmodule DMEx.Integration.VerticalSliceTest do
       eventually(fn -> cursor_rows() == [["test/slice", id]] end)
     end
 
-    # The trade the design deliberately makes: the message list is not part of
+    # The trade the design deliberately makes: the message set is not part of
     # the identity, so a type gained by adding a clause is handled from the tip
     # onward and its history is *not* replayed. Getting it takes Cursors.move!/3.
     test "adding a clause handles that type from the tip, without replaying", _ctx do

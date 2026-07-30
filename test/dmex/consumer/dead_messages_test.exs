@@ -17,7 +17,7 @@ defmodule DMEx.Consumer.DeadMessagesTest do
   setup do
     Handlers.report_to(self())
 
-    # `replay/2` takes no message list — it reads the handler's own.
+    # `replay/2` takes no message set — it reads the handler's own.
     %{
       opts: [repo: Repo],
       replay: [repo: Repo],

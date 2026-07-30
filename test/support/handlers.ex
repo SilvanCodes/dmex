@@ -8,7 +8,7 @@ defmodule DMEx.Test.Handlers do
 
   Every one declares `producer: :test`, so `DMEx.Test.Server.producers/1` binds
   the whole file to one runtime URL. Ids are per-module because a subscription
-  id keys the cursor and these run concurrently — and the message list is now
+  id keys the cursor and these run concurrently — and the message set is now
   whatever `handle_message/2` matches on, so a handler needed for two different
   sets of types is two modules.
   """
@@ -57,7 +57,7 @@ defmodule DMEx.Test.Handlers do
     `Echo` with server-side selection turned off.
 
     A second module rather than a `subscribe/2` option, for the same reason the
-    message list is: the handler module is the complete declaration of what the
+    message set is: the handler module is the complete declaration of what the
     subscription *is*, and a call site that could vary it could disagree with it.
     """
     use DMEx.Consumer.Handler, producer: :test, id: :echo_whole_log, selective: false
@@ -75,7 +75,7 @@ defmodule DMEx.Test.Handlers do
 
   defmodule EchoAll do
     @moduledoc """
-    `Echo` with a wider message list.
+    `Echo` with a wider message set.
 
     A second module rather than an option, because the list is part of the
     declaration now: a handler subscribed to a list that does not contain what
@@ -216,12 +216,12 @@ defmodule DMEx.Test.Handlers do
 
   defmodule FailTimesMismatched do
     @moduledoc """
-    `FailTimes`' identity with the wrong message list.
+    `FailTimes`' identity with the wrong message set.
 
     Deliberately declares the same `{producer, id}` — so it addresses the very
     same cursor and dead messages — while matching on a type those rows are not.
     It is how the replay tests reach "a dead row this handler cannot decode",
-    given that the message list is whatever the clauses match on.
+    given that the message set is whatever the clauses match on.
 
     Never put this and `FailTimes` in one `handlers:` list; sharing an id is
     exactly what `DMEx.Consumer.init/1` refuses.

@@ -20,12 +20,16 @@ defmodule DMEx.Consumer.Handler do
 
   ## The message types are read from the callback, not declared
 
-  A subscription's message list is derived at compile time from the structs
-  `c:handle_message/2` matches on — `[OrderPlaced, OrderCancelled]` above. There
-  is no option for it, because there is nothing an option could say that the
-  clauses do not already say.
+  A subscription's message set is derived at compile time from the structs
+  `c:handle_message/2` matches on — `OrderPlaced` and `OrderCancelled` above.
+  There is no option for it, because there is nothing an option could say that
+  the clauses do not already say.
 
-  ## That same list is the server-side selection
+  It is a `MapSet`, which is what it means: clause order carries no information
+  here, and two clauses matching the same struct are one selection. Neither fact
+  needs a convention when the collection cannot represent them.
+
+  ## That same set is the server-side selection
 
   It does two jobs. It resolves a row's `message_type` back to a module on the
   way in, and — encoded as a `DMEx.Fingerprint` blob at compile time — it is
@@ -40,7 +44,7 @@ defmodule DMEx.Consumer.Handler do
   with no producer-side curation and nobody to coordinate with.
 
   The blob is a **compile-time constant** on `__dmex__/0`, so connecting builds
-  nothing, and it is a pure function of the message list — the same handler
+  nothing, and it is a pure function of the message set — the same handler
   compiles to the same URL on every machine, and reordering these clauses does
   not change it.
 
@@ -59,7 +63,7 @@ defmodule DMEx.Consumer.Handler do
   A separate list could only ever *describe* the clauses, and the two could
   disagree: a subscription naming a type its handler has no clause for is an
   ordinary typo, and it surfaces as a `FunctionClauseError` on a real message,
-  at runtime, straight into the retry-then-`on_failure` path. With one list,
+  at runtime, straight into the retry-then-`on_failure` path. With one set,
   derived, that state is unrepresentable rather than merely discouraged.
 
   ### What it costs to check, measured
@@ -179,11 +183,11 @@ defmodule DMEx.Consumer.Handler do
 
   ## Adding a clause handles that type from now on, not from the beginning
 
-  The message list does not participate in the identity, so adding a clause for
+  The message set does not participate in the identity, so adding a clause for
   a new type keeps the cursor exactly where it was: the new type is handled from
   the tip onward and its history is *not* replayed. That is the cheap default
   rather than the safe one, chosen because the alternative — minting a new
-  identity per message list — makes a routine additive change silently replay
+  identity per message set — makes a routine additive change silently replay
   the entire log and orphan that handler's dead messages.
 
   Server-side selection sharpens this rather than changing it. The cursor is a
@@ -207,11 +211,14 @@ defmodule DMEx.Consumer.Handler do
   A handler's compile-time declaration, as returned by its `__dmex__/0`.
 
   `:id` is the full composite identifier — `"orders/order_projection"` — not the
-  `id:` half that was declared. `:messages` is derived from the callback's
-  clauses, in the order they were written. `:fingerprint` is those messages'
-  wire types encoded as a `DMEx.Fingerprint` blob — the path segment this
-  subscription requests — or `nil` when `selective: false` asked for the whole
-  log, in which case there is no segment to request.
+  `id:` half that was declared. `:messages` is the set of modules derived from
+  the callback's clauses; a set rather than a list because nothing downstream
+  asks about order or repetition, and both jobs it does — a `message_type =>
+  module` lookup and the selection blob — are already invariant under them.
+  `:fingerprint` is those messages' wire types encoded as a `DMEx.Fingerprint`
+  blob — the path segment this subscription requests — or `nil` when
+  `selective: false` asked for the whole log, in which case there is no segment
+  to request.
 
   There is no separate `:selective` field: a `nil` fingerprint is exactly that
   answer, and carrying both would be two values that can disagree.
@@ -220,7 +227,7 @@ defmodule DMEx.Consumer.Handler do
           handler: module(),
           producer: String.t(),
           id: String.t(),
-          messages: [module(), ...],
+          messages: MapSet.t(module()),
           fingerprint: String.t() | nil
         }
 
@@ -239,7 +246,7 @@ defmodule DMEx.Consumer.Handler do
     quote bind_quoted: [opts: opts] do
       @behaviour DMEx.Consumer.Handler
 
-      # Only what was written at the `use` site. The message list is read off
+      # Only what was written at the `use` site. The message set is read off
       # the callback's own clauses, which cannot happen until they all exist —
       # hence @before_compile rather than an attribute set right here, and hence
       # carrying these across in an attribute so they are still in hand then.
@@ -362,7 +369,7 @@ defmodule DMEx.Consumer.Handler do
     end
   end
 
-  ## Deriving the message list
+  ## Deriving the message set
 
   # `Module.get_definition/2` hands back the stored clauses with their aliases
   # already resolved to modules, so this needs no `Macro.expand/2` and no
@@ -381,9 +388,12 @@ defmodule DMEx.Consumer.Handler do
 
     {:v1, :def, _meta, clauses} = Module.get_definition(env.module, {:handle_message, 2})
 
+    # Every clause is checked, including the second one matching a struct an
+    # earlier clause already named — the set collapses the duplicate, but only
+    # after `message!/2` has had its say about it.
     clauses
     |> Enum.map(&message!(env, &1))
-    |> Enum.uniq()
+    |> MapSet.new()
   end
 
   defp message!(env, {meta, [pattern | _rest], _guards, _body}) do

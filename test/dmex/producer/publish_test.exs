@@ -91,6 +91,10 @@ defmodule DMEx.Producer.PublishTest do
     end
 
     test "reaches publish/1 through apply as well" do
+      # The literal MFA form, since that is the shape generic code holding
+      # {producer, message} reaches for. Deliberately `apply/3` rather than a
+      # direct call — that is the API surface under test.
+      # credo:disable-for-next-line Credo.Check.Refactor.Apply
       assert {:ok, _} = apply(Producer, :publish, [%OrderPlaced{order_id: 7}])
     end
   end
