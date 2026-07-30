@@ -51,8 +51,9 @@ defmodule DMEx do
       MyApp.Producer.publish(%MyApp.Messages.OrderPlaced{order_id: 7})
       #=> {:ok, 1042}
 
-  `DMEx.Publisher.publish/3` is the explicit form of the same call, for generic
-  code that does not have a particular producer module in hand.
+  Generic code that does not have a particular producer module in hand calls it
+  through a variable — `producer.publish(message)` — rather than through a
+  second, explicit publishing API.
 
   ## Consuming
 

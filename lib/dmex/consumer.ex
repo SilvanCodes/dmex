@@ -21,10 +21,9 @@ defmodule DMEx.Consumer do
 
       DMEx.Consumer.subscribe(MyApp.OrderProjection, on_failure: :skip)
 
-  Both forms exist for the same reason `DMEx.Publisher.publish/3` and
-  `MyApp.Producer.publish/2` both do: the declarative one is what an application
-  writes, the imperative one is for code deciding at runtime. Neither repeats
-  what the handler already declares — see `DMEx.Consumer.Handler`.
+  Both forms exist because the declarative one is what an application writes,
+  while the imperative one is for code deciding at runtime. Neither repeats what
+  the handler already declares — see `DMEx.Consumer.Handler`.
 
   ## Producer names, not URLs
 

@@ -297,7 +297,7 @@ INSERT time but makes rows visible at COMMIT time, so two concurrent publishes
 can commit out of allocation order — and a reader scanning `id > cursor ORDER BY
 id` would advance straight over the row that had not committed yet and lose it
 **permanently and silently**. Every read path here is such a cursor, so
-`DMEx.Publisher` appends under a transaction-scoped advisory lock keyed on the
+`DMEx.Producer` appends under a transaction-scoped advisory lock keyed on the
 app (`DMEx.Storage.Postgres`). The cost is publish concurrency; the purchase is
 a reader model with no gap-detection logic anywhere in it. (SQLite is
 single-writer already.)

@@ -1,7 +1,6 @@
-defmodule DMEx.PublisherTest do
+defmodule DMEx.Producer.PublishTest do
   use DMEx.Case, async: true, database: true
 
-  alias DMEx.Publisher
   alias DMEx.Storage.Postgres
   alias DMEx.Test.Messages.OrderPlaced
   alias DMEx.Test.Messages.OrderShipped
@@ -11,22 +10,22 @@ defmodule DMEx.PublisherTest do
     %{opts: Producer.__dmex__().storage_opts}
   end
 
-  describe "publish/3" do
+  describe "publish/2" do
     test "returns the assigned id", %{opts: opts} do
-      assert {:ok, id} = Publisher.publish(Producer, %OrderPlaced{order_id: 7})
+      assert {:ok, id} = Producer.publish(%OrderPlaced{order_id: 7})
       assert is_integer(id)
 
       assert {:ok, ^id} = Postgres.max_id(opts)
     end
 
     test "reads the wire type off the message's own module", %{opts: opts} do
-      {:ok, id} = Publisher.publish(Producer, %OrderPlaced{order_id: 7})
+      {:ok, id} = Producer.publish(%OrderPlaced{order_id: 7})
 
       assert %{message_type: "DMEx.Test.Messages.OrderPlaced"} = fetch!(opts, id)
     end
 
     test "serializes the struct, not a wrapper around it", %{opts: opts} do
-      {:ok, id} = Publisher.publish(Producer, %OrderPlaced{order_id: 7, total: 1999})
+      {:ok, id} = Producer.publish(%OrderPlaced{order_id: 7, total: 1999})
 
       assert %{data: data} = fetch!(opts, id)
 
@@ -34,8 +33,7 @@ defmodule DMEx.PublisherTest do
     end
 
     test "passes metadata through untouched", %{opts: opts} do
-      {:ok, id} =
-        Publisher.publish(Producer, %OrderPlaced{order_id: 7}, metadata: %{trace_id: "abc"})
+      {:ok, id} = Producer.publish(%OrderPlaced{order_id: 7}, metadata: %{trace_id: "abc"})
 
       assert %{metadata: metadata} = fetch!(opts, id)
       assert JSON.decode!(metadata) == %{"trace_id" => "abc"}
@@ -45,21 +43,21 @@ defmodule DMEx.PublisherTest do
       # No producer, no origin, no timestamp — so a publisher has no reserved
       # key names to avoid. The type string already identifies the publishing
       # application, which is why nothing needs recording here.
-      {:ok, id} = Publisher.publish(Producer, %OrderPlaced{order_id: 7}, metadata: %{a: 1})
+      {:ok, id} = Producer.publish(%OrderPlaced{order_id: 7}, metadata: %{a: 1})
 
       assert %{metadata: metadata} = fetch!(opts, id)
       assert JSON.decode!(metadata) == %{"a" => 1}
     end
 
     test "defaults metadata to an empty map", %{opts: opts} do
-      {:ok, id} = Publisher.publish(Producer, %OrderPlaced{order_id: 7})
+      {:ok, id} = Producer.publish(%OrderPlaced{order_id: 7})
 
       assert %{metadata: "{}"} = fetch!(opts, id)
     end
 
     test "distinguishes message types on the same log", %{opts: opts} do
-      {:ok, _} = Publisher.publish(Producer, %OrderPlaced{order_id: 7})
-      {:ok, _} = Publisher.publish(Producer, %OrderShipped{order_id: 7, carrier: "dhl"})
+      {:ok, _} = Producer.publish(%OrderPlaced{order_id: 7})
+      {:ok, _} = Producer.publish(%OrderShipped{order_id: 7, carrier: "dhl"})
 
       assert {:ok, rows} = Postgres.read(opts, 0, 10, 1_048_576, :all)
 
@@ -70,7 +68,7 @@ defmodule DMEx.PublisherTest do
     end
 
     test "assigns ids in call order", %{opts: opts} do
-      ids = for n <- 1..5, do: elem(Publisher.publish(Producer, %OrderPlaced{order_id: n}), 1)
+      ids = for n <- 1..5, do: elem(Producer.publish(%OrderPlaced{order_id: n}), 1)
 
       assert ids == Enum.sort(ids)
 
@@ -79,10 +77,12 @@ defmodule DMEx.PublisherTest do
     end
   end
 
-  describe "the producer module's shorthand" do
-    test "publish/1 and publish/2 write the same row publish/3 does", %{opts: opts} do
+  describe "a producer held in a variable" do
+    test "writes the same row a literal call does", %{opts: opts} do
+      producer = Producer
+
       assert {:ok, _} = Producer.publish(%OrderPlaced{order_id: 7}, metadata: %{a: 1})
-      assert {:ok, _} = Publisher.publish(Producer, %OrderPlaced{order_id: 7}, metadata: %{a: 1})
+      assert {:ok, _} = producer.publish(%OrderPlaced{order_id: 7}, metadata: %{a: 1})
 
       assert {:ok, [first, second]} = Postgres.read(opts, 0, 10, 1_048_576, :all)
 
@@ -90,21 +90,21 @@ defmodule DMEx.PublisherTest do
                Map.take(second, [:message_type, :data, :metadata])
     end
 
-    test "publish/1 defaults its metadata" do
-      assert {:ok, _} = Producer.publish(%OrderPlaced{order_id: 7})
+    test "reaches publish/1 through apply as well" do
+      assert {:ok, _} = apply(Producer, :publish, [%OrderPlaced{order_id: 7}])
     end
   end
 
   describe "errors" do
     test "a struct that is not a DMEx message names the fix" do
       assert_raise ArgumentError, ~r/is not a DMEx message module.*use DMEx.Message/s, fn ->
-        Publisher.publish(Producer, %URI{})
+        Producer.publish(%URI{})
       end
     end
 
     test "an unknown option is rejected rather than ignored" do
       assert_raise ArgumentError, ~r/unknown publish option\(s\): \[:priority\]/, fn ->
-        Publisher.publish(Producer, %OrderPlaced{order_id: 7}, priority: :high)
+        Producer.publish(%OrderPlaced{order_id: 7}, priority: :high)
       end
     end
   end
@@ -117,7 +117,7 @@ defmodule DMEx.PublisherTest do
           [:dmex, :publish, :stop]
         ])
 
-      {:ok, _} = Publisher.publish(Producer, %OrderPlaced{order_id: 7})
+      {:ok, _} = Producer.publish(%OrderPlaced{order_id: 7})
 
       assert_received {[:dmex, :publish, :start], ^ref, _measurements, metadata}
       assert metadata.producer == Producer

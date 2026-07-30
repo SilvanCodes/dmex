@@ -32,7 +32,7 @@ message = %OrderPlaced{order_id: 1, customer_id: 2, total: 1999}
 data = JSON.encode!(message)
 
 # The same insert without the advisory lock, as the control. Deliberately not
-# routed through DMEx.Publisher, because the point is to isolate the lock.
+# routed through `publish/2`, because the point is to isolate the lock.
 unlocked = fn ->
   SQL.query!(
     DMEx.Test.IntegrationRepo,
