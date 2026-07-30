@@ -24,7 +24,7 @@ defmodule DMEx.Test.ClosingAdapter do
       state: Keyword.get(opts, :state, :unset),
       owner: owner,
       req_headers: Keyword.get(opts, :req_headers, []),
-      method: "GET",
+      method: Keyword.get(opts, :method, "GET"),
       request_path: "/stream"
     }
   end

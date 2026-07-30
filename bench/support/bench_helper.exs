@@ -92,11 +92,11 @@ defmodule DMEx.BenchHelper do
     end
   end
 
-  @doc "A ready-made SSE frame of `count` rows at `payload_bytes` each."
+  @doc "A ready-made run of `count` SSE frames, one row each, at `payload_bytes`."
   def frame_bytes(count, payload_bytes) do
     count
     |> rows(payload_bytes)
-    |> DMEx.SSE.Frame.encode_batch(count)
+    |> Enum.map(&DMEx.SSE.Frame.encode_row/1)
     |> IO.iodata_to_binary()
   end
 

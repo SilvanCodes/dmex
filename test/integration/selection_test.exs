@@ -118,7 +118,7 @@ defmodule DMEx.Integration.SelectionTest do
 
   describe "delivery" do
     test "only the selected types cross the wire", %{base: _base} do
-      {:ok, _} = Consumer.subscribe(Handlers.Echo, consumer: TestConsumer, batch_window: 50)
+      {:ok, _} = Consumer.subscribe(Handlers.Echo, consumer: TestConsumer)
 
       {:ok, _} = Producer.publish(%OrderShipped{order_id: 1, carrier: "dhl"})
       {:ok, _} = Producer.publish(%OrderPlaced{order_id: 2})
@@ -150,8 +150,8 @@ defmodule DMEx.Integration.SelectionTest do
       # Not a partitioning: there is still one log and one id sequence, so a
       # selective subscription sees a sparse subset of the same ids rather than
       # a space of its own.
-      {:ok, _} = Consumer.subscribe(Handlers.Echo, consumer: TestConsumer, batch_window: 50)
-      {:ok, _} = Consumer.subscribe(Handlers.EchoAll, consumer: TestConsumer, batch_window: 50)
+      {:ok, _} = Consumer.subscribe(Handlers.Echo, consumer: TestConsumer)
+      {:ok, _} = Consumer.subscribe(Handlers.EchoAll, consumer: TestConsumer)
 
       {:ok, _} = Producer.publish(%OrderShipped{order_id: 1, carrier: "dhl"})
       {:ok, placed} = Producer.publish(%OrderPlaced{order_id: 2})
@@ -171,7 +171,7 @@ defmodule DMEx.Integration.SelectionTest do
       # and stopping here would turn a deploy-ordering choice into a
       # permanently dead subscription.
       {:ok, pid} =
-        Consumer.subscribe(__MODULE__.AheadOfProducer, consumer: TestConsumer, batch_window: 50)
+        Consumer.subscribe(__MODULE__.AheadOfProducer, consumer: TestConsumer)
 
       ref = Process.monitor(pid)
 

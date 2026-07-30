@@ -8,21 +8,17 @@ defmodule DMEx.Consumer.Request do
   as data rather than buried in a process makes it obvious when one drifts from
   the other.
 
-  Three headers go out and two come back:
+  One header goes out, and it is one SSE already defines:
 
-  | header | out | back |
-  | --- | --- | --- |
-  | `last-event-id` | where to resume from | — |
-  | `dmex-batch-window` | what pacing is asked for | what was applied |
-  | `dmex-max-batch-size` | what pacing is asked for | what was applied |
+  | header | meaning |
+  | --- | --- |
+  | `last-event-id` | where to resume from |
 
-  ## Asked for, not granted
-
-  The pacing sent is what the controller decided to **request**. The producer
-  may clamp it to its own bounds and echoes back what it actually applied, and
-  that echo — not the request — is what the controller reasons about next. Send
-  the granted values instead and every re-parameterization becomes a no-op on
-  the wire while the controller believes it took effect.
+  **DMEx adds no request headers of its own.** Pacing is the producer's
+  configuration, so there is nothing to ask for and nothing to hear back — which
+  means this request is byte-identical to what a browser's `EventSource` sends
+  for the same URL. Everything that distinguishes one subscription from another
+  is in the path.
 
   ## The resume position
 
@@ -37,20 +33,13 @@ defmodule DMEx.Consumer.Request do
 
   alias DMEx.Config
 
-  @typedoc "A pacing pair, either requested or granted."
-  @type pacing :: %{batch_window: pos_integer(), max_batch_size: pos_integer()}
-
   @typedoc "A durable cursor, or `:none` when this handler has never committed one."
   @type cursor :: non_neg_integer() | :none
 
-  @doc "The request headers for a connect at `cursor`, asking for `requested`."
-  @spec headers(pacing(), cursor(), Config.Consumer.t()) :: [{String.t(), String.t()}]
-  def headers(requested, cursor, %Config.Consumer{} = config) do
-    [
-      {"accept", "text/event-stream"},
-      {"dmex-batch-window", Integer.to_string(requested.batch_window)},
-      {"dmex-max-batch-size", Integer.to_string(requested.max_batch_size)}
-    ] ++ last_event_id(cursor, config)
+  @doc "The request headers for a connect at `cursor`."
+  @spec headers(cursor(), Config.consumer()) :: [{String.t(), String.t()}]
+  def headers(cursor, config) do
+    [{"accept", "text/event-stream"}] ++ last_event_id(cursor, config)
   end
 
   @doc """
@@ -59,8 +48,8 @@ defmodule DMEx.Consumer.Request do
   Exposed separately because the vocabulary — an integer, the literal `latest`,
   or absent — is the part most worth reading in one place.
   """
-  @spec last_event_id(cursor(), Config.Consumer.t()) :: [{String.t(), String.t()}]
-  def last_event_id(:none, %Config.Consumer{start: start}) do
+  @spec last_event_id(cursor(), Config.consumer()) :: [{String.t(), String.t()}]
+  def last_event_id(:none, %{start: start}) do
     case start do
       :beginning -> []
       :latest -> [{"last-event-id", "latest"}]
@@ -70,22 +59,6 @@ defmodule DMEx.Consumer.Request do
 
   def last_event_id(cursor, _config) when is_integer(cursor) do
     [{"last-event-id", Integer.to_string(cursor)}]
-  end
-
-  @doc """
-  Adopts the pacing the producer echoed as the new operating point.
-
-  A header that is absent or unparseable leaves the previous value in place: a
-  producer that echoes nothing is one this consumer has no news about, which is
-  not the same as one that granted zero.
-  """
-  @spec adopt(pacing(), [{String.t(), String.t()}]) :: pacing()
-  def adopt(pacing, headers) when is_list(headers) do
-    Enum.reduce(headers, pacing, fn
-      {"dmex-batch-window", value}, acc -> put_int(acc, :batch_window, value)
-      {"dmex-max-batch-size", value}, acc -> put_int(acc, :max_batch_size, value)
-      _other, acc -> acc
-    end)
   end
 
   @doc """
@@ -116,11 +89,4 @@ defmodule DMEx.Consumer.Request do
   @spec scheme(URI.t()) :: :http | :https
   def scheme(%URI{scheme: "https"}), do: :https
   def scheme(%URI{}), do: :http
-
-  defp put_int(pacing, key, value) do
-    case Integer.parse(value) do
-      {int, ""} when int > 0 -> Map.put(pacing, key, int)
-      _ -> pacing
-    end
-  end
 end

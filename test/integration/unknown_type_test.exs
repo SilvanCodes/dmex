@@ -105,6 +105,32 @@ defmodule DMEx.Integration.UnknownTypeTest do
     eventually(fn -> cursor("test/echo_whole_log") == {:ok, id} end)
   end
 
+  # A clean stop must settle the run of skips it is holding, or the next start
+  # re-reads and re-skips them for nothing. That flush lives in `terminate/2`,
+  # which only runs because the stream traps exits — a non-trapping child of a
+  # `DynamicSupervisor` is killed outright by `terminate_child/2` and the
+  # callback never fires.
+  test "unsubscribing settles a pending run of skips", _ctx do
+    # Far longer than this test runs, so the only thing that can write the
+    # cursor is the flush on the way down.
+    {:ok, _} =
+      Consumer.subscribe(Handlers.EchoWholeLog,
+        consumer: TestConsumer,
+        checkpoint_interval: 600_000
+      )
+
+    ref = :telemetry_test.attach_event_handlers(self(), [[:dmex, :consumer, :skip]])
+
+    {:ok, id} = Producer.publish(%OrderShipped{order_id: 1, carrier: "dhl"})
+
+    assert_receive {[:dmex, :consumer, :skip], ^ref, _measurements, _metadata}, 5_000
+    assert cursor("test/echo_whole_log") == {:ok, nil}
+
+    :ok = Consumer.unsubscribe(Handlers.EchoWholeLog, consumer: TestConsumer)
+
+    eventually(fn -> cursor("test/echo_whole_log") == {:ok, id} end)
+  end
+
   test "declaring both modules delivers both", _ctx do
     # The same list does double duty: it is what makes decoding possible and
     # what narrows the stream. Widening it is one edit — of the handler module,
@@ -121,7 +147,7 @@ defmodule DMEx.Integration.UnknownTypeTest do
   # The message list is part of the module now, so "the same handler with a
   # different list" is a different module.
   defp subscribe(handler) do
-    {:ok, _} = Consumer.subscribe(handler, consumer: TestConsumer, batch_window: 50)
+    {:ok, _} = Consumer.subscribe(handler, consumer: TestConsumer)
   end
 
   defp cursor(subscription \\ "test/echo") do

@@ -3,8 +3,8 @@
 #
 # Chunk boundaries are not frame boundaries, so a decoder has to hold a partial
 # frame across reads. The obvious `buffer <> chunk` copies the whole buffer every
-# time — and real TCP reads are small, so a 512 KB frame arriving in 1 KB pieces
-# would copy on the order of 128 MB.
+# time — and real TCP reads are small, so a 512 KB run of frames arriving in 1 KB
+# pieces would copy far more than it received.
 #
 # The property to look for: cost should be flat in chunk size. If the 1 KB column
 # is dramatically worse than the 64 KB one, the accumulation is quadratic.
@@ -14,14 +14,14 @@ alias DMEx.SSE.Decoder
 
 Helper.section("sse_decode — is the accumulation linear in bytes?")
 
-frame = Helper.frame_bytes(500, 1_024)
+frames = Helper.frame_bytes(500, 1_024)
 
 inputs =
   for size <- [512, 1_024, 8_192, 65_536], into: %{} do
-    {"#{div(byte_size(frame), 1024)}KB frame in #{size}B chunks", Helper.chunks(frame, size)}
+    {"#{div(byte_size(frames), 1024)}KB in #{size}B chunks", Helper.chunks(frames, size)}
   end
 
-inputs = Map.put(inputs, "whole frame in one chunk", [frame])
+inputs = Map.put(inputs, "everything in one chunk", [frames])
 
 # The naive implementation, for contrast.
 defmodule Bench.NaiveDecoder do

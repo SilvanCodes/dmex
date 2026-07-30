@@ -1,4 +1,4 @@
-defmodule DMEx.Integration.HeaderNegotiationTest do
+defmodule DMEx.Integration.WireContractTest do
   @moduledoc """
   The HTTP contract, exercised by a raw client rather than by DMEx's own.
 
@@ -6,6 +6,11 @@ defmodule DMEx.Integration.HeaderNegotiationTest do
   a DMEx stream. These tests speak to the producer with a bare Mint connection —
   no DMEx consumer anywhere — so what they assert is the wire contract a
   third-party client would be written against.
+
+  **There is nothing to negotiate.** A request carries a path and, optionally,
+  `Last-Event-ID`; a response carries the ordinary SSE headers and a run of
+  frames. Everything about pacing is the producer's configuration and never
+  appears on the wire, which is why this file no longer has a negotiation half.
   """
 
   use DMEx.IntegrationCase
@@ -35,45 +40,30 @@ defmodule DMEx.Integration.HeaderNegotiationTest do
       assert header(headers, "x-accel-buffering") == "no"
     end
 
-    test "echoes the producer's defaults to a client that asks for nothing", ctx do
-      # Which is exactly what a browser EventSource gets, permanently: it can set
-      # no request headers of its own beyond Last-Event-ID.
+    # A browser EventSource sets no request headers of its own beyond
+    # Last-Event-ID, and it needs none: there is nothing DMEx-specific in either
+    # direction.
+    test "carries no DMEx headers in either direction", ctx do
       {200, headers, _} = request(ctx, [])
 
-      assert header(headers, "dmex-batch-window") == "200"
-      assert header(headers, "dmex-max-batch-size") == "500"
+      assert Enum.reject(headers, fn {name, _} -> name == "dmex-matched-messages" end)
+             |> Enum.all?(fn {name, _} -> not String.starts_with?(name, "dmex-") end)
     end
 
     test "opens the stream with a retry: frame carrying the effective heartbeat", ctx do
-      {200, _headers, body} = request(ctx, [{"dmex-batch-window", "300"}])
+      {200, _headers, body} = request(ctx, [])
 
       # heartbeat_ms + batch_window, since the throttle runs after the heartbeat
-      # branch and the sum is the real upper bound on silence.
-      assert body =~ "retry: 15300"
-    end
-  end
-
-  describe "pacing is clamped, not rejected" do
-    test "a request below the floor comes back at the floor", ctx do
-      {status, headers, _} = request(ctx, [{"dmex-batch-window", "1"}])
-
-      assert status == 200
-      assert header(headers, "dmex-batch-window") == "50"
+      # branch and the sum is the real upper bound on silence. Both are producer
+      # configuration, so this number is the same for every client.
+      assert body =~ "retry: 15010"
     end
 
-    test "a request above the ceiling comes back at the ceiling", ctx do
-      {status, headers, _} = request(ctx, [{"dmex-max-batch-size", "999999"}])
-
-      assert status == 200
-      assert header(headers, "dmex-max-batch-size") == "5000"
-    end
-
-    test "the echo is what the producer applied, so a client can see it was capped", ctx do
-      {200, headers, _} =
-        request(ctx, [{"dmex-batch-window", "999999"}, {"dmex-max-batch-size", "0"}])
-
-      assert header(headers, "dmex-batch-window") == "5000"
-      assert header(headers, "dmex-max-batch-size") == "1"
+    # A producer must not reject a request over a header it does not define —
+    # that is how a client shipped against a later version breaks against an
+    # earlier one for no reason.
+    test "ignores a header it does not define", ctx do
+      assert {200, _headers, _body} = request(ctx, [{"dmex-batch-window", "fast"}])
     end
   end
 
@@ -112,10 +102,14 @@ defmodule DMEx.Integration.HeaderNegotiationTest do
 
       # Still valid JSON, and still the same values — which is all the wire
       # contract promises.
-      [_retry, frame | _] = String.split(body, "\n\n", trim: true)
-      {:ok, parsed} = Frame.parse(frame)
+      [_retry | frames] = String.split(body, "\n\n", trim: true)
 
-      assert Enum.map(parsed.messages, & &1["data"]["order_id"]) == [1, 2, 3, 4, 5]
+      order_ids =
+        for frame <- frames,
+            {:ok, {:message, row}} = Frame.parse(frame),
+            do: row["data"]["order_id"]
+
+      assert order_ids == [1, 2, 3, 4, 5]
     end
 
     test "`latest` skips history entirely", ctx do
@@ -123,7 +117,7 @@ defmodule DMEx.Integration.HeaderNegotiationTest do
 
       # A consumer that only cares about what happens from now on, with no
       # preflight request and no second parameter.
-      refute body =~ "event: batch"
+      refute body =~ "event: "
       assert body =~ "retry: "
     end
   end
@@ -136,14 +130,6 @@ defmodule DMEx.Integration.HeaderNegotiationTest do
 
         assert body =~ "invalid last-event-id header"
       end
-    end
-
-    test "a non-integer pacing header", ctx do
-      assert {400, _, body} = request(ctx, [{"dmex-batch-window", "fast"}])
-      assert body =~ "invalid dmex-batch-window header"
-
-      assert {400, _, body} = request(ctx, [{"dmex-max-batch-size", "-1"}])
-      assert body =~ "invalid dmex-max-batch-size header"
     end
 
     test "a 400 is text/plain and opens no stream", ctx do

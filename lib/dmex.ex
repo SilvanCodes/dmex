@@ -112,13 +112,13 @@ defmodule DMEx do
   ## Telemetry
 
   `[:dmex, :publish, :start | :stop | :exception]`, `[:dmex, :stream, :connect]`,
-  `[:dmex, :stream, :frame]`, `[:dmex, :dispatcher, :broadcast]`,
+  `[:dmex, :stream, :write]`, `[:dmex, :dispatcher, :broadcast]`,
   `[:dmex, :consumer, :message, :start | :stop | :exception]`,
   `[:dmex, :consumer, :skip]`, `[:dmex, :consumer, :lag]`,
-  `[:dmex, :consumer, :reconnect]`.
+  `[:dmex, :consumer, :reconnect]`. `DMEx.Telemetry` documents all of them.
 
-  The two most useful in practice: `[:dmex, :consumer, :lag]` carries how far
-  behind the tip a frame left this subscription, and `[:dmex, :consumer, :skip]`
+  The two most useful in practice: `[:dmex, :consumer, :lag]` carries how stale
+  the rows this subscription is handling are, and `[:dmex, :consumer, :skip]`
   fires for every row the consumer had no module for — without it, a consumer
   discarding most of a stream and one discarding the single type it wanted look
   identical.

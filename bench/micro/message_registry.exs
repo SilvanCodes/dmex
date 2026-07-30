@@ -1,9 +1,10 @@
-# Confirms an assumption the queue design rests on.
+# Confirms an assumption the pipeline rests on.
 #
-# Every row admitted to a consumer's queue gets its `message_type` resolved
-# against the subscription's module registry — including rows that will be
-# skipped, because in v1 a subscription receives the producer's whole log and
-# skipping is a pipeline step rather than a filter at the door.
+# Every row a consumer receives gets its `message_type` resolved against the
+# subscription's module registry — including rows that will be skipped, because
+# a filter is heuristic in one direction and `selective: false` asks for the
+# whole log outright, so skipping is a pipeline step rather than a filter at the
+# door.
 #
 # That is only defensible if the lookup is negligible. This measures it, plus
 # the one-off cost of building the registry per subscription.

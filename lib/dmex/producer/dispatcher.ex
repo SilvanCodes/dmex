@@ -213,8 +213,14 @@ defmodule DMEx.Producer.Dispatcher do
 
     :telemetry.execute(
       [:dmex, :dispatcher, :broadcast],
-      %{streams: DMEx.Producer.Registry.count(state.producer), woken: :counters.get(woken, 1)},
-      %{producer: state.producer, types: length(types)}
+      %{
+        streams: DMEx.Producer.Registry.count(state.producer),
+        woken: :counters.get(woken, 1),
+        # A count, so it is a measurement. It sat in metadata under the same name
+        # the *list* uses everywhere else in this module, which read as the list.
+        types: length(types)
+      },
+      %{producer: state.producer}
     )
 
     state

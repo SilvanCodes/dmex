@@ -139,9 +139,9 @@ result only has to be a *superset* of what the producer publishes: an extra type
 never matches, a missing one is silent loss.
 
 **Not a partitioning.** There is still one totally-ordered log and one id
-sequence. A selective subscription sees a sparse subset of that same id space —
-`max_id` stays the tip of the whole log — so every consumer's `last_seen` is
-directly comparable with every other's regardless of what it selected. The
+sequence. A selective subscription sees a sparse subset of that same id space,
+never a space of its own, so every consumer's `last_seen` is directly comparable
+with every other's regardless of what it selected. The
 visible consequence is that a selective cursor lags the log by however much of
 it went to somebody else, which costs nothing to resume from: `(message_type,
 id)` makes the next read an index seek, the same price whether the next matching
@@ -186,89 +186,99 @@ identifies the app.
 blob decode. `stats` is reserved and not yet implemented, answered `404`. A
 segment that is neither reserved nor decodable is a `400`.
 
-**Request headers** — validated and clamped by `DMEx.Producer.Params`:
+**Request headers** — validated by `DMEx.Producer.Params`:
 
 | header | meaning |
 | --- | --- |
 | `Last-Event-ID` | resume position: an integer id, the literal `latest` (start from the tip), or absent (the whole log). Anything else is a `400`. |
-| `DMEx-Batch-Window` | preferred minimum ms between frames. |
-| `DMEx-Max-Batch-Size` | preferred maximum rows per frame. |
 
-**The URL says what the subscription *is*; headers say how it is *paced*.** A
-malformed pacing header is a `400`; a well-formed value outside the producer's
-bounds is **clamped, not rejected**, and the `200` echoes what was actually
-applied as `DMEx-Batch-Window` / `DMEx-Max-Batch-Size` response headers — so a
-clamped consumer can tell "the producer is honoring me and I still can't keep
-up" from "my request never took effect". Keeping pacing out of the URL means one
-stable URL per subscription across every reconnect, which matters because an
-adaptive consumer re-negotiates repeatedly over its lifetime.
+**That is the whole list. DMEx defines no request headers of its own.** Pacing
+is producer configuration — `batch_window` and `max_batch_size` on the producer
+module — so there is nothing for a consumer to ask for, nothing to clamp, and
+nothing to echo back. The direct consequence is that **DMEx's own consumer and a
+browser's `EventSource` send byte-identical requests** for the same
+subscription, and everything that distinguishes one subscription from another is
+in the request line.
 
-The selection is in the URL for the same rule's sake — it is identity, not
-pacing — and it is the half of the rule that survives contact with a browser: an
-`EventSource` sets no request headers but owns its URL entirely, so it can
-select even though it cannot pace itself. The asymmetry is the rule working
-rather than an inconsistency in it. Pacing is a tuning knob whose defaults must
-be sane anyway; selection decides what crosses the wire at all, and a client
-with no way to express it pays for that on every message for as long as it stays
-connected.
+That also settles where the selection goes. A selection is *identity* — a
+different selection is a different resource — so it belongs in the path, and
+three things follow:
 
-Selection also changes at deploy cadence rather than connection cadence, which
-is what makes it safe in a URL where pacing would not be: an adaptive consumer
-re-negotiates pacing repeatedly *within* one subscription's lifetime and would
-mint new URLs continuously, while a message list changes when somebody ships
-code. One URL per deployment is precisely the stable grouping the rule protects.
+- **A browser `EventSource` can select.** It sets no request headers beyond
+  `Last-Event-ID`, but the URL is entirely its own.
+- **Intermediaries treat paths as load-bearing and query strings as
+  negotiable.** Caches and proxies routinely drop, reorder or key-strip query
+  strings; nothing does that to a path. Losing a selection silently converts a
+  selective subscription into a whole-log one — a bandwidth incident rather than
+  an error.
+- **A selection is stable, so the URL is stable.** A message list changes when
+  somebody ships code, so one URL per deployment is a grouping that survives
+  long enough to be worth having in a proxy log, a cache key or a dashboard.
 
 On a selective stream the `200` additionally carries
 **`DMEx-Matched-Messages`**, the count of the producer's own types the filter
-admitted. The blob is opaque and cannot be reversed, so this is the one thing
-that makes a subscription legible from outside — a count of `0` where ten types
-were selected is an encoding mismatch, visible at connect rather than through
-silence.
+admitted. It is the only DMEx header anywhere in the contract, and it is
+diagnostic rather than functional: the blob is opaque and cannot be reversed, so
+this is the one thing that makes a subscription legible from outside — a count
+of `0` where ten types were selected is an encoding mismatch, visible at connect
+rather than through silence.
 
 **The response** is `text/event-stream` with `Cache-Control: no-cache`,
 `X-Accel-Buffering: no` (nginx buffers by default, which would swallow both
 pacing and heartbeats), and `Connection: keep-alive` on HTTP/1.1.
 
-**Frames.** Every data frame is a batch, including one carrying a single
-message — one encode path, one decode path, and no branch that could let batched
-and unbatched messages drift apart:
+**Frames.** One frame per log row. A `dmex_messages` row has five columns and an
+SSE frame has five slots, so the mapping is direct and there is no envelope:
 
 ```
 id: 1042
-event: batch
-data: {"metadata":{"max_id":1180},"messages":[{"id":1041,"message_type":"MyApp.Messages.OrderPlaced","data":{"order_id":7,"total":1999},"metadata":{},"inserted_at":"2026-07-27T10:31:04.221Z"},{"id":1042,"message_type":"MyApp.Messages.OrderShipped","data":{"order_id":7},"metadata":{"trace_id":"abc"},"inserted_at":"2026-07-27T10:31:04.884Z"}]}
+event: MyApp.Messages.OrderShipped
+data: {"data":{"order_id":7},"metadata":{"trace_id":"abc"},"inserted_at":"2026-07-27T10:31:04.884Z"}
 
 ```
 
-- `event:` is DMEx's **transport-level** framing type, always `batch`. The
-  application's `message_type` lives inside `data`, so a small fixed vocabulary
-  DMEx controls stays separate from the open-ended set of application types.
-- `id:` is the **highest** message id in the frame, since SSE allows only one.
-  Per-message ids live in `data.messages`; a DMEx consumer advances per message
-  from that list, while a generic client resuming via `Last-Event-ID` lands on a
-  correct position.
-- `data` is **one line**, so the joined payload is exactly a JSON document a
-  client can hand to its parser. Per-line framing would make it NDJSON — a
-  second framing layer inside the frame that every client would have to
-  implement before parsing anything.
-- `data.messages` holds **serialized log rows exactly as stored**. No wrapper,
-  no reshaping, no fields lifted or renamed, so the wire format has no shape of
-  its own to drift from the schema.
-- `data.metadata` holds facts about the *frame*: `max_id`, the log's tip when
-  the frame was sent. Diffing a message's `id` against it is the "am I falling
-  behind" signal.
+| column | goes to | why there |
+| --- | --- | --- |
+| `id` | `id:` | it *is* the resume position, so a generic client's `Last-Event-ID` works with no DMEx knowledge |
+| `message_type` | `event:` | it *is* the event name, so `addEventListener("MyApp.Messages.OrderShipped", …)` works in a browser |
+| `data` | inside `data:` | the publisher's payload, verbatim |
+| `metadata` | inside `data:` | the publisher's metadata, verbatim |
+| `inserted_at` | inside `data:` | publish time, which is what the consumer's lag signal is measured against |
+
+- **There is no batch envelope and no `max_id`.** Batching is still real — the
+  producer encodes a whole read's rows and hands them to `chunk/2` in one call —
+  but it is a *write* batch rather than a wire construct, so nothing on the
+  consumer side has to know it happened. That is what lets `id:` be the row's own
+  id rather than "the highest in this frame", and what makes a frame mean the
+  same thing whether one row or five hundred went out together.
+- **`data:` is one line**, so the payload is exactly a JSON document a client can
+  hand to its parser. JSON's grammar forbids raw control characters inside
+  strings, which is what makes it safe to splice stored `jsonb` text straight in
+  with no escaping pass.
+- **`message_type` is constrained by the schema**, because it goes on an
+  `event:` line and SSE field lines have no escaping. `dmex_messages` carries a
+  CHECK constraint restricting it to `[A-Za-z0-9_.]+` — exactly an Elixir module
+  name's charset — so a type that could split a frame cannot be published.
+- **How far behind is `now - inserted_at`**, in milliseconds, rather than an id
+  difference against a tip the wire no longer carries. It compares two machines'
+  clocks, so it is an NTP-accurate seconds-scale signal and not a finer one.
+
+The cost of putting the type on `event:` is that a browser's
+`EventSource.onmessage` stops firing — named events need `addEventListener` —
+which is the ordinary way to write an `EventSource` against a typed stream.
+`curl -N` is unaffected, and reads better than it did: the type is right there
+on its own line.
 
 **Heartbeats** are SSE comment frames (`: hb`) on an idle interval — ignored by
 every spec-compliant client. `retry:` is sent at stream open carrying the
 **effective** interval, `heartbeat_ms + batch_window`, because the send loop's
 throttle runs after the heartbeat branch and that sum is the real upper bound on
-silence. A generic client reads it as a reconnect delay; a DMEx consumer reads
-it as "expect a frame or a comment within this window" and reconnects after
-three missed ones.
+silence. Both halves are producer configuration, so every connection to one
+producer is told the same number. A generic client reads it as a reconnect
+delay; a DMEx consumer reads it as "expect a frame or a comment within this
+window" and reconnects after three missed ones.
 
 Because the protocol is just HTTP and SSE, no custom client library is required.
-Uniform batch framing helps: a generic client sees one frame shape rather than
-branching on `event:`.
 
 ## The invariants
 
@@ -326,25 +336,38 @@ same `id > last_seen` read a cold connect does. That is what makes it safe to be
 aggressive about reclaiming, and why there is no in-band "you are being dropped"
 frame — it would have to be written to the very socket that is stalled.
 
-**8. The consumer holds the socket off rather than buffering.** Rows land in a
-bounded FIFO (`DMEx.Consumer.Queue`) and the socket is re-armed only while it
-has headroom, so the TCP receive window really closes. A client that reads
-eagerly into its own mailbox does not remove the backpressure problem, it
-relocates it. The queue's slack exists to *measure* drain rate, not to absorb
-overload.
+**8. The consumer has no buffer, and that is what makes the backpressure
+exact.** `DMEx.Consumer.Stream` runs each row through the pipeline **inline, on
+the socket path**, as it is decoded. There is no queue, no drain loop and no
+explicit socket gate: `Mint.HTTP.stream/2` re-arms `active: :once` itself, so
+while the process is inside a handler nothing is re-armed, the TCP receive
+window closes, and the producer's `chunk/2` blocks on it. The most that can be
+in flight is one decoded chunk in hand plus one socket message already in the
+mailbox.
 
-**9. TCP backpressure is one bit, so the consumer also asks for less.** It can
-say stop; it cannot say send me less at a time. `DMEx.Consumer.Control` converts
-sustained queue pressure into smaller `max_batch_size` requests — sized from
-measured service time (`DMEx.Consumer.Meter`), not from throughput — and
-recovers additively in the reverse order. Without it, a slow consumer settles
-into a reconnect loop that makes the producer work harder the slower it gets.
+A buffer would only have relocated the problem: a few hundred rows of slack
+absorb nothing at a sustained mismatch, and every row of slack is one more row
+the socket keeps accepting before it says stop. Nothing accumulates, so there is
+nothing to bound and no depth to observe — which is also why there is no
+consumer-side controller. The window closing *is* the signal, and the producer's
+loop is already gated on it (invariant 3).
 
-**10. Batching is framing, never processing.** Every de-batched row goes through
-`DMEx.Consumer.Pipeline` one at a time: its own transaction, its own handler
-call, its own `last_seen` advance, its own failure handling. A batch is never
-processed or committed as a unit, so a mid-batch failure rolls back exactly one
-message.
+**9. Pacing has exactly one owner.** `batch_window` and `max_batch_size` are the
+producer's configuration and appear nowhere else — not in a request, not in a
+response, not in a subscription's options. What that buys is the absence of a
+whole class of question: there is no "requested" value to drift from an
+"effective" one, no clamping, no echo to interpret, and no state machine
+re-negotiating anything mid-subscription. The producer is the party whose
+database and request processes pacing protects, so it is the party that chooses
+it. See [the deployment guide](guides/deployment.md) for the one sizing rule
+that ties a producer's `max_batch_size` to consumers it does not control.
+
+**10. Batching is a write batch, never a processing unit.** The producer encodes
+a read's rows as one frame each and writes them together; the consumer sees a
+plain run of one-row frames and runs each through `DMEx.Consumer.Pipeline`
+separately — its own transaction, its own handler call, its own `last_seen`
+advance, its own failure handling. A mid-batch failure rolls back exactly one
+message, and nothing on the wire records that a batch happened.
 
 **11. The handler sees its message and the publisher's metadata, nothing else.**
 No id, no `message_type`, no frame. A handler is a plain function of its domain
@@ -377,8 +400,9 @@ themselves are web-server request processes running `DMEx.Producer.Stream`.
 
 **Consumer.** `DMEx.Consumer` supervises one `DMEx.Consumer.Stream` per
 subscription under a `DMEx.Consumer.Supervisor`, each owning one outbound
-connection, its queue, its adaptive controller and its cursor. Restart intensity
-is set never to trip: a subscription that crash-loops — on a poison message
+connection and one cursor, and running `DMEx.Consumer.Pipeline` inline on the
+rows it decodes. There is nothing else in a subscription — no queue process, no
+controller, no drain loop. Restart intensity is set never to trip: a subscription that crash-loops — on a poison message
 under `on_failure: :crash`, or on a repo that is down — does so on its own, at a
 pace set by jittered backoff, and its siblings never notice.
 
@@ -446,7 +470,7 @@ it has established so far:
   ~1.13x at concurrency 1–2, ~4.8x at 8, ~5.8x at 32, with locked throughput
   *falling* as concurrency rises. Publish concurrency buys an application
   nothing; batch work into fewer, larger messages instead.
-- **Per-connection pacing holds exactly as designed** — 5.2 frames/s against a
+- **Per-connection pacing holds exactly as designed** — 5.2 writes/s against a
   200 ms window regardless of publish rate, and an idle log costs one query per
   poll interval per *app* (1/s flat at both 10 and 200 connections), which is
   the thundering-herd guard working.
@@ -493,7 +517,7 @@ it has established so far:
 ## Open questions
 
 - **Auth / access control** — who may read a producer's endpoint, and how is
-  that enforced? Nothing in v1 answers this.
+  that enforced? Nothing here answers this.
 - **Sharing message modules across independent applications.** `DMEx.Message`
   assumes the consumer has the *same* Elixir module the producer published
   from, so it derives the same `message_type` and decodes into the same struct.
@@ -522,17 +546,21 @@ it has established so far:
   `inserted_at` is when a row landed there, so "abandoned more than N days ago"
   is expressible. Whether DMEx should ship the pruning or leave it to a `DELETE`
   is open.
-- **Whether the adaptive constants are right under real load.** The shape is
-  settled and the numbers are in `DMEx.Config`, but they have only been
-  exercised against a deliberately slow test handler.
+- **Whether the pacing defaults are right under real load.** They are in
+  `DMEx.Config` with the reasoning beside each one, but they have only been
+  exercised against benchmarks and a deliberately slow test handler. The one
+  that interacts with something a producer does not control is `max_batch_size`:
+  a write does not complete until the consumer has drained it, so
+  `max_batch_size / slowest-consumer-rows-per-second` has to stay well under
+  `stall_timeout`. See [the deployment guide](guides/deployment.md).
 - ~~**Coalescing consecutive skips into one cursor advance.**~~ **Settled, and
   built.** A skip runs no handler, so its advance is atomic with nothing;
   deferring it into a pending marker and writing it on a `checkpoint_interval`
   timer costs a crash only the re-skipping of rows no code ran for. `last_seen`
   does now advance in variable-size jumps, which was the stated reservation —
   in practice nothing reads it as a per-row counter, and the two paths that
-  could have drifted (a re-parameterization's local drain and a reconnect) both
-  flush first. A handled message needs no flush of its own because
+  could have drifted (a reconnect and a clean stop) both flush first. A handled
+  message needs no flush of its own because
   `advance/3` is absolute and subsumes the pending run below it, so the
   handler/cursor transaction is untouched. See `DMEx.Consumer.Pipeline`,
   section 2a. Server-side selection has since removed most of the motivation —
@@ -544,14 +572,14 @@ it has established so far:
   wakeups moved the ceiling rather than settling it: a publish now wakes only
   the connections that selected its type, so the amplification is per-type
   rather than per-connection, and where *that* binds has not been measured.
-- **Adaptation-induced reconnect churn** — every re-parameterization is a
-  reconnect, and a correlated event (a producer deploy slowing every consumer at
-  once) is damped only by jitter. Should adaptation be rate-limited over a
-  longer window?
-- **A byte bound on the consumer queue** — `queue_limit` is a row count, which
-  says nothing about memory when payloads vary by three orders of magnitude. A
-  second threshold the controller must reason about, or is documenting the
-  product enough?
+- **Whether a slow consumer needs anything beyond the receive window.** With no
+  consumer-side buffer, a consumer too slow for its producer's pacing simply
+  stops reading and is eventually reclaimed (invariant 5), reconnects, and does
+  it again. That is correct and costs a re-read each time, but it is a loop, and
+  the only lever is the producer's `max_batch_size` — which one slow consumer
+  cannot ask to be lowered for it alone. Is a steady
+  `[:dmex, :stream, :reclaim]` rate an adequate signal to an operator, or does
+  the protocol eventually need a way for a consumer to say "less at a time"?
 - **Third-party client backpressure** — invariant 8 is a property of *DMEx's*
   client. Any SSE-capable client can consume a stream, and one that bounds
   neither its socket nor its queue is indistinguishable to the producer from a

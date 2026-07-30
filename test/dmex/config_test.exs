@@ -2,21 +2,15 @@ defmodule DMEx.ConfigTest do
   use DMEx.Case, async: true
 
   alias DMEx.Config
-  alias DMEx.Config.Consumer
-  alias DMEx.Config.Producer
 
   describe "producer!/1" do
     test "returns the documented defaults when given nothing" do
-      assert %Producer{
+      assert %{
                batch_window: 200,
                max_batch_size: 500,
-               batch_window_floor: 50,
-               batch_window_ceiling: 5_000,
-               max_batch_size_floor: 1,
-               max_batch_size_ceiling: 5_000,
                heartbeat_ms: 15_000,
                poll_interval: 1_000,
-               frame_max_bytes: 1_048_576,
+               write_max_bytes: 1_048_576,
                stall_timeout: 30_000,
                stall_check_interval: 1_000
              } = Config.producer!([])
@@ -27,13 +21,13 @@ defmodule DMEx.ConfigTest do
 
       assert config.batch_window == 500
       assert config.heartbeat_ms == 30_000
-      assert config.max_batch_size == %Producer{}.max_batch_size
+      assert config.max_batch_size == Config.producer!([]).max_batch_size
     end
 
     test "ignores keys that belong to the producer module rather than its pacing" do
       # `use DMEx.Producer` hands its whole option list over; rejecting typos is
       # its job, not this one's.
-      assert %Producer{} =
+      assert %{} =
                Config.producer!(repo: MyApp.Repo, storage: SomeAdapter, app: :thing, prefix: "x")
     end
 
@@ -71,35 +65,18 @@ defmodule DMEx.ConfigTest do
       end
     end
 
-    test "raises when a floor exceeds its ceiling" do
-      assert_raise ArgumentError, ~r/:batch_window_floor \(900\) must not exceed/, fn ->
-        Config.producer!(batch_window_floor: 900, batch_window_ceiling: 800)
-      end
-
-      assert_raise ArgumentError, ~r/:max_batch_size_floor \(50\) must not exceed/, fn ->
-        Config.producer!(max_batch_size_floor: 50, max_batch_size_ceiling: 10)
-      end
-    end
-
-    test "raises when the configured default lies outside its own bounds" do
-      # An unreachable default is a configuration mistake: every connection that
-      # did not name a value would be clamped away from it on arrival.
-      assert_raise ArgumentError, ~r/:batch_window \(10\) must lie within/, fn ->
-        Config.producer!(batch_window: 10)
-      end
-
-      assert_raise ArgumentError, ~r/:max_batch_size \(9_?000\) must lie within/, fn ->
-        Config.producer!(max_batch_size: 9000)
-      end
+    # There are no floors and no ceilings any more, because there is nothing to
+    # clamp: pacing is producer configuration and no consumer ever asks for a
+    # different value. A producer that wants a 10 ms window may simply have one.
+    test "takes any positive pacing value, with nothing to clamp it against" do
+      assert Config.producer!(batch_window: 10).batch_window == 10
+      assert Config.producer!(max_batch_size: 9_000).max_batch_size == 9_000
     end
   end
 
   describe "consumer!/1" do
     test "returns the documented defaults when given nothing" do
-      assert %Consumer{
-               batch_window: 200,
-               max_batch_size: 500,
-               queue_limit: nil,
+      assert %{
                start: :beginning,
                on_failure: :dead_message,
                max_attempts: 3,
@@ -108,13 +85,20 @@ defmodule DMEx.ConfigTest do
                reconnect_backoff: 500,
                reconnect_backoff_max: 30_000,
                max_frame_bytes: 4_194_304,
-               missed_heartbeats: 3,
-               adaptive: true
+               missed_heartbeats: 3
              } = Config.consumer!([])
     end
 
+    # Every pacing setting is the producer's now, so a subscription simply has
+    # no field for one — and `consumer!/1` ignores what it does not know, the
+    # way it ignores `:repo`.
+    test "carries no pacing settings at all" do
+      refute Map.has_key?(Config.consumer!([]), :batch_window)
+      refute Map.has_key?(Config.consumer!([]), :max_batch_size)
+    end
+
     test "ignores keys that belong to the subscription rather than its pacing" do
-      assert %Consumer{} =
+      assert %{} =
                Config.consumer!(
                  consumer: MyApp.Consumer,
                  producer: %{orders: "https://example.test/stream"},
@@ -142,73 +126,16 @@ defmodule DMEx.ConfigTest do
         Config.consumer!(on_failure: :retry_forever)
       end
     end
-
-    test "raises on a non-boolean :adaptive" do
-      assert_raise ArgumentError, ~r/:adaptive must be one of/, fn ->
-        Config.consumer!(adaptive: :yes)
-      end
-    end
-
-    test "allows queue_limit to be nil but not zero" do
-      assert Config.consumer!(queue_limit: nil).queue_limit == nil
-      assert Config.consumer!(queue_limit: 10).queue_limit == 10
-
-      assert_raise ArgumentError, ~r/:queue_limit must be a positive integer/, fn ->
-        Config.consumer!(queue_limit: 0)
-      end
-    end
   end
 
-  describe "clamp/3" do
-    setup do
-      %{config: Config.producer!([])}
-    end
-
-    test "raises a value up to the floor and lowers it to the ceiling", %{config: config} do
-      assert Config.clamp(:batch_window, 0, config) == config.batch_window_floor
-      assert Config.clamp(:batch_window, 999_999, config) == config.batch_window_ceiling
-      assert Config.clamp(:max_batch_size, 0, config) == config.max_batch_size_floor
-      assert Config.clamp(:max_batch_size, 999_999, config) == config.max_batch_size_ceiling
-    end
-
-    test "leaves an in-range value alone", %{config: config} do
-      assert Config.clamp(:batch_window, 200, config) == 200
-      assert Config.clamp(:max_batch_size, 250, config) == 250
-    end
-
-    test "is idempotent", %{config: config} do
-      for setting <- [:batch_window, :max_batch_size], value <- [0, 1, 200, 5_000, 999_999] do
-        once = Config.clamp(setting, value, config)
-        assert Config.clamp(setting, once, config) == once
-      end
-    end
-
-    test "is monotone", %{config: config} do
-      for setting <- [:batch_window, :max_batch_size] do
-        clamped = Enum.map([0, 10, 100, 1_000, 10_000], &Config.clamp(setting, &1, config))
-        assert clamped == Enum.sort(clamped)
-      end
-    end
-  end
-
-  describe "effective_heartbeat/2" do
+  describe "effective_heartbeat/1" do
     test "is the sum, because the throttle runs after the heartbeat branch" do
       # The loop sleeps out `batch_window` *after* deciding whether to send a
       # heartbeat, so the sum — not the interval — is the real upper bound on
       # silence, and that is what a consumer measures against.
-      assert Config.effective_heartbeat(15_000, 200) == 15_200
-    end
-  end
+      config = Config.producer!(heartbeat_ms: 15_000, batch_window: 200)
 
-  describe "queue_limit/1" do
-    test "derives two frames' worth when unset" do
-      assert Config.consumer!(max_batch_size: 500) |> Config.queue_limit() == 1_000
-      assert Config.consumer!(max_batch_size: 40) |> Config.queue_limit() == 80
-    end
-
-    test "respects an explicit limit" do
-      assert Config.consumer!(max_batch_size: 500, queue_limit: 1_500)
-             |> Config.queue_limit() == 1_500
+      assert Config.effective_heartbeat(config) == 15_200
     end
   end
 

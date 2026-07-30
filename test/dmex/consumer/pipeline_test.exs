@@ -25,7 +25,7 @@ defmodule DMEx.Consumer.PipelineTest do
     test "drops rows at or below the cursor and runs only what is new", ctx do
       state = state(ctx, handler: Handlers.Echo, cursor: 5)
 
-      assert {:ok, %{cursor: 7}} = Pipeline.run_all(rows(3..7), state)
+      assert {:ok, %{cursor: 7}} = run_all(rows(3..7), state)
 
       assert_received {:handled, %OrderPlaced{order_id: 6}, _}
       assert_received {:handled, %OrderPlaced{order_id: 7}, _}
@@ -45,8 +45,8 @@ defmodule DMEx.Consumer.PipelineTest do
     test "makes a replayed frame harmless", ctx do
       state = state(ctx, handler: Handlers.Echo, cursor: 0)
 
-      {:ok, %{cursor: cursor} = state} = Pipeline.run_all(rows(1..3), state)
-      {:ok, %{cursor: ^cursor}} = Pipeline.run_all(rows(1..3), state)
+      {:ok, %{cursor: cursor} = state} = run_all(rows(1..3), state)
+      {:ok, %{cursor: ^cursor}} = run_all(rows(1..3), state)
 
       for id <- 1..3, do: assert_received({:handled, %OrderPlaced{order_id: ^id}, _})
       refute_received {:handled, _, _}
@@ -78,7 +78,7 @@ defmodule DMEx.Consumer.PipelineTest do
       state = state(ctx, handler: Handlers.Echo, cursor: 0)
 
       assert {:ok, %{cursor: 3}} =
-               Pipeline.run_all([unknown_row(1), row(2), unknown_row(3)], state)
+               run_all([unknown_row(1), row(2), unknown_row(3)], state)
 
       assert_received {:handled, %OrderPlaced{order_id: 2}, _}
 
@@ -109,7 +109,7 @@ defmodule DMEx.Consumer.PipelineTest do
     test "a run of skips costs one write, not one per row", ctx do
       state = state(ctx, handler: Handlers.Echo, cursor: 0)
 
-      {:ok, state} = Pipeline.run_all(Enum.map(1..50, &unknown_row/1), state)
+      {:ok, state} = run_all(Enum.map(1..50, &unknown_row/1), state)
 
       assert state.pending
       assert state.cursor == 50
@@ -126,7 +126,7 @@ defmodule DMEx.Consumer.PipelineTest do
       state = state(ctx, handler: Handlers.Echo, cursor: 0)
 
       rows = [unknown_row(1), unknown_row(2), unknown_row(3), row(4)]
-      {:ok, state} = Pipeline.run_all(rows, state)
+      {:ok, state} = run_all(rows, state)
 
       refute state.pending
       assert {:ok, 4} = Postgres.last_seen(ctx.storage_opts, "test/echo")
@@ -147,14 +147,14 @@ defmodule DMEx.Consumer.PipelineTest do
     test "a crash mid-run loses only the skipping, and it is redone", ctx do
       state = state(ctx, handler: Handlers.Echo, cursor: 0)
 
-      {:ok, crashed} = Pipeline.run_all(Enum.map(1..5, &unknown_row/1), state)
+      {:ok, crashed} = run_all(Enum.map(1..5, &unknown_row/1), state)
       assert crashed.pending
       assert crashed.cursor == 5
 
       # Restart: the durable cursor is the authority, and it never moved.
       assert {:ok, nil} = Postgres.last_seen(ctx.storage_opts, "test/echo")
 
-      {:ok, resumed} = Pipeline.run_all(Enum.map(1..5, &unknown_row/1), state)
+      {:ok, resumed} = run_all(Enum.map(1..5, &unknown_row/1), state)
       {:ok, resumed} = Pipeline.flush(resumed)
 
       assert resumed.cursor == 5
@@ -166,7 +166,7 @@ defmodule DMEx.Consumer.PipelineTest do
       ref = :telemetry_test.attach_event_handlers(self(), [[:dmex, :consumer, :checkpoint]])
       state = state(ctx, handler: Handlers.Echo, cursor: 0)
 
-      {:ok, state} = Pipeline.run_all([unknown_row(1), unknown_row(2)], state)
+      {:ok, state} = run_all([unknown_row(1), unknown_row(2)], state)
       Pipeline.flush(state)
 
       assert_receive {[:dmex, :consumer, :checkpoint], ^ref, %{id: 2},
@@ -206,7 +206,7 @@ defmodule DMEx.Consumer.PipelineTest do
     test "decodes into whichever module the type names", ctx do
       state = state(ctx, handler: Handlers.EchoAll, cursor: 0)
 
-      Pipeline.run_all([row(1), shipped_row(2)], state)
+      run_all([row(1), shipped_row(2)], state)
 
       assert_received {:handled, %OrderPlaced{}, _}
       assert_received {:handled, %OrderShipped{order_id: 2, carrier: "dhl"}, _}
@@ -262,7 +262,7 @@ defmodule DMEx.Consumer.PipelineTest do
     test "stops the batch at the failing row rather than skipping past it", ctx do
       state = state(ctx, handler: Handlers.Raising, cursor: 0)
 
-      catch_error(Pipeline.run_all(rows(1..3), state))
+      catch_error(run_all(rows(1..3), state))
 
       assert_received {:attempted, %OrderPlaced{order_id: 1}}
       refute_received {:attempted, %OrderPlaced{order_id: 2}}
@@ -336,8 +336,8 @@ defmodule DMEx.Consumer.PipelineTest do
 
   # `on_failure: :crash` explicitly, because these tests are about what the
   # pipeline does with an exception rather than about what the default does with
-  # a poison message — the terminal action is `DMEx.Consumer.Failure`'s subject,
-  # and the default is `:dead_message`.
+  # a poison message — the terminal action is `DMEx.Consumer.PipelineFailureTest`'s
+  # subject, and the default is `:dead_message`.
   defp state(ctx, opts) do
     Pipeline.build(
       storage: DMEx.Storage.Postgres,
@@ -347,6 +347,12 @@ defmodule DMEx.Consumer.PipelineTest do
       cursor: Keyword.get(opts, :cursor, 0),
       config: DMEx.Config.consumer!(on_failure: :crash)
     )
+  end
+
+  # `DMEx.Consumer.Stream` runs rows one at a time; this is the local
+  # convenience for a test holding a whole batch already.
+  defp run_all(rows, state) do
+    Enum.reduce(rows, {:ok, state}, fn row, {:ok, state} -> Pipeline.run(row, state) end)
   end
 
   defp rows(range), do: Enum.map(range, &row/1)

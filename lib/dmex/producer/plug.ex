@@ -66,10 +66,6 @@ defmodule DMEx.Producer.Plug do
       is nginx-specific and ignored elsewhere, and it is the difference between
       DMEx working behind a default nginx and not.
 
-    * **the echoed pacing values** — `dmex-batch-window` and
-      `dmex-max-batch-size` as actually applied, so a clamped consumer can tell
-      that it was clamped. See `DMEx.Producer.Params`.
-
     * **`dmex-matched-messages`** — on a selective stream only, how many of the
       producer's own types the filter admitted. The blob is opaque and cannot be
       reversed, so this is the one thing that makes a subscription legible from
@@ -80,10 +76,11 @@ defmodule DMEx.Producer.Plug do
 
   ## Errors
 
-  A malformed `Last-Event-ID` or pacing header is a `400` with a `text/plain`
-  body naming the header, and so is a path segment that is neither a reserved
-  name nor a decodable filter. A well-formed pacing value out of range is *not*
-  an error — it is clamped, and the echo says so.
+  A malformed `Last-Event-ID` is a `400` with a `text/plain` body naming the
+  header, and so is a path segment that is neither a reserved name nor a
+  decodable filter. Nothing else about a request is negotiable, because nothing
+  else about one is DMEx's: pacing is producer configuration and never appears
+  in a request at all.
 
   A `404` means the segment named something that does not exist here: a reserved
   sub-resource that is not implemented, or a filter matching none of this
@@ -120,14 +117,24 @@ defmodule DMEx.Producer.Plug do
     %{producer: producer}
   end
 
+  # A stream is a read and nothing else, so anything but GET is a `405` with the
+  # `allow` header RFC 9110 requires. Without this a POST to the mount would open
+  # a chunked stream and sit there, which is a confusing way to learn about a
+  # typo in a router.
   @impl Plug
+  def call(%Plug.Conn{method: method} = conn, _opts) when method != "GET" do
+    conn
+    |> Plug.Conn.put_resp_header("allow", "GET")
+    |> respond(405, "only GET is supported on a DMEx stream")
+  end
+
   def call(conn, %{producer: producer}) do
     config = producer.__dmex__().config
 
     # `conn.path_info` is what the mount handed us — Plug's `forward` strips the
     # prefix — so the one-line `forward "/stream", to: DMEx.Producer.Plug` mount
     # routes `/stream/<blob>` with no routing change at all.
-    case Params.parse(conn.path_info, conn.req_headers, config) do
+    case Params.parse(conn.path_info, conn.req_headers) do
       {:ok, params} -> select(conn, producer, params, config)
       {:error, {:reserved, _name} = error} -> not_found(conn, Params.describe(error))
       {:error, error} -> bad_request(conn, error)
@@ -196,23 +203,18 @@ defmodule DMEx.Producer.Plug do
 
     conn =
       conn
-      |> put_stream_headers(params, selection)
+      |> put_stream_headers(selection)
       |> Plug.Conn.send_chunked(200)
 
     :telemetry.execute(
       [:dmex, :stream, :connect],
       %{cursor: cursor, matched: matched(selection)},
-      %{
-        producer: producer,
-        batch_window: params.batch_window,
-        max_batch_size: params.max_batch_size,
-        selective: selection != :all
-      }
+      %{producer: producer, selective: selection != :all}
     )
 
-    case advertise_retry(conn, config, params, status) do
+    case advertise_retry(conn, config, status) do
       {:ok, conn} ->
-        SendLoop.loop(conn, SendLoop.initial_state(producer, params, cursor, status, selection))
+        SendLoop.loop(conn, SendLoop.initial_state(producer, cursor, status, selection))
 
       {:error, _reason} ->
         conn
@@ -237,21 +239,18 @@ defmodule DMEx.Producer.Plug do
   # dispatches nothing: an SSE parser applies `retry:` the moment it parses the
   # line, while an event is only dispatched if the data buffer is non-empty when
   # the blank line arrives.
-  defp advertise_retry(conn, config, params, status) do
-    effective = Config.effective_heartbeat(config.heartbeat_ms, params.batch_window)
-
+  defp advertise_retry(conn, config, status) do
     Status.arm(status, config.stall_timeout)
 
-    Plug.Conn.chunk(conn, Frame.encode_retry(effective))
+    Plug.Conn.chunk(conn, Frame.encode_retry(Config.effective_heartbeat(config)))
   end
 
-  defp put_stream_headers(conn, params, selection) do
+  defp put_stream_headers(conn, selection) do
     conn
     |> Plug.Conn.put_resp_content_type("text/event-stream")
     |> Plug.Conn.put_resp_header("cache-control", "no-cache")
     |> Plug.Conn.put_resp_header("x-accel-buffering", "no")
     |> put_keep_alive()
-    |> put_resp_headers(Params.resp_headers(params))
     |> put_resp_headers(matched_headers(selection))
   end
 

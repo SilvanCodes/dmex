@@ -235,8 +235,14 @@ silently truncating a selection.
 
 ## 12. The `/stream` namespace
 
-`/stream/...` is a namespace, and **reserved names are matched before any decode
-is attempted**. The reserved list is closed and currently holds one name:
+`/stream/...` is a namespace, and it carries the *whole* of what distinguishes
+one subscription from another: a connect request has no DMEx headers at all, so
+a producer answers it from the request line plus SSE's own `Last-Event-ID` and
+nothing else. That is what makes a DMEx consumer's request byte-identical to a
+browser `EventSource`'s.
+
+**Reserved names are matched before any decode is attempted.** The reserved list
+is closed and currently holds one name:
 
 - `stats` — a named sub-resource of the producer. Not yet implemented; answered
   with `404`.
@@ -251,3 +257,9 @@ filter that decodes but matches none of the producer's known message types is a
 `404`, which a consumer should **retry** rather than treat as fatal: a consumer
 deployed ahead of the producer that will emit its types is legitimately in that
 state, and the repair is the producer's next deploy.
+
+An **empty** segment — the trailing slash in `GET /stream/` — is the same
+resource as `GET /stream`: the whole log. A trailing slash is otherwise the kind
+of thing that creeps into a configured URL, and answering it with a `400` a
+consumer must treat as fatal would let one stray character kill a subscription
+permanently.

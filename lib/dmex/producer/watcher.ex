@@ -57,7 +57,7 @@ defmodule DMEx.Producer.Watcher do
   ## Where global limits would land
 
   This process already knows the whole live set for a producer, which makes it
-  the seat for the aggregate machinery v1 deliberately leaves out: a connection
+  the seat for the aggregate machinery DMEx deliberately leaves out: a connection
   budget, `503`/`Retry-After` admission control asked for at connect, and a
   shedding policy — which can rank candidates by deadline, since it holds every
   one. See `ROADMAP.md`.

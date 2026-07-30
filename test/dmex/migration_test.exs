@@ -72,6 +72,26 @@ defmodule DMEx.MigrationTest do
 
       assert index_columns("dmex_messages_message_type_id_index") == ["message_type", "id"]
     end
+
+    # `message_type` goes on the wire as an SSE `event:` line, unescaped, because
+    # SSE field lines have no escaping. Everything else on the wire is spliced
+    # JSON, whose grammar already forbids raw control characters inside strings;
+    # this column is not, so the log enforces the charset instead. A row that
+    # could split a frame cannot be written in the first place.
+    test "message_type is constrained to what an SSE event: line can carry" do
+      assert "dmex_messages_type_charset" in constraints("dmex_messages")
+
+      for bad <- ["With\nNewline", "With\rReturn", "With Space", "With:Colon", ""] do
+        assert_raise Postgrex.Error, ~r/dmex_messages_type_charset/, fn ->
+          insert_type(bad)
+        end
+      end
+    end
+
+    test "the charset is exactly what an Elixir module name uses" do
+      assert :ok = insert_type("MyApp.Messages.OrderPlaced")
+      assert :ok = insert_type("Elixir.A_b.C9")
+    end
   end
 
   describe "dmex_cursors" do
@@ -211,6 +231,28 @@ defmodule DMEx.MigrationTest do
       )
 
     List.flatten(rows)
+  end
+
+  defp constraints(table) do
+    %{rows: rows} =
+      query(
+        """
+        SELECT conname FROM pg_constraint
+         WHERE conrelid = $1::text::regclass AND contype = 'c'
+        """,
+        [table]
+      )
+
+    List.flatten(rows)
+  end
+
+  defp insert_type(type) do
+    query(
+      "INSERT INTO dmex_messages (message_type, data) VALUES ($1, '{}'::jsonb)",
+      [type]
+    )
+
+    :ok
   end
 
   defp query(sql, params), do: SQL.query!(Repo, sql, params)

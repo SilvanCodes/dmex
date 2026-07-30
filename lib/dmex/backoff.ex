@@ -10,14 +10,16 @@ defmodule DMEx.Backoff do
   synchronized reconnect storm, which is why DMEx's own client keeps its own
   jittered schedule rather than reconnecting at exactly the advertised interval.
 
-  Full jitter — a uniform draw from `[0, capped)` rather than a band around it —
-  is used because it decorrelates hardest, which is what a thundering herd needs.
+  Full jitter — a uniform draw from `[1, capped]` rather than a band around the
+  ceiling — is used because it decorrelates hardest, which is what a thundering
+  herd needs. The draw starts at 1 rather than 0 so a delay is always a delay:
+  a zero would make the first retry of a crash-looping subscription immediate.
   """
 
   @doc """
   The delay in ms before attempt `attempt`, counting from 1.
 
-  Doubles per attempt up to `max`, then draws uniformly below that.
+  Doubles per attempt up to `max`, then draws uniformly from `[1, ceiling]`.
   """
   @spec delay(pos_integer(), pos_integer(), pos_integer()) :: non_neg_integer()
   def delay(attempt, base, max)

@@ -1,7 +1,6 @@
 defmodule DMEx.Producer.StreamTest do
   use DMEx.Case, async: true
 
-  alias DMEx.Producer.Params
   alias DMEx.Producer.Status
   alias DMEx.Producer.Stream, as: SendLoop
   alias DMEx.Test.ClosingAdapter
@@ -14,20 +13,21 @@ defmodule DMEx.Producer.StreamTest do
   end
 
   describe "reading and framing" do
-    test "sends one frame per non-empty read", %{opts: opts} do
+    # One frame per row, one `chunk/2` per read. Batching is a write batch and
+    # nothing the consumer can observe: it sees three ordinary one-row frames.
+    test "writes one frame per row, all of a read in one chunk", %{opts: opts} do
       Stub.put_rows(opts, 3)
 
       run(opts, chunks: 1)
 
-      assert_received {:chunk, frame}
-      assert frame =~ "event: batch"
+      assert_received {:chunk, write}
+      assert ids(write) == [1, 2, 3]
       refute_received {:chunk, _}
     end
 
     test "an empty read sends no frame at all", %{opts: opts} do
-      # Not an empty batch frame, not a zero-row frame — nothing. Which is also
-      # why a read returning no rows needs no max_id. The heartbeat interval is
-      # long here so that nothing is owed on the liveness side either.
+      # Nothing at all, not a zero-row frame. The heartbeat interval is long here
+      # so that nothing is owed on the liveness side either.
       start_loop(opts, heartbeat_ms: 60_000)
 
       refute_receive {:chunk, _}, 50
@@ -59,24 +59,25 @@ defmodule DMEx.Producer.StreamTest do
       assert length(Stub.reads(opts)) == 3
     end
 
-    test "the frame's id is the highest id it carries", %{opts: opts} do
+    # Each frame's `id:` is its own row's id — never "the highest in this write" —
+    # which is what makes a generic client's `Last-Event-ID` land exactly.
+    test "each frame's id is its own row's id", %{opts: opts} do
       Stub.put_rows(opts, 3)
 
       run(opts, chunks: 1)
 
-      assert_received {:chunk, frame}
-      assert frame =~ "id: 3\n"
+      assert_received {:chunk, write}
+      assert write =~ "id: 1\nevent: "
+      assert write =~ "id: 3\nevent: "
     end
 
-    test "carries the log's tip as max_id, not the batch's highest id", %{opts: opts} do
-      Stub.put_rows(opts, 10)
+    test "the message type is the event name", %{opts: opts} do
+      Stub.put_rows(opts, 1)
 
-      run(opts, chunks: 1, max_batch_size: 4)
+      run(opts, chunks: 1)
 
-      assert_received {:chunk, frame}
-      # Four rows sent, but the consumer must be able to see it is six behind.
-      assert frame =~ ~s("max_id":10)
-      assert frame =~ "id: 4\n"
+      assert_received {:chunk, write}
+      assert write =~ "event: DMEx.Test.Messages.OrderPlaced\n"
     end
 
     test "never reads more than max_batch_size", %{opts: opts} do
@@ -87,8 +88,8 @@ defmodule DMEx.Producer.StreamTest do
       assert Enum.all?(Stub.reads(opts), fn {_cursor, limit, _types} -> limit == 7 end)
 
       for _ <- 1..3 do
-        assert_received {:chunk, frame}
-        assert length(String.split(frame, ~s("id":))) - 1 <= 7
+        assert_received {:chunk, write}
+        assert length(ids(write)) <= 7
       end
     end
 
@@ -107,9 +108,8 @@ defmodule DMEx.Producer.StreamTest do
       run(opts, chunks: 1, cursor: 6)
 
       assert [{6, _limit, :all}] = Stub.reads(opts)
-      assert_received {:chunk, frame}
-      assert frame =~ ~s("id":7)
-      refute frame =~ ~s("id":6)
+      assert_received {:chunk, write}
+      assert hd(ids(write)) == 7
     end
   end
 
@@ -129,8 +129,8 @@ defmodule DMEx.Producer.StreamTest do
 
       run(opts, chunks: 1, heartbeat_ms: 10)
 
-      assert_received {:chunk, frame}
-      assert frame =~ "event: batch"
+      assert_received {:chunk, write}
+      assert ids(write) == [1]
       refute_received {:chunk, ": hb\n\n"}
     end
 
@@ -255,13 +255,13 @@ defmodule DMEx.Producer.StreamTest do
     end
   end
 
-  describe "the frame byte cap" do
-    test "truncates a frame that would exceed it, keeping the rest for next time", %{opts: opts} do
+  describe "the write byte cap" do
+    test "truncates a write that would exceed it, keeping the rest for next time", %{opts: opts} do
       big = String.duplicate("x", 400)
       rows = for id <- 1..10, do: Stub.row(id, data: ~s({"note":"#{big}"}))
       Stub.put_rows(opts, rows)
 
-      run(opts, chunks: 2, frame_max_bytes: 1_000)
+      run(opts, chunks: 2, write_max_bytes: 1_000)
 
       assert_received {:chunk, first}
       assert byte_size(first) < 2_000
@@ -277,27 +277,43 @@ defmodule DMEx.Producer.StreamTest do
 
     test "always sends at least one row, even one larger than the cap", %{opts: opts} do
       # Refusing it would wedge the stream on that row permanently, which is a
-      # worse failure than one oversized frame.
+      # worse failure than one oversized write.
       huge = String.duplicate("x", 5_000)
       Stub.put_rows(opts, [Stub.row(1, data: ~s({"note":"#{huge}"}))])
 
-      run(opts, chunks: 1, frame_max_bytes: 100)
+      run(opts, chunks: 1, write_max_bytes: 100)
 
-      assert_received {:chunk, frame}
-      assert byte_size(frame) > 5_000
+      assert_received {:chunk, write}
+      assert byte_size(write) > 5_000
     end
 
     test "reports truncation in telemetry", %{opts: opts} do
-      ref = :telemetry_test.attach_event_handlers(self(), [[:dmex, :stream, :frame]])
+      ref = :telemetry_test.attach_event_handlers(self(), [[:dmex, :stream, :write]])
 
       big = String.duplicate("x", 400)
       Stub.put_rows(opts, for(id <- 1..10, do: Stub.row(id, data: ~s({"note":"#{big}"}))))
 
-      run(opts, chunks: 2, frame_max_bytes: 1_000)
+      run(opts, chunks: 2, write_max_bytes: 1_000)
 
-      assert_received {[:dmex, :stream, :frame], ^ref, measurements, %{truncated: true}}
+      assert_received {[:dmex, :stream, :write], ^ref, measurements, %{truncated: true}}
       assert measurements.rows < 10
       assert measurements.bytes > 0
+    end
+
+    # A lone oversized row overshoots the cap without anything having been cut,
+    # and reporting that as truncation would fire the alert on a write that went
+    # out whole.
+    test "does not report truncation when nothing was cut", %{opts: opts} do
+      ref = :telemetry_test.attach_event_handlers(self(), [[:dmex, :stream, :write]])
+
+      huge = String.duplicate("x", 5_000)
+      Stub.put_rows(opts, [Stub.row(1, data: ~s({"note":"#{huge}"}))])
+
+      # Two chunks, because the first write only *completes* — and so only
+      # reports — if the adapter has not closed on it.
+      run(opts, chunks: 2, write_max_bytes: 100, heartbeat_ms: 10)
+
+      assert_received {[:dmex, :stream, :write], ^ref, _measurements, %{truncated: false}}
     end
   end
 
@@ -352,27 +368,30 @@ defmodule DMEx.Producer.StreamTest do
   end
 
   describe "telemetry" do
-    test "reports rows, bytes and how far behind the frame left the consumer", %{opts: opts} do
-      ref = :telemetry_test.attach_event_handlers(self(), [[:dmex, :stream, :frame]])
+    test "reports the rows and bytes of each write", %{opts: opts} do
+      ref = :telemetry_test.attach_event_handlers(self(), [[:dmex, :stream, :write]])
 
       Stub.put_rows(opts, 10)
 
       run(opts, chunks: 2, max_batch_size: 4)
 
       # Matched in the pattern rather than asserted afterwards: telemetry
-      # handlers are global, so an async sibling's frame event can land in this
+      # handlers are global, so an async sibling's write event can land in this
       # mailbox first and assert_receive scans for a match rather than taking
       # the head.
-      assert_receive {[:dmex, :stream, :frame], ^ref, measurements, %{truncated: false}}
+      assert_receive {[:dmex, :stream, :write], ^ref, measurements, %{truncated: false}}
                      when measurements.rows == 4
 
       assert measurements.bytes > 0
-      # Six rows still unsent when this frame went out.
-      assert measurements.lag == 6
     end
   end
 
   ## Harness
+
+  # The ids of every frame in one write, in order.
+  defp ids(write) do
+    Regex.scan(~r/^id: (\d+)$/m, write) |> Enum.map(fn [_, id] -> String.to_integer(id) end)
+  end
 
   # The loop only returns when the connection closes, and an idle stream never
   # closes — so it runs in its own process. That also puts wakeups where they
@@ -401,21 +420,15 @@ defmodule DMEx.Producer.StreamTest do
   end
 
   defp state(opts, test_opts) do
-    params = %Params{
-      cursor: 0,
-      batch_window: Keyword.get(test_opts, :batch_window, 1),
-      max_batch_size: Keyword.get(test_opts, :max_batch_size, 500)
-    }
-
     %{
       producer: __MODULE__,
       storage: Stub,
       storage_opts: opts,
       cursor: Keyword.get(test_opts, :cursor, 0),
-      batch_window: params.batch_window,
-      max_batch_size: params.max_batch_size,
+      batch_window: Keyword.get(test_opts, :batch_window, 1),
+      max_batch_size: Keyword.get(test_opts, :max_batch_size, 500),
       heartbeat_ms: Keyword.get(test_opts, :heartbeat_ms, 60_000),
-      frame_max_bytes: Keyword.get(test_opts, :frame_max_bytes, 1_048_576),
+      write_max_bytes: Keyword.get(test_opts, :write_max_bytes, 1_048_576),
       stall_timeout: Keyword.get(test_opts, :stall_timeout, 30_000),
       last_sent_at: nil,
       status: Keyword.get(test_opts, :status) || Status.new(30_000),

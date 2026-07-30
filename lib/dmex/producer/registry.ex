@@ -92,24 +92,15 @@ defmodule DMEx.Producer.Registry do
   end
 
   @doc """
-  Sends `message` to every registered stream process.
-
-  Uses `Registry.dispatch/3`, which runs in the calling process, so a slow or
-  dead stream cannot block the dispatcher — `send/2` never blocks.
-  """
-  @spec broadcast(module(), term()) :: :ok
-  def broadcast(producer, message) when is_atom(producer) do
-    each(producer, fn pid, _status, _selection -> send(pid, message) end)
-  end
-
-  @doc """
   Runs `fun` for every registered stream, with its pid, its status and its
   selection.
 
-  The dispatcher uses this rather than `broadcast/2` so it can decide per
+  There is deliberately no blanket `broadcast/2`: the dispatcher decides per
   connection whether a wakeup is worth sending — against both the wakeup flag
-  and the selection — and `DMEx.Producer.Watcher` uses it to read every
-  connection's deadline. `fun` runs in the calling process and must not block.
+  and the selection — and `DMEx.Producer.Watcher` uses this to read every
+  connection's deadline. `fun` runs in the calling process (`Registry.dispatch/3`
+  guarantees that), so a slow or dead stream cannot block the caller, and it
+  must not block.
   """
   @spec each(module(), (pid(), Status.t(), selection() -> any())) :: :ok
   def each(producer, fun) when is_atom(producer) and is_function(fun, 3) do

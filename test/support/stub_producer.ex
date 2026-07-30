@@ -22,7 +22,7 @@ defmodule DMEx.Test.StubProducer do
   end
 
   @doc "The installed state, for handing to a process that did not install it."
-  @spec export() :: {DMEx.Storage.opts(), DMEx.Config.Producer.t()}
+  @spec export() :: {DMEx.Storage.opts(), DMEx.Config.producer()}
   def export, do: Process.get(@key)
 
   @doc "Installs previously exported state into the calling process."

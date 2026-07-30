@@ -6,20 +6,31 @@ defmodule DMEx.Producer.Stream do
   distinction between a "catching up" and a "live tailing" connection. They are
   the same loop; they differ only in whether it finds rows waiting when it
   reads. A consumer far behind the tip simply finds a full `max_batch_size` on
-  every read and sends full frames back-to-back until it drains.
+  every read and writes full batches back-to-back until it drains.
 
   A selective connection is not a distinct mode either. Its read carries one
   extra predicate — the type list `DMEx.Producer.Plug` expanded from its filter
   at connect — and everything else about the loop is identical. What it sees is
-  a *sparse subset of the same id space*, never a space of its own: `max_id`
-  stays the tip of the whole log, so every consumer's cursor stays directly
-  comparable with every other's regardless of what it selected.
+  a *sparse subset of the same id space*, never a space of its own, so every
+  consumer's cursor stays directly comparable with every other's regardless of
+  what it selected.
+
+  ## Batching is a write batch, not a wire construct
+
+  One read's rows are encoded as one frame each and handed to `chunk/2`
+  together, as a single iodata list. So `max_batch_size` and `batch_window`
+  still bound how much work one connection does per iteration and how often it
+  reads — but nothing about that reaches the consumer, which sees a plain run of
+  one-row frames and cannot tell how many arrived in one write.
+
+  That is the point: it makes batching a producer-side concern entirely, with no
+  matching consumer-side configuration to keep in step.
 
   ## Four properties, and they are the whole reason for this shape
 
     * **Memory per connection is one batch.** There is no accumulator. The
       producer never holds rows on behalf of a consumer; it holds at most the
-      frame it is currently writing.
+      rows it is currently writing.
 
     * **Reads are gated on sends completing.** This is the key inversion. If
       reads were driven by the publisher's rate, that decoupling *would be* an
@@ -49,12 +60,16 @@ defmodule DMEx.Producer.Stream do
 
   ## Pacing
 
-  `batch_window` is a hard floor on frame *rate*; `max_batch_size` is a hard cap
-  on frame *size*. Because the loop is sequential, neither can preempt the
-  other, and together they cap this connection's work at `max_batch_size` rows
-  per `batch_window`. Both are per-connection and fixed for the connection's
-  lifetime — a consumer wanting different pacing reconnects, which costs it one
-  read it was going to issue anyway.
+  `batch_window` is a hard floor on *write* rate; `max_batch_size` is a hard cap
+  on how many rows one write carries. Because the loop is sequential, neither
+  can preempt the other, and together they cap this connection's work at
+  `max_batch_size` rows per `batch_window`.
+
+  **Both are the producer's, and only the producer's.** A consumer asks for
+  nothing and is told nothing: it reads what arrives, and the socket's receive
+  window is the only thing it says back. Pacing protects the producer's database
+  and its request processes, which is exactly the party that should be choosing
+  it.
   """
 
   alias DMEx.Producer.Status
@@ -71,7 +86,7 @@ defmodule DMEx.Producer.Stream do
           required(:batch_window) => pos_integer(),
           required(:max_batch_size) => pos_integer(),
           required(:heartbeat_ms) => pos_integer(),
-          required(:frame_max_bytes) => pos_integer(),
+          required(:write_max_bytes) => pos_integer(),
           required(:stall_timeout) => Status.budget(),
           required(:last_sent_at) => integer() | nil,
           required(:status) => Status.t() | nil,
@@ -140,12 +155,11 @@ defmodule DMEx.Producer.Stream do
   @doc false
   @spec initial_state(
           module(),
-          DMEx.Producer.Params.t(),
           non_neg_integer(),
           Status.t() | nil,
           DMEx.Producer.Registry.selection()
         ) :: state()
-  def initial_state(producer, params, cursor, status \\ nil, selection \\ :all) do
+  def initial_state(producer, cursor, status \\ nil, selection \\ :all) do
     %{storage: storage, storage_opts: storage_opts, config: config} = producer.__dmex__()
 
     %{
@@ -153,17 +167,18 @@ defmodule DMEx.Producer.Stream do
       storage: storage,
       storage_opts: storage_opts,
       cursor: cursor,
-      batch_window: params.batch_window,
-      max_batch_size: params.max_batch_size,
+      batch_window: config.batch_window,
+      max_batch_size: config.max_batch_size,
       heartbeat_ms: config.heartbeat_ms,
-      frame_max_bytes: config.frame_max_bytes,
+      write_max_bytes: config.write_max_bytes,
       stall_timeout: config.stall_timeout,
       last_sent_at: nil,
       status: status,
-      # Expanded once at connect and fixed for the connection's lifetime, for
-      # the same reason pacing is: a consumer wanting a different selection
-      # reconnects. As a list rather than the registry's `MapSet`, because this
-      # is a query parameter now, not a membership test.
+      # Expanded once at connect and fixed for the connection's lifetime: a
+      # consumer wanting a different selection asks for a different resource,
+      # which is a different URL and therefore a different connection. As a list
+      # rather than the registry's `MapSet`, because this is a query parameter
+      # now, not a membership test.
       types: types(selection)
     }
   end
@@ -181,11 +196,11 @@ defmodule DMEx.Producer.Stream do
     arm(state)
 
     case state.storage.read(state.storage_opts, state.cursor, state.max_batch_size, state.types) do
-      {:ok, {[], _max_id}} ->
+      {:ok, []} ->
         {:empty, conn, state}
 
-      {:ok, {rows, max_id}} ->
-        send_frame(conn, state, rows, max_id)
+      {:ok, rows} ->
+        send_frames(conn, state, rows)
 
       {:error, reason} ->
         # The database is the log; if it cannot be read there is nothing to send
@@ -200,16 +215,19 @@ defmodule DMEx.Producer.Stream do
     end
   end
 
-  defp send_frame(conn, state, rows, max_id) do
-    {rows, truncated?} = cap_bytes(rows, state.frame_max_bytes)
-    frame = Frame.encode_batch(rows, max_id)
+  # One frame per row, all of them in one `chunk/2`. Writing them individually
+  # would multiply the syscalls and the deadline arming by `max_batch_size` for
+  # bytes that are going out together anyway.
+  defp send_frames(conn, state, rows) do
+    {rows, truncated?} = cap_bytes(rows, state.write_max_bytes)
+    frames = Enum.map(rows, &Frame.encode_row/1)
     last_id = rows |> List.last() |> Map.fetch!(:id)
 
-    case chunk(conn, state, frame) do
+    case chunk(conn, state, frames) do
       {:ok, conn} ->
         :telemetry.execute(
-          [:dmex, :stream, :frame],
-          %{rows: length(rows), bytes: IO.iodata_length(frame), lag: max_id - last_id},
+          [:dmex, :stream, :write],
+          %{rows: length(rows), bytes: IO.iodata_length(frames)},
           %{producer: state.producer, truncated: truncated?}
         )
 
@@ -273,7 +291,7 @@ defmodule DMEx.Producer.Stream do
     end
   end
 
-  ## Frame byte cap
+  ## Write byte cap
 
   # `max_batch_size` bounds rows; this bounds bytes, which is what the socket and
   # `stall_timeout` actually see. Truncating is safe because the cursor only ever
@@ -281,20 +299,25 @@ defmodule DMEx.Producer.Stream do
   #
   # At least one row always goes out, even if that row alone exceeds the cap:
   # refusing it would wedge the stream on it permanently, and a stuck stream is
-  # a worse failure than one oversized frame.
+  # a worse failure than one oversized write.
+  #
+  # The flag rides in the accumulator rather than being inferred from the total,
+  # because a lone oversized row overshoots the cap without anything having been
+  # cut — and reporting that as truncation would make the telemetry fire on a
+  # batch that was sent whole.
   defp cap_bytes([first | rest], max_bytes) do
-    {rows, total} =
-      Enum.reduce_while(rest, {[first], row_bytes(first)}, fn row, {kept, total} ->
+    {kept, _total, truncated?} =
+      Enum.reduce_while(rest, {[first], row_bytes(first), false}, fn row, {kept, total, false} ->
         total = total + row_bytes(row)
 
         if total > max_bytes do
-          {:halt, {kept, total}}
+          {:halt, {kept, total, true}}
         else
-          {:cont, {[row | kept], total}}
+          {:cont, {[row | kept], total, false}}
         end
       end)
 
-    {Enum.reverse(rows), total > max_bytes}
+    {Enum.reverse(kept), truncated?}
   end
 
   # Deliberately an over-estimate. The cap is a ceiling, so counting a row as
@@ -303,10 +326,11 @@ defmodule DMEx.Producer.Stream do
   # to prevent.
   #
   # `message_type` is included because it is a fully-qualified module name,
-  # routinely 30-50 bytes; leaving it out under-counted a wide batch by enough
-  # to overshoot. The constant covers the rest of the row's JSON scaffolding:
-  # the four key names, quoting, separators, the id, and a 27-byte ISO 8601
-  # timestamp, which comes to about 110 bytes.
+  # routinely 30-50 bytes, and it now appears on the `event:` line as well as
+  # nowhere else; leaving it out under-counted a wide batch by enough to
+  # overshoot. The constant covers the rest of a frame's scaffolding: the field
+  # names, the `data:` JSON keys, quoting, separators, the id, the blank-line
+  # delimiter, and a 27-byte ISO 8601 timestamp.
   @row_overhead 128
 
   defp row_bytes(row) do

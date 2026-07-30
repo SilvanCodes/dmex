@@ -1,7 +1,6 @@
 defmodule DMEx.Producer.WatcherTest do
   use DMEx.Case, async: true
 
-  alias DMEx.Producer.Params
   alias DMEx.Producer.Status
   alias DMEx.Producer.Stream, as: SendLoop
   alias DMEx.Producer.Watcher
@@ -103,10 +102,8 @@ defmodule DMEx.Producer.WatcherTest do
   ## Harness
 
   defp state(opts, status) do
-    params = %Params{cursor: 0, batch_window: 1, max_batch_size: 10}
-
     %{
-      SendLoop.initial_state(Producer, params, 0, status)
+      SendLoop.initial_state(Producer, 0, status)
       | storage: Stub,
         storage_opts: opts
     }

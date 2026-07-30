@@ -116,22 +116,21 @@ anything pruning it has to work along.
 
 ### Backpressure
 
-A consumer that falls behind holds the socket off rather than buffering without
-limit: rows land in a bounded queue, and the TCP receive window closes when it
-fills because the consumer stops re-arming. That protects the consumer's memory
-but on its own leaves it in a reconnect loop, since the producer will keep
-handing over frames at a rate it cannot drain.
+**A consumer has no buffer at all**, and that is the whole mechanism. Rows run
+through the pipeline inline, on the socket path, as they are decoded — so while
+a handler is running the socket is not being re-armed, the TCP receive window
+closes, and the producer's `chunk/2` blocks on it. Backpressure is what happens
+by default rather than something detected and handled.
 
-So the consumer also measures itself and asks for less. It times each message's
-pipeline pass — **service time, not throughput**, because throughput on an
-unsaturated consumer is just the arrival rate — and on sustained pressure
-requests no more per window than it was measured to empty per window. Recovery
-is additive and unwinds in the reverse order, reclaiming `batch_window` before
-`max_batch_size`, because a widened window costs latency on every message while
-an oversized batch costs nothing on a quiet stream.
+The producer's send loop is already gated the same way: the next read cannot
+happen until the previous write returns, so a stalled consumer stalls its own
+connection and nothing else. It reads no more rows, allocates no more memory,
+and issues no more queries.
 
-Set `adaptive: false` on a subscription that would rather have predictable
-framing than an automatically fitted one.
+There is nothing to configure on the consumer side, because there is nothing to
+size. How fast a stream is fed is `batch_window` and `max_batch_size` on the
+**producer** — the party whose database and request processes that protects —
+and consumers neither ask for pacing nor are told what it is.
 
 ### Not yet built
 
@@ -168,7 +167,7 @@ COMMIT, and the append-ordering test needs genuinely concurrent transactions.
 ## Benchmarks
 
 ```sh
-mix bench.micro   # per-row and per-frame costs on the hot paths
+mix bench.micro   # per-row costs on the hot paths
 mix bench.e2e     # throughput and latency against a real database and socket
 ```
 

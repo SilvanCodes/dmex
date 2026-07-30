@@ -57,7 +57,6 @@ defmodule DMEx.MixProject do
       # to carry Postgrex, and a producer-only one has no reason to carry Mint.
       {:ecto_sql, "~> 3.12", optional: true},
       {:postgrex, "~> 0.19", optional: true},
-      {:ecto_sqlite3, "~> 0.17", optional: true},
       {:plug, "~> 1.16", optional: true},
       {:mint, "~> 1.6", optional: true},
 

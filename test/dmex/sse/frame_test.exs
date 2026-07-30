@@ -16,25 +16,25 @@ defmodule DMEx.SSE.FrameTest do
     }
   end
 
-  defp encode(rows, max_id), do: rows |> Frame.encode_batch(max_id) |> IO.iodata_to_binary()
+  defp encode(row), do: row |> Frame.encode_row() |> IO.iodata_to_binary()
 
-  describe "encode_batch/2" do
+  describe "encode_row/1" do
     test "produces exactly the documented wire shape" do
-      assert encode([row(1042)], 1180) ==
+      assert encode(row(1042)) ==
                "id: 1042\n" <>
-                 "event: batch\n" <>
-                 ~s(data: {"metadata":{"max_id":1180},"messages":[) <>
-                 ~s({"id":1042,"message_type":"MyApp.Messages.OrderPlaced",) <>
-                 ~s("data":{"order_id":7},"metadata":{},) <>
-                 ~s("inserted_at":"2026-07-27T10:31:04.221Z"}]}\n\n)
+                 "event: MyApp.Messages.OrderPlaced\n" <>
+                 ~s(data: {"data":{"order_id":7},"metadata":{},) <>
+                 ~s("inserted_at":"2026-07-27T10:31:04.221Z"}\n\n)
     end
 
-    test "the frame id is the highest message id, not the first or last" do
-      assert %Frame{id: 1042} = reparse(encode([row(1041), row(1042), row(7)], 1180))
-    end
+    # The five columns land in five slots, and two of them are SSE's own — which
+    # is what makes a generic client's `Last-Event-ID` and `addEventListener`
+    # work with no DMEx knowledge at all.
+    test "the id is the row's own id, and the event is its message type" do
+      assert {:message, message} = reparse(encode(row(1042)))
 
-    test "a single message is still a one-element batch" do
-      assert %Frame{event: "batch", messages: [_only]} = reparse(encode([row(1)], 1))
+      assert message["id"] == 1042
+      assert message["message_type"] == "MyApp.Messages.OrderPlaced"
     end
 
     test "splices row data verbatim rather than re-encoding it" do
@@ -42,27 +42,22 @@ defmodule DMEx.SSE.FrameTest do
       # through a map would not guarantee.
       data = ~s({"z":1,"a":2,"m":{"nested":[1,2,3]}})
 
-      assert encode([row(1, data: data)], 1) =~ ~s("data":#{data},)
+      assert encode(row(1, data: data)) =~ ~s("data":#{data},)
     end
 
     test "splices row metadata verbatim" do
-      assert encode([row(1, metadata: ~s({"trace_id":"abc"}))], 1) =~
+      assert encode(row(1, metadata: ~s({"trace_id":"abc"}))) =~
                ~s("metadata":{"trace_id":"abc"},)
     end
 
-    test "escapes the message type through the JSON encoder" do
-      assert encode([row(1, message_type: ~s(Weird"Type))], 1) =~
-               ~s("message_type":"Weird\\"Type")
-    end
-
-    test "emits exactly one data: line, however many messages" do
-      body = encode(Enum.map(1..50, &row/1), 100)
+    test "emits exactly one data: line" do
+      body = encode(row(1))
 
       assert body |> String.split("\n") |> Enum.count(&String.starts_with?(&1, "data: ")) == 1
     end
 
     test "is never pretty-printed and contains no stray newlines" do
-      body = encode(Enum.map(1..20, &row/1), 100)
+      body = encode(row(1))
 
       # Three field lines plus the terminating blank line.
       assert body |> String.split("\n") |> length() == 5
@@ -73,137 +68,125 @@ defmodule DMEx.SSE.FrameTest do
       # JSON escapes U+0000..U+001F inside strings by grammar, so a newline in a
       # value can never reach the wire as a literal newline.
       data = JSON.encode!(%{"note" => "line one\nline two\r\ttabbed"})
-      body = encode([row(1, data: data)], 1)
+      body = encode(row(1, data: data))
 
       assert body |> String.split("\n") |> length() == 5
 
-      assert %Frame{messages: [%{"data" => %{"note" => "line one\nline two\r\ttabbed"}}]} =
-               reparse(body)
-    end
-
-    test "carries max_id in frame metadata, separate from any row" do
-      assert %Frame{metadata: %{"max_id" => 9999}} = reparse(encode([row(1)], 9999))
+      assert {:message, %{"data" => %{"note" => "line one\nline two\r\ttabbed"}}} = reparse(body)
     end
 
     test "accepts a NaiveDateTime as well as a DateTime" do
-      assert encode([row(1, inserted_at: ~N[2026-07-27 10:31:04])], 1) =~
+      assert encode(row(1, inserted_at: ~N[2026-07-27 10:31:04])) =~
                ~s("inserted_at":"2026-07-27T10:31:04")
     end
 
-    test "refuses to encode an empty batch" do
-      assert_raise ArgumentError, ~r/empty batch/, fn -> Frame.encode_batch([], 5) end
-    end
-
     test "returns iodata, not a flattened binary" do
-      assert Frame.encode_batch([row(1)], 1) |> is_list()
+      assert row(1) |> Frame.encode_row() |> is_list()
     end
   end
 
   describe "encode_retry/1 and encode_heartbeat/0" do
     test "a retry frame carries no data and so dispatches nothing" do
       assert IO.iodata_to_binary(Frame.encode_retry(4200)) == "retry: 4200\n\n"
-      assert %Frame{retry: 4200, messages: nil} = reparse(Frame.encode_retry(4200))
+      assert reparse(Frame.encode_retry(4200)) == {:retry, 4200}
     end
 
     test "a heartbeat is a comment frame" do
       assert IO.iodata_to_binary(Frame.encode_heartbeat()) == ": hb\n\n"
     end
 
-    test "a heartbeat parses to a frame carrying nothing at all" do
-      assert %Frame{messages: nil, retry: nil, id: nil, event: nil} =
-               reparse(Frame.encode_heartbeat())
+    test "a heartbeat parses to nothing at all" do
+      assert reparse(Frame.encode_heartbeat()) == :ignore
     end
   end
 
   describe "parse/1" do
     test "decodes exactly one level — rows stay as maps, not structs" do
-      assert {:ok, %Frame{messages: [message]}} =
-               Frame.parse(block(encode([row(1042)], 1180)))
+      assert {:ok, {:message, message}} = Frame.parse(block(encode(row(1042))))
 
       assert message["message_type"] == "MyApp.Messages.OrderPlaced"
       assert message["data"] == %{"order_id" => 7}
-      assert is_map(message["data"])
+      assert message["metadata"] == %{}
+      assert message["inserted_at"] == "2026-07-27T10:31:04.221Z"
     end
 
     test "tolerates CRLF and CR line terminators" do
-      crlf = "id: 5\r\nevent: batch\r\ndata: {\"metadata\":{},\"messages\":[]}"
-      cr = "id: 5\revent: batch\rdata: {\"metadata\":{},\"messages\":[]}"
+      crlf = ~s(id: 5\r\nevent: T\r\ndata: {"data":{}})
+      cr = ~s(id: 5\revent: T\rdata: {"data":{}})
 
-      assert {:ok, %Frame{id: 5, event: "batch", messages: []}} = Frame.parse(crlf)
-      assert {:ok, %Frame{id: 5, event: "batch", messages: []}} = Frame.parse(cr)
+      assert {:ok, {:message, %{"id" => 5, "message_type" => "T"}}} = Frame.parse(crlf)
+      assert {:ok, {:message, %{"id" => 5, "message_type" => "T"}}} = Frame.parse(cr)
     end
 
     test "joins consecutive data: lines with LF, as the SSE spec requires" do
-      block = ~s(event: batch\ndata: {"metadata":{},\ndata: "messages":[]})
+      block = ~s(id: 5\nevent: T\ndata: {"data":\ndata: {"a":1}})
 
-      assert {:ok, %Frame{messages: []}} = Frame.parse(block)
+      assert {:ok, {:message, %{"data" => %{"a" => 1}}}} = Frame.parse(block)
     end
 
     test "accepts a field with no space after the colon" do
-      assert {:ok, %Frame{id: 5}} = Frame.parse(~s(id:5\ndata: {"messages":[]}))
+      assert {:ok, {:message, %{"id" => 5}}} = Frame.parse(~s(id:5\nevent:T\ndata:{"data":{}}))
     end
 
     test "preserves further leading spaces, stripping only the first" do
-      assert {:ok, %Frame{event: " padded"}} =
-               Frame.parse(~s(event:  padded\ndata: {"messages":[]}))
+      assert {:ok, {:message, %{"message_type" => " padded"}}} =
+               Frame.parse(~s(id: 1\nevent:  padded\ndata: {"data":{}}))
     end
 
     test "ignores comment lines and unknown fields" do
-      block = ~s(: a comment\nid: 5\nunknown: whatever\ndata: {"messages":[]})
+      block = ~s(: a comment\nid: 5\nevent: T\nunknown: whatever\ndata: {"data":{}})
 
-      assert {:ok, %Frame{id: 5, messages: []}} = Frame.parse(block)
+      assert {:ok, {:message, %{"id" => 5}}} = Frame.parse(block)
     end
 
-    test "ignores a non-integer id or retry rather than failing the frame" do
-      assert {:ok, %Frame{id: nil, retry: nil, messages: []}} =
-               Frame.parse(~s(id: abc\nretry: later\ndata: {"messages":[]}))
+    # A message needs all three, so a block missing any of them is not one. That
+    # is not an error: per the SSE specification an event is dispatched only when
+    # the data buffer is non-empty, and a producer may send whatever else it
+    # likes.
+    test "a block short of id, event or data is ignored rather than rejected" do
+      assert {:ok, :ignore} = Frame.parse(~s(event: T\ndata: {"data":{}}))
+      assert {:ok, :ignore} = Frame.parse(~s(id: 5\ndata: {"data":{}}))
+      assert {:ok, :ignore} = Frame.parse(~s(id: 5\nevent: T))
+      assert {:ok, :ignore} = Frame.parse("")
     end
 
-    test "defaults absent frame metadata to an empty map" do
-      assert {:ok, %Frame{metadata: %{}}} = Frame.parse(~s(data: {"messages":[]}))
+    test "a non-integer id is not an id, so the block is not a message" do
+      assert {:ok, :ignore} = Frame.parse(~s(id: abc\nevent: T\ndata: {"data":{}}))
     end
 
     test "rejects malformed JSON" do
-      assert {:error, {:invalid_json, _}} = Frame.parse(~s(data: {not json}))
+      assert {:error, {:invalid_json, _}} = Frame.parse(~s(id: 1\nevent: T\ndata: {not json}))
     end
 
-    test "rejects a data payload that is not an object carrying messages" do
-      assert {:error, {:invalid_data_shape, _}} = Frame.parse(~s(data: [1,2,3]))
-      assert {:error, {:invalid_data_shape, _}} = Frame.parse(~s(data: {"messages":"nope"}))
+    test "rejects a data payload that does not carry the row's data" do
+      assert {:error, {:invalid_data_shape, _}} = Frame.parse(~s(id: 1\nevent: T\ndata: [1,2,3]))
+
+      assert {:error, {:invalid_data_shape, _}} =
+               Frame.parse(~s(id: 1\nevent: T\ndata: {"metadata":{}}))
     end
   end
 
   describe "round trip" do
-    property "any batch survives encode -> parse unchanged" do
+    property "any row survives encode -> parse unchanged" do
       check all(
-              messages <-
-                list_of(
-                  tuple(
-                    {integer(1..1_000_000), string(:alphanumeric),
-                     map_of(string(:alphanumeric), integer())}
-                  ),
-                  min_length: 1,
-                  max_length: 20
-                ),
-              max_id <- integer(1..2_000_000)
+              id <- integer(1..1_000_000),
+              type <- string(:alphanumeric),
+              payload <- map_of(string(:alphanumeric), integer()),
+              metadata <- map_of(string(:alphanumeric), integer())
             ) do
-        rows =
-          messages
-          |> Enum.uniq_by(fn {id, _, _} -> id end)
-          |> Enum.map(fn {id, type, payload} ->
-            row(id, message_type: "T" <> type, data: JSON.encode!(payload))
-          end)
+        row =
+          row(id,
+            message_type: "T" <> type,
+            data: JSON.encode!(payload),
+            metadata: JSON.encode!(metadata)
+          )
 
-        encoded = encode(rows, max_id)
-        assert {:ok, %Frame{} = frame} = Frame.parse(block(encoded))
+        assert {:ok, {:message, message}} = Frame.parse(block(encode(row)))
 
-        assert frame.event == "batch"
-        assert frame.id == rows |> Enum.map(& &1.id) |> Enum.max()
-        assert frame.metadata == %{"max_id" => max_id}
-        assert Enum.map(frame.messages, & &1["id"]) == Enum.map(rows, & &1.id)
-
-        assert Enum.map(frame.messages, & &1["data"]) ==
-                 Enum.map(rows, &JSON.decode!(&1.data))
+        assert message["id"] == id
+        assert message["message_type"] == "T" <> type
+        assert message["data"] == payload
+        assert message["metadata"] == metadata
       end
     end
   end
@@ -215,7 +198,7 @@ defmodule DMEx.SSE.FrameTest do
   end
 
   defp reparse(encoded) do
-    {:ok, frame} = encoded |> block() |> Frame.parse()
-    frame
+    {:ok, parsed} = encoded |> block() |> Frame.parse()
+    parsed
   end
 end

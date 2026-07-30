@@ -14,7 +14,7 @@ defmodule DMEx.Consumer do
        },
        handlers: [
          MyApp.OrderProjection,
-         {MyApp.OrderEmail, on_failure: :crash, max_batch_size: 100}
+         {MyApp.OrderEmail, on_failure: :crash, max_attempts: 5}
        ]}
 
   or start one later:
@@ -45,7 +45,9 @@ defmodule DMEx.Consumer do
   **A name is not verifiable against reality.** Pointing an entry at the wrong
   host yields a subscription that looks perfectly healthy — connected, cursor
   advancing, every row skipped as an unknown type — while reading the wrong log.
-  Skips are the normal case in v1, so they are not a signal.
+  A selective subscription pointed at the wrong producer usually gets a `404`
+  and says so; one declared `selective: false` gets a stream of skips, which is
+  indistinguishable from a correct one on a quiet log.
 
   ## Where the cursor is written
 
@@ -76,8 +78,10 @@ defmodule DMEx.Consumer do
     * `:name` — names this consumer, so an application can run more than one.
 
   Per subscription: any `DMEx.Config` consumer setting (`:start`, `:on_failure`,
-  `:batch_window`, `:max_batch_size`, …), plus the storage and producer keys
-  above.
+  `:max_attempts`, …), plus the storage and producer keys above.
+
+  Note what is *not* there: pacing. How fast a stream is fed is the producer's
+  configuration, so a subscription has nothing to say about it.
 
   ## Two handlers cannot share one identity
 
@@ -97,9 +101,9 @@ defmodule DMEx.Consumer do
   a subscription *is*; nothing at this call site can disagree with it, because
   nothing here says anything about it.
 
-  What this call site does vary is legitimate: pacing, where the cursor is
-  written, and which consumer to attach to. Those are properties of *running*
-  the subscription rather than of what it is.
+  What this call site does vary is legitimate: failure handling, where the
+  cursor is written, and which consumer to attach to. Those are properties of
+  *running* the subscription rather than of what it is.
 
   A row whose type the handler has no clause for advances the cursor and invokes
   nothing. With selection on that should be rare, but it is not a fault: filter
@@ -150,6 +154,13 @@ defmodule DMEx.Consumer do
     # Computing an id is a pure function of the declaration, so nothing has to
     # start for this to be answerable.
     reject_duplicate_ids!(handlers)
+
+    # For the same reason, and everything else `subscribe/2` raises for that is
+    # answerable without anything running: an unknown `producer:`, an unusable
+    # URL, an unknown or out-of-range option. Left to the Task those would kill
+    # it silently and the application would boot with a subscription that never
+    # existed.
+    reject_unstartable!(handlers, opts)
 
     children = [
       # The default storage and the producer map ride along as registry metadata,
@@ -313,11 +324,42 @@ defmodule DMEx.Consumer do
     :ok
   end
 
+  # The pure half of `subscribe/2`, run before any child starts. Everything here
+  # is a function of the declaration and the options, so nothing has to be alive
+  # for it to be answerable — and every one of these raises, which inside the
+  # `Task` would be invisible.
+  defp reject_unstartable!(handlers, opts) do
+    producers = producer_map!(opts)
+
+    Enum.each(handlers, fn {handler, handler_opts} ->
+      unless Handler.handler?(handler) do
+        raise ArgumentError,
+              "#{inspect(handler)} is not a DMEx handler. " <>
+                "Add `use DMEx.Consumer.Handler` to it."
+      end
+
+      validate_keys!(handler_opts)
+
+      _ = Config.consumer!(handler_opts)
+
+      overridden =
+        if Keyword.has_key?(handler_opts, :producer),
+          do: producer_map!(handler_opts),
+          else: producers
+
+      _ = resolve_url!(handler.__dmex__(), overridden)
+    end)
+
+    :ok
+  end
+
   ## Producer resolution
 
   defp resolve_url!(declaration, opts, consumer) do
-    producers = resolve_producers!(opts, consumer)
+    resolve_url!(declaration, resolve_producers!(opts, consumer))
+  end
 
+  defp resolve_url!(declaration, producers) do
     case Map.fetch(producers, declaration.producer) do
       {:ok, url} ->
         url

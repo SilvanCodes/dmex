@@ -118,7 +118,7 @@ defmodule DMEx.Integration.HeartbeatTest do
       body = collect(ctx, 300)
 
       # The frame's own bytes are the liveness signal.
-      assert body =~ "event: batch"
+      assert body =~ "event: DMEx.Test.Messages.OrderPlaced"
     end
   end
 
@@ -164,9 +164,9 @@ defmodule DMEx.Integration.HeartbeatTest do
 
       eventually(fn -> Decoder.retry(:sys.get_state(pid).decoder) != nil end)
 
-      # Read off the wire rather than assumed, which is what lets a consumer
-      # measure against a producer paced differently from itself.
-      assert Decoder.retry(:sys.get_state(pid).decoder) == @heartbeat + 50
+      # Read off the wire rather than assumed: the producer's own heartbeat plus
+      # its own batch_window, neither of which this consumer had any say in.
+      assert Decoder.retry(:sys.get_state(pid).decoder) == @heartbeat + 200
     end
   end
 
@@ -229,7 +229,7 @@ defmodule DMEx.Integration.HeartbeatTest do
   ## Helpers
 
   defp subscribe do
-    Consumer.subscribe(Handlers.Echo, consumer: TestConsumer, batch_window: 50)
+    Consumer.subscribe(Handlers.Echo, consumer: TestConsumer)
   end
 
   # A bare Mint client that reads for a while and returns whatever arrived.

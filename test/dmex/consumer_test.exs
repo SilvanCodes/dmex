@@ -77,6 +77,28 @@ defmodule DMEx.ConsumerTest do
       assert start_error(handlers: ["nope"]) =~
                "must be a handler module or a {module, keyword} pair"
     end
+
+    # Same argument as the duplicate-id check above, and the same failure mode
+    # without it: these all raise, and raising inside the `restart: :temporary`
+    # Task that starts the children is invisible — the application would boot
+    # with a subscription that never existed.
+    test "refuses a configured handler naming a producer nothing binds" do
+      assert start_error(handlers: [ElsewhereHandler]) =~
+               ~r/declares `producer: "elsewhere"`, which is not in the producer map/
+    end
+
+    test "refuses a configured handler that is not a handler at all" do
+      assert start_error(handlers: [DMEx.Consumer]) =~ "is not a DMEx handler"
+    end
+
+    test "refuses a configured handler with an unknown option" do
+      assert start_error(handlers: [{Handlers.Echo, nope: 1}]) =~
+               "unknown subscription option(s) [:nope]"
+    end
+
+    test "refuses a configured handler with an out-of-range option" do
+      assert start_error(handlers: [{Handlers.Echo, on_failure: :explode}]) =~ "on_failure"
+    end
   end
 
   # Validated where the map is declared rather than at first connect, because a

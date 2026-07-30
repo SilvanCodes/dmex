@@ -1,48 +1,59 @@
 defmodule DMEx.SSE.Frame do
   @moduledoc """
-  The SSE wire format: one struct per `text/event-stream` chunk.
+  The SSE wire format: one frame per log row.
 
-  A frame models a *batch*, not a single message. Every data frame is a batch
-  frame, including one carrying exactly a single message — it is simply a
-  one-element `messages` list. That costs a couple of bytes on the wire and buys
-  a single encode path, a single decode path, and no branch anywhere that could
-  let batched and unbatched messages drift apart in behaviour.
+  A `dmex_messages` row has five columns and an SSE frame has five slots, so the
+  mapping is direct and there is no envelope:
 
       id: 1042
-      event: batch
-      data: {"metadata":{"max_id":1180},"messages":[{"id":1042,...}]}
+      event: MyApp.Messages.OrderPlaced
+      data: {"data":{"order_id":7},"metadata":{"trace_id":"abc"},"inserted_at":"2026-07-27T10:31:04.221Z"}
 
-  | field | SSE field | meaning |
+  | column | goes to | why there |
   | --- | --- | --- |
-  | `id` | `id:` | the **highest** message id in this frame |
-  | `event` | `event:` | transport-level framing type, always `"batch"` for data frames |
-  | `metadata` | inside `data:` | frame-level facts, currently `max_id` |
-  | `messages` | inside `data:` | the frame's log rows, exactly as stored |
-  | `retry` | `retry:` | the producer's effective heartbeat interval, in ms |
+  | `id` | `id:` | it *is* the resume position, so a generic client's `Last-Event-ID` works with no DMEx knowledge |
+  | `message_type` | `event:` | it *is* the event name, so `addEventListener("MyApp.Messages.OrderPlaced", …)` works in a browser |
+  | `data` | inside `data:` | the publisher's payload, verbatim |
+  | `metadata` | inside `data:` | the publisher's metadata, verbatim |
+  | `inserted_at` | inside `data:` | publish time, which is what the consumer's lag signal is measured against |
 
-  SSE allows only one `id:` per frame, so the frame's `id:` is the highest
-  message id it carries; per-message ids live inside `messages`. A DMEx consumer
-  advances its cursor per message from that list, never from the frame's `id:`.
-  The frame-level `id:` exists so a generic, non-DMEx SSE client resuming via
-  `Last-Event-ID` lands on a correct position — never skipped, never re-read from
-  the middle.
+  There is no batch envelope and no frame-level `max_id`. Batching is still real
+  — the producer writes a whole read's worth of frames in one `chunk/2` — but it
+  is a *write* batch rather than a wire construct, so nothing on the consumer
+  side has to know it happened. That is what lets `id:` be the row's own id
+  rather than "the highest id in this frame", and what makes the frame's meaning
+  identical whether one row or five hundred went out together.
+
+  ## `event:` carries the message type, and the type is constrained for it
+
+  SSE field lines have no escaping: a CR or LF inside `event:` would end the
+  line and split the frame. JSON's grammar forbids raw control characters inside
+  strings, which is what keeps the spliced `data:` payload safe — but
+  `message_type` is not spliced through a JSON encoder here, it is written
+  straight onto a header line.
+
+  So the log constrains it instead: `dmex_messages` carries a CHECK constraint
+  restricting `message_type` to `[A-Za-z0-9_.]`, which is exactly the charset an
+  Elixir module name uses. A type that cannot be written on an `event:` line
+  cannot be published in the first place. See `DMEx.Migration`.
 
   ## Encoding
 
-  Frames are built as iodata, and rows are **spliced, never re-encoded**: a row's
-  `data` and `metadata` go in as text, exactly as the read returned them. The
-  alternative — letting the driver decode `jsonb` into a map and re-encoding it —
-  pays a decode plus an encode per row, and pays it once per connection for the
-  same rows, since every connection issues its own read.
+  Frames are built as iodata, and rows are **spliced, never re-encoded**: a
+  row's `data` and `metadata` go in as text, exactly as the read returned them.
+  The alternative — letting the driver decode `jsonb` into a map and re-encoding
+  it — pays a decode plus an encode per row, and pays it once per connection for
+  the same rows, since every connection issues its own read.
 
-  Two invariants keep that safe, and they are the whole of the encoding contract:
-  a frame is **never pretty-printed**, and **nothing is spliced into it that did
-  not come out of a JSON encoder or a JSON-typed column**. Together they
-  guarantee the payload contains no raw CR or LF — JSON's grammar requires
-  U+0000–U+001F to be escaped inside strings — which is what makes it safe to put
-  the whole payload on one `data:` line with no base64 and no escaping pass.
+  Two invariants keep that safe, and they are the whole of the encoding
+  contract: a frame is **never pretty-printed**, and **nothing is spliced into
+  it that did not come out of a JSON encoder, a JSON-typed column, or a column
+  the schema constrains to a safe charset**. Together they guarantee no raw CR
+  or LF reaches the wire, which is what makes it safe to put a whole payload on
+  one `data:` line with no base64 and no escaping pass.
   """
 
+  @typedoc "A log row on the producer's side, as `c:DMEx.Storage.read/4` returns it."
   @type row :: %{
           required(:id) => pos_integer(),
           required(:message_type) => String.t(),
@@ -51,67 +62,49 @@ defmodule DMEx.SSE.Frame do
           required(:inserted_at) => DateTime.t() | NaiveDateTime.t()
         }
 
-  @type t :: %__MODULE__{
-          id: pos_integer() | nil,
-          event: String.t() | nil,
-          metadata: map() | nil,
-          messages: [map()] | nil,
-          retry: pos_integer() | nil
-        }
+  @typedoc """
+  A log row on the consumer's side, as `parse/1` yields it.
 
-  defstruct [:id, :event, :metadata, :messages, :retry]
+  String-keyed and one level decoded — `data` and `metadata` are maps, and
+  turning `data` into a message struct is the message module's job, later, in
+  the pipeline.
+  """
+  @type decoded_row :: %{String.t() => term()}
 
-  @batch_event "batch"
+  @typedoc """
+  One parsed frame block.
 
-  @doc "The transport-level `event:` value carried by every data frame."
-  @spec batch_event() :: String.t()
-  def batch_event, do: @batch_event
+  `:message` is a data frame — the only kind that carries a row. `:retry` is the
+  producer's advertised heartbeat interval, which an SSE parser applies the
+  moment it reads the line. `:ignore` is everything else: a heartbeat comment, a
+  frame whose `data:` buffer was empty, a field vocabulary this does not know.
+  """
+  @type parsed :: {:message, decoded_row()} | {:retry, pos_integer()} | :ignore
+
+  @type error :: {:invalid_json, term()} | {:invalid_data_shape, term()}
 
   @doc """
-  Encodes a batch frame as iodata.
+  Encodes one log row as one frame, as iodata.
 
-  `rows` must be non-empty — a read returning nothing sends no frame at all, so
-  encoding an empty batch is a bug rather than a valid degenerate case.
-
-  Each row's `:data` and `:metadata` are spliced verbatim and must therefore
-  already be JSON text. `:message_type` and `:inserted_at` are run through the
-  JSON encoder, which is what keeps the "nothing unescaped is spliced" invariant
-  true for them.
+  `:data` and `:metadata` are spliced verbatim and must therefore already be
+  JSON text. `:message_type` goes on the `event:` line unescaped, which the
+  log's CHECK constraint is what makes safe; `:inserted_at` is run through the
+  JSON encoder.
   """
-  @spec encode_batch([row()], non_neg_integer()) :: iodata()
-  def encode_batch([], _max_id) do
-    raise ArgumentError, "cannot encode an empty batch frame; skip the frame instead"
-  end
-
-  def encode_batch(rows, max_id) when is_list(rows) and is_integer(max_id) do
-    frame_id = rows |> Enum.map(& &1.id) |> Enum.max()
-
+  @spec encode_row(row()) :: iodata()
+  def encode_row(row) do
     [
       "id: ",
-      Integer.to_string(frame_id),
-      "\nevent: ",
-      @batch_event,
-      "\ndata: {\"metadata\":{\"max_id\":",
-      Integer.to_string(max_id),
-      "},\"messages\":[",
-      rows |> Enum.map(&encode_row/1) |> Enum.intersperse(?,),
-      "]}\n\n"
-    ]
-  end
-
-  defp encode_row(row) do
-    [
-      "{\"id\":",
       Integer.to_string(row.id),
-      ",\"message_type\":",
-      JSON.encode_to_iodata!(row.message_type),
-      ",\"data\":",
+      "\nevent: ",
+      row.message_type,
+      "\ndata: {\"data\":",
       row.data,
       ",\"metadata\":",
       row.metadata,
       ",\"inserted_at\":",
       row.inserted_at |> to_iso8601() |> JSON.encode_to_iodata!(),
-      ?}
+      "}\n\n"
     ]
   end
 
@@ -143,39 +136,40 @@ defmodule DMEx.SSE.Frame do
   Parses one complete frame block — the field lines between blank lines, without
   the terminating blank line itself.
 
-  Decoding goes exactly one level: the `data:` payload becomes frame metadata
-  plus the list of rows, and no further. Turning a row's `data` into a struct is
-  the message module's job and happens later, in the consumer's pipeline.
+  A block is a message only if it carries **all three** of `id:`, `event:` and a
+  non-empty `data:`. Anything short of that is `:ignore` rather than an error:
+  per the SSE specification an event is dispatched only when the data buffer is
+  non-empty, and a producer is free to send comments and bare fields.
 
-  Returns a frame whose `messages` is `nil` when the block carried no `data:`
-  field. That is not an error — per the SSE specification an event is dispatched
-  only if the data buffer is non-empty — and it is how a lone `retry:` frame
-  arrives. Callers decide whether to dispatch.
+  Decoding goes exactly one level. The `data:` payload becomes the row's `data`,
+  `metadata` and `inserted_at`; turning `data` into a struct happens later, in
+  the consumer's pipeline.
   """
-  @spec parse(binary()) ::
-          {:ok, t()} | {:error, {:invalid_json, term()} | {:invalid_data_shape, term()}}
+  @spec parse(binary()) :: {:ok, parsed()} | {:error, error()}
   def parse(block) when is_binary(block) do
     fields =
       block
       |> split_lines()
       |> Enum.reduce(%{data: []}, &collect_field/2)
 
-    case fields.data do
-      [] ->
-        {:ok, build(fields, nil, nil)}
-
-      lines ->
+    case fields do
+      %{id: id, event: event, data: [_ | _] = lines} ->
         # SSE joins consecutive `data:` lines with LF; DMEx always emits one, but
         # a generic producer may not, and joining costs nothing.
-        payload = lines |> Enum.reverse() |> Enum.join("\n")
-        decode_data(fields, payload)
+        lines |> Enum.reverse() |> Enum.join("\n") |> decode_row(id, event)
+
+      %{retry: retry} ->
+        {:ok, {:retry, retry}}
+
+      _other ->
+        {:ok, :ignore}
     end
   end
 
-  defp decode_data(fields, payload) do
+  defp decode_row(payload, id, event) do
     case JSON.decode(payload) do
-      {:ok, %{"messages" => messages} = decoded} when is_list(messages) ->
-        {:ok, build(fields, Map.get(decoded, "metadata", %{}), messages)}
+      {:ok, %{"data" => _} = decoded} ->
+        {:ok, {:message, Map.merge(decoded, %{"id" => id, "message_type" => event})}}
 
       {:ok, other} ->
         {:error, {:invalid_data_shape, other}}
@@ -183,16 +177,6 @@ defmodule DMEx.SSE.Frame do
       {:error, reason} ->
         {:error, {:invalid_json, reason}}
     end
-  end
-
-  defp build(fields, metadata, messages) do
-    %__MODULE__{
-      id: fields[:id],
-      event: fields[:event],
-      metadata: metadata,
-      messages: messages,
-      retry: fields[:retry]
-    }
   end
 
   # SSE line terminators are CR, LF and CRLF — and only those. Notably U+2028 and

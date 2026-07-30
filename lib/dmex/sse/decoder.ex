@@ -1,6 +1,6 @@
 defmodule DMEx.SSE.Decoder do
   @moduledoc """
-  Turns a stream of arbitrary byte runs into whole `DMEx.SSE.Frame`s.
+  Turns a stream of arbitrary byte runs into whole log rows.
 
   **Chunk boundaries are not frame boundaries.** Chunked transfer encoding and
   TCP both deliver whatever they happen to have, so a frame can span several
@@ -9,29 +9,26 @@ defmodule DMEx.SSE.Decoder do
 
   ## Two things it drops, on purpose
 
-  Heartbeat comments (`: hb`) and the lone `retry:` frame at stream open both
-  parse to a frame with no `messages`. Neither is a delivery event, so neither
-  is returned — but the `retry:` value is kept (see `retry/1`), because it is
-  how a consumer learns the interval to measure silence against.
+  Heartbeat comments (`: hb`) and the lone `retry:` frame at stream open carry
+  no row. Neither is a delivery event, so neither is returned — but the `retry:`
+  value is kept (see `retry/1`), because it is how a consumer learns the
+  interval to measure silence against.
 
-  ## The buffer is bounded, and the queue bound does not cover it
+  ## The buffer is bounded
 
   A producer that never emits a blank line — broken, hostile, or simply
-  mid-frame when it wedged — would grow this buffer without limit, and it does
-  so on the socket path *above* any queue, where a row-based bound has no reach.
-  Exceeding `max_bytes` returns `{:error, :frame_too_large, decoder}`; the
-  caller drops the connection and reconnects from `last_seen`, which costs
-  nothing beyond a re-read since a drop is not a delivery event.
+  mid-frame when it wedged — would grow this buffer without limit. Exceeding
+  `max_bytes` returns `{:error, :frame_too_large, decoder}`; the caller drops
+  the connection and reconnects from `last_seen`, which costs nothing beyond a
+  re-read since a drop is not a delivery event.
 
   ## Why it accumulates iodata
 
   The obvious implementation, `buffer <> chunk`, copies the whole buffer on
   every chunk — quadratic in the number of chunks, and real TCP reads are small,
-  so a 512 KB frame arriving in 1 KB pieces would copy ~128 MB. Instead chunks
-  are consed onto a list and flattened only when one of them actually contains a
-  line terminator, which for DMEx frames means roughly once per frame: the
-  payload is a single `data:` line, and JSON's grammar forbids raw control
-  characters inside it, so a frame's bytes are newline-free until it ends.
+  so a large run of frames arriving in 1 KB pieces would copy far more than it
+  received. Instead chunks are consed onto a list and flattened only when one of
+  them actually contains a line terminator.
   """
 
   alias DMEx.SSE.Frame
@@ -68,12 +65,12 @@ defmodule DMEx.SSE.Decoder do
   def retry(%__MODULE__{retry: retry}), do: retry
 
   @doc """
-  Feeds a chunk in and returns every frame it completed.
+  Feeds a chunk in and returns every row it completed.
 
-  Frames come back in arrival order. A chunk that completes nothing returns an
-  empty list, which is the ordinary case for a large frame in flight.
+  Rows come back in arrival order. A chunk that completes nothing returns an
+  empty list, which is the ordinary case for a frame still in flight.
   """
-  @spec push(t(), binary()) :: {:ok, [Frame.t()], t()} | {:error, error(), t()}
+  @spec push(t(), binary()) :: {:ok, [Frame.decoded_row()], t()} | {:error, error(), t()}
   def push(%__MODULE__{} = decoder, chunk) when is_binary(chunk) do
     decoder = %{decoder | buffer: [chunk | decoder.buffer], size: decoder.size + byte_size(chunk)}
 
@@ -103,19 +100,13 @@ defmodule DMEx.SSE.Decoder do
         decoder = %{decoder | buffer: [rest], size: byte_size(rest)}
 
         case Frame.parse(block) do
-          {:ok, frame} -> extract(apply_retry(decoder, frame), collect(acc, frame))
+          {:ok, {:message, row}} -> extract(decoder, [row | acc])
+          {:ok, {:retry, retry}} -> extract(%{decoder | retry: retry}, acc)
+          {:ok, :ignore} -> extract(decoder, acc)
           {:error, reason} -> {:error, reason, decoder}
         end
     end
   end
-
-  # A frame with no `messages` is a heartbeat comment or the stream-open
-  # `retry:` frame. Neither is a delivery event, so neither is handed on.
-  defp collect(acc, %Frame{messages: nil}), do: acc
-  defp collect(acc, frame), do: [frame | acc]
-
-  defp apply_retry(decoder, %Frame{retry: nil}), do: decoder
-  defp apply_retry(decoder, %Frame{retry: retry}), do: %{decoder | retry: retry}
 
   defp check_size(%{size: size, max_bytes: max} = decoder, _frames) when size > max do
     {:error, :frame_too_large, decoder}

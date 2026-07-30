@@ -119,10 +119,12 @@ GET /stream/stats
 }
 ```
 
-`max_id` at the top level is the log's own latest id — the same number that
-already rides in every frame's `data.metadata` (see
-[The wire contract](ARCHITECTURE.md#the-wire-contract)), repeated here so a
-single request answers "how big is this log" as well as "what is in it".
+`max_id` at the top level is the log's own latest id. Nothing on the stream
+carries it — the wire has no tip and a consumer measures how far behind it is
+from `inserted_at` (see
+[The wire contract](ARCHITECTURE.md#the-wire-contract)) — so this endpoint is
+the only place it is available, which strengthens rather than weakens the case
+for it: one request answers "how big is this log" as well as "what is in it".
 `message_types` is sorted by `message_type`, so two fetches of an unchanged
 log compare cleanly.
 
@@ -265,7 +267,7 @@ registering. Nothing about v1 has to move to make room.
   a synchronized retry storm, which is precisely what admission control is
   supposed to prevent.
 - **An aggregate budget beyond count.** Bytes in flight is the honest quantity
-  — frames are capped per connection, so `open × frame_max_bytes` is already a
+  — frames are capped per connection, so `open × write_max_bytes` is already a
   bound, and a budget denominated the same way composes with it. Summing
   process memory per sweep is the tempting alternative and probably too coarse
   and too expensive to be worth it.
@@ -317,26 +319,34 @@ the producer answers with `Content-Encoding: gzip` and compresses the chunk
 stream. A browser `EventSource` gets it for free, which is notable given how
 little else it can negotiate.
 
-It pays unusually well here, and **batching is why**: a frame holds up to
-`max_batch_size` rows with identical key names, a small set of repeating
-`message_type` strings and near-identical timestamps, so the redundancy is
-*within* the frame and available to the compressor immediately rather than
-depending on cross-frame dictionary state.
+It pays unusually well here, and **write batching is why**: one `chunk/2` call
+carries up to `max_batch_size` frames with identical key names, a small set of
+repeating `message_type` strings and near-identical timestamps, so the
+redundancy is *within* one write and available to the compressor immediately
+rather than depending on cross-write dictionary state.
+
+Note that this is the one place where the unbatched wire format costs something
+rather than saving it: the per-row `id:`/`event:`/`data:` scaffolding repeats
+where a batch envelope stated it once. It is also exactly the kind of repetition
+deflate is best at, so the *compressed* size should be close to a batched
+frame's — but that is an expectation to measure rather than assume.
 
 Three things have to be got right, and the third decides the default:
 
-- **It must flush per frame.** Left to itself, deflate buffers until it has a
-  block worth emitting, which would hold a frame on the wire until the *next*
-  frame pushed it out — unbounded added latency on a quiet stream, and a
+- **It must flush per write, not per frame.** Left to itself, deflate buffers
+  until it has a block worth emitting, which would hold a write on the wire
+  until the *next* one pushed it out — unbounded added latency on a quiet
+  stream, and a
   heartbeat arriving only once it is no longer needed, which is precisely the
   failure heartbeats exist to prevent. Every `chunk/2` must end in a sync flush.
   If the web server compresses automatically, that behaviour has to be verified
   rather than assumed; if it does not flush per chunk, DMEx compresses itself.
 - **Flushing costs ratio, and that is the trade.** A sync flush ends the block
-  and emits a few bytes of overhead, and small frames compress worse than large
-  ones — so a consumer that has adapted down to tiny batches also gets worse
-  compression. The two degrade together, which is the right direction but worth
-  knowing.
+  and emits a few bytes of overhead, and a small write compresses worse than a
+  large one — so a producer paced to small batches for latency also gets worse
+  compression. That is a real tension between two of the producer's own
+  settings, and it is now visible in one place rather than split across a
+  negotiation.
 - **Per-connection compressor state is the catch**, and it lands squarely on the
   property the producer's send loop was built to have. A zlib deflate stream at
   defaults (`windowBits` 15, `memLevel` 8) holds on the order of 256 KB for the
@@ -346,7 +356,7 @@ Three things have to be got right, and the third decides the default:
 
 So compression would be **producer-side opt-in with explicitly-sized zlib
 parameters** — `windowBits` 12 / `memLevel` 4, about 32 KB per connection — and
-the frame byte cap measured *before* compression, which is simpler and bounds
+`write_max_bytes` measured *before* compression, which is simpler and bounds
 the producer's own buffers. The consumer carries an inflate stream too, but one
 per subscription rather than one per connection served, so it is not the same
 question.

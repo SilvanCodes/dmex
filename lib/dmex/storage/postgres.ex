@@ -66,9 +66,10 @@ defmodule DMEx.Storage.Postgres do
     end
   end
 
+  # No default for `types`: a default here defines a `read/3` that is not in the
+  # behaviour, so `@impl` would be silently vouching for an arity nothing
+  # implements.
   @impl DMEx.Storage
-  def read(opts, cursor, limit, types \\ :all)
-
   def read(opts, cursor, limit, :all)
       when is_integer(cursor) and cursor >= 0 and is_integer(limit) and limit > 0 do
     query(opts, read_sql(opts, ""), [cursor, limit])
@@ -84,17 +85,13 @@ defmodule DMEx.Storage.Postgres do
     query(opts, read_sql(opts, "AND message_type = ANY($3)"), [cursor, limit, types])
   end
 
-  # `max_id` is the tip of the *whole* log even on a filtered read, and that is
-  # load-bearing rather than an oversight: it is what keeps a selective
-  # subscription's cursor denominated in the same id space as every other
-  # consumer's, so a sparse subset never becomes a space of its own.
+  # Five columns, and nothing else: the wire carries no `max_id`, so the
+  # correlated `(SELECT max(id) ...)` subquery this used to fold in has nothing
+  # left to feed and every read is now a plain range scan.
   defp read_sql(opts, predicate) do
-    table = table(opts, @messages)
-
     """
-    SELECT id, message_type, data::text, metadata::text, inserted_at,
-           (SELECT max(id) FROM #{table}) AS max_id
-      FROM #{table}
+    SELECT id, message_type, data::text, metadata::text, inserted_at
+      FROM #{table(opts, @messages)}
      WHERE id > $1 #{predicate}
      ORDER BY id
      LIMIT $2
@@ -103,8 +100,7 @@ defmodule DMEx.Storage.Postgres do
 
   defp query(opts, sql, params) do
     case SQL.query(Map.fetch!(opts, :repo), sql, params) do
-      {:ok, %{rows: []}} -> {:ok, {[], nil}}
-      {:ok, %{rows: rows}} -> {:ok, {Enum.map(rows, &to_row/1), max_id_of(rows)}}
+      {:ok, %{rows: rows}} -> {:ok, Enum.map(rows, &to_row/1)}
       {:error, reason} -> {:error, reason}
     end
   end
@@ -356,7 +352,7 @@ defmodule DMEx.Storage.Postgres do
 
   ## Row shaping
 
-  defp to_row([id, message_type, data, metadata, inserted_at | _max_id]) do
+  defp to_row([id, message_type, data, metadata, inserted_at]) do
     %{
       id: id,
       message_type: message_type,
@@ -365,9 +361,6 @@ defmodule DMEx.Storage.Postgres do
       inserted_at: inserted_at
     }
   end
-
-  # Every row carries the same correlated `max_id`, so the first one has it.
-  defp max_id_of([first | _]), do: List.last(first)
 
   ## Naming
 

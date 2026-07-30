@@ -1,7 +1,6 @@
 defmodule DMEx.ProducerTest do
   use DMEx.Case, async: true
 
-  alias DMEx.Config
   alias DMEx.Test.Producer
 
   describe "__dmex__/0" do
@@ -14,7 +13,7 @@ defmodule DMEx.ProducerTest do
                channel: "dmex_dm_ex_test_producer",
                lock: {classid, objid},
                prefix: nil,
-               config: %Config.Producer{},
+               config: %{batch_window: 200},
                storage_opts: storage_opts
              } = Producer.__dmex__()
 
@@ -122,8 +121,8 @@ defmodule DMEx.ProducerTest do
     end
 
     test "validates config overrides at compile time" do
-      assert_raise ArgumentError, ~r/:batch_window \(1\) must lie within/, fn ->
-        define!("BadConfig", "repo: DMEx.Test.Repo, batch_window: 1")
+      assert_raise ArgumentError, ~r/:batch_window must be a positive integer/, fn ->
+        define!("BadConfig", "repo: DMEx.Test.Repo, batch_window: 0")
       end
     end
 

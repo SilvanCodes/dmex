@@ -81,8 +81,8 @@ defmodule DMEx.Consumer.Pipeline do
   What it must not become is a way to hide a permanently-failing handler, so the
   count is small and the schedule short — jittered, for the same reason
   reconnects are: a shared downstream going down fails every consumer's handler
-  at roughly the same instant. Once the attempts are spent,
-  `DMEx.Consumer.Failure` decides what happens.
+  at roughly the same instant. Once the attempts are spent, `on_failure` decides
+  what happens; section 6 is that decision.
 
   ## 5. The handler and the cursor share one transaction
 
@@ -91,11 +91,73 @@ defmodule DMEx.Consumer.Pipeline do
   bookkeeping cannot drift from the callback. If the handler raises, the
   transaction rolls back, the cursor does not move, and the exception
   propagates.
+
+  ## 6. `on_failure` is the terminal action, and there are three
+
+  The retry step above is identical in all three; only what happens after it
+  differs. Both non-crashing modes commit an **absolute** advance to the failing
+  row's id, which carries any coalesced run of skips below it (section 2a) — so
+  `:pending` is cleared rather than flushed separately, and a dead-message row
+  stays atomic with the advance that moved past it.
+
+  ### `:dead_message` (the default)
+
+  Advances past the failing message, but writes it to `dmex_dead_messages`
+  first, **in the same transaction**. That atomicity is the point: a dead
+  message and the cursor that skipped past it commit together or not at all, so
+  there is no state where a message was skipped without being recorded, or
+  recorded without being skipped.
+
+  It is the default because it is the only mode that refuses both bad outcomes.
+  One message a handler cannot process is a bug in that handler or a malformed
+  payload, not a reason for every *later* message to stop arriving — and it is
+  not a reason to lose the failing one either. Recording it and moving on keeps
+  the subscription live and keeps the evidence, and `DMEx.Consumer.DeadMessages`
+  is how you inspect, replay or discard what accumulated.
+
+  **What is stored is the message, and only the message.** The dead-messages
+  table is structurally `dmex_messages` plus the subscription id that says whose
+  row it is, so a stored row *is* a log row — replaying one is feeding it back
+  to a handler with no reshaping in between. Equal as a value rather than
+  byte-for-byte: the payload is re-encoded from the term the frame decoded.
+
+  The exception, its message and the attempt count are **not** stored. A failure
+  is an event, not a property of the message: it goes to the log and to
+  `[:dmex, :consumer, :failed]`. Persisting it would make each row a mixture of
+  a message and an incident, and stop it being replayable as the former.
+
+  ### `:crash`
+
+  Re-raises, with the original stacktrace, and without advancing — so a pending
+  run of skips is simply dropped and re-skipped after the restart, which is what
+  a pending run always costs. The stream process dies, its supervisor restarts
+  it, and on restart it re-reads its persisted cursor — still pointing at the
+  message *before* this one — so the producer's ordinary range scan re-streams
+  the very message that killed it. A permanently-failing handler crash-loops on
+  it forever.
+
+  Choose this when a stuck subscription is the *better* failure: when later
+  messages genuinely must not be processed without this one, or when a loud,
+  impossible-to-ignore alarm beats a growing table nobody is watching. Reconnect
+  backoff inside `DMEx.Consumer.Stream` keeps the loop from hammering the
+  producer's database, and `DMEx.Consumer.Supervisor`'s restart budget is set so
+  it cannot take its sibling subscriptions down with it.
+
+  ### `:skip`
+
+  Commits an advance past the failing message *without* the handler having
+  succeeded, and carries on. The message is simply gone from this consumer's
+  perspective.
+
+  DMEx records nothing durable: the failure is logged and emitted as
+  `[:dmex, :consumer, :failed]`, and that is the only trace. It is
+  `:dead_message` minus the evidence, which is worth being deliberate about.
   """
 
   alias DMEx.Backoff
-  alias DMEx.Consumer.Failure
   alias DMEx.Consumer.Handler
+
+  require Logger
 
   @typedoc """
   Everything processing a row needs, built once per subscription.
@@ -118,7 +180,7 @@ defmodule DMEx.Consumer.Pipeline do
           required(:url) => String.t(),
           required(:cursor) => non_neg_integer(),
           required(:pending) => boolean(),
-          required(:config) => DMEx.Config.Consumer.t()
+          required(:config) => DMEx.Config.consumer()
         }
 
   @doc """
@@ -145,23 +207,6 @@ defmodule DMEx.Consumer.Pipeline do
     else
       dispatch(row, id, state)
     end
-  end
-
-  @doc """
-  Runs a list of rows in order, stopping at the first that raises.
-
-  Rows are processed strictly one at a time: a batch is a wire-framing
-  convenience and never a processing unit, so a mid-batch failure only ever
-  rolls back that one message.
-
-  Does **not** flush: a run ending on a skip leaves `:pending` set, and it is
-  the caller's job to decide when that is written. `DMEx.Consumer.Stream` drains
-  row by row rather than through this, so this is the path for a caller holding
-  a whole batch already.
-  """
-  @spec run_all([map()], t()) :: {:ok, t()}
-  def run_all(rows, state) do
-    Enum.reduce(rows, {:ok, state}, fn row, {:ok, state} -> run(row, state) end)
   end
 
   @doc """
@@ -203,9 +248,9 @@ defmodule DMEx.Consumer.Pipeline do
   end
 
   # One attempt, one telemetry span. A retried message therefore emits an
-  # `:exception` event per failed try and a `:stop` for the one that worked,
-  # and — importantly for the adaptive controller later — no span ever covers
-  # backoff. Sleeping is a failure mode, not capacity.
+  # `:exception` event per failed try and a `:stop` for the one that worked, and
+  # no span ever covers backoff — an attempt's duration is what the handler
+  # costs, and a retry sequence's is mostly sleeping.
   defp attempt(row, id, message, metadata, state, attempt) do
     telemetry = %{
       subscription: state.subscription,
@@ -246,8 +291,70 @@ defmodule DMEx.Consumer.Pipeline do
 
         attempt(row, id, message, metadata, state, attempt + 1)
       else
-        Failure.resolve(state, row, id, exception, stacktrace, attempt)
+        resolve(state, row, id, exception, stacktrace, attempt)
       end
+  end
+
+  ## Terminal actions — see section 6
+
+  defp resolve(state, row, id, exception, stacktrace, attempts) do
+    case state.config.on_failure do
+      :crash -> reraise(exception, stacktrace)
+      :skip -> give_up(state, row, id, exception, attempts, :skip)
+      :dead_message -> give_up(state, row, id, exception, attempts, :dead_message)
+    end
+  end
+
+  defp give_up(state, row, id, exception, attempts, mode) do
+    commit!(state, fn ->
+      # The dead-message row and the advance past it are one transaction,
+      # deliberately: they are the same fact, and a state where one landed
+      # without the other is not one anybody could act on.
+      if mode == :dead_message, do: record_dead!(state, row, id)
+
+      advance!(state, id)
+    end)
+
+    report(state, row, id, exception, attempts, mode)
+
+    {:ok, %{state | cursor: id, pending: false}}
+  end
+
+  defp record_dead!(state, row, id) do
+    :ok =
+      state.storage.dead_message(state.storage_opts, %{
+        subscription: state.subscription,
+        id: id,
+        message_type: Map.fetch!(row, "message_type"),
+        data: encode(Map.get(row, "data")),
+        metadata: encode(Map.get(row, "metadata"))
+      })
+  end
+
+  # The row arrived through `DMEx.SSE.Frame`, which decodes one level, so `data`
+  # and `metadata` are terms here and the storage adapter wants JSON text.
+  defp encode(nil), do: "{}"
+  defp encode(value), do: JSON.encode!(value)
+
+  defp report(state, row, id, exception, attempts, mode) do
+    Logger.error(fn ->
+      "DMEx #{state.subscription} (#{inspect(state.handler)}) gave up on message #{id} " <>
+        "(#{Map.fetch!(row, "message_type")}) from #{state.url} after #{attempts} " <>
+        "attempt(s): #{Exception.message(exception)} — on_failure: #{mode}"
+    end)
+
+    :telemetry.execute(
+      [:dmex, :consumer, :failed],
+      %{id: id, attempts: attempts},
+      %{
+        subscription: state.subscription,
+        handler: state.handler,
+        message_type: Map.fetch!(row, "message_type"),
+        url: state.url,
+        on_failure: mode,
+        reason: Exception.message(exception)
+      }
+    )
   end
 
   # No transaction and no write. The advance is deferred into `:pending` and

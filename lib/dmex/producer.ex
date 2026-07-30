@@ -40,7 +40,7 @@ defmodule DMEx.Producer do
       to the Mix application being compiled; see `DMEx.Producer.Messages`.
 
   Any `DMEx.Config` producer setting may also be given here — `batch_window:`,
-  `max_batch_size:`, `heartbeat_ms:`, `poll_interval:` and the clamp bounds. An
+  `max_batch_size:`, `heartbeat_ms:`, `poll_interval:` and the rest. An
   unrecognised option raises at compile time rather than being ignored.
 
   ## The app key
@@ -135,7 +135,7 @@ defmodule DMEx.Producer do
           channel: String.t(),
           lock: {integer(), integer()},
           prefix: String.t() | nil,
-          config: Config.Producer.t(),
+          config: Config.producer(),
           storage_opts: DMEx.Storage.opts()
         }
 

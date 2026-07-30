@@ -11,7 +11,7 @@ connections and manages its own timeouts.
 ## 1. Stuck connections are reclaimed for you
 
 The producer's send loop bounds memory by construction: it holds at most the
-frame it is currently writing, and the next read cannot happen until the
+rows it is currently writing, and the next read cannot happen until the
 previous write returns. What it cannot do is reclaim itself — **a process
 blocked in `chunk/2` cannot time itself out, because it is not running**, and
 neither can one blocked in a read against a database that has stopped
@@ -36,10 +36,10 @@ open connection and no query, so leaving the interval at a second costs
 nothing measurable.
 
 **Sizing `stall_timeout`.** The budget covers a single blocking step, and the
-step that matters is a write of at most `frame_max_bytes` (1 MiB by default).
-The default 30 000 ms therefore tolerates a consumer draining a full frame at
+step that matters is a write of at most `write_max_bytes` (1 MiB by default).
+The default 30 000 ms therefore tolerates a consumer draining a full write at
 roughly 280 kbit/s. Tighten it if you know your consumers are on fast links and
-want stalls cleared sooner; loosen it, or lower `frame_max_bytes`, if you serve
+want stalls cleared sooner; loosen it, or lower `write_max_bytes`, if you serve
 consumers on genuinely slow ones. The failure mode of tightening too far is a
 healthy slow consumer being dropped, which costs it a reconnect and costs you a
 fresh catch-up read — survivable, but at scale it is a reconnect storm with no
@@ -53,9 +53,30 @@ durable, and resumption is the same `id > last_seen` read a cold connect does.
 
 **What to alert on.** Every reclaim emits `[:dmex, :stream, :reclaim]` with an
 `overdue_by` measurement, and logs a warning. Occasional ones are a slow
-consumer; a steady rate is either a consumer that cannot keep up (check whether
-it is adapting its own pacing) or a `stall_timeout` set tighter than your links
-deserve.
+consumer; a steady rate is either a consumer that cannot keep up or a
+`stall_timeout` set tighter than your links deserve.
+
+## 1a. Sizing `max_batch_size` against `stall_timeout`
+
+A consumer processes rows **inline, as they arrive**, so the producer's write
+does not complete until the consumer has drained it through its handler. That
+makes one write's drain time a real term in the producer's stall budget:
+
+```
+max_batch_size / (slowest consumer's rows per second)  <  stall_timeout
+```
+
+At the defaults that is `500 / 265 ≈ 1.9 s` against a 30 s budget — about
+fifteen times the headroom, using 265 rows/s as a deliberately slow handler.
+It breaks down below roughly **17 rows/s**, which is a handler spending 60 ms
+per message.
+
+If your handlers are that slow, lower `max_batch_size` rather than raising
+`stall_timeout`: a smaller batch also lowers the latency floor and the
+producer's per-connection memory, while a larger timeout only delays noticing a
+genuinely wedged connection. This is the one place where a producer's setting
+has to account for consumers it does not control, which is why it is written
+down here rather than left implicit.
 
 ## 2. Socket timeouts — optional, and what they add
 
@@ -89,8 +110,8 @@ than the watcher on the one failure it can see.
 
 If you set it, `send_timeout_close: true` is not optional: without it the
 timeout leaves the socket in an undefined state. And size it against
-`frame_max_bytes` the same way as `stall_timeout` above — 5 000 ms tolerates a
-consumer draining a 1 MiB frame at roughly 1.6 Mbit/s.
+`write_max_bytes` the same way as `stall_timeout` above — 5 000 ms tolerates a
+consumer draining a 1 MiB write at roughly 1.6 Mbit/s.
 
 ### TCP keepalive — for the case nothing in-process can reach
 
@@ -160,7 +181,9 @@ Two consequences:
 
 - **Size the pool for streams as well as for requests.** A producer serving 200
   streams at the default 200 ms window issues about 1 000 reads/s, each a short
-  primary-key range scan, on top of whatever else the application does.
+  primary-key range scan, on top of whatever else the application does. Raising
+  `batch_window` is the lever, and it is entirely yours: consumers do not ask
+  for pacing and cannot override it.
 - **The producer needs one extra connection beyond the pool.** `LISTEN` cannot
   share a pooled connection, since it must stay checked out for its whole life,
   so `DMEx.Storage.Postgres` opens a dedicated `Postgrex.Notifications`

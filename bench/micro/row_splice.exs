@@ -24,9 +24,9 @@ inputs =
     {"500 rows x #{payload}B", Helper.rows(500, payload)}
   end
 
-# What DMEx would have to do if `read/3` returned driver-decoded maps: parse each
-# row's payload back out of storage and re-serialize the whole frame.
-reencode = fn rows, max_id ->
+# What DMEx would have to do if `read/4` returned driver-decoded maps: parse each
+# row's payload back out of storage and re-serialize every frame.
+reencode = fn rows ->
   messages =
     Enum.map(rows, fn row ->
       %{
@@ -38,13 +38,13 @@ reencode = fn rows, max_id ->
       }
     end)
 
-  JSON.encode_to_iodata!(%{"metadata" => %{"max_id" => max_id}, "messages" => messages})
+  Enum.map(messages, &JSON.encode_to_iodata!/1)
 end
 
 Benchee.run(
   %{
-    "splice (what DMEx does)" => fn rows -> Frame.encode_batch(rows, 1_000_000) end,
-    "decode + re-encode (the control)" => fn rows -> reencode.(rows, 1_000_000) end
+    "splice (what DMEx does)" => fn rows -> Enum.map(rows, &Frame.encode_row/1) end,
+    "decode + re-encode (the control)" => fn rows -> reencode.(rows) end
   },
   Helper.opts(inputs: inputs)
 )

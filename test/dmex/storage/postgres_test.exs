@@ -37,32 +37,32 @@ defmodule DMEx.Storage.PostgresTest do
     end
   end
 
-  describe "read/3" do
+  describe "read/4" do
     test "returns rows in ascending id order", %{opts: opts} do
       ids = for n <- 1..5, do: elem(append(opts, "A", %{n: n}), 1)
 
-      assert {:ok, {rows, _max_id}} = Postgres.read(opts, 0, 100)
+      assert {:ok, rows} = Postgres.read(opts, 0, 100, :all)
       assert Enum.map(rows, & &1.id) == Enum.sort(ids)
     end
 
     test "is exclusive on the cursor", %{opts: opts} do
       [_first, second, third] = for n <- 1..3, do: elem(append(opts, "A", %{n: n}), 1)
 
-      assert {:ok, {rows, _}} = Postgres.read(opts, second, 100)
+      assert {:ok, rows} = Postgres.read(opts, second, 100, :all)
       assert Enum.map(rows, & &1.id) == [third]
     end
 
     test "honours the limit", %{opts: opts} do
       for n <- 1..10, do: append(opts, "A", %{n: n})
 
-      assert {:ok, {rows, _}} = Postgres.read(opts, 0, 4)
+      assert {:ok, rows} = Postgres.read(opts, 0, 4, :all)
       assert length(rows) == 4
     end
 
     test "returns every field DMEx.SSE.Frame needs, and nothing else", %{opts: opts} do
       {:ok, id} = append(opts, "MyApp.Messages.OrderPlaced", %{order_id: 7})
 
-      assert {:ok, {[row], _}} = Postgres.read(opts, id - 1, 1)
+      assert {:ok, [row]} = Postgres.read(opts, id - 1, 1, :all)
 
       assert Map.keys(row) |> Enum.sort() ==
                [:data, :id, :inserted_at, :message_type, :metadata]
@@ -71,14 +71,14 @@ defmodule DMEx.Storage.PostgresTest do
       assert row.message_type == "MyApp.Messages.OrderPlaced"
     end
 
-    # This is the splice invariant. DMEx.SSE.Frame.encode_batch/2 copies these two
+    # This is the splice invariant. DMEx.SSE.Frame.encode_row/1 copies these two
     # columns into the wire frame byte-for-byte without parsing them, so an
     # adapter that let its driver decode jsonb into a map would hand Frame a map
     # where it expects text and build a wrong frame.
     test "returns data and metadata as JSON text, never as decoded maps", %{opts: opts} do
       {:ok, id} = append(opts, "A", %{order_id: 7, total: 1999}, %{trace_id: "abc"})
 
-      assert {:ok, {[row], _}} = Postgres.read(opts, id - 1, 1)
+      assert {:ok, [row]} = Postgres.read(opts, id - 1, 1, :all)
 
       assert is_binary(row.data)
       assert is_binary(row.metadata)
@@ -89,7 +89,7 @@ defmodule DMEx.Storage.PostgresTest do
     test "returns inserted_at as a DateTime, so the wire keeps its UTC suffix", %{opts: opts} do
       {:ok, id} = append(opts, "A", %{n: 1})
 
-      assert {:ok, {[row], _}} = Postgres.read(opts, id - 1, 1)
+      assert {:ok, [row]} = Postgres.read(opts, id - 1, 1, :all)
 
       # timestamptz -> %DateTime{}; a plain `timestamp` column would come back
       # as %NaiveDateTime{} and silently drop the trailing Z from every frame.
@@ -97,21 +97,10 @@ defmodule DMEx.Storage.PostgresTest do
       assert row.inserted_at |> DateTime.to_iso8601() |> String.ends_with?("Z")
     end
 
-    test "carries max_id on the same round trip", %{opts: opts} do
-      for n <- 1..5, do: append(opts, "A", %{n: n})
-      {:ok, tip} = Postgres.max_id(opts)
-
-      # Read only the first two rows: max_id must still report the log's tip,
-      # not the highest id in the batch — that is the whole "am I behind" signal.
-      assert {:ok, {rows, max_id}} = Postgres.read(opts, 0, 2)
-      assert length(rows) == 2
-      assert max_id == tip
-      assert max_id > List.last(rows).id
-    end
-
-    test "returns no max_id when the read is empty", %{opts: opts} do
-      # Legal: a zero-row read sends no frame, so there is nothing to stamp.
-      assert {:ok, {[], nil}} = Postgres.read(opts, 0, 10)
+    # The wire carries no `max_id`, so a read returns rows and nothing else: no
+    # correlated subquery folded in, and no tuple to unwrap.
+    test "an empty read is an empty list, not a tuple with a nil tip", %{opts: opts} do
+      assert {:ok, []} = Postgres.read(opts, 0, 10, :all)
     end
   end
 
@@ -299,8 +288,8 @@ defmodule DMEx.Storage.PostgresTest do
 
   describe "dead_messages/2 and delete_dead_message/3" do
     # The point of the table's shape: what comes back is a log row, in exactly
-    # the shape read/3 returns and the pipeline consumes.
-    test "reads back rows in the same shape read/3 returns", %{opts: opts} do
+    # the shape read/4 returns and the pipeline consumes.
+    test "reads back rows in the same shape read/4 returns", %{opts: opts} do
       :ok = Postgres.dead_message(opts, dead_attrs())
 
       assert {:ok, [row]} = Postgres.dead_messages(opts, @some)
@@ -348,7 +337,7 @@ defmodule DMEx.Storage.PostgresTest do
   end
 
   defp fetch!(opts, id) do
-    {:ok, {[row], _}} = Postgres.read(opts, id - 1, 1)
+    {:ok, [row]} = Postgres.read(opts, id - 1, 1, :all)
     row
   end
 

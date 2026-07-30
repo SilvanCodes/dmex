@@ -96,7 +96,7 @@ defmodule DMEx.Test.Storage do
   end
 
   @impl DMEx.Storage
-  def read(opts, cursor, limit, types \\ :all) do
+  def read(opts, cursor, limit, types) do
     # Before the agent call, so the caller wedges rather than the stub.
     maybe_hang(opts, :read)
 
@@ -115,12 +115,7 @@ defmodule DMEx.Test.Storage do
       |> Enum.filter(&(&1.id > cursor and selected?(&1, types)))
       |> Enum.take(limit)
 
-    # The tip of the *whole* log even on a filtered read, matching the real
-    # adapter: a selective stream sees a sparse subset of one id space, never a
-    # space of its own.
-    max_id = if rows == [], do: nil, else: max_id_of(state.rows)
-
-    {{:ok, {rows, max_id}}, state}
+    {{:ok, rows}, state}
   end
 
   defp selected?(_row, :all), do: true

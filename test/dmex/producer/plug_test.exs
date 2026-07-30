@@ -38,12 +38,15 @@ defmodule DMEx.Producer.PlugTest do
       assert body =~ "invalid last-event-id header"
     end
 
-    test "a garbage pacing header is a 400", %{opts: opts, plug: plug} do
-      conn = call(opts, plug, [{"dmex-max-batch-size", "lots"}])
+    # There are no DMEx request headers, so one is just an unknown header — and
+    # a producer has no business rejecting a request over a header it does not
+    # define.
+    test "a header DMEx does not define is ignored, not rejected", %{opts: opts, plug: plug} do
+      Stub.put_rows(opts, 1)
 
-      assert conn.status == 400
-      assert_received {:resp, 400, body}
-      assert body =~ "invalid dmex-max-batch-size header"
+      conn = stream(opts, plug, [{"dmex-max-batch-size", "lots"}])
+
+      assert conn.status == 200
     end
 
     test "a 400 carries text/plain and none of the stream headers", %{opts: opts, plug: plug} do
@@ -56,6 +59,26 @@ defmodule DMEx.Producer.PlugTest do
 
     test "a rejected request never opens a stream", %{opts: opts, plug: plug} do
       call(opts, plug, [{"last-event-id", "nope"}])
+
+      assert Stub.reads(opts) == []
+      assert ProducerRegistry.count(StubProducer) == 0
+    end
+
+    # Without this a POST to the mount opens a chunked stream and sits there,
+    # which is a confusing way to learn about a typo in a router.
+    test "anything but GET is a 405 with an allow header", %{opts: opts, plug: plug} do
+      StubProducer.install(opts)
+
+      conn =
+        ProducerPlug.call(
+          ClosingAdapter.conn(self(), 1, method: "POST", req_headers: []),
+          plug
+        )
+
+      assert conn.status == 405
+      assert get_header(conn, "allow") == "GET"
+      assert_received {:resp, 405, body}
+      assert body =~ "only GET"
 
       assert Stub.reads(opts) == []
       assert ProducerRegistry.count(StubProducer) == 0
@@ -89,31 +112,13 @@ defmodule DMEx.Producer.PlugTest do
       assert stream(opts, plug) |> get_header("connection") == "keep-alive"
     end
 
-    test "echoes the pacing it actually applied", %{opts: opts, plug: plug} do
-      conn = stream(opts, plug, [{"dmex-batch-window", "300"}, {"dmex-max-batch-size", "250"}])
-
-      assert get_header(conn, "dmex-batch-window") == "300"
-      assert get_header(conn, "dmex-max-batch-size") == "250"
-    end
-
-    # Without this a clamped consumer cannot tell "the producer is honouring my
-    # request and I still can't keep up" from "the producer capped me and my
-    # request never took effect" — opposite situations calling for opposite
-    # reactions from an adaptive controller.
-    test "echoes the clamped value, not the requested one", %{opts: opts, plug: plug} do
-      conn = stream(opts, plug, [{"dmex-batch-window", "1"}, {"dmex-max-batch-size", "999999"}])
-
-      assert conn.status == 200
-      assert get_header(conn, "dmex-batch-window") == "50"
-      assert get_header(conn, "dmex-max-batch-size") == "5000"
-    end
-
-    test "echoes the defaults for a client that asks for nothing", %{opts: opts, plug: plug} do
-      # Which is every browser EventSource, permanently.
+    # There is no pacing echo, because there is no pacing request. A DMEx
+    # consumer and a browser EventSource get byte-identical responses.
+    test "carries no DMEx pacing headers", %{opts: opts, plug: plug} do
       conn = stream(opts, plug)
 
-      assert get_header(conn, "dmex-batch-window") == "200"
-      assert get_header(conn, "dmex-max-batch-size") == "500"
+      assert get_header(conn, "dmex-batch-window") == nil
+      assert get_header(conn, "dmex-max-batch-size") == nil
     end
   end
 
@@ -124,23 +129,23 @@ defmodule DMEx.Producer.PlugTest do
     } do
       Stub.put_rows(opts, 1)
 
-      stream(opts, plug, [{"dmex-batch-window", "300"}])
+      stream(opts, plug)
 
       # heartbeat_ms + batch_window, because the loop's throttle runs after the
-      # heartbeat branch — the sum is the real upper bound on silence.
-      assert_received {:chunk, "retry: 15300\n\n"}
+      # heartbeat branch — the sum is the real upper bound on silence. Both are
+      # producer configuration, so every connection is told the same number.
+      assert_received {:chunk, "retry: 15200\n\n"}
     end
 
-    test "then sends the log as batch frames", %{opts: opts, plug: plug} do
+    test "then sends the log as one frame per row", %{opts: opts, plug: plug} do
       Stub.put_rows(opts, 2)
 
       stream(opts, plug)
 
       assert_received {:chunk, "retry: " <> _}
-      assert_received {:chunk, frame}
-      assert frame =~ "event: batch"
-      assert frame =~ ~s("id":1)
-      assert frame =~ ~s("id":2)
+      assert_received {:chunk, write}
+      assert write =~ "id: 1\nevent: DMEx.Test.Messages.OrderPlaced\n"
+      assert write =~ "id: 2\nevent: DMEx.Test.Messages.OrderPlaced\n"
     end
 
     test "registers the request process for wakeups", %{opts: opts, plug: plug} do
@@ -166,8 +171,8 @@ defmodule DMEx.Producer.PlugTest do
       pid = start_stream(opts, plug, [{"last-event-id", "7"}], chunks: 5)
 
       assert_receive {[:dmex, :stream, :connect], ^ref, %{cursor: 7}, metadata}, 1_000
-      assert metadata.batch_window == 200
-      assert metadata.max_batch_size == 500
+      assert metadata.producer == StubProducer
+      refute metadata.selective
 
       Process.exit(pid, :kill)
     end

@@ -1,4 +1,12 @@
-defmodule DMEx.Consumer.FailureTest do
+defmodule DMEx.Consumer.PipelineFailureTest do
+  @moduledoc """
+  `on_failure` — section 6 of `DMEx.Consumer.Pipeline`.
+
+  Split from `DMEx.Consumer.PipelineTest` by subject rather than by module:
+  that one is about what the pipeline does with a row, this one is about what it
+  does once a handler has run out of attempts.
+  """
+
   use DMEx.Case, async: true, database: true
 
   alias DMEx.Config
@@ -60,8 +68,8 @@ defmodule DMEx.Consumer.FailureTest do
 
       Pipeline.run(row(1), state)
 
-      # No span ever covers the backoff sleep — that matters for the adaptive
-      # controller, which reads these durations as capacity.
+      # No span ever covers the backoff sleep, so a span's duration is what
+      # the handler cost rather than how long the schedule waited.
       assert_receive {[:dmex, :consumer, :message, :exception], ^ref, _,
                       %{attempt: 1, handler: Handlers.FailTimes}}
 
@@ -105,7 +113,7 @@ defmodule DMEx.Consumer.FailureTest do
     test "does not stop the rest of the batch", ctx do
       state = state(ctx, handler: Handlers.Raising, on_failure: :skip)
 
-      assert {:ok, %{cursor: 3}} = Pipeline.run_all([row(1), row(2), row(3)], state)
+      assert {:ok, %{cursor: 3}} = run_all([row(1), row(2), row(3)], state)
     end
 
     # The message is simply gone from this consumer's perspective, and this
@@ -234,7 +242,7 @@ defmodule DMEx.Consumer.FailureTest do
     test "does not stop the rest of the batch", ctx do
       state = state(ctx, handler: Handlers.Raising, on_failure: :dead_message)
 
-      assert {:ok, %{cursor: 3}} = Pipeline.run_all([row(1), row(2), row(3)], state)
+      assert {:ok, %{cursor: 3}} = run_all([row(1), row(2), row(3)], state)
       assert dead_count() == 3
     end
   end
@@ -265,6 +273,12 @@ defmodule DMEx.Consumer.FailureTest do
       # about how long the schedule waits.
       config: Config.consumer!([retry_backoff: 1, retry_backoff_max: 2] ++ config_opts)
     )
+  end
+
+  # `DMEx.Consumer.Stream` runs rows one at a time; this is the local
+  # convenience for a test holding a whole batch already.
+  defp run_all(rows, state) do
+    Enum.reduce(rows, {:ok, state}, fn row, {:ok, state} -> Pipeline.run(row, state) end)
   end
 
   defp row(id, opts \\ []) do

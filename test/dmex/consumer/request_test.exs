@@ -14,8 +14,6 @@ defmodule DMEx.Consumer.RequestTest do
 
   defp config(opts \\ []), do: Config.consumer!(opts)
 
-  defp pacing(window \\ 200, size \\ 500), do: %{batch_window: window, max_batch_size: size}
-
   defp header(headers, name) do
     case List.keyfind(headers, name, 0) do
       {^name, value} -> value
@@ -23,23 +21,20 @@ defmodule DMEx.Consumer.RequestTest do
     end
   end
 
-  describe "headers/3" do
-    test "asks for the stream and for its pacing" do
-      headers = Request.headers(pacing(300, 250), 0, config())
+  describe "headers/2" do
+    test "asks for the stream" do
+      headers = Request.headers(0, config())
 
       assert header(headers, "accept") == "text/event-stream"
-      assert header(headers, "dmex-batch-window") == "300"
-      assert header(headers, "dmex-max-batch-size") == "250"
     end
 
-    # Sending the granted values instead makes every re-parameterization a no-op
-    # on the wire while the controller believes it took effect — which is
-    # exactly the bug this separation exists to make visible.
-    test "sends what is requested, which is not what was last granted" do
-      headers = Request.headers(pacing(50, 10), 0, config(batch_window: 200, max_batch_size: 500))
+    # The whole of it. A subscription is identified by its URL and positioned by
+    # `last-event-id`; there is nothing left to negotiate, so this request is
+    # byte-identical to what a browser's EventSource sends for the same URL.
+    test "adds no DMEx headers of its own" do
+      names = Request.headers(42, config()) |> Enum.map(&elem(&1, 0)) |> Enum.sort()
 
-      assert header(headers, "dmex-batch-window") == "50"
-      assert header(headers, "dmex-max-batch-size") == "10"
+      assert names == ["accept", "last-event-id"]
     end
   end
 
@@ -73,44 +68,11 @@ defmodule DMEx.Consumer.RequestTest do
       assert Request.last_event_id(:none, config(start: 500)) == [{"last-event-id", "500"}]
     end
 
-    test "headers/3 carries it through" do
-      assert Request.headers(pacing(), :none, config(start: :latest))
-             |> header("last-event-id") == "latest"
+    test "headers/2 carries it through" do
+      assert :none |> Request.headers(config(start: :latest)) |> header("last-event-id") ==
+               "latest"
 
-      refute Request.headers(pacing(), :none, config(start: :beginning))
-             |> header("last-event-id")
-    end
-  end
-
-  describe "adopt/2" do
-    test "takes the producer's echo as the new operating point" do
-      granted =
-        Request.adopt(pacing(200, 500), [
-          {"dmex-batch-window", "50"},
-          {"dmex-max-batch-size", "5000"}
-        ])
-
-      assert granted == %{batch_window: 50, max_batch_size: 5_000}
-    end
-
-    test "keeps what it had when the producer echoes nothing" do
-      # A producer that says nothing is one this consumer has no news about,
-      # which is not the same as one that granted zero.
-      assert Request.adopt(pacing(200, 500), [{"content-type", "text/event-stream"}]) ==
-               pacing(200, 500)
-    end
-
-    test "ignores an unparseable or non-positive echo" do
-      for value <- ["", "lots", "-1", "0", "1.5", "50abc"] do
-        assert Request.adopt(pacing(200, 500), [{"dmex-batch-window", value}]) ==
-                 pacing(200, 500),
-               "expected #{inspect(value)} to be ignored"
-      end
-    end
-
-    test "adopts each header independently" do
-      assert Request.adopt(pacing(200, 500), [{"dmex-max-batch-size", "10"}]) ==
-               %{batch_window: 200, max_batch_size: 10}
+      refute :none |> Request.headers(config(start: :beginning)) |> header("last-event-id")
     end
   end
 
@@ -133,40 +95,22 @@ defmodule DMEx.Consumer.RequestTest do
     # The point of having both halves as pure modules: what one sends, the other
     # accepts — asserted rather than assumed.
     test "everything this sends, DMEx.Producer.Params parses" do
-      headers = Request.headers(pacing(300, 250), 42, config())
-
-      assert {:ok, params} = Params.parse([], headers, Config.producer!([]))
+      assert {:ok, params} = Params.parse([], Request.headers(42, config()))
 
       assert params.cursor == 42
-      assert params.batch_window == 300
-      assert params.max_batch_size == 250
-    end
-
-    test "and what it echoes back, this adopts" do
-      {:ok, params} =
-        Params.parse(
-          [],
-          Request.headers(pacing(1, 999_999), :none, config()),
-          Config.producer!([])
-        )
-
-      granted = Request.adopt(pacing(1, 999_999), Params.resp_headers(params))
-
-      # Clamped by the producer, and the consumer now reasons about the clamped
-      # figures rather than about what it asked for.
-      assert granted == %{batch_window: 50, max_batch_size: 5_000}
+      assert params.selection == :all
     end
 
     test "start: :beginning round-trips as the whole log" do
-      headers = Request.headers(pacing(), :none, config(start: :beginning))
+      headers = Request.headers(:none, config(start: :beginning))
 
-      assert {:ok, %{cursor: 0}} = Params.parse([], headers, Config.producer!([]))
+      assert {:ok, %{cursor: 0}} = Params.parse([], headers)
     end
 
     test "start: :latest round-trips as the tip" do
-      headers = Request.headers(pacing(), :none, config(start: :latest))
+      headers = Request.headers(:none, config(start: :latest))
 
-      assert {:ok, %{cursor: :latest}} = Params.parse([], headers, Config.producer!([]))
+      assert {:ok, %{cursor: :latest}} = Params.parse([], headers)
     end
   end
 end

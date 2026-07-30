@@ -61,7 +61,7 @@ defmodule DMEx.PublisherTest do
       {:ok, _} = Publisher.publish(Producer, %OrderPlaced{order_id: 7})
       {:ok, _} = Publisher.publish(Producer, %OrderShipped{order_id: 7, carrier: "dhl"})
 
-      assert {:ok, {rows, _}} = Postgres.read(opts, 0, 10)
+      assert {:ok, rows} = Postgres.read(opts, 0, 10, :all)
 
       assert Enum.map(rows, & &1.message_type) == [
                "DMEx.Test.Messages.OrderPlaced",
@@ -74,7 +74,7 @@ defmodule DMEx.PublisherTest do
 
       assert ids == Enum.sort(ids)
 
-      {:ok, {rows, _}} = Postgres.read(opts, 0, 10)
+      {:ok, rows} = Postgres.read(opts, 0, 10, :all)
       assert Enum.map(rows, &JSON.decode!(&1.data)["order_id"]) == [1, 2, 3, 4, 5]
     end
   end
@@ -84,7 +84,7 @@ defmodule DMEx.PublisherTest do
       assert {:ok, _} = Producer.publish(%OrderPlaced{order_id: 7}, metadata: %{a: 1})
       assert {:ok, _} = Publisher.publish(Producer, %OrderPlaced{order_id: 7}, metadata: %{a: 1})
 
-      assert {:ok, {[first, second], _}} = Postgres.read(opts, 0, 10)
+      assert {:ok, [first, second]} = Postgres.read(opts, 0, 10, :all)
 
       assert Map.take(first, [:message_type, :data, :metadata]) ==
                Map.take(second, [:message_type, :data, :metadata])
@@ -129,7 +129,7 @@ defmodule DMEx.PublisherTest do
   end
 
   defp fetch!(opts, id) do
-    {:ok, {[row], _}} = Postgres.read(opts, id - 1, 1)
+    {:ok, [row]} = Postgres.read(opts, id - 1, 1, :all)
     row
   end
 end

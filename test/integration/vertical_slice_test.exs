@@ -217,11 +217,7 @@ defmodule DMEx.Integration.VerticalSliceTest do
       stop(Slice, after: first)
 
       {:ok, _} =
-        Consumer.subscribe(Slice,
-          consumer: TestConsumer,
-          producer: Server.producers(second),
-          batch_window: 50
-        )
+        Consumer.subscribe(Slice, consumer: TestConsumer, producer: Server.producers(second))
 
       {:ok, id} = Producer.publish(%OrderPlaced{order_id: 2})
 
@@ -291,7 +287,7 @@ defmodule DMEx.Integration.VerticalSliceTest do
   end
 
   defp subscribe(handler) do
-    {:ok, _} = Consumer.subscribe(handler, consumer: TestConsumer, batch_window: 50)
+    {:ok, _} = Consumer.subscribe(handler, consumer: TestConsumer)
 
     :ok
   end

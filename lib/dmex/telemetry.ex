@@ -20,16 +20,19 @@ defmodule DMEx.Telemetry do
   ### `[:dmex, :stream, :connect]`
 
   A consumer opened a stream. Measurements: `:cursor`, the resolved starting
-  position. Metadata: `:producer`, `:batch_window`, `:max_batch_size` — the
-  values actually applied after clamping, so this is where to see whether
-  consumers are asking for pacing the producer refuses.
+  position, and `:matched`, how many of the producer's types a selective
+  connection admitted (`nil` for a whole-log one). Metadata: `:producer` and
+  `:selective`.
 
-  ### `[:dmex, :stream, :frame]`
+  ### `[:dmex, :stream, :write]`
 
-  One frame written to one connection. Measurements: `:rows`, `:bytes`, and
-  `:lag` — the log's tip minus the highest id in the frame, so a persistently
-  non-zero `:lag` is a consumer falling behind. Metadata: `:producer`,
-  `:truncated` (whether the frame byte cap cut the batch short).
+  One write to one connection — a whole read's rows, encoded as one frame each
+  and handed to `chunk/2` together. Measurements: `:rows` and `:bytes`.
+  Metadata: `:producer`, `:truncated` (whether `write_max_bytes` cut the batch
+  short, which is `false` for a lone oversized row that went out whole).
+
+  `:rows` sitting at `max_batch_size` write after write is a connection reading
+  as fast as its pacing allows, which is what catch-up looks like.
 
   ### `[:dmex, :stream, :heartbeat]`
 
@@ -74,19 +77,20 @@ defmodule DMEx.Telemetry do
 
   A retried message emits one span per attempt, so `:exception` events with
   `attempt: 1` followed by a `:stop` with `attempt: 2` is a transient failure
-  recovering. The `:stop` duration is the number Stage 3's adaptive controller
-  will use as its service-time sample, which is why the span covers an attempt
-  rather than the whole retry sequence — backoff is not capacity.
+  recovering. The span covers one attempt rather than the whole retry sequence
+  because the two measure different things: an attempt's duration is what a
+  handler costs, and a retry sequence's is mostly backoff.
 
   ### `[:dmex, :consumer, :skip]`
 
   A row whose `message_type` matched no declared module. Measurements: `:id`.
   Metadata: `:subscription`, `:handler`, `:message_type`, `:url`.
 
-  **Worth a dashboard even though it is the normal case.** In v1 a subscription
-  receives the producer's entire log, so skips are expected — but a consumer
-  silently discarding most of a stream and one silently discarding the single
-  type it wanted look identical without this.
+  **Worth a dashboard even though it is not a fault.** Server-side selection
+  makes it rare — but filter inclusion is heuristic in one direction, and a
+  handler declared `selective: false` asks for the whole log outright. A
+  consumer silently discarding most of a stream and one silently discarding the
+  single type it wanted look identical without this.
 
   ### `[:dmex, :consumer, :checkpoint]`
 
@@ -115,39 +119,27 @@ defmodule DMEx.Telemetry do
 
   ### `[:dmex, :consumer, :lag]`
 
-  Per frame received. Measurements: `:lag` (the producer's tip minus the last id
-  in the frame), `:rows`, and `:utilization`. Metadata: `:subscription`,
-  `:handler`, `:url`.
+  Once per socket read that carried rows — not once per row. Measurements:
+  `:lag`, milliseconds between the last row's `inserted_at` and now, and
+  `:rows`, how many that read carried. Metadata: `:subscription`, `:handler`,
+  `:url`.
 
-  `:lag` is the "am I falling behind" signal, and the consumer-side twin of
-  `[:dmex, :stream, :frame]`'s. **`:utilization` is what it cannot tell you**: a
-  consumer keeping up with room to spare and one keeping up with none both
-  report zero lag, and they are the difference between healthy and one traffic
-  increment away from falling behind. It is the fraction of a recent window the
-  pipeline had anything to do — near 1 with low lag is the one to watch.
+  The "am I falling behind" signal. It is in **milliseconds rather than ids**
+  because the wire carries no `max_id` to subtract from — and staleness is the
+  question the id difference was a proxy for anyway.
 
-  Reported, never acted on. Adaptation triggers on queue depth alone.
+  It compares the producer's clock against this one, so it is only as good as
+  the two machines' NTP agreement. Fine for a seconds-scale signal, and not for
+  anything finer.
 
-  ### `[:dmex, :consumer, :socket]`
+  Reported, never acted on: nothing on this side adapts, because the socket's
+  receive window already carries the pressure.
 
-  The socket was gated off or re-armed. Measurements: `:depth`. Metadata:
-  `:subscription`, `:handler`, `:url`, `:mode` (`:passive` or `:active`).
-
-  `:passive` means the TCP receive window is closing because this consumer
-  stopped re-arming — structural backpressure working, not a fault. Sustained
-  time in `:passive` is what precedes a re-parameterization.
-
-  ### `[:dmex, :consumer, :reparameterize]`
-
-  The controller decided to ask for different pacing. Measurements:
-  `:batch_window`, `:max_batch_size` (the new request) and `:depth` at the
-  moment of the decision. Metadata: `:subscription`, `:handler`, `:url`,
-  `:mean_service_ms` — the measured capacity the new size was computed from.
-
-  Each of these costs a close, a local drain and a reconnect, so a healthy
-  subscription emits a handful over its lifetime. A steady stream of them is
-  flapping, and the thing to look at is `mean_service_ms` — a handler whose cost
-  swings wildly gives the controller a moving target.
+  There is deliberately **no socket-gating event**. Backpressure is not a
+  decision this side makes and could report — it is what happens when the
+  process is busy in a handler and therefore not re-arming the socket. The
+  producer's `[:dmex, :stream, :reclaim]` is where a consumer too slow to keep up
+  becomes visible.
 
   ### `[:dmex, :consumer, :reconnect]`
 

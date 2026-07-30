@@ -18,15 +18,17 @@ defmodule DMEx.Producer.RegistryTest do
     assert ProducerRegistry.name(FakeProducer) == DMEx.Producer.RegistryTest.FakeProducer.Registry
   end
 
-  test "a registered process receives broadcasts" do
-    {:ok, _status} = ProducerRegistry.register(FakeProducer, 5_000)
+  test "each/2 visits a registered process with its status and selection" do
+    {:ok, status} = ProducerRegistry.register(FakeProducer, 5_000)
 
-    ProducerRegistry.broadcast(FakeProducer, :wakeup)
+    ProducerRegistry.each(FakeProducer, fn pid, entry_status, selection ->
+      send(pid, {:visited, entry_status, selection})
+    end)
 
-    assert_received :wakeup
+    assert_received {:visited, ^status, :all}
   end
 
-  test "every registered stream receives the same broadcast" do
+  test "each/2 visits every registered stream" do
     parent = self()
 
     pids =
@@ -43,7 +45,7 @@ defmodule DMEx.Producer.RegistryTest do
 
     for pid <- pids, do: assert_receive({:registered, ^pid})
 
-    ProducerRegistry.broadcast(FakeProducer, :wakeup)
+    ProducerRegistry.each(FakeProducer, fn pid, _status, _selection -> send(pid, :wakeup) end)
 
     for pid <- pids, do: assert_receive({:woke, ^pid})
   end
@@ -82,7 +84,10 @@ defmodule DMEx.Producer.RegistryTest do
     eventually(fn -> ProducerRegistry.count(FakeProducer) == 0 end)
   end
 
-  test "broadcasting to nobody is fine" do
-    assert :ok = ProducerRegistry.broadcast(FakeProducer, :wakeup)
+  test "each/2 over nobody is fine" do
+    assert :ok =
+             ProducerRegistry.each(FakeProducer, fn pid, _status, _selection ->
+               send(pid, :wakeup)
+             end)
   end
 end

@@ -109,7 +109,7 @@ defmodule DMEx.Integration.ResumptionTest do
   test "a killed stream mid-batch skips nothing and repeats at most the one in flight", _ctx do
     # The slow handler guarantees the kill lands mid-drain rather than between
     # frames, which is the case duplicate suppression exists for.
-    {:ok, pid} = subscribe(Handlers.Slow, batch_window: 20)
+    {:ok, pid} = subscribe(Handlers.Slow)
 
     for n <- 1..10, do: {:ok, _} = Producer.publish(%OrderPlaced{order_id: n})
 
@@ -142,7 +142,7 @@ defmodule DMEx.Integration.ResumptionTest do
   defp subscribe(handler, opts \\ []) do
     Consumer.subscribe(
       handler,
-      Keyword.merge([consumer: TestConsumer, batch_window: 50], opts)
+      Keyword.merge([consumer: TestConsumer], opts)
     )
   end
 

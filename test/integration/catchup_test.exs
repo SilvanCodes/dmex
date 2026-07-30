@@ -41,15 +41,10 @@ defmodule DMEx.Integration.CatchupTest do
     %{url: url}
   end
 
-  test "drains a large backlog in order, in frames no larger than requested", _ctx do
-    ref = :telemetry_test.attach_event_handlers(self(), [[:dmex, :stream, :frame]])
+  test "drains a large backlog in order, in writes no larger than requested", _ctx do
+    ref = :telemetry_test.attach_event_handlers(self(), [[:dmex, :stream, :write]])
 
-    {:ok, _} =
-      Consumer.subscribe(Handlers.Echo,
-        consumer: TestConsumer,
-        max_batch_size: 250,
-        batch_window: 20
-      )
+    {:ok, _} = Consumer.subscribe(Handlers.Echo, consumer: TestConsumer)
 
     ids =
       for _ <- 1..@backlog do
@@ -59,60 +54,34 @@ defmodule DMEx.Integration.CatchupTest do
 
     assert ids == Enum.to_list(1..@backlog)
 
-    # `max_batch_size` is a hard cap on frame size, however far behind the
-    # consumer is — the loop reads with it as the LIMIT every single time.
-    frame_sizes = collect_frame_sizes(ref)
+    # `max_batch_size` is a hard cap on how much one write carries, however far
+    # behind the consumer is — the loop reads with it as the LIMIT every time.
+    # It is the *producer's* setting, so this is the producer's default.
+    write_sizes = collect_write_sizes(ref)
 
-    assert frame_sizes != []
-    assert Enum.max(frame_sizes) <= 250
+    assert write_sizes != []
+    assert Enum.max(write_sizes) <= DMEx.Config.producer!([]).max_batch_size
   end
 
-  test "the first frame's max_id tells the consumer how big the gap is", _ctx do
+  # How far behind is answered from `inserted_at`, which every row carries
+  # anyway — no `max_id` on the wire, no HEAD preflight, and no separate backlog
+  # endpoint. A consumer draining a backlog is handling rows published a while
+  # ago, and that is exactly what this measures.
+  test "the rows a catching-up consumer handles are visibly stale", _ctx do
     ref = :telemetry_test.attach_event_handlers(self(), [[:dmex, :consumer, :lag]])
 
-    {:ok, _} =
-      Consumer.subscribe(Handlers.Echo,
-        consumer: TestConsumer,
-        max_batch_size: 100,
-        batch_window: 20
-      )
+    seeded_at = System.monotonic_time(:millisecond)
 
-    # No HEAD preflight and no separate backlog endpoint: the frame the consumer
-    # was going to receive anyway already carries the answer.
-    assert_receive {[:dmex, :consumer, :lag], ^ref, %{lag: lag}, _}, 30_000
+    {:ok, _} = Consumer.subscribe(Handlers.Echo, consumer: TestConsumer)
+
+    assert_receive {[:dmex, :consumer, :lag], ^ref, %{lag: lag, rows: rows}, metadata}, 30_000
+
+    # The backlog was seeded before the subscription started, so every row in it
+    # is older than the subscription is.
     assert lag > 0
-  end
-
-  test "and how much of the consumer's capacity is already spoken for", _ctx do
-    ref = :telemetry_test.attach_event_handlers(self(), [[:dmex, :consumer, :lag]])
-
-    {:ok, _} =
-      Consumer.subscribe(Handlers.Echo,
-        consumer: TestConsumer,
-        max_batch_size: 100,
-        batch_window: 20
-      )
-
-    # The signal lag alone cannot give: a consumer keeping up with room to spare
-    # and one keeping up with none both report zero lag, and they are the
-    # difference between healthy and one traffic increment from falling behind.
-    assert_receive {[:dmex, :consumer, :lag], ^ref, %{utilization: utilization}, _}, 30_000
-
-    assert utilization >= 0.0
-    assert utilization <= 1.0
-
-    # Draining a backlog flat out, so it must climb well off the floor.
-    eventually(
-      fn ->
-        receive do
-          {[:dmex, :consumer, :lag], ^ref, %{utilization: u}, _} when u > 0.05 -> true
-        after
-          0 -> false
-        end
-      end,
-      30_000,
-      20
-    )
+    assert lag < System.monotonic_time(:millisecond) - seeded_at + 60_000
+    assert rows > 0
+    assert metadata.subscription == "test/echo"
   end
 
   ## Helpers
@@ -131,9 +100,9 @@ defmodule DMEx.Integration.CatchupTest do
     )
   end
 
-  defp collect_frame_sizes(ref, acc \\ []) do
+  defp collect_write_sizes(ref, acc \\ []) do
     receive do
-      {[:dmex, :stream, :frame], ^ref, %{rows: rows}, _} -> collect_frame_sizes(ref, [rows | acc])
+      {[:dmex, :stream, :write], ^ref, %{rows: rows}, _} -> collect_write_sizes(ref, [rows | acc])
     after
       0 -> acc
     end

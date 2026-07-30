@@ -37,7 +37,7 @@ defmodule DMEx.Storage do
 
   ### `c:read/4` must return `data` and `metadata` as JSON *text*
 
-  `DMEx.SSE.Frame.encode_batch/2` splices those two columns into the wire frame
+  `DMEx.SSE.Frame.encode_row/1` splices those two columns into the wire frame
   byte-for-byte, without parsing them. An adapter that lets its driver decode
   `jsonb` into an Elixir map hands `Frame` a map where it expects text, and the
   frame it builds is wrong — so the cast belongs in the query (`data::text`),
@@ -60,14 +60,13 @@ defmodule DMEx.Storage do
   Everything an adapter needs, built once by the producer module or the
   subscription and passed to every call.
 
-  `:repo` is the only universally-required key. `:app_key`, `:lock` and
-  `:channel` are producer-side (they scope the append lock and the notification
-  channel); `:prefix` is the optional schema both sides may live in.
+  `:repo` is the only universally-required key. `:lock` and `:channel` are
+  producer-side (they scope the append lock and the notification channel);
+  `:prefix` is the optional schema both sides may live in.
   """
   @type opts :: %{
           required(:repo) => module(),
           optional(:producer) => module(),
-          optional(:app_key) => String.t(),
           optional(:lock) => {integer(), integer()},
           optional(:channel) => String.t(),
           optional(:prefix) => String.t() | nil
@@ -98,34 +97,24 @@ defmodule DMEx.Storage do
   Reads up to `limit` rows with `id > cursor`, in ascending id order, optionally
   narrowed to a set of message types.
 
-  Returns the rows together with the log's current `max_id` as of the same
-  round trip — a correlated scalar subquery, not a second query. On the primary
-  key that is one descent to the rightmost entry, and folding it into a read the
-  loop was issuing anyway is what avoids paying an extra query per connection
-  per `batch_window`.
-
-  `max_id` is `nil` when the read returns no rows, which is legal: a zero-row
-  read sends no frame, so there is nothing for it to stamp.
-
   `types` is `:all` for a whole-log subscription — the primary key serves that
-  directly, exactly as it always did — or an explicit list, already expanded
-  from a consumer's filter by `DMEx.Producer.Plug`. An adapter must issue these
-  as **two different statements** rather than one with a nullable predicate: a
+  directly — or an explicit list, already expanded from a consumer's filter by
+  `DMEx.Producer.Plug`. An adapter must issue these as **two different
+  statements** rather than one with a nullable predicate: a
   `($3 IS NULL OR message_type = ANY($3))` shape is a correct query and a
   ruinous plan, since it defeats the index on both branches.
 
-  `max_id` is deliberately **unfiltered** in both cases. It is the tip of the
-  whole log, which is what makes a selective subscription's `last_seen`
-  comparable with every other consumer's — a selective stream sees a sparse
-  subset of one id space, never a space of its own.
+  Nothing about the log's tip comes back with the rows. The wire carries no
+  `max_id`, so there is nothing for a read to stamp a frame with — a consumer
+  measures how far behind it is from `inserted_at`, which every row carries
+  anyway.
   """
   @callback read(
               opts(),
               cursor :: non_neg_integer(),
               limit :: pos_integer(),
               types :: :all | [String.t()]
-            ) ::
-              {:ok, {[row()], non_neg_integer() | nil}} | {:error, term()}
+            ) :: {:ok, [row()]} | {:error, term()}
 
   @doc """
   The log's current highest id, or `0` when the log is empty.

@@ -58,27 +58,37 @@ defmodule DMEx.Consumer.Stream do
   A skipped row runs no handler, so `DMEx.Consumer.Pipeline` defers its cursor
   advance instead of committing one per row. This process owns settling that:
   a `checkpoint_interval` timer, armed for the process's whole life rather than
-  per connection, plus a flush before each of the three points that re-read the
-  durable cursor — a reconnect, the end of a re-parameterization's local drain,
-  and `terminate/2`. Without those a run of skips would be re-read and
-  re-skipped for nothing on the next connect.
+  per connection, plus a flush before each of the two points that re-read the
+  durable cursor — a reconnect and `terminate/2`. Without those a run of skips
+  would be re-read and re-skipped for nothing on the next connect.
 
-  ## Backpressure in Stage 1
+  The `terminate/2` half only works because this process **traps exits**: a
+  non-trapping child of a `DynamicSupervisor` is killed outright by
+  `terminate_child/2`, and the callback never runs.
 
-  Rows are processed inline as frames arrive. `Mint.HTTP.stream/2` re-arms
-  `active: :once` itself, so at most one further chunk lands in the mailbox
-  while a frame is draining — real, if coarse, backpressure. The bounded queue
-  and explicit `set_mode(:passive)` gate that turn this into a measurable drain
-  rate are a later stage.
+  ## Backpressure is the absence of a buffer
+
+  Rows are run through the pipeline **inline, on the socket path**, one at a
+  time, as they are decoded. There is no queue, no drain loop and no explicit
+  socket gate, and that is what makes the backpressure exact rather than
+  approximate.
+
+  `Mint.HTTP.stream/2` re-arms `active: :once` itself, so while this process is
+  inside a handler it is not calling `stream/2` — nothing is re-armed, the TCP
+  receive window closes, and the producer's `chunk/2` blocks on it. The most
+  that can be in flight is one decoded chunk in hand plus one socket message
+  already in the mailbox. Nothing accumulates, so there is nothing to bound and
+  no depth to observe.
+
+  A buffer would only have relocated the problem: a few hundred rows of slack
+  absorb nothing at a sustained mismatch, and every row of slack is one more row
+  the socket keeps accepting before it says stop.
   """
 
   use GenServer
 
   alias DMEx.Backoff
-  alias DMEx.Consumer.Control
-  alias DMEx.Consumer.Meter
   alias DMEx.Consumer.Pipeline
-  alias DMEx.Consumer.Queue
   alias DMEx.Consumer.Request
   alias DMEx.SSE.Decoder
 
@@ -111,6 +121,11 @@ defmodule DMEx.Consumer.Stream do
     url = Keyword.fetch!(opts, :url)
     config = Keyword.fetch!(opts, :config)
 
+    # Without this the flush in `terminate/2` is dead code: a non-trapping child
+    # of a `DynamicSupervisor` is killed outright by `terminate_child/2` and on
+    # shutdown, so the callback never runs and a pending run of skips is lost.
+    Process.flag(:trap_exit, true)
+
     # Registering here — before any socket opens — is what enforces one live
     # stream per subscription id: a second subscribe/2 for the same identity
     # fails in init rather than after both have started clobbering one cursor.
@@ -139,28 +154,12 @@ defmodule DMEx.Consumer.Stream do
           liveness_timer: nil,
           decoder: Decoder.new(config.max_frame_bytes),
           cursor: nil,
-          # What the producer granted, from its echo. Decisions are made against
-          # this rather than against what was asked for.
-          params: %{batch_window: config.batch_window, max_batch_size: config.max_batch_size},
-          # What the next connect asks for. Moves under the control law; the
-          # producer may still clamp it.
-          requested: %{
-            batch_window: config.batch_window,
-            max_batch_size: config.max_batch_size
-          },
-          queue: Queue.new(DMEx.Config.queue_limit(config), config.max_batch_size),
-          meter: Meter.new(config),
-          control: Control.new(),
-          socket_mode: :active,
-          draining?: false,
-          reparameterizing?: false,
           checkpoint_timer: nil,
           attempt: 0
         }
 
         # Armed once for the process's whole life rather than per connection: a
-        # pending run of skips outlives a disconnect, and the local drain during
-        # a re-parameterization runs with no connection at all.
+        # pending run of skips outlives a disconnect.
         {:ok, schedule_checkpoint(state), {:continue, :connect}}
 
       {:error, {:already_registered, _pid}} ->
@@ -173,9 +172,6 @@ defmodule DMEx.Consumer.Stream do
 
   @impl GenServer
   def handle_info(:connect, state), do: connect(state)
-
-  @impl GenServer
-  def handle_info(:drain, state), do: {:noreply, drain(state)}
 
   @impl GenServer
   def handle_info(:checkpoint, state) do
@@ -249,8 +245,6 @@ defmodule DMEx.Consumer.Stream do
            # re-delivered and re-skipped. Either way it is not owed a write.
            pipeline: %{state.pipeline | pending: false},
            decoder: Decoder.new(state.config.max_frame_bytes),
-           socket_mode: :active,
-           reparameterizing?: false,
            attempt: 0
        }
        |> touch()
@@ -266,7 +260,7 @@ defmodule DMEx.Consumer.Stream do
   end
 
   defp request(conn, state, cursor) do
-    headers = Request.headers(state.requested, cursor, state.config)
+    headers = Request.headers(cursor, state.config)
 
     Mint.HTTP.request(conn, "GET", Request.path(state.uri, state.fingerprint), headers, nil)
   end
@@ -317,16 +311,6 @@ defmodule DMEx.Consumer.Stream do
     end
   end
 
-  defp handle_responses([{:headers, ref, headers} | rest], %{ref: ref} = state) do
-    params = Request.adopt(state.params, headers)
-
-    # The queue reserves room for one whole frame, and the frame size is
-    # whatever the producer actually granted — not what was asked for.
-    queue = Queue.resize(state.queue, params.max_batch_size)
-
-    handle_responses(rest, %{state | params: params, queue: queue})
-  end
-
   defp handle_responses([{:data, ref, chunk} | rest], %{ref: ref} = state) do
     # Any bytes at all, including a heartbeat comment, mean the connection is
     # alive. Silence is what this measures, not idleness.
@@ -334,11 +318,12 @@ defmodule DMEx.Consumer.Stream do
     previous = Decoder.retry(state.decoder)
 
     case Decoder.push(state.decoder, chunk) do
-      {:ok, frames, decoder} ->
+      {:ok, rows, decoder} ->
         state = adopt_interval(%{state | decoder: decoder}, previous)
-        state = Enum.reduce(frames, state, &process_frame/2)
 
-        handle_responses(rest, state |> observe() |> gate_socket() |> advance())
+        report_lag(rows, state)
+
+        handle_responses(rest, Enum.reduce(rows, state, &run/2))
 
       {:error, reason, _decoder} ->
         # Dropping and reconnecting from the durable cursor costs only a
@@ -357,40 +342,54 @@ defmodule DMEx.Consumer.Stream do
 
   defp handle_responses([_other | rest], state), do: handle_responses(rest, state)
 
-  # Admitted whole, in order, and *not* processed here. Decoding a row into a
-  # struct on the socket path would put per-row work above the queue's bound —
-  # unbounded by it, and invisible to the drain measurement even though it is
-  # real cost the consumer pays for every row.
-  defp process_frame(frame, state) do
-    report_lag(frame, state)
+  # Inline, one row at a time, right here on the socket path. That *is* the
+  # backpressure: while this runs the process is not calling `Mint.HTTP.stream/2`,
+  # so the socket is not re-armed, the receive window closes, and the producer's
+  # `chunk/2` blocks. Nothing buffers, so there is nothing to bound.
+  defp run(row, state) do
+    {:ok, pipeline} = Pipeline.run(row, %{state.pipeline | cursor: cursor_of(state)})
 
-    %{state | queue: Queue.push(state.queue, frame.messages)}
+    %{state | pipeline: pipeline, cursor: pipeline.cursor}
   end
 
   defp cursor_of(%{cursor: :none}), do: 0
   defp cursor_of(%{cursor: cursor}), do: cursor
 
-  # `max_id` minus the last id in the frame is the "am I falling behind" signal,
-  # and it is the only thing that outlives the frame.
-  defp report_lag(%{metadata: %{"max_id" => max_id}, messages: [_ | _] = messages}, state) do
-    last = messages |> List.last() |> Map.fetch!("id")
+  # How far behind the tip this consumer is, in ms rather than in ids. The wire
+  # carries no `max_id` to subtract from, and `inserted_at` answers the question
+  # the id difference was a proxy for anyway — "how stale is what I am handling".
+  #
+  # Once per decoder push rather than once per row: a push is one socket read's
+  # worth of rows, so this samples at the rate bytes actually arrive instead of
+  # emitting an event per message.
+  #
+  # It compares the producer's clock against this one, so it is only as good as
+  # the two machines' NTP agreement. That is fine for a seconds-scale signal and
+  # would not be for anything finer.
+  defp report_lag([], _state), do: :ok
 
-    :telemetry.execute(
-      [:dmex, :consumer, :lag],
-      %{
-        lag: max_id - last,
-        rows: length(messages),
-        # The one signal `lag` alone cannot give: a consumer keeping up with
-        # room to spare and one keeping up with none both report zero lag, and
-        # they are the difference between healthy and one traffic increment
-        # from falling behind.
-        utilization: Meter.utilization(state.meter, now())
-      },
-      %{subscription: state.subscription, handler: state.handler, url: state.url}
-    )
+  defp report_lag(rows, state) do
+    case rows |> List.last() |> Map.get("inserted_at") |> parse_inserted_at() do
+      nil ->
+        :ok
+
+      at ->
+        :telemetry.execute(
+          [:dmex, :consumer, :lag],
+          %{lag: DateTime.diff(DateTime.utc_now(), at, :millisecond), rows: length(rows)},
+          %{subscription: state.subscription, handler: state.handler, url: state.url}
+        )
+    end
   end
 
-  defp report_lag(_frame, _state), do: :ok
+  defp parse_inserted_at(value) when is_binary(value) do
+    case DateTime.from_iso8601(value) do
+      {:ok, at, _offset} -> at
+      {:error, _reason} -> nil
+    end
+  end
+
+  defp parse_inserted_at(_other), do: nil
 
   ## Reconnecting
 
@@ -424,187 +423,6 @@ defmodule DMEx.Consumer.Stream do
     %{state | conn: nil, ref: nil, liveness_timer: nil, attempt: attempt}
   end
 
-  ## Draining
-
-  # One row per message, deliberately. Draining the whole queue in a single pass
-  # would starve the receive loop, and depth could then never rise above what a
-  # single frame put there — which is exactly the signal the queue exists to
-  # produce. Returning between rows lets a frame land mid-drain, and *that* is
-  # what "the consumer did not finish the last frame before the next arrived"
-  # looks like.
-  defp drain(state) do
-    started = System.monotonic_time(:microsecond)
-
-    case Queue.pop(state.queue) do
-      :empty ->
-        advance(%{state | draining?: false})
-
-      {:ok, row, queue} ->
-        {:ok, pipeline} = Pipeline.run(row, %{state.pipeline | cursor: cursor_of(state)})
-
-        elapsed = (System.monotonic_time(:microsecond) - started) / 1000
-
-        %{state | queue: queue, pipeline: pipeline, cursor: pipeline.cursor, draining?: false}
-        |> sample(elapsed)
-        |> observe()
-        |> gate_socket()
-        |> reparameterize()
-        |> advance()
-    end
-  end
-
-  # Only a pass that committed is a sample. A raising handler is retried inside
-  # the pipeline with backoff, and those sleeps are wall-clock the stream spends
-  # not draining — a failure mode, not a capacity. One poison message under
-  # exponential backoff would otherwise drag the estimate down by orders of
-  # magnitude and pin the batches at the floor long after `on_failure` resolved
-  # it.
-  defp sample(state, elapsed) do
-    %{state | meter: Meter.sample(state.meter, elapsed, now())}
-  end
-
-  # Everything that depends on "what is in the queue now" decides it here, once.
-  #
-  # It used to be two functions — one scheduling the next row, one finishing a
-  # re-parameterization — and the second was unreachable: the drain loop stops
-  # scheduling itself the moment the queue empties, so the branch that noticed
-  # emptiness never ran again. A re-parameterization would close its connection,
-  # drain locally, and then sit there. One `cond` is not just shorter, it makes
-  # that class of bug unrepresentable.
-  defp advance(%{draining?: true} = state), do: state
-
-  defp advance(state) do
-    cond do
-      not Queue.empty?(state.queue) ->
-        send(self(), :drain)
-
-        %{state | draining?: true}
-
-      # Step three of a re-parameterization: everything in hand is committed, so
-      # the cursor is exactly current and the new connection can be opened.
-      state.reparameterizing? ->
-        finish_reparameterize(state)
-
-      true ->
-        state
-    end
-  end
-
-  ## Backpressure
-
-  defp observe(state) do
-    %{state | control: Control.observe(state.control, Queue.pressure(state.queue), now())}
-  end
-
-  # `Mint.HTTP.stream/2` re-arms `active: :once` itself, so withholding the
-  # re-arm means switching the socket to passive rather than declining to call
-  # it. That is what closes the TCP receive window and makes the backpressure
-  # structural rather than advisory.
-  #
-  # Mint documents that one socket message may already be in the mailbox at the
-  # switch. The gate reserves a whole frame's worth of room, so that overshoot
-  # is already accounted for.
-  defp gate_socket(%{conn: nil} = state), do: state
-
-  defp gate_socket(state) do
-    case {state.socket_mode, Queue.room?(state.queue)} do
-      {:active, false} -> set_mode(state, :passive)
-      {:passive, true} -> set_mode(state, :active)
-      _ -> state
-    end
-  end
-
-  defp set_mode(state, mode) do
-    case Mint.HTTP.set_mode(state.conn, mode) do
-      {:ok, conn} ->
-        :telemetry.execute(
-          [:dmex, :consumer, :socket],
-          %{depth: Queue.depth(state.queue)},
-          %{subscription: state.subscription, handler: state.handler, url: state.url, mode: mode}
-        )
-
-        %{state | conn: conn, socket_mode: mode}
-
-      {:error, _reason} ->
-        state
-    end
-  end
-
-  ## Re-parameterizing
-
-  # Already on the way down, or draining what is left before reconnecting.
-  defp reparameterize(%{reparameterizing?: true} = state), do: state
-
-  defp reparameterize(state) do
-    decision =
-      Control.decide(state.control, %{
-        meter: state.meter,
-        granted: state.params,
-        requested: state.requested,
-        config: state.config,
-        now: now()
-      })
-
-    case decision do
-      {:hold, control} ->
-        %{state | control: control}
-
-      {:adapt, requested, control} ->
-        start_reparameterize(%{state | control: control, requested: requested})
-    end
-  end
-
-  # The order matters, and this is step one: **close the connection first.**
-  # That is the immediate relief and it is instant — it stops the inflow and
-  # hands the producer back its request process, rather than leaving a stalled
-  # connection for the producer's watcher to reclaim.
-  #
-  # Step two is draining what is already in hand, which happens through the
-  # ordinary `:drain` loop with no connection attached: every queued row goes
-  # through its own transaction and its own cursor advance, so nothing already
-  # transferred is re-fetched. The drain also refines the estimate under no
-  # inbound load at all.
-  #
-  # Step three, reconnecting from the post-drain cursor with the new headers,
-  # happens in `finish_reparameterize/1` once the queue is empty.
-  defp start_reparameterize(state) do
-    :telemetry.execute(
-      [:dmex, :consumer, :reparameterize],
-      %{
-        batch_window: state.requested.batch_window,
-        max_batch_size: state.requested.max_batch_size,
-        depth: Queue.depth(state.queue)
-      },
-      %{
-        subscription: state.subscription,
-        handler: state.handler,
-        url: state.url,
-        mean_service_ms: Meter.mean(state.meter)
-      }
-    )
-
-    if state.conn, do: Mint.HTTP.close(state.conn)
-    if state.liveness_timer, do: Process.cancel_timer(state.liveness_timer)
-
-    %{state | conn: nil, ref: nil, liveness_timer: nil, reparameterizing?: true}
-  end
-
-  # The cursor is exactly current by now, so the new connection starts with an
-  # empty queue and no overlap to suppress. Jittered like every other reconnect,
-  # because a producer restart re-pacing every consumer at once is a
-  # synchronized storm with nothing to absorb it.
-  defp finish_reparameterize(state) do
-    # "The cursor is exactly current by now" is only true once the local drain's
-    # pending skips are written — the reconnect below resolves the durable one.
-    state = flush(state)
-
-    delay = Backoff.delay(1, state.config.reconnect_backoff, state.config.reconnect_backoff_max)
-
-    Process.send_after(self(), :connect, delay)
-
-    %{state | reparameterizing?: false}
-  end
-
   ## Checkpointing
 
   # Settles a coalesced run of skips. A no-op unless one is outstanding, so the
@@ -620,8 +438,6 @@ defmodule DMEx.Consumer.Stream do
 
     %{state | checkpoint_timer: timer}
   end
-
-  defp now, do: System.monotonic_time(:millisecond)
 
   ## Liveness
 

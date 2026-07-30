@@ -1,17 +1,20 @@
 defmodule DMEx.Producer.Params do
   @moduledoc """
-  What a connect request said, validated and clamped.
+  What a connect request said, validated.
 
-  A path segment and three request headers describe a subscription, and the
-  split between them is the design's own rule: **the URL says what the
-  subscription *is*; headers say how it is *paced*.**
+  A path segment and one request header describe a subscription, and that is the
+  whole of it:
 
   | carried in | meaning | absent | invalid |
   | --- | --- | --- | --- |
   | the path segment | which message types | the whole log | `400` |
   | `last-event-id` | resume position | from the beginning | `400` |
-  | `dmex-batch-window` | minimum ms between frames | producer default | `400` |
-  | `dmex-max-batch-size` | maximum rows per frame | producer default | `400` |
+
+  **There are no DMEx request headers.** Pacing is producer configuration, so a
+  connect request carries nothing about it — which means DMEx's own consumer and
+  a browser's `EventSource` send byte-identical requests, and everything the
+  producer needs to answer one is in the request line plus a header SSE already
+  defines.
 
   This module takes a path and request headers rather than a `Plug.Conn`, which
   keeps it pure, free of any optional dependency, and testable without a socket.
@@ -31,11 +34,10 @@ defmodule DMEx.Producer.Params do
       query strings; nothing does that to a path. Losing the selection silently
       converts a selective subscription back into a whole-log one, which is a
       bandwidth incident rather than an error.
-    * **Selection changes at deploy cadence, not connection cadence.** Pacing is
-      re-negotiated repeatedly *within* one subscription's lifetime, so pacing
-      in a URL would mint new URLs continuously; a message list changes when
-      somebody ships code. One URL per deployment is the stable grouping the
-      rule is protecting.
+    * **A selection is stable, so the URL is stable.** A message list changes
+      when somebody ships code, so one URL per deployment is a grouping that
+      survives long enough to be worth having in a proxy log, a cache key or a
+      dashboard.
 
   ## The `/stream` namespace
 
@@ -47,21 +49,6 @@ defmodule DMEx.Producer.Params do
   It could hardly collide anyway — the shortest valid blob is a 64-bit seed plus
   three fingerprints, and every reserved name is a short readable word — but
   "hardly" is not a guarantee and ordering is.
-
-  ## Why pacing is clamped but resumption is rejected
-
-  A well-formed pacing value outside the producer's bounds is **clamped**. Those
-  bounds exist to protect the producer, and a consumer asking for more than it
-  may have should get a working stream at the permitted rate rather than a `400`
-  it has no way to interpret. The producer then echoes what it actually applied
-  (see `resp_headers/1`), so an adaptive consumer can tell "the producer is
-  honouring my request and I still cannot keep up" from "the producer capped me
-  and my request never took effect" — opposite situations calling for opposite
-  reactions.
-
-  A malformed value of any kind is a `400`, because a client sending garbage has
-  a bug worth hearing about rather than being handed an arbitrary slice of the
-  log.
 
   ## The `Last-Event-ID` vocabulary
 
@@ -80,22 +67,19 @@ defmodule DMEx.Producer.Params do
   forms plus absent is small enough to validate exactly.
   """
 
-  alias DMEx.Config
   alias DMEx.Fingerprint
 
-  defstruct [:cursor, :batch_window, :max_batch_size, selection: :all]
+  defstruct [:cursor, selection: :all]
 
   @typedoc """
   A parsed connect request.
 
-  `:selection` is `:all` for a bare `GET /stream` — v1's behaviour, and what a
-  browser `EventSource` pointed at the plain URL asks for — or the filter
-  decoded from the path segment.
+  `:selection` is `:all` for a bare `GET /stream` — what a browser `EventSource`
+  pointed at the plain URL asks for, and what a handler declared
+  `selective: false` requests — or the filter decoded from the path segment.
   """
   @type t :: %__MODULE__{
           cursor: non_neg_integer() | :latest,
-          batch_window: pos_integer(),
-          max_batch_size: pos_integer(),
           selection: :all | Fingerprint.t()
         }
 
@@ -112,8 +96,6 @@ defmodule DMEx.Producer.Params do
           | {:reserved, name :: String.t()}
 
   @last_event_id "last-event-id"
-  @batch_window "dmex-batch-window"
-  @max_batch_size "dmex-max-batch-size"
   @matched "dmex-matched-messages"
 
   # Named sub-resources of the producer, matched before any blob decode. Closed
@@ -128,7 +110,7 @@ defmodule DMEx.Producer.Params do
   @digits ~r/\A\d+\z/
 
   @doc """
-  Parses and clamps a request's path and headers against a producer's configuration.
+  Parses a request's path and headers.
 
   `path_info` is what the mount handed the plug — `[]` for a bare
   `GET /stream`, one segment for anything under it.
@@ -137,38 +119,13 @@ defmodule DMEx.Producer.Params do
   present but outside its vocabulary, which the caller answers with a `400`, and
   `{:error, {:reserved, name}}` for a reserved sub-resource.
   """
-  @spec parse([String.t()], [{String.t(), String.t()}], Config.Producer.t()) ::
-          {:ok, t()} | {:error, error()}
-  def parse(path_info, req_headers, %Config.Producer{} = config)
+  @spec parse([String.t()], [{String.t(), String.t()}]) :: {:ok, t()} | {:error, error()}
+  def parse(path_info, req_headers)
       when is_list(path_info) and is_list(req_headers) do
     with {:ok, selection} <- selection(path_info),
-         {:ok, cursor} <- cursor(req_headers),
-         {:ok, batch_window} <- pacing(req_headers, @batch_window, config.batch_window),
-         {:ok, max_batch_size} <- pacing(req_headers, @max_batch_size, config.max_batch_size) do
-      {:ok,
-       %__MODULE__{
-         selection: selection,
-         cursor: cursor,
-         batch_window: Config.clamp(:batch_window, batch_window, config),
-         max_batch_size: Config.clamp(:max_batch_size, max_batch_size, config)
-       }}
+         {:ok, cursor} <- cursor(req_headers) do
+      {:ok, %__MODULE__{selection: selection, cursor: cursor}}
     end
-  end
-
-  @doc """
-  The pacing values actually applied, for the `200`'s response headers.
-
-  Echoing the effective values rather than the requested ones closes the
-  adaptive controller's loop with no extra round trip: it gets its real
-  operating point rather than its hoped-for one. This cannot be inferred from
-  `retry:`, which carries `heartbeat_ms + batch_window` as a single sum.
-  """
-  @spec resp_headers(t()) :: [{String.t(), String.t()}]
-  def resp_headers(%__MODULE__{} = params) do
-    [
-      {@batch_window, Integer.to_string(params.batch_window)},
-      {@max_batch_size, Integer.to_string(params.max_batch_size)}
-    ]
   end
 
   @doc """
@@ -204,7 +161,11 @@ defmodule DMEx.Producer.Params do
 
   # Reserved names first, before any decode is attempted. That ordering is what
   # makes the namespace guarantee structural rather than probabilistic.
+  # `GET /stream` and `GET /stream/` are the same resource. A trailing slash in a
+  # producer URL is otherwise a permanent `400`, and a `400` is fatal to a
+  # consumer — one stray character would silently kill a subscription forever.
   defp selection([]), do: {:ok, :all}
+  defp selection([""]), do: {:ok, :all}
 
   defp selection([name]) when name in @reserved, do: {:error, {:reserved, name}}
 
@@ -223,14 +184,6 @@ defmodule DMEx.Producer.Params do
       {:ok, "latest"} -> {:ok, :latest}
       {:ok, value} -> integer(value, @last_event_id)
       {:error, value} -> {:error, {:invalid, @last_event_id, value}}
-    end
-  end
-
-  defp pacing(req_headers, header, default) do
-    case fetch(req_headers, header) do
-      :error -> {:ok, default}
-      {:ok, value} -> integer(value, header)
-      {:error, value} -> {:error, {:invalid, header, value}}
     end
   end
 
