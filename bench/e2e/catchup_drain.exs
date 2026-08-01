@@ -145,9 +145,7 @@ report.("(b) end to end, no-op handler", backlog, System.monotonic_time(:microse
 
 defmodule Bench.UnusedMessage do
   @moduledoc false
-  @derive JSON.Encoder
-  use DMEx.Message
-  defstruct [:id]
+  use DMEx.Message, [:id]
 end
 
 defmodule Bench.SkippingHandler do

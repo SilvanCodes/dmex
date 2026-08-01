@@ -6,14 +6,36 @@ defmodule DMEx.Message do
   message type, owned by the appending application:
 
       defmodule MyApp.Messages.OrderPlaced do
-        use DMEx.Message
-
-        @derive JSON.Encoder
-        defstruct [:order_id, :customer_id, :total]
+        use DMEx.Message, [:order_id, :customer_id, :total]
       end
 
-  `use DMEx.Message` takes no options. It gives the module two callbacks and
-  nothing else.
+  `use DMEx.Message` takes the message's fields in exactly the shape
+  `defstruct/1` takes them — a list of atoms, a keyword list of defaults, or a
+  mix of the two — and generates from them the three things every appendable
+  message needs anyway: the `defstruct`, the `@derive JSON.Encoder`, and a
+  `t/0` type.
+
+      defmodule MyApp.Messages.OrderShipped do
+        use DMEx.Message, [:order_id, carrier: "unknown"]
+      end
+
+      #=> @type t :: %MyApp.Messages.OrderShipped{
+      #=>              order_id: term(),
+      #=>              carrier: term()
+      #=>            }
+
+  Every field is `term()`. A field list says what the fields are and never what
+  they hold, so the generated type pins the shape — which keys exist, and that
+  the struct is the struct — and nothing it would have to invent.
+
+  Fields are the only thing it takes: a message module declares what the
+  message is, and nothing about who receives it. Omit them entirely for a
+  message that carries no data.
+
+  Because the `@derive` and the `t/0` are generated with the struct, a message
+  module defines neither itself: `@derive` only takes effect before
+  `defstruct`, and a second `@type t` is a redefinition. Implement a protocol
+  directly, and name a hand-written type something other than `t`.
 
   ## `c:type/0` — the wire type
 
@@ -40,10 +62,7 @@ defmodule DMEx.Message do
   round-trips as a string or a plain map and needs a `cast/1` of its own:
 
       defmodule MyApp.Messages.OrderPlaced do
-        use DMEx.Message
-
-        @derive JSON.Encoder
-        defstruct [:order_id, :placed_at]
+        use DMEx.Message, [:order_id, :placed_at]
 
         @impl true
         def cast(%{"placed_at" => placed_at} = data) do
@@ -81,12 +100,9 @@ defmodule DMEx.Message do
   """
   @callback cast(data :: map()) :: struct()
 
-  defmacro __using__(opts) do
-    if opts != [] do
-      raise ArgumentError,
-            "use DMEx.Message takes no options, got: #{inspect(opts)}. " <>
-              "A message module declares what the message is, and nothing about who receives it."
-    end
+  defmacro __using__(fields) do
+    fields = validate_fields!(fields)
+    struct_type = struct_type(fields)
 
     quote do
       @behaviour DMEx.Message
@@ -94,6 +110,15 @@ defmodule DMEx.Message do
       # Evaluated at compile time, so `type/0` is a constant rather than an
       # `inspect/1` call on every append.
       @dmex_message_type inspect(__MODULE__)
+
+      # Every message that is ever appended has to be JSON-encodable, and the
+      # derive has to precede the `defstruct` — so both are generated here
+      # rather than left as two lines each module repeats.
+      @derive JSON.Encoder
+      defstruct unquote(fields)
+
+      @typedoc "The #{@dmex_message_type} message."
+      @type t :: unquote(struct_type)
 
       @impl true
       def type, do: @dmex_message_type
@@ -103,6 +128,44 @@ defmodule DMEx.Message do
 
       defoverridable cast: 1
     end
+  end
+
+  # `%__MODULE__{field: term(), ...}`. Every field is `term()`: the declaration
+  # says what the fields are and never what they hold, so this pins the shape —
+  # which keys exist, and that the struct is the struct — and nothing it would
+  # have to invent.
+  defp struct_type(fields) do
+    pairs =
+      Enum.map(fields, fn
+        field when is_atom(field) -> {field, quote(do: term())}
+        {field, _default} -> {field, quote(do: term())}
+      end)
+
+    quote do
+      %__MODULE__{unquote_splicing(pairs)}
+    end
+  end
+
+  # The fields reach `defstruct` verbatim, so this is only here to turn what
+  # would otherwise be an error inside the generated code into one that names
+  # `use DMEx.Message`. Anything beyond the shape — duplicate keys, say — is
+  # left to `defstruct` itself.
+  defp validate_fields!(fields) when is_list(fields) do
+    Enum.each(fields, fn
+      field when is_atom(field) -> :ok
+      {field, _default} when is_atom(field) -> :ok
+      other -> raise ArgumentError, bad_fields_message(other)
+    end)
+
+    fields
+  end
+
+  defp validate_fields!(other), do: raise(ArgumentError, bad_fields_message(other))
+
+  defp bad_fields_message(got) do
+    "use DMEx.Message takes the message's fields, in the shape defstruct takes them — " <>
+      "a list of atoms, a keyword list of defaults, or a mix of the two. Got: " <>
+      Macro.to_string(got)
   end
 
   @doc """

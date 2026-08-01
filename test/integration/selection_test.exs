@@ -4,10 +4,9 @@
 # see — which is exactly the consumer-deployed-ahead-of-its-log case.
 defmodule DMEx.Integration.SelectionTest.NotYetPublished do
   @moduledoc false
-  use DMEx.Message
-
-  # No `@derive JSON.Encoder`: nothing ever appends this, which is the point.
-  defstruct [:order_id]
+  # Nothing ever appends this, which is the point — it exists only for the
+  # consumer's handler to match on.
+  use DMEx.Message, [:order_id]
 end
 
 defmodule DMEx.Integration.SelectionTest.AheadOfLog do
