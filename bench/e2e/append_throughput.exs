@@ -1,18 +1,12 @@
 # What does the append lock actually cost?
 #
-# Per-app advisory-locked appends make the reader cursor sound but serialize
-# every append in the application. "What append throughput does that actually
-# cap out at" was the open question, and this is the measurement behind the
-# figures `ARCHITECTURE.md` now quotes.
-#
 # Read it two ways:
 #
 #   * Locked throughput should be roughly flat across concurrency. If it rises,
 #     the lock is not doing what it claims; if it collapses, contention is
 #     costing more than serialization alone.
-#   * The locked/unlocked ratio at high concurrency is the price being paid for
-#     a gap-free cursor. That is the number to weigh against the alternatives
-#     the design rejected — snapshot watermarks, read-behind lag.
+#   * The locked/unlocked ratio at high concurrency is the price of a gap-free
+#     cursor.
 #
 # Secondary signal: if locked and unlocked are close even at concurrency 32, the
 # bottleneck is fsync rather than the lock, and the advice to users is "batch

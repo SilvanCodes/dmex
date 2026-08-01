@@ -1,11 +1,6 @@
 defmodule DMEx.BenchHelper do
   @moduledoc """
   Shared setup and fixtures for the benchmark suite.
-
-  Benchmarks here exist to answer questions `ARCHITECTURE.md` records as open —
-  what the append lock actually costs, where the consumer's per-row commit
-  starts to dominate, at what connection count read amplification bites. They
-  are decision tools, not regression tests, so nothing here runs in CI.
   """
 
   alias DMEx.Test.Storage, as: Stub
@@ -70,7 +65,7 @@ defmodule DMEx.BenchHelper do
     "http://127.0.0.1:#{port}"
   end
 
-  @doc "Empties the log, so a run is not measuring the previous run's rows."
+  @doc "Truncates `dmex_messages` and `dmex_cursors`, so a run does not measure the previous one's rows."
   def reset_log! do
     Ecto.Adapters.SQL.query!(
       DMEx.Test.IntegrationRepo,

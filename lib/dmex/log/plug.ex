@@ -2,27 +2,25 @@ defmodule DMEx.Log.Plug do
   @moduledoc """
   Serves a log as an SSE stream.
 
-  The HTTP half of `DMEx.Transport.SSE`: this mount is what a subscription
-  bound to a URL connects to. A subscription in the same application reads the
-  log directly and never comes here — see `DMEx.Transport.Local`.
+  The HTTP half of `DMEx.Transport.SSE`: what a subscription bound to a URL
+  connects to. A subscription in the same application reads the log directly and
+  never comes here — see `DMEx.Transport.Local`.
 
   Mount it wherever you mount plugs — a Phoenix router, a `Plug.Router`, or a
   bare Bandit/Cowboy pipeline:
 
       forward "/stream", to: DMEx.Log.Plug, init_opts: [log: MyApp.Log]
 
-  The mount is a prefix `forward`, and one thing hangs off it:
+  The mount is a prefix `forward`, and two things hang off it:
 
-    * **`GET /stream`** — the log's whole log, which is what a bare browser
-      `EventSource`, `curl`, or anything written before selection existed asks
-      for.
+    * **`GET /stream`** — the whole log, which is what a bare browser
+      `EventSource` or `curl` asks for.
     * **`GET /stream/<blob>`** — the same log narrowed to the message types a
       consumer's filter admits. See `DMEx.Fingerprint` for the blob and
       `DMEx.Log.Messages` for what it is resolved against.
 
-  There is still no application segment and no query string: a log
-  application owns exactly one log, and the app's own hostname already
-  identifies the app.
+  There is no application segment and no query string: one mount serves exactly
+  one log.
 
   ## Selection is resolved once, at connect
 
@@ -30,71 +28,52 @@ defmodule DMEx.Log.Plug do
   something an index can seek on — so the plug expands it against the log's
   compiled message modules before the send loop starts, turning it into the
   concrete type list the read path's `message_type = ANY($1)` predicate wants.
-  The resulting set is also what routes wakeups, so an append only ever disturbs
-  the connections that asked for that type.
+  The resulting set also routes wakeups, so an append only disturbs the
+  connections that asked for that type.
 
   **A filter that matches nothing is a `404`.** An empty expansion is
   indistinguishable on the wire from a healthy stream on a quiet log, so the
   alternative is a connection that opens and says nothing forever. It is not
-  proof of a client bug — a consumer deployed ahead of the log that will
-  emit its types is legitimately in this state — which is why DMEx's own
-  consumer retries a `404` instead of stopping on it.
+  proof of a client bug — a consumer deployed ahead of the log that will emit
+  its types is legitimately in this state — which is why DMEx's own consumer
+  retries a `404` instead of stopping.
 
-  Nothing consumer-supplied is validated beyond that, and emphatically nothing
-  is atomized: a name the log has never heard of simply matches nothing.
+  Nothing consumer-supplied is validated beyond that, and nothing is atomized: a
+  name the log has never heard of simply matches nothing.
 
   ## The request process *is* the stream
 
-  There is no per-connection `GenServer` and no log-side supervisor. This
-  plug registers the request process for wakeups and then runs the send loop
-  inline for the life of the connection.
-
-  That is deliberate. In both Bandit and Cowboy the connection process owns the
+  No per-connection `GenServer` and no log-side supervisor: this plug registers
+  the request process for wakeups and runs the send loop inline for the life of
+  the connection. In both Bandit and Cowboy the connection process owns the
   socket, so writing chunks from another process is awkward at best — and
   reclaiming a stalled connection means killing whichever process is blocked in
   the write, so it had better be the one the connection dies with.
 
-  Registration therefore happens here, before anything that can block: it hands
-  back the connection's `DMEx.Log.Status`, which is what puts even the
-  connect path under `DMEx.Log.Watcher`.
+  Registration happens before anything that can block, and hands back the
+  connection's `DMEx.Log.Status`, which puts even the connect path under
+  `DMEx.Log.Watcher`.
 
   ## Response headers
 
-  Beyond the ordinary SSE set, the `200` carries two things worth knowing about:
+  Beyond the ordinary SSE set:
 
-    * **`x-accel-buffering: no`** — nginx proxies with `proxy_buffering on` by
-      default, which holds response bytes until its buffer fills. On an SSE
-      stream that converts `max_batch_frequency` pacing into "whenever the buffer
-      happens to fill" and swallows heartbeats entirely, so a healthy stream
-      looks dead to both the consumer and the proxy's idle timeout. The header
-      is nginx-specific and ignored elsewhere, and it is the difference between
-      DMEx working behind a default nginx and not.
-
+    * **`x-accel-buffering: no`** — nginx-specific; stops it buffering the
+      stream. See `guides/deployment.md`.
     * **`dmex-matched-messages`** — on a selective stream only, how many of the
-      log's own types the filter admitted. The blob is opaque and cannot be
-      reversed, so this is the one thing that makes a subscription legible from
-      outside.
+      log's types the filter admitted.
 
   `connection: keep-alive` is set only on HTTP/1.1, where it means something; it
-  is a connection-specific header and illegal on HTTP/2.
+  is illegal on HTTP/2.
 
   ## Errors
 
-  A malformed `Last-Event-ID` is a `400` with a `text/plain` body naming the
-  header, and so is a path segment that is neither a reserved name nor a
-  decodable filter. Nothing else about a request is negotiable, because nothing
-  else about one is DMEx's: pacing is log configuration and never appears
-  in a request at all.
+  A `400` for a malformed `Last-Event-ID` or a path segment that is neither a
+  reserved name nor a decodable filter. A `404` for a reserved sub-resource that
+  is not implemented, or a filter matching none of this log's message types. A
+  `405` with `allow: GET` for any other method.
 
-  A `404` means the segment named something that does not exist here: a reserved
-  sub-resource that is not implemented, or a filter matching none of this
-  log's message types.
-
-  There is no `503`/`Retry-After` admission control: DMEx has no aggregate
-  budget to enforce one against, so a log never turns a connect attempt
-  away for load reasons. `DMEx.Log.Watcher` is where one would be enforced
-  if it existed — it already holds the live set — and this is where it would be
-  asked, before registering. See `ROADMAP.md`.
+  There is no `503`/`Retry-After` admission control — see `ROADMAP.md`.
   """
 
   alias DMEx.Config
@@ -121,10 +100,9 @@ defmodule DMEx.Log.Plug do
     %{log: log}
   end
 
-  # A stream is a read and nothing else, so anything but GET is a `405` with the
-  # `allow` header RFC 9110 requires. Without this a POST to the mount would open
-  # a chunked stream and sit there, which is a confusing way to learn about a
-  # typo in a router.
+  # Anything but GET is a `405` with the `allow` header RFC 9110 requires.
+  # Without this a POST to the mount would open a chunked stream and sit there,
+  # which is a confusing way to learn about a typo in a router.
   @impl Plug
   def call(%Plug.Conn{method: method} = conn, _opts) when method != "GET" do
     conn
@@ -135,9 +113,6 @@ defmodule DMEx.Log.Plug do
   def call(conn, %{log: log}) do
     config = log.__dmex__().config
 
-    # `conn.path_info` is what the mount handed us — Plug's `forward` strips the
-    # prefix — so the one-line `forward "/stream", to: DMEx.Log.Plug` mount
-    # routes `/stream/<blob>` with no routing change at all.
     case Params.parse(conn.path_info, conn.req_headers) do
       {:ok, params} -> select(conn, log, params, config)
       {:error, {:reserved, _name} = error} -> not_found(conn, Params.describe(error))
@@ -147,14 +122,9 @@ defmodule DMEx.Log.Plug do
 
   ## Selection
 
-  # Expanded once, here, against the log's own compiled message modules
-  # rather than against what its log happens to contain — see
-  # `DMEx.Log.Messages` for why those two are not interchangeable.
-  #
-  # A filter cannot be pushed into a SQL index; membership is a computation, not
-  # something an index can seek on. Turning it into a concrete type list at
-  # connect time is what lets the read below become an ordinary indexed
-  # `message_type = ANY($1)` predicate.
+  # Expanded once against the log's compiled message modules rather than against
+  # what its log happens to contain — see `DMEx.Log.Messages` for why those are
+  # not interchangeable.
   defp select(conn, log, %{selection: :all} = params, config) do
     stream(conn, log, params, config, :all)
   end
@@ -167,14 +137,6 @@ defmodule DMEx.Log.Plug do
       |> MapSet.new()
 
     if MapSet.size(selection) == 0 do
-      # Deliberately loud. An empty expansion is indistinguishable on the wire
-      # from a healthy stream on a quiet log, so answering it with an open
-      # connection that says nothing forever is the worst of the options.
-      #
-      # It is *not* proof of a client bug: a consumer deployed ahead of the
-      # log that will emit its types is legitimately in this state, which
-      # is why `DMEx.Handler.Stream` retries a 404 rather than treating it as
-      # fatal the way it treats a 400.
       not_found(
         conn,
         "this filter matched none of the message types #{inspect(log)} knows about"
@@ -187,17 +149,13 @@ defmodule DMEx.Log.Plug do
   ## Streaming
 
   defp stream(conn, log, params, config, selection) do
-    # The request process registers *itself*, which is the whole point of the
-    # request being the stream: when the connection dies the entry goes with it.
-    # Registering before the first read means an append landing in between is
-    # picked up by that read rather than missed — and registering before the
-    # first *write* puts the connect path under the watcher too, since resolving
-    # a cursor and sending headers can block exactly as the send loop can.
-    # The status comes back with the registration and lives in that entry, so it
-    # is cleaned up when this process dies without anything watching for it.
-    # The selection rides in the registry entry, so `DMEx.Log.Dispatcher`
-    # can decide whether an append is worth waking this connection for without
-    # messaging it — which matters most exactly when it is wedged.
+    # The request process registers *itself*, so the entry dies with the
+    # connection. Before the first read, so an append landing in between is
+    # picked up by that read; before the first *write*, so the connect path is
+    # under the watcher too, since resolving a cursor and sending headers can
+    # block exactly as the send loop can. The selection rides along so
+    # `DMEx.Log.Dispatcher` can decide whether an append is worth waking this
+    # connection for without messaging it.
     {:ok, status} =
       DMEx.Log.Registry.register(log, config.stall_timeout, selection)
 
@@ -233,9 +191,8 @@ defmodule DMEx.Log.Plug do
     end
   end
 
-  # `latest` is the only cursor needing a query on the connect path, and it is
-  # what lets a consumer skip history without a preflight request or a second
-  # parameter.
+  # The only cursor needing a query on the connect path, and what lets a
+  # consumer skip history without a preflight request.
   defp resolve_cursor(log, :latest) do
     %{storage: storage, storage_opts: opts} = log.__dmex__()
 
@@ -247,10 +204,9 @@ defmodule DMEx.Log.Plug do
 
   defp resolve_cursor(_log, cursor) when is_integer(cursor), do: cursor
 
-  # Sent in a frame of its own at stream open, which is well-defined and
-  # dispatches nothing: an SSE parser applies `retry:` the moment it parses the
-  # line, while an event is only dispatched if the data buffer is non-empty when
-  # the blank line arrives.
+  # A frame of its own at stream open, which dispatches nothing: an SSE parser
+  # applies `retry:` the moment it parses the line, while an event is dispatched
+  # only if the data buffer is non-empty when the blank line arrives.
   defp advertise_retry(conn, config, status) do
     Status.arm(status, config.stall_timeout)
 

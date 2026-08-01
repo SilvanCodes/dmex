@@ -1,33 +1,6 @@
 defmodule DMEx.Handler.DeadMessages do
   @moduledoc """
-  Inspecting, replaying and discarding messages a handler gave up on.
-
-  `dmex_dead_messages` is **structurally a message log**: the stored columns are
-  `dmex_messages`' columns — `id`, `message_type`, `data`, `metadata`,
-  `inserted_at` — with the subscription id alongside to say whose row it is.
-  `id` is still the log's own id.
-
-  One column means something different here: `inserted_at` is when the row
-  landed in *this* table, not when the message was appended. That is what makes
-  the table prunable — "abandoned more than 30 days ago" is a question append
-  time cannot answer — and nothing downstream notices, since a handler is given
-  its struct and the publisher's metadata, never the row's timestamps.
-
-  That is the whole reason replay is a few lines rather than a subsystem: a dead
-  row *is* a log row, so it can be handed straight back to a handler with no
-  reshaping, no field lifting, and no second decode path to keep in step with
-  the first.
-
-  Nothing about the failure is stored — no exception, no message, no attempt
-  count. A failure is an event, not a property of the message; it is in your
-  logs and in `[:dmex, :handler, :failed]`.
-
-  One caveat on "the same row": the payload is equal as a *value*, not
-  byte-for-byte. It was decoded out of a frame and re-encoded on the way in, so
-  key order and whitespace come from Elixir's encoder rather than from the
-  log's `jsonb` rendering. Nothing should hash or sign a replayed payload
-  and expect it to match the original bytes — which is already true of anything
-  read back out of the log itself.
+  Inspects, replays and discards messages a handler gave up on.
 
       # what is stuck
       DMEx.Handler.DeadMessages.list(MyApp.OrderProjection, repo: MyApp.Repo)
@@ -35,25 +8,23 @@ defmodule DMEx.Handler.DeadMessages do
       # fix the handler, deploy, then
       DMEx.Handler.DeadMessages.replay(MyApp.OrderProjection, repo: MyApp.Repo)
 
+  The stored columns are `dmex_messages`' columns, so a dead row *is* a log row
+  and replay hands it straight back with no reshaping — see `DMEx.Migration`
+  for the shape and for what is deliberately not stored.
+
   ## Replay does not touch the cursor
 
-  A replayed message is delivered out of band: the subscription has long since
-  advanced past it, and moving the cursor backwards to re-reach it would
-  redeliver everything in between. So `replay/2` calls the handler directly and
-  deletes the row on success, in one transaction — the same atomicity the
-  original failure was recorded with.
-
-  It follows that replay bypasses duplicate suppression, because the cursor is
-  the only thing suppression consults. Replaying twice calls the handler twice.
+  The subscription advanced past a dead message long ago, and moving the cursor
+  backwards would redeliver everything in between. So `replay/2` calls the
+  handler directly and deletes the row on success, in one transaction. It
+  follows that replay bypasses duplicate suppression, which consults only the
+  cursor — so a handler can be called for a message whose side effects partly
+  landed on an earlier attempt.
 
   ## Options
 
-  `repo:` (required), plus optional `storage:` and `prefix:`, the same as
-  `DMEx.Supervisor`, and `log:` — which a handler reading more than one log must
-  give, since a dead row belongs to one `{log, id}` pair. Nothing else: which
-  messages to decode and which subscription a row belongs to both come off the
-  handler module, so there is no second place to keep them in step with the live
-  path.
+  `repo:` (required), plus optional `storage:`, `prefix:` and — for a multi-log
+  handler — `log:`. See `DMEx.Supervisor.storage!/1`.
   """
 
   alias DMEx.Handler
@@ -62,7 +33,7 @@ defmodule DMEx.Handler.DeadMessages do
   require Logger
 
   @doc """
-  Every message `handler`'s subscription gave up on, oldest first.
+  Lists every message `handler`'s subscription gave up on, oldest first.
 
   Rows come back in `t:DMEx.Storage.row/0` shape — `data` and `metadata` as JSON
   text, exactly as stored.
@@ -117,8 +88,6 @@ defmodule DMEx.Handler.DeadMessages do
 
   ## Internals
 
-  # A dead message belongs to one subscription, so a multi-log handler has to say
-  # which one. `DMEx.Handler.log!/2` is what raises when it did not.
   defp subscription!(handler, opts) do
     Handler.subscription_id(handler, Handler.log!(handler, opts))
   end
@@ -139,7 +108,6 @@ defmodule DMEx.Handler.DeadMessages do
   end
 
   defp run(row, module, declaration, subscription, storage, storage_opts) do
-    # Stored as text, decoded here, exactly as the live path does it.
     message = module.cast(JSON.decode!(row.data))
     metadata = JSON.decode!(row.metadata)
 

@@ -103,10 +103,8 @@ end
 # them independently spreads appends across the window the way real traffic
 # does, which is what makes the expected average half an interval.
 #
-# The rate is also deliberately kept *below* what the consumer can drain. Push
-# past that and this stops measuring framing and starts measuring backlog: at
-# 500 back-to-back appends against a consumer doing ~155 rows/s, p50 comes out
-# near two seconds, which is a queueing figure rather than a latency one.
+# The rate is deliberately kept *below* what the consumer can drain: past that
+# this stops measuring latency and starts measuring backlog.
 busy = fn count, interval_ms ->
   sent =
     for _ <- 1..count do

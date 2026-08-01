@@ -2,45 +2,27 @@ defmodule DMEx.Transport.Local do
   @moduledoc """
   Reading a log this application owns, in this VM.
 
-  Chosen for a `logs:` entry that is a module rather than a URL. Nothing
-  configures it: an application does not read its own log over a socket, and the
-  binding already says which kind of log this is.
+  Chosen for a `logs:` entry that is a module rather than a URL. There is no
+  wire, so there is no framing, no fingerprint and no heartbeat — only a read
+  and a handler.
 
-  There is no wire here, so there is nothing on it: no frame is encoded, nothing
-  is parsed back, no fingerprint is built or expanded, no connection can be lost
-  and no heartbeat is owed. What is left is a read and a handler, which is what
-  reading a table in your own database ought to cost.
+  **It is the same send loop.** `connect/1` starts a linked process that
+  registers with `DMEx.Log.Registry` — the same registration a request process
+  serving SSE makes — and runs `DMEx.Log.Stream.loop/2` with this module as its
+  transport. So a local subscription gets `LISTEN`/`NOTIFY` wakeups,
+  selection-based routing, pacing and `DMEx.Log.Watcher` reclaim by construction
+  rather than reimplementation. Only `c:DMEx.Transport.write/2` differs.
 
-  ## It is the same send loop
+  **Backpressure is a call, not a window.** `write/2` is a `GenServer.call/3`
+  whose reply comes only after the pipeline has run the whole batch, so the loop
+  reads nothing meanwhile. A handler that never returns therefore wedges its
+  reader rather than the subscription, and the watcher reclaims it like any
+  other stalled stream.
 
-  `connect/1` starts a linked process that registers with
-  `DMEx.Log.Registry` — the same registration a request process serving SSE
-  makes — and runs `DMEx.Log.Stream.loop/2` with this module as its transport.
-  So a local subscription gets `LISTEN`/`NOTIFY` wakeups, selection-based wakeup
-  routing, `max_batch_size`/`max_batch_bytes`/`max_batch_frequency` pacing and
-  `DMEx.Log.Watcher` reclaim by construction rather than by reimplementation.
-  The only thing that differs is what `c:DMEx.Transport.write/2` does with a
-  read's rows.
-
-  ## Backpressure is a call, not a window
-
-  `write/2` is a `GenServer.call/3` into the subscription, and the reply only
-  comes after the pipeline has run the whole batch. The loop is blocked in the
-  meantime, so it reads nothing further — exactly the property the socket's
-  receive window gives the SSE transport, with one batch in flight and nothing
-  queued anywhere.
-
-  It also means a handler that never returns wedges its reader rather than the
-  subscription, and the watcher reclaims it on `stall_timeout` like any other
-  stalled stream. The reply then goes to a dead caller, which costs nothing, and
-  the subscription reconnects from its durable cursor.
-
-  ## Selection is a list, not a filter
-
-  A remote subscription encodes its message types into a `DMEx.Fingerprint` blob
-  because they have to cross a wire and be expanded on the other side. Here both
-  ends are the same node, so the handler's declared modules go straight into the
-  read as a type list. A handler declared `selective: false` reads the whole log.
+  **Selection is a list, not a filter.** A remote subscription encodes its
+  message types into a `DMEx.Fingerprint` blob because they cross a wire and are
+  expanded on the other side. Here both ends are the same node, so the declared
+  modules go straight into the read as a type list.
   """
 
   @behaviour DMEx.Transport
@@ -62,15 +44,11 @@ defmodule DMEx.Transport.Local do
     :exit, reason -> {:error, reason}
   end
 
-  # Nothing can mistake a quiet in-VM reader for a dead one, so there is no
-  # liveness signal to send.
   @impl DMEx.Transport
   def heartbeat(sink), do: {:ok, sink}
 
-  # A storage row is atom-keyed with `data` and `metadata` as JSON text, which is
-  # what the wire splices verbatim. The pipeline takes the shape `parse/1`
-  # yields, so this decodes those two and nothing else — no encode, no frame, no
-  # re-parse.
+  # The pipeline takes the shape `Frame.parse/1` yields, so this decodes `data`
+  # and `metadata` and nothing else.
   defp row(row) do
     %{
       "id" => row.id,
@@ -95,8 +73,7 @@ defmodule DMEx.Transport.Local do
     reader =
       spawn_link(fn ->
         # Registered by the reader itself, so the entry dies with it — the same
-        # reason the SSE side registers the request process rather than tracking
-        # it from elsewhere.
+        # reason the SSE side registers the request process.
         {:ok, status} = DMEx.Log.Registry.register(log, config.stall_timeout, selection)
 
         :telemetry.execute(
@@ -119,8 +96,7 @@ defmodule DMEx.Transport.Local do
     {:ok, %{log: log, reader: reader}}
   end
 
-  # The reader is linked, so its death arrives here as an exit signal the owner
-  # traps. Anything else belongs to somebody else.
+  # The reader is linked, so its death arrives as an exit the owner traps.
   @impl DMEx.Transport
   def handle_message({:EXIT, reader, reason}, %{reader: reader} = source) do
     {:disconnect, reason, source}
@@ -138,16 +114,13 @@ defmodule DMEx.Transport.Local do
     :ok
   end
 
-  # Nothing to lose, so nothing to watch for: a reader that stops delivering has
-  # either died — which arrives as an exit — or is legitimately parked on an idle
-  # log.
   @impl DMEx.Transport
   def liveness(_source), do: :infinity
 
   ## Resolution
 
   # The same three answers `DMEx.Handler.Request` puts in a `last-event-id`
-  # header and `DMEx.Log.Plug` resolves back out of one, without the round trip.
+  # header and `DMEx.Log.Plug` resolves back out, without the round trip.
   defp resolve_cursor(log, :none, %{start: :latest}) do
     %{storage: storage, storage_opts: storage_opts} = log.__dmex__()
 

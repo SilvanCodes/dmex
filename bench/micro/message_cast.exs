@@ -1,4 +1,4 @@
-# Benchmark B3, named in `lib/dmex/message.ex`.
+# Should `use DMEx.Message` inject precomputed field-name strings?
 #
 # `DMEx.Message.cast_default/2` walks the struct's fields and calls
 # `Atom.to_string/1` on each one to look it up in the incoming map. That is one
@@ -12,7 +12,7 @@
 alias DMEx.BenchHelper, as: Helper
 alias DMEx.Message
 
-Helper.section("message_cast (B3) — per-row casting cost")
+Helper.section("message_cast — per-row casting cost")
 
 defmodule Bench.Cast do
   @moduledoc false

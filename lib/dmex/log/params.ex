@@ -7,70 +7,31 @@ defmodule DMEx.Log.Params do
 
   | carried in | meaning | absent | invalid |
   | --- | --- | --- | --- |
-  | the path segment | which message types | the whole log | `400` |
+  | the path segment | which message types | the whole log | `400`, or `404` if reserved |
   | `last-event-id` | resume position, as `previous/current` or a bare id | from the beginning | `400` |
 
-  **There are no DMEx request headers.** Pacing is log configuration, so a
-  connect request carries nothing about it — which means DMEx's own consumer and
-  a browser's `EventSource` send byte-identical requests, and everything the
-  log needs to answer one is in the request line plus a header SSE already
-  defines.
+  **DMEx defines no request headers.** See the wire contract in
+  `ARCHITECTURE.md`, which also covers why the selection goes in the path.
 
   This module takes a path and request headers rather than a `Plug.Conn`, which
   keeps it pure, free of any optional dependency, and testable without a socket.
 
-  ## Why the selection is in the URL, and in the path half of it
-
-  A type selector is *identity* — a different selection is a different resource,
-  not the same one with a modifier — so it belongs in the path rather than in a
-  query string or a header, and three things follow from that:
-
-    * **A browser `EventSource` can select.** It sets no request headers beyond
-      `Last-Event-ID`, but the URL is entirely its own. In a header this would
-      have left every browser client receiving its log's whole log and
-      discarding most of it.
-    * **Intermediaries treat paths as load-bearing and query strings as
-      negotiable.** Caches and proxies routinely drop, reorder or key-strip
-      query strings; nothing does that to a path. Losing the selection silently
-      converts a selective subscription back into a whole-log one, which is a
-      bandwidth incident rather than an error.
-    * **A selection is stable, so the URL is stable.** A message set changes
-      when somebody ships code, so one URL per deployment is a grouping that
-      survives long enough to be worth having in a proxy log, a cache key or a
-      dashboard.
-
-  ## The `/stream` namespace
-
-  Putting a blob in the path makes `/stream/...` a namespace, and a namespace can
-  collide. **Reserved names are matched first**, before any decode is attempted,
-  which is what makes the guarantee structural rather than probabilistic. The
-  reserved list is closed and lives in this module.
-
-  It could hardly collide anyway — the shortest valid blob is a 64-bit seed plus
-  three fingerprints, and every reserved name is a short readable word — but
-  "hardly" is not a guarantee and ordering is.
-
   ## The `Last-Event-ID` vocabulary
 
-  The SSE specification puts no numeric constraint on the header, so the
-  log accepts a small vocabulary and rejects everything else:
+  The SSE specification puts no numeric constraint on the header, so the log
+  accepts a small vocabulary and rejects everything else:
 
-    * **`<previous>/<current>`** — the ordinary case, because that is what a
-      frame's `id:` field carries and what any SSE client echoes back verbatim.
-      Only `current` is used; the predecessor is a consumer-side integrity check
-      (see `DMEx.Transport.SSE.Frame`) and means nothing to a log, which resumes from
-      a position rather than verifying one.
-    * **an integer id** — resume after it. What a client constructs by hand, and
-      what everything sent before the chain existed looks like.
-    * **`latest`** — start from the tip, resolved against the log's current
-      `max(id)`. This is how a consumer that only cares about what happens from
-      now on skips history, with no preflight request and no second parameter;
-    * **absent** — from id 0, the whole log, which is also what a fresh
-      browser `EventSource` sends.
+    * **`<previous>/<current>`** — the ordinary case, since that is what a
+      frame's `id:` carries and what any SSE client echoes back verbatim. Only
+      `current` is used; the predecessor is a consumer-side integrity check (see
+      `DMEx.Transport.SSE.Frame`) and means nothing to a log.
+    * **an integer id** — resume after it.
+    * **`latest`** — start from the tip, resolved against the log's `max(id)`.
+      How a consumer skips history with no preflight request.
+    * **absent** — from id 0, the whole log, which is what a fresh browser
+      `EventSource` sends.
 
-  Validation is deliberately strict — `~r/\\A\\d+\\z/` per half rather than
-  `Integer.parse/1`, which would accept `"5abc"` and `"+5"`. A vocabulary this
-  small is worth validating exactly.
+  Validation is strict: `~r/\\A\\d+\\z/` per half, so `"5abc"` is a `400`.
   """
 
   alias DMEx.Fingerprint
@@ -80,9 +41,8 @@ defmodule DMEx.Log.Params do
   @typedoc """
   A parsed connect request.
 
-  `:selection` is `:all` for a bare `GET /stream` — what a browser `EventSource`
-  pointed at the plain URL asks for, and what a handler declared
-  `selective: false` requests — or the filter decoded from the path segment.
+  `:selection` is `:all` for a bare `GET /stream`, or the filter decoded from
+  the path segment.
   """
   @type t :: %__MODULE__{
           cursor: non_neg_integer() | :latest,
@@ -94,8 +54,8 @@ defmodule DMEx.Log.Params do
 
   `:invalid` names the offending header or path segment and its value, and is
   answered with a `400`. `:reserved` means the segment is a named sub-resource
-  of the log rather than a filter, and is answered with a `404` until one
-  of them is implemented.
+  of the log rather than a filter, and is answered with a `404` until one is
+  implemented.
   """
   @type error ::
           {:invalid, source :: String.t(), value :: String.t()}
@@ -111,8 +71,6 @@ defmodule DMEx.Log.Params do
   # What a filter path segment is called when a `400` has to name it.
   @filter "filter"
 
-  # HTTP header names are case-insensitive and Plug downcases them, so nothing
-  # here should ever compare them any other way.
   @digits ~r/\A\d+\z/
 
   @doc """
@@ -135,13 +93,9 @@ defmodule DMEx.Log.Params do
   end
 
   @doc """
-  The header saying how many of the log's own types a filter admitted.
+  Builds the header saying how many of the log's types a filter admitted.
 
-  Sent only on a selective stream. The blob is opaque — it cannot be reversed,
-  and it says nothing at all in a proxy log — so this is the one thing that
-  makes a subscription legible from outside: a count of `0` where ten types were
-  selected is an encoding mismatch, visible at connect rather than through
-  silence.
+  Sent only on a selective stream.
   """
   @spec matched_header(non_neg_integer()) :: [{String.t(), String.t()}]
   def matched_header(count) when is_integer(count) and count >= 0 do
@@ -165,11 +119,9 @@ defmodule DMEx.Log.Params do
 
   ## Internals
 
-  # Reserved names first, before any decode is attempted. That ordering is what
-  # makes the namespace guarantee structural rather than probabilistic.
-  # `GET /stream` and `GET /stream/` are the same resource. A trailing slash in a
-  # log URL is otherwise a permanent `400`, and a `400` is fatal to a
-  # consumer — one stray character would silently kill a subscription forever.
+  # Reserved names first, before any decode. `GET /stream` and `GET /stream/`
+  # are the same resource: a trailing slash would otherwise be a permanent
+  # `400`, and a `400` is fatal to a consumer.
   defp selection([]), do: {:ok, :all}
   defp selection([""]), do: {:ok, :all}
 
@@ -193,9 +145,6 @@ defmodule DMEx.Log.Params do
     end
   end
 
-  # A frame's `id:` is `previous/current`, and a client echoes it back whole. The
-  # predecessor is the consumer's own integrity check and carries nothing a
-  # log needs, so it is validated and discarded.
   defp resume_position(value) do
     case String.split(value, "/", parts: 2) do
       [current] ->
@@ -216,8 +165,8 @@ defmodule DMEx.Log.Params do
     end
   end
 
-  # A header sent twice is a client bug of the same kind as a malformed value:
-  # there is no sensible way to pick between two resume positions.
+  # HTTP header names are case-insensitive and Plug downcases them. A header
+  # sent twice is a `400`: there is no sensible way to pick a resume position.
   defp fetch(req_headers, name) do
     case for {^name, value} <- req_headers, do: value do
       [] -> :error

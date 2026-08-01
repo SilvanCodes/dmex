@@ -15,7 +15,7 @@ alias DMEx.Transport.SSE.Frame
 
 Helper.section("frame_parse — consumer-side decode ceiling")
 
-# One frame per row now, so there is no batch dimension left: a block is a row.
+# One frame per row: a block is a row.
 inputs =
   for payload <- [128, 1_024, 16_384], into: %{} do
     {"1 row x #{payload}B", 1 |> Helper.frame_bytes(payload) |> String.trim_trailing("\n\n")}

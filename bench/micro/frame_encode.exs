@@ -5,9 +5,6 @@
 # the id, and a `JSON.encode_to_iodata!/1` for the ISO8601 timestamp. If those
 # dominate at small payloads, precomputing the timestamp string is worth doing;
 # if they vanish beside the copy, the module is done.
-#
-# The ns/row figure this produces is also what sizes the write byte cap: it says
-# how long the log spends building the largest write it will ever send.
 
 alias DMEx.BenchHelper, as: Helper
 alias DMEx.Transport.SSE.Frame

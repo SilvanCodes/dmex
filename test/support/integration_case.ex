@@ -3,10 +3,8 @@ defmodule DMEx.IntegrationCase do
   Case template for the integration suite.
 
   Runs against `DMEx.Test.IntegrationRepo` with **no sandbox**, so writes really
-  commit. That is a requirement rather than a preference: `LISTEN`/`NOTIFY` only
-  fires at COMMIT, and the append-ordering test needs genuinely concurrent
-  transactions. The cost is that cleanup is ours to do, and that these tests
-  cannot run `async: true` against the same tables.
+  commit — see `config/test.exs` for why. The cost is that cleanup is ours to
+  do, and that these tests cannot run `async: true` against the same tables.
 
   Tagged `:integration`, so `mix test` skips them; run them with
   `mix test.integration` or `mix test.all`.

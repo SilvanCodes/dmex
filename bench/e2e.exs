@@ -1,10 +1,9 @@
-# End-to-end benchmarks: the questions ARCHITECTURE.md leaves open with no
-# numbers attached.
+# End-to-end benchmarks.
 #
 #     MIX_ENV=test mix bench.e2e
 #
 # These need a reachable Postgres (the integration database) and they write to
-# it. Each file states which open question it answers. None run in CI.
+# it. Each file states the question it answers.
 
 Code.require_file("support/bench_helper.exs", __DIR__)
 

@@ -2,10 +2,9 @@ defmodule DMEx.Test.Server do
   @moduledoc """
   A real Bandit server mounting `DMEx.Log.Plug`, for the integration suite.
 
-  Binds port 0 and reports what it got, so tests can run in parallel with each
-  other and with anything else on the machine. The router is the same
-  `forward/2` line the documentation tells a host application to write, so these
-  tests exercise the documented mount rather than a private entry point.
+  Binds port 0, so it never collides with anything on the machine. The router is
+  the same `forward/2` line the documentation tells a host application to write,
+  so these tests exercise the documented mount rather than a private one.
   """
 
   defmodule Router do
@@ -60,12 +59,8 @@ defmodule DMEx.Test.Server do
   end
 
   @doc """
-  The log map binding `:test` — the name every `DMEx.Test.Handlers` module
-  declares — to `url`.
-
-  The reason the map lives on the `DMEx.Supervisor` child spec rather than in
-  application config, stated as code: the port is 0 until the server is running,
-  so this cannot be a literal anywhere.
+  Binds `:test` to `url` for `DMEx.Supervisor`. Not a literal anywhere, since
+  the port is 0 until the server is running.
   """
   @spec logs(String.t()) :: keyword(String.t())
   def logs(url), do: [test: url]

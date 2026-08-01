@@ -12,25 +12,18 @@ defmodule DMEx.Supervisor do
          billing: "https://billing.internal/stream"
        ]}
 
-  One list, two kinds of entry. A **module** is a log this application owns and
-  appends to, started here and served over `DMEx.Log.Plug`; a **URL** is someone
-  else's log. Both are just names as far as a handler is concerned, which is what
-  lets a log move between the two — an application that grows its own copy of a
-  feed changes one entry and nothing else.
-
-  **The binding also chooses the transport**, which is why nothing configures
-  one: a module is read in this VM (`DMEx.Transport.Local`), a URL is read over
-  HTTP (`DMEx.Transport.SSE`). Reading a log this application owns costs a query
-  and a handler call — no socket, no framing, no round trip through itself.
+  One list, two kinds of entry. A **module** is a log this application owns,
+  started here and served over `DMEx.Log.Plug`; a **URL** is someone else's.
+  Both are just names as far as a handler is concerned, which lets a log move
+  between the two. The binding also **chooses the transport**, which is why
+  nothing configures one: a module is read in this VM (`DMEx.Transport.Local`),
+  a URL over HTTP (`DMEx.Transport.SSE`).
 
   Handlers are **not** listed. Every `use DMEx.Handler` module compiled into an
-  application that depends on `:dmex` is discovered and started, one subscription
-  per log it names, and everything about a subscription — which logs, under what
-  id, which message types, how it handles failure — is declared on the handler
-  module. All this needs to say is what each log name means.
-
-  A discovered handler naming a log that is not bound here stops the boot: a
-  typo'd log name is otherwise a subscription that silently never exists.
+  application depending on `:dmex` is discovered and started, one subscription
+  per log it names; all this needs to say is what each log name means. A
+  discovered handler naming a log that is not bound here stops the boot, since
+  the alternative is a subscription that silently never exists.
 
   Code deciding at runtime can still start one by hand:
 
@@ -41,36 +34,29 @@ defmodule DMEx.Supervisor do
     * `:logs` — a keyword list of log name to either a `DMEx.Log` module (owned)
       or a stream URL (remote).
     * `:otp_app` — the application whose modules are scanned, for handlers and
-      for the message types an owned log can append. Defaults to the Mix project,
-      which is the answer in dev and test; in a release it is worth stating,
-      though every application depending on `:dmex` is scanned regardless.
-      `otp_app: nil` scans nothing beyond those.
+      for the message types an owned log can append. Defaults to the Mix project;
+      worth stating in a release, though every application depending on `:dmex`
+      is scanned regardless. `otp_app: nil` scans nothing beyond those.
     * `:repo` — the Ecto repo holding `dmex_cursors`.
     * `:storage` — the `DMEx.Storage` adapter; defaults to `DMEx.Storage.Postgres`.
     * `:prefix` — Postgres schema for the DMEx tables.
     * `:name` — names this supervisor, so an application can run more than one.
 
-  A URL is not verifiable against reality. Pointing an entry at the wrong host
+  A URL is not verifiable against reality: pointing an entry at the wrong host
   yields a subscription that looks perfectly healthy — connected, cursor
   advancing, every row skipped as an unknown type — while reading the wrong log.
   A selective subscription usually gets a `404` and says so; one declared
-  `selective: false` gets a stream of skips, which is indistinguishable from a
-  correct one on a quiet log.
+  `selective: false` gets a stream of skips.
 
-  ## Where the cursor is written
+  `repo:` (and optionally `storage:` / `prefix:`) is the default for every
+  subscription under this supervisor. A `subscribe/2` call may override it, or
+  resolve it from the supervisor named by `supervisor:`; with neither it raises
+  and names both fixes. `logs:` resolves the same way.
 
-  `repo:` (and optionally `storage:` / `prefix:`) here is the default for every
-  subscription under it. A `subscribe/2` call may override it — for an
-  application whose bookkeeping lives in a second repo — or resolve it from the
-  running supervisor named by `supervisor:`. With neither, it raises and names
-  both fixes. `logs:` resolves the same way.
-
-  ## Two subscriptions cannot share one identity
-
-  `{log, id}` keys the cursor, so two handlers declaring the same pair would
-  clobber each other's position. That is checked across every discovered
-  handler's every log before any child starts; the registry rejects a dynamic
-  `subscribe/2` for an id already live with `{:error, {:already_subscribed, id}}`.
+  **Two subscriptions cannot share one identity.** `{log, id}` keys the cursor,
+  so two handlers declaring the same pair would clobber each other's position.
+  Checked across every discovered handler before any child starts; a dynamic
+  `subscribe/2` for a live id gets `{:error, {:already_subscribed, id}}`.
   """
 
   use Supervisor
@@ -111,18 +97,17 @@ defmodule DMEx.Supervisor do
     logs = logs!(opts)
     otp_app = otp_app(opts)
 
-    # Before any child starts, and loudly. It cannot live in `start_discovered/2`
-    # below: that runs inside a `Task` with `restart: :temporary`, so a raise
-    # there would kill the Task silently and the supervisor would never notice.
+    # Before any child starts, and loudly. It cannot live in
+    # `start_discovered/2`: that runs inside a `Task` with `restart:
+    # :temporary`, so a raise there would kill the Task silently.
     handlers = __startable__!(Handler.discover(otp_app), logs)
 
     children =
       owned_logs(logs, otp_app) ++
         [
           # The default storage and the log bindings ride along as registry
-          # metadata, seeded at start. That is why a bare subscribe/2 can find
-          # them with no GenServer call, and why nothing has to write them
-          # afterwards.
+          # metadata, seeded at start, which is why a bare subscribe/2 can find
+          # them with no GenServer call.
           {Registry,
            keys: :unique, name: registry(name), meta: [storage: storage_config!(opts), logs: logs]},
           {Subscriptions, name: subscriptions(name)},
@@ -149,10 +134,9 @@ defmodule DMEx.Supervisor do
     for {_name, target} <- logs, is_atom(target), uniq: true, do: {target, otp_app: otp_app}
   end
 
-  # Where handler discovery and an owned log's message scan both start. Every
-  # application depending on `:dmex` is scanned anyway, so this only adds one
-  # that does not — which in practice is the host application in a release, and
-  # the Mix project everywhere else.
+  # Every application depending on `:dmex` is scanned anyway, so this only adds
+  # one that does not: the host application in a release, the Mix project
+  # everywhere else.
   defp otp_app(opts) do
     Keyword.get_lazy(opts, :otp_app, &mix_app/0)
   end
@@ -166,13 +150,11 @@ defmodule DMEx.Supervisor do
 
   Everything about *what* is consumed comes off the module, as do its defaults
   for how it runs. The options here override those, and say where the cursor is
-  written and which supervisor to attach to. `log:` narrows the call to one of
-  the handler's logs.
+  written and which supervisor to attach to. `log:` narrows the call to one log.
 
-  Returns `{:error, {:already_subscribed, id}}` if one of them already has a live
-  stream — one cursor per identity is the model, and two streams sharing one
-  would clobber it. The subscriptions started before it stay up: each is
-  independent, and tearing down working ones to report on another helps nobody.
+  Returns `{:error, {:already_subscribed, id}}` if one already has a live stream.
+  Subscriptions started before it stay up: each is independent, and tearing down
+  working ones to report on another helps nobody.
   """
   @spec subscribe(module(), keyword()) ::
           {:ok, [pid()]} | {:error, {:already_subscribed, String.t()}} | {:error, term()}
@@ -253,9 +235,8 @@ defmodule DMEx.Supervisor do
   Resolves `repo:`, `storage:` and `prefix:` into an adapter and its options.
 
   The one place those three are read, so `subscribe/2`, `DMEx.Handler.Cursors`
-  and `DMEx.Handler.DeadMessages` cannot drift on what they mean. `:repo` may be
-  absent here — a supervisor started with no default is legal, and `subscribe/2`
-  is what insists on one.
+  and `DMEx.Handler.DeadMessages` cannot drift. `:repo` may be absent here — a
+  supervisor started with no default is legal, and `subscribe/2` insists on one.
   """
   @spec storage(keyword()) :: {module(), DMEx.Storage.opts()}
   def storage(opts) do
@@ -291,11 +272,10 @@ defmodule DMEx.Supervisor do
   def subscriptions(name \\ @default_name), do: Module.concat(name, "Subscriptions")
 
   @doc """
-  The discovered handlers that may be started against `logs`, or a raise.
+  Returns the discovered handlers that may be started against `logs`, or raises.
 
   Both failures are pure functions of the declarations, so nothing has to be
-  running for them to be answerable — which is why `init/1` asks before it
-  starts anything.
+  running to answer them — which is why `init/1` asks before starting anything.
   """
   @spec __startable__!([module()], %{String.t() => String.t() | module()}) :: [module()]
   def __startable__!(handlers, logs) do
@@ -338,10 +318,8 @@ defmodule DMEx.Supervisor do
 
   ## Log resolution
 
-  # The binding is the whole of the choice: a URL is somebody else's log and is
-  # read over HTTP, a module is one this application owns and is read in this
-  # VM. There is no transport option anywhere, because there is nothing left for
-  # one to say.
+  # The binding is the whole of the choice, which is why there is no transport
+  # option anywhere: there would be nothing left for one to say.
   defp transport!(declaration, log, logs) do
     case Map.fetch(logs, log) do
       {:ok, url} when is_binary(url) -> {DMEx.Transport.SSE, url}
@@ -383,8 +361,8 @@ defmodule DMEx.Supervisor do
   end
 
   # Names are validated where they are declared rather than at first connect,
-  # because a typo in a key and a typo in a handler's `logs:` are the same bug and
-  # only one of them is visible in the "unknown log" message.
+  # because a typo in a key and a typo in a handler's `logs:` are the same bug
+  # and only one is visible in the "unknown log" message.
   defp logs!(opts) do
     case Keyword.get(opts, :logs, []) do
       entries when is_list(entries) or is_map(entries) ->
@@ -531,10 +509,8 @@ defmodule DMEx.Supervisor do
         raise ArgumentError,
               "unknown subscription option(s) #{inspect(unknown)}. " <>
                 "Known options: #{inspect(Enum.sort(known))}. " <>
-                "Note there is no filter or selection option here: a subscription selects " <>
-                "the message types its handler's clauses match on, encoded at compile time " <>
-                "and sent in the request path. The logs, the id, the message types and " <>
-                "`selective:` all belong to the handler module, not here."
+                "Note there is no filter or selection option here: the logs, the id, the " <>
+                "message types and `selective:` all belong to the handler module, not here."
     end
   end
 end
