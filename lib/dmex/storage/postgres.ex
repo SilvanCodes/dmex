@@ -2,19 +2,17 @@ defmodule DMEx.Storage.Postgres do
   @moduledoc """
   The Postgres implementation of `DMEx.Storage`.
 
-  Raw SQL through `Ecto.Adapters.SQL.query/4` rather than Ecto schemas. Two
-  reasons, and the first is not negotiable: `data::text` cannot be expressed as
-  a schema load, and the whole point of the read is that `jsonb` comes back as
-  the text `DMEx.Transport.SSE.Frame` splices verbatim. The second is that there is no schema
-  to reuse — DMEx owns three tables nothing else queries.
+  Raw SQL through `Ecto.Adapters.SQL.query/4` rather than Ecto schemas, for two
+  reasons. `data::text` cannot be expressed as a schema load, and the whole
+  point of the read is that `jsonb` comes back as the text
+  `DMEx.Transport.SSE.Frame` splices verbatim. And there is no schema to reuse —
+  DMEx owns three tables nothing else queries.
 
   ## No JSON library is ever required
 
   Parameters go in as **`$n::text::jsonb`** and `data`/`metadata` come back as
-  `column::text`. Postgrex is therefore never asked to encode or decode `jsonb`,
-  and DMEx never needs `config :postgrex, :json_library` — which matters,
-  because DMEx depends on no JSON library at all and uses Elixir's built-in
-  `JSON` module.
+  `column::text`, so Postgrex is never asked to encode or decode `jsonb` and
+  DMEx never needs `config :postgrex, :json_library`.
 
   **The double cast is load-bearing, and `$n::jsonb` is the trap.** Postgres
   infers a parameter's type from where it is used, so `$n::jsonb` makes it
@@ -25,8 +23,8 @@ defmodule DMEx.Storage.Postgres do
   untouched and Postgres does the parse.
 
   That failure is silent — the insert succeeds, the row is valid `jsonb`, and
-  only a consumer decoding the payload ever notices — so there is a test
-  asserting `jsonb_typeof(data) = 'object'`.
+  only a consumer decoding the payload notices — so a test asserts
+  `jsonb_typeof(data) = 'object'`.
   """
 
   @behaviour DMEx.Storage
@@ -52,9 +50,7 @@ defmodule DMEx.Storage.Postgres do
 
         # Postgres delivers notifications at COMMIT, so a row is never announced
         # before it is visible. The payload is the `message_type` and nothing
-        # else: a routing key, never a carrier of work — no id, no range, no
-        # row, because each stream reads from its own cursor to whatever is
-        # there now and would consume none of it.
+        # else: a routing key, never a carrier of work.
         notify!(repo, opts, type)
 
         id
@@ -92,44 +88,35 @@ defmodule DMEx.Storage.Postgres do
   @doc false
   def __read_sql__(opts, predicate), do: read_sql(opts, predicate)
 
-  # Four nested levels, and each one is load-bearing.
+  # Four nested levels, each load-bearing.
   #
   # **`page`** applies the row limit against the index, so everything above it
-  # works on at most `$2` rows rather than on the whole log after the cursor.
-  # That nesting is not stylistic: within one SELECT, Postgres computes window
-  # functions *before* LIMIT, so a window in the same query level as the LIMIT
-  # would run the running sum over every matching row in the log. The `::text`
+  # works on at most `$2` rows. Not stylistic: within one SELECT, Postgres
+  # computes window functions *before* LIMIT, so a window at the same level as
+  # the LIMIT would run the sum over every matching row in the log. The `::text`
   # casts happen here, once.
   #
-  # **`sized`** gives each row its own byte count, off the already-cast text
-  # columns so nothing is cast twice.
+  # **`sized`** gives each row its byte count, off the already-cast columns.
   #
-  # **`measured`** adds two things over the same ordering. The *exclusive* prefix
-  # sum — the bytes of the rows strictly before this one; `sum()` over an empty
-  # frame is NULL, hence the coalesce, and that NULL-to-zero is exactly the first
-  # row. And `previous_id`, the id of the row before this one *in the delivered
-  # sequence*, defaulting to the cursor so the first row of a page links back to
-  # what the caller asked to resume after.
-  #
-  # `previous_id` is what lets a consumer prove nothing went missing between two
-  # rows. It cannot be `id - 1`: a selective read returns a sparse subset of the
-  # id space, so consecutive delivered rows are routinely far apart, and only the
-  # log knows which gaps it created on purpose. `lag/3` states it.
+  # **`measured`** adds two things over the same ordering. The *exclusive*
+  # prefix sum — bytes of the rows strictly before this one; `sum()` over an
+  # empty frame is NULL, hence the coalesce, and that NULL-to-zero is exactly
+  # the first row. And `previous_id` via `lag/3`, defaulting to the cursor so
+  # the first row of a page links back to what the caller asked to resume after.
   #
   # **The outer filter** is where the bound is. `prefix_bytes + bytes <= $3` is
-  # inclusive, so the rows that come back never total more than the budget —
-  # an exclusive `prefix_bytes < $3` would admit a row whose own size pushes the
-  # total past it, which is a bound that does not bound.
+  # inclusive, so the rows never total more than the budget — an exclusive
+  # `prefix_bytes < $3` would admit a row whose own size pushes the total past
+  # it, which is a bound that does not bound.
   #
-  # `OR prefix_bytes = 0` is the one deliberate exception, and it is what stops
-  # a single row larger than the whole budget from wedging the subscription
-  # forever. It identifies the first row exactly: `message_type` is `NOT NULL`
-  # and constrained to one or more characters, so every row contributes at least
-  # one byte and no later row can have a zero prefix.
+  # `OR prefix_bytes = 0` is the deliberate exception that stops a single
+  # oversized row from wedging the subscription forever. It identifies the first
+  # row exactly: `message_type` is `NOT NULL` and constrained to one or more
+  # characters, so every row contributes at least one byte.
   #
-  # The ORDER BY is repeated at the top because a filter over a subquery does not
-  # contractually preserve its ordering, and ordering here is a delivery
-  # guarantee rather than a convenience.
+  # The ORDER BY is repeated at the top because a filter over a subquery does
+  # not contractually preserve its ordering, and ordering here is a delivery
+  # guarantee.
   defp read_sql(opts, predicate) do
     """
     SELECT id, previous_id, message_type, data, metadata, inserted_at
@@ -182,10 +169,9 @@ defmodule DMEx.Storage.Postgres do
     repo = Map.fetch!(opts, :repo)
 
     # One statement for both halves the poll needs. `array_agg(DISTINCT ...)`
-    # over a window bounded by one poll interval of appends is a range scan on
-    # the primary key, and on an idle log — the case that has to stay cheap,
-    # since this runs once per interval per app — it touches nothing and both
-    # columns come back NULL.
+    # over a window bounded by one poll interval of appends is a primary-key
+    # range scan, and on an idle log it touches nothing and both columns come
+    # back NULL.
     sql = """
     SELECT max(id), coalesce(array_agg(DISTINCT message_type), '{}')
       FROM #{table(opts, @messages)}
@@ -401,10 +387,8 @@ defmodule DMEx.Storage.Postgres do
 
   # pg_notify/2 rather than `NOTIFY <channel>`, so neither a derived channel
   # name nor a message type needs identifier quoting or can be an injection
-  # site. Both go in as ordinary parameters.
-  #
-  # Postgres caps a notification payload at 8000 bytes. A `message_type` is a
-  # module name, so this is not a limit anything can reach.
+  # site. Postgres caps a notification payload at 8000 bytes, which a module
+  # name cannot reach.
   defp notify!(repo, opts, type) do
     channel = Map.fetch!(opts, :channel)
 
@@ -424,9 +408,9 @@ defmodule DMEx.Storage.Postgres do
     }
   end
 
-  # `dead_messages/2` reads a table with no delivered-sequence to chain over —
-  # a replayed row is handed straight to a handler, never framed — so it gets a
-  # nil predecessor rather than a meaningless one.
+  # `dead_messages/2` reads a table with no delivered sequence to chain over —
+  # a replayed row goes straight to a handler, never framed — so it gets a nil
+  # predecessor rather than a meaningless one.
   defp to_row([id, message_type, data, metadata, inserted_at]) do
     to_row([id, nil, message_type, data, metadata, inserted_at])
   end

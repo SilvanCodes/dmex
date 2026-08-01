@@ -9,32 +9,28 @@ defmodule DMEx.Transport do
   the id chain — lives behind these callbacks.
 
   Both ends are on one module on purpose: they are the two halves of one wire
-  format, and splitting them into separately-named modules would make it
-  possible to configure a sender that no receiver understands.
+  format, and splitting them would make it possible to configure a sender no
+  receiver understands.
 
-  ## A transport is never configured, only inferred
-
-  A `logs:` entry resolving to a **module** is a log this application owns, so
-  it is read in this VM (`DMEx.Transport.Local`). One resolving to a **URL** is
-  someone else's, so it is read over HTTP (`DMEx.Transport.SSE`). There is no
-  `transport:` option anywhere, because the binding already says everything an
-  option could: an application does not get to read its own log over a socket,
-  and cannot read a URL any other way.
+  **A transport is never configured, only inferred.** A `logs:` entry resolving
+  to a **module** is read in this VM (`DMEx.Transport.Local`); one resolving to
+  a **URL** is read over HTTP (`DMEx.Transport.SSE`). There is no `transport:`
+  option, because the binding already says everything one could: an application
+  does not read its own log over a socket, and cannot read a URL any other way.
 
   ## What a transport must preserve
 
-  **No buffer.** DMEx's backpressure is structural rather than monitored: at most
-  one batch may be in flight, and producing the next one must be blocked until
-  the current one has been handled. `DMEx.Transport.SSE` gets this from TCP —
-  while the pipeline runs, the socket is not re-armed and the log's `chunk/2`
-  blocks. `DMEx.Transport.Local` gets it from a synchronous call. A transport
-  that queues rows to be picked up later has replaced a structural guarantee
-  with a bound somebody has to choose.
+  **No buffer.** At most one batch may be in flight, and producing the next must
+  be blocked until the current one has been handled. `DMEx.Transport.SSE` gets
+  this from TCP — while the pipeline runs, the socket is not re-armed and the
+  log's `chunk/2` blocks; `DMEx.Transport.Local` gets it from a synchronous
+  call. A transport that queues rows for later has replaced a structural
+  guarantee with a bound somebody has to choose.
 
   **Rows are handled in the process that owns the cursor.** `c:handle_message/2`
-  runs inside `DMEx.Handler.Stream`, and the rows it returns are run inline
-  there. A transport that ran the pipeline itself would put the handler callback
-  and the cursor advance in different processes.
+  runs inside `DMEx.Handler.Stream` and its rows are run inline there. A
+  transport running the pipeline itself would put the handler callback and the
+  cursor advance in different processes.
   """
 
   @typedoc "A transport's send-side state — a `Plug.Conn`, a pid, whatever it needs."
@@ -66,10 +62,9 @@ defmodule DMEx.Transport do
   @doc """
   Opens the receive side at `cursor`, or fails so the caller can back off.
 
-  Takes the subscription's whole option list — `:handler`, `:subscription`,
-  `:origin`, `:cursor`, `:config`, `:fingerprint`, `:storage`, `:storage_opts` —
-  and uses what it needs. Runs inside `DMEx.Handler.Stream`, so anything it
-  starts is linked to the process that owns the cursor.
+  Takes the subscription's whole option list and uses what it needs. Runs inside
+  `DMEx.Handler.Stream`, so anything it starts is linked to the process that
+  owns the cursor.
   """
   @callback connect(keyword()) :: {:ok, source()} | {:error, term()}
 
@@ -83,12 +78,12 @@ defmodule DMEx.Transport do
       flushes, closes and reconnects on its backoff schedule.
     * `{:stop, reason}` — fatal. Reconnecting would repeat whatever caused it.
 
-  After running rows the stream calls this again with **`:continue`**, which
-  asks whether one message carried anything beyond them. A transport that can
-  produce rows and a terminal event from a single message — an HTTP response
-  ending right after its last chunk — parks the terminal and returns it then,
-  so it never discards rows that were already verified. One with nothing to
-  park answers `:unknown` and the drain ends there.
+  After running rows the stream calls this again with **`:continue`**, asking
+  whether one message carried anything beyond them. A transport that can produce
+  rows *and* a terminal event from a single message — an HTTP response ending
+  right after its last chunk — parks the terminal and returns it then, so it
+  never discards rows already verified. One with nothing to park answers
+  `:unknown`.
   """
   @callback handle_message(term(), source()) ::
               {:rows, [DMEx.Handler.Pipeline.row()], source()}

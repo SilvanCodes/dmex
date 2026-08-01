@@ -2,17 +2,14 @@ defmodule DMEx.Discovery do
   @moduledoc """
   Which modules could hold a DMEx declaration.
 
-  Every loaded application that declares a dependency on `:dmex`, plus `otp_app`
-  when one is given. A module cannot `use DMEx.Message` or `use DMEx.Handler`
-  unless its application depends on `:dmex`, so that condition is exact rather
-  than a heuristic — and it keeps the scan off the several thousand modules in
-  OTP and Elixir that could never qualify.
+  Every loaded application declaring a dependency on `:dmex`, plus `otp_app`
+  when given. A module cannot `use DMEx.Message` or `use DMEx.Handler` unless
+  its application depends on `:dmex`, so the condition is exact rather than a
+  heuristic — and it keeps the scan off the thousands of OTP and Elixir modules
+  that could never qualify. It also makes a **shared package** work: a library
+  of message modules lists `:dmex` and is scanned like any other.
 
-  It is also what makes a **shared package** work: a library of message modules
-  or handlers, depended on by more than one application, lists `:dmex` among its
-  own applications and is therefore scanned like any other.
-
-  `otp_app` covers the one case the rule misses — an application that does not
+  `otp_app` covers the case the rule misses — an application that does not
   itself depend on `:dmex`, such as an umbrella parent or DMEx's own test suite.
   """
 

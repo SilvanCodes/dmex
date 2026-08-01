@@ -17,60 +17,43 @@ defmodule DMEx.Transport.SSE.Frame do
   | `metadata` | inside `data:` | the publisher's metadata, verbatim |
   | `inserted_at` | inside `data:` | append time, which is what the consumer's lag signal is measured against |
 
-  There is no batch envelope and no frame-level `max_id`. Batching is still real
-  — the producer writes a whole read's worth of frames in one `chunk/2` — but it
-  is a *write* batch rather than a wire construct, so nothing on the consumer
-  side has to know it happened. That is what lets `id:` be the row's own id
-  rather than "the highest id in this frame", and what makes the frame's meaning
-  identical whether one row or five hundred went out together.
+  There is no batch envelope and no frame-level `max_id`. Batching is real — the
+  producer writes a whole read's frames in one `chunk/2` — but it is a *write*
+  batch rather than a wire construct, so nothing on the consumer side has to
+  know it happened. That is what lets `id:` be the row's own id, and makes a
+  frame mean the same thing whether one row or five hundred went out together.
 
   ## `id:` is a link, not a number
 
-  `id: 1041/1042` reads "the row before me was 1041, I am 1042". The pair is
-  what makes a **missing** frame detectable: a consumer holds the last id it
-  saw and refuses a frame that does not claim it as its predecessor, so a row
-  that never arrives breaks the chain instead of being silently stepped over.
-  Without it a dropped frame is invisible — the next row's cursor advance
-  commits straight past the gap and the message is gone for good.
+  `id: 1041/1042` reads "the row before me was 1041, I am 1042", and that pair
+  is what makes a **missing** frame detectable: a consumer refuses a frame that
+  does not claim the row it last saw, so a lost row breaks the chain instead of
+  being silently stepped over by the next row's cursor advance. It has to be a
+  stated link rather than `id - 1`, because a selective stream's ids are
+  legitimately sparse and only the producer knows which gaps are deliberate.
 
-  It has to be a stated link rather than `id - 1`, because a selective stream's
-  ids are legitimately sparse: the producer skips the types this subscription
-  did not ask for, and only the producer knows which gaps are deliberate.
-
-  The first frame of a connection carries the cursor the read was issued
-  against, so the chain also proves the producer resumed where it was asked to.
-
-  **`Last-Event-ID` therefore carries the pair too.** A generic client stores
-  whatever was in `id:` and echoes it back verbatim, so a producer must accept
-  `1041/1042` and resume after `1042`. See `DMEx.Log.Params`.
-
-  ## `event:` carries the message type, and the type is constrained for it
-
-  SSE field lines have no escaping: a CR or LF inside `event:` would end the
-  line and split the frame. JSON's grammar forbids raw control characters inside
-  strings, which is what keeps the spliced `data:` payload safe — but
-  `message_type` is not spliced through a JSON encoder here, it is written
-  straight onto a header line.
-
-  So the log constrains it instead: `dmex_messages` carries a CHECK constraint
-  restricting `message_type` to `[A-Za-z0-9_.]`, which is exactly the charset an
-  Elixir module name uses. A type that cannot be written on an `event:` line
-  cannot be appended in the first place. See `DMEx.Migration`.
+  **`Last-Event-ID` therefore carries the pair too.** A generic client echoes
+  back whatever was in `id:` verbatim, so a producer must accept `1041/1042` and
+  resume after `1042`. See `DMEx.Log.Params`.
 
   ## Encoding
 
-  Frames are built as iodata, and rows are **spliced, never re-encoded**: a
-  row's `data` and `metadata` go in as text, exactly as the read returned them.
-  The alternative — letting the driver decode `jsonb` into a map and re-encoding
-  it — pays a decode plus an encode per row, and pays it once per connection for
-  the same rows, since every connection issues its own read.
+  Frames are iodata, and rows are **spliced, never re-encoded**: `data` and
+  `metadata` go in as text, exactly as the read returned them. Decoding `jsonb`
+  into a map and re-encoding would pay a decode plus an encode per row, once per
+  connection for the same rows.
 
   Two invariants keep that safe, and they are the whole of the encoding
-  contract: a frame is **never pretty-printed**, and **nothing is spliced into
-  it that did not come out of a JSON encoder, a JSON-typed column, or a column
-  the schema constrains to a safe charset**. Together they guarantee no raw CR
-  or LF reaches the wire, which is what makes it safe to put a whole payload on
-  one `data:` line with no base64 and no escaping pass.
+  contract: a frame is **never pretty-printed**, and **nothing is spliced in
+  that did not come out of a JSON encoder, a JSON-typed column, or a column the
+  schema constrains to a safe charset**. Together they guarantee no raw CR or LF
+  reaches the wire, which is what makes it safe to put a whole payload on one
+  `data:` line with no escaping pass.
+
+  `message_type` is the constrained-charset case: it goes straight onto the
+  `event:` line, and SSE field lines have no escaping. `dmex_messages` carries a
+  CHECK restricting it to `[A-Za-z0-9_.]`, so a type that cannot be written on an
+  `event:` line cannot be appended. See `DMEx.Migration`.
   """
 
   @typedoc "A log row on the log's side, as `c:DMEx.Storage.read/5` returns it."
@@ -79,19 +62,18 @@ defmodule DMEx.Transport.SSE.Frame do
   @typedoc """
   A log row on the reader's side, as `parse/1` yields it.
 
-  String-keyed and one level decoded — `data` and `metadata` are maps, and
-  turning `data` into a message struct is the message module's job, later, in
-  the pipeline.
+  String-keyed and one level decoded; turning `data` into a message struct is
+  the message module's job, later, in the pipeline.
   """
   @type decoded_row :: DMEx.Handler.Pipeline.row()
 
   @typedoc """
   One parsed frame block.
 
-  `:message` is a data frame — the only kind that carries a row. `:retry` is the
-  producer's advertised heartbeat interval, which an SSE parser applies the
-  moment it reads the line. `:ignore` is everything else: a heartbeat comment, a
-  frame whose `data:` buffer was empty, a field vocabulary this does not know.
+  `:message` is the only kind that carries a row. `:retry` is the producer's
+  advertised interval, which an SSE parser applies the moment it reads the line.
+  `:ignore` is everything else: a heartbeat comment, a frame whose `data:`
+  buffer was empty, a field vocabulary this does not know.
   """
   @type parsed :: {:message, decoded_row()} | {:retry, pos_integer()} | :ignore
 
@@ -102,11 +84,11 @@ defmodule DMEx.Transport.SSE.Frame do
 
   `:data` and `:metadata` are spliced verbatim and must therefore already be
   JSON text. `:message_type` goes on the `event:` line unescaped, which the
-  log's CHECK constraint is what makes safe; `:inserted_at` is run through the
-  JSON encoder.
+  log's CHECK constraint makes safe; `:inserted_at` runs through the JSON
+  encoder.
 
-  `id:` carries `previous_id/id`. A `nil` predecessor renders as `0`, which is
-  the same thing a read from the very beginning of a log says.
+  `id:` carries `previous_id/id`. A `nil` predecessor renders as `0`, the same
+  thing a read from the beginning of a log says.
   """
   @spec encode_row(row()) :: iodata()
   def encode_row(row) do
@@ -133,9 +115,9 @@ defmodule DMEx.Transport.SSE.Frame do
   @doc """
   Encodes a lone `retry:` frame, sent at stream open.
 
-  Well-defined and dispatches nothing: an SSE parser applies `retry:` the moment
-  it parses the line, while an event is dispatched only if the data buffer is
-  non-empty when the blank line arrives.
+  Dispatches nothing: an SSE parser applies `retry:` the moment it parses the
+  line, while an event is dispatched only if the data buffer is non-empty when
+  the blank line arrives.
   """
   @spec encode_retry(pos_integer()) :: iodata()
   def encode_retry(ms) when is_integer(ms) and ms > 0 do
@@ -160,17 +142,15 @@ defmodule DMEx.Transport.SSE.Frame do
   per the SSE specification an event is dispatched only when the data buffer is
   non-empty, and a producer is free to send comments and bare fields.
 
-  That `:ignore` is precisely why the id chain exists. A block this drops is a
-  message the consumer never sees, and without the chain it would be
-  indistinguishable from a message that was never sent — see the moduledoc.
+  That `:ignore` is precisely why the id chain exists: a block this drops is a
+  message the consumer never sees, indistinguishable without the chain from one
+  that was never sent.
 
-  `id:` parses in both forms. `1041/1042` yields `"previous_id" => 1041`; a bare
-  `1042` yields `nil`, which is what a producer that predates the chain sends
-  and what a consumer refuses to accept.
+  `id:` parses in both forms — `1041/1042` yields `"previous_id" => 1041`, a
+  bare `1042` yields `nil`, which a consumer refuses to accept.
 
-  Decoding goes exactly one level. The `data:` payload becomes the row's `data`,
-  `metadata` and `inserted_at`; turning `data` into a struct happens later, in
-  the consumer's pipeline.
+  Decoding goes exactly one level; turning `data` into a struct happens later,
+  in the consumer's pipeline.
   """
   @spec parse(binary()) :: {:ok, parsed()} | {:error, error()}
   def parse(block) when is_binary(block) do
@@ -181,8 +161,8 @@ defmodule DMEx.Transport.SSE.Frame do
 
     case fields do
       %{id: id, event: event, data: [_ | _] = lines} ->
-        # SSE joins consecutive `data:` lines with LF; DMEx always emits one, but
-        # a generic producer may not, and joining costs nothing.
+        # SSE joins consecutive `data:` lines with LF. DMEx always emits one,
+        # but a generic producer may not.
         lines |> Enum.reverse() |> Enum.join("\n") |> decode_row(id, event)
 
       %{retry: retry} ->
@@ -208,9 +188,9 @@ defmodule DMEx.Transport.SSE.Frame do
     end
   end
 
-  # SSE line terminators are CR, LF and CRLF — and only those. Notably U+2028 and
-  # U+2029 are not terminators here, despite being a perennial hazard in
-  # JavaScript contexts, so they need no special handling.
+  # SSE line terminators are CR, LF and CRLF, and only those. Notably U+2028 and
+  # U+2029 are not, despite being a perennial hazard in JavaScript contexts, so
+  # they need no special handling.
   defp split_lines(block), do: String.split(block, ["\r\n", "\n", "\r"])
 
   defp collect_field(line, acc) do

@@ -2,56 +2,39 @@ defmodule DMEx.Log.Dispatcher do
   @moduledoc """
   Tells a log's live streams that something was appended.
 
-  One per log, started by that log's supervisor. It does two things
-  and nothing else: it holds the `LISTEN` connection, and it runs a poll timer.
-  On either signal it broadcasts a bare `:wakeup` across `DMEx.Log.Registry`.
+  One per log, started by that log's supervisor. It holds the `LISTEN`
+  connection and runs a poll timer; on either signal it broadcasts a bare
+  `:wakeup` across `DMEx.Log.Registry`.
 
-  ## Belt and suspenders
+  **Belt and suspenders.** `NOTIFY` gives low latency; the poll makes dispatch
+  *robust*. A missed or coalesced notification costs up to one poll interval of
+  latency and never a stuck consumer — the same arrangement Oban's stager uses,
+  and why a storage engine with no notification support needs no separate code
+  path: it runs the poll alone.
 
-  `NOTIFY` gives low latency; the poll makes dispatch *robust*. A missed or
-  coalesced notification — a connection blip, a restarted listener — costs up to
-  one poll interval of latency and never a stuck consumer. This is the same
-  arrangement Oban's stager uses, and it is why a storage engine with no
-  notification support needs no separate code path: it simply runs the poll
-  alone.
+  **It never reads rows or fans out data.** Each stream reads for itself,
+  bounded by its own `max_batch_size`, so this shared per-app process holds no
+  message data on any connection's behalf. A notification carries a routing key
+  and nothing else — never a range, an id, or a row. Missing a hint costs
+  latency, never correctness, so the send loop stays correct with this process
+  down.
 
-  ## What it does not do
+  **The poll must not wake connections for nothing.** Unconditional broadcast
+  re-creates a thundering herd: a thousand connections at a one-second interval
+  is a thousand reads per second on a completely idle log. So the poll asks what
+  has been appended since the highest id already announced and broadcasts only
+  if that moved — one cheap query per interval per *app*, zero wakeups when
+  nothing was appended.
 
-  It does not read rows, and it does not fan out data. Each stream reads for
-  itself, bounded by its own `max_batch_size`, so this one shared per-app
-  process never holds message data on any connection's behalf.
-
-  A notification carries **a routing key and nothing else — never a range, an
-  id, or a row.** The `message_type` says which connections could possibly care;
-  it never says what to do about it. Each loop still reads from its own cursor
-  to whatever is there now, the cursor in each stream is still the sole
-  authority, and this is still only ever a hint that work may exist. Missing a
-  hint costs latency, never correctness, which is why the log's send loop
-  stays correct even with this process down.
-
-  ## The poll must not wake connections for nothing
-
-  A poll that unconditionally broadcasts re-creates a thundering herd: at a
-  thousand connections and a one-second interval, a thousand reads per second on
-  a completely idle log. So the poll asks what has been appended since the
-  highest id already announced, and broadcasts only if that moved. One cheap
-  query per interval per *app*, and zero wakeups when nothing was appended.
-
-  ## Both signals route, and they have to
-
-  A wakeup goes only to connections whose selection contains the appended type
-  (`DMEx.Log.Registry`); a whole-log subscription matches everything.
-
-  That is why the poll asks for the distinct types and not just `max(id)`. The
-  notification path does not advance `last_announced` — it cannot, since it is
-  handed no id — so on any log appending more than once per interval the poll
-  independently sees movement and broadcasts too. Were that broadcast unrouted,
-  it would wake every connection every second regardless of selection, and the
-  routing would buy nothing on exactly the busy logs where it matters. Both
-  paths route, or neither does.
-
-  Duplicate wakeups across the two paths are fine and always were: a spurious
-  wakeup costs one read that finds nothing.
+  **Both signals route.** A wakeup goes only to connections whose selection
+  contains the appended type; a whole-log subscription matches everything. That
+  is why the poll asks for distinct types and not just `max(id)`: the
+  notification path cannot advance `last_announced`, since it is handed no id,
+  so on a log appending more than once per interval the poll independently sees
+  movement and broadcasts too. Unrouted, that broadcast would wake every
+  connection every second regardless of selection — buying nothing on exactly
+  the busy logs where routing matters. Duplicate wakeups across the two paths
+  are fine: a spurious wakeup costs one read that finds nothing.
   """
 
   use GenServer
@@ -63,8 +46,7 @@ defmodule DMEx.Log.Dispatcher do
   @doc """
   Starts a dispatcher for `log:`.
 
-  Started automatically by the log's own supervisor; you should not need to
-  start one yourself.
+  Done automatically by the log's own supervisor.
   """
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
@@ -92,15 +74,14 @@ defmodule DMEx.Log.Dispatcher do
       warned?: false
     }
 
-    # Seeded from the current tip rather than from 0, so a dispatcher starting
-    # against a log with history does not announce that history as new.
+    # Seeded from the current tip, so a dispatcher starting against a log with
+    # history does not announce that history as new.
     #
-    # This happens in init/1, before start_link/1 returns, and that placement is
-    # load-bearing. Seeding in handle_continue/2 leaves a window between "the
-    # dispatcher is started" and "the baseline is taken": an append landing in
-    # it is read into the baseline and therefore never announced, so already
-    # connected streams wait out a full heartbeat instead of being woken. It
-    # costs one index descent on a blocking start.
+    # In init/1 rather than handle_continue/2, deliberately: the latter leaves a
+    # window between "the dispatcher is started" and "the baseline is taken", and
+    # an append landing in it is read into the baseline and therefore never
+    # announced, so connected streams wait out a full heartbeat. It costs one
+    # index descent on a blocking start.
     {:ok, %{state | last_announced: current_max_id(state)}, {:continue, :listen}}
   end
 
@@ -113,9 +94,9 @@ defmodule DMEx.Log.Dispatcher do
 
   @impl GenServer
   def handle_info({:notification, _pid, _ref, _channel, payload}, state) do
-    # Collapse a burst of appends into one broadcast pass. The payloads are
-    # accumulated rather than discarded, because the union of the types in a
-    # burst is exactly the routing key set for the one pass that replaces it.
+    # Collapse a burst of appends into one broadcast pass. Payloads accumulate
+    # rather than being discarded, because the union of the types in a burst is
+    # exactly the routing key set for the one pass that replaces it.
     types = drain_notifications([payload])
 
     {:noreply, broadcast(state, types)}
@@ -153,12 +134,10 @@ defmodule DMEx.Log.Dispatcher do
 
   ## Internals
 
-  # Establishing LISTEN is best-effort by design. A storage engine with no
-  # notification support, a notifier that has not started yet, and a notifier
-  # that just crashed are all the same situation to this process: run
-  # polling-only until one succeeds. None of them may take the dispatcher down,
-  # because polling is the mechanism that makes dispatch robust in the first
-  # place.
+  # Best-effort by design. An engine with no notification support, a notifier
+  # that has not started, and one that just crashed are the same situation here:
+  # run polling-only until one succeeds. None may take the dispatcher down,
+  # because polling is what makes dispatch robust in the first place.
   defp ensure_listening(%{notifier_ref: ref} = state) when is_reference(ref), do: state
 
   defp ensure_listening(state) do
@@ -166,8 +145,8 @@ defmodule DMEx.Log.Dispatcher do
       {:ok, pid} ->
         %{state | notifier_ref: Process.monitor(pid), warned?: false}
 
-      # This engine has no notification mechanism at all, so polling-only is the
-      # design rather than a degradation. Nothing to warn about.
+      # No notification mechanism at all, so polling-only is the design rather
+      # than a degradation. Nothing to warn about.
       :unsupported ->
         state
 
@@ -216,8 +195,7 @@ defmodule DMEx.Log.Dispatcher do
       %{
         streams: DMEx.Log.Registry.count(state.log),
         woken: :counters.get(woken, 1),
-        # A count, so it is a measurement. It sat in metadata under the same name
-        # the *list* uses everywhere else in this module, which read as the list.
+        # A count, so it belongs in measurements rather than metadata.
         types: length(types)
       },
       %{log: state.log}
@@ -231,10 +209,9 @@ defmodule DMEx.Log.Dispatcher do
   defp concerns?(:all, _types), do: true
   defp concerns?(selection, types), do: Enum.any?(types, &MapSet.member?(selection, &1))
 
-  # `{nil, []}` on an empty window, and on an error: a storage engine that
-  # cannot answer must not be reported as "nothing was appended", but it also
-  # must not take the dispatcher down. Leaving `last_announced` untouched means
-  # the next poll asks the same question over the same window.
+  # `{nil, []}` on an empty window and on an error alike: an engine that cannot
+  # answer must not take the dispatcher down, and leaving `last_announced`
+  # untouched means the next poll asks the same question over the same window.
   defp appended_since(%{storage: storage, storage_opts: opts, last_announced: last}) do
     case storage.appended_since(opts, last) do
       {:ok, {max_id, types}} -> {max_id, types}

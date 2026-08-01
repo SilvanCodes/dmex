@@ -2,18 +2,16 @@ defmodule DMEx.Backoff do
   @moduledoc """
   Jittered exponential backoff, shared by reconnects and local retries.
 
-  **Jitter is not a refinement here, it is the point.** An event that fails many
-  consumers at once — a producer restart, a network blip, a deploy — would
-  otherwise bring them all back simultaneously, and DMEx has deliberately no
-  admission control to absorb that. The same argument applies to a producer's
-  advertised `retry:` value: one number applied literally by every consumer is a
-  synchronized reconnect storm, which is why DMEx's own client keeps its own
-  jittered schedule rather than reconnecting at exactly the advertised interval.
+  **Jitter is the point, not a refinement.** An event that fails many consumers
+  at once — a producer restart, a network blip, a deploy — would otherwise bring
+  them all back simultaneously, and DMEx has no admission control to absorb
+  that. Full jitter (a uniform draw from `[1, capped]` rather than a band around
+  the ceiling) decorrelates hardest. The draw starts at 1 so a delay is always a
+  delay.
 
-  Full jitter — a uniform draw from `[1, capped]` rather than a band around the
-  ceiling — is used because it decorrelates hardest, which is what a thundering
-  herd needs. The draw starts at 1 rather than 0 so a delay is always a delay:
-  a zero would make the first retry of a crash-looping subscription immediate.
+  The same argument applies to a producer's advertised `retry:` value, which is
+  why DMEx's own client keeps its own schedule rather than reconnecting at
+  exactly the advertised interval.
   """
 
   @doc """

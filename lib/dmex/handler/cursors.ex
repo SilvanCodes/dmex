@@ -1,26 +1,20 @@
 defmodule DMEx.Handler.Cursors do
   @moduledoc """
-  Reading and moving a subscription's read position, deliberately.
+  Reads and moves a subscription's read position, deliberately.
 
-  DMEx owns `last_seen` and application code never touches it during normal
+  DMEx owns `last_seen` and application code never touches it in normal
   operation. These are the operator-facing exceptions: inspecting where a
-  subscription has got to, deliberately replaying part of a log, and — the one
-  that actually bites — migrating a cursor when a subscription's declared
-  identity changes.
+  subscription has got to, replaying part of a log, and migrating a cursor when
+  a subscription's declared identity changes.
 
-  ## Renaming the handler module is free; changing its declaration is not
+  ## Changing a declaration costs a migration; renaming a module does not
 
   `last_seen` is keyed by the identifier a handler declares —
-  `"orders/order_projection"` for a module with `logs: [:orders],
-  id: :order_projection` — not by the module's name. So renaming
-  `MyApp.OrderHandler` to `MyApp.Orders.Handler` costs nothing at all, which is
-  the point: a rename is something a refactoring tool does without asking.
-
-  What does still reset a cursor is changing the *declaration*: a different
-  `id:`, or a different key for that log in `DMEx.Supervisor`'s `logs:`. Both
-  are deliberate acts rather than incidental ones, but the effect is the same —
-  a new identity with no cursor, which then replays the log from the beginning.
-  Do it in a migration, next to the code change that causes it:
+  `"orders/order_projection"` — not by the module's name, so a rename costs
+  nothing. What does reset a cursor is a different `id:` or a different key for
+  that log in `DMEx.Supervisor`'s `logs:`: a new identity with no cursor, which
+  then replays from the beginning. Do it in a migration, next to the code change
+  that causes it:
 
       defmodule MyApp.Repo.Migrations.RenameOrderProjection do
         use Ecto.Migration
@@ -34,43 +28,31 @@ defmodule DMEx.Handler.Cursors do
         end
       end
 
-  Note that `rename!/3` takes identifier **strings**, while everything else here
-  takes the handler module. That asymmetry is honest rather than accidental: the
-  old identity is precisely the one no module declares, so there is no module to
-  name it with.
-
-  ## Adding a message type does not replay its history
-
-  A handler's message set is not part of its identity, so adding a clause for a
-  new type leaves the cursor where it is and that type is handled from the tip
-  onward.
-  When you want that type's history too, `move!/3` is how you ask for it — and
-  it replays *everything* after the id you name, not only the new type, so
-  handlers must tolerate the redelivery.
+  `rename!/3` takes identifier **strings** while everything else here takes the
+  handler module, because the old identity is precisely the one no module
+  declares any longer.
 
   ## Options
 
-  All four take `repo:` (required), plus optional `storage:` and `prefix:`,
-  the same as `DMEx.Supervisor`. The three taking a handler module also take
-  `log:`, which a handler reading more than one log must give — a cursor belongs
-  to one `{log, id}` pair, so there is nothing else the call could mean.
+  All four take `repo:` (required), plus optional `storage:` and `prefix:`, the
+  same as `DMEx.Supervisor`. The three taking a handler module also take `log:`,
+  which a handler reading more than one log must give.
 
   ## These do not touch a running subscription
 
   A live `DMEx.Handler.Stream` holds its cursor in memory and re-reads the
-  durable one only when it connects. Moving a cursor under a running
-  subscription therefore takes effect on its next reconnect, not immediately —
-  so do this while it is stopped, or restart it afterwards.
+  durable one only on connect, so a move takes effect at its next reconnect. Do
+  this while it is stopped, or restart it afterwards.
   """
 
   alias DMEx.Handler
 
   @doc """
-  Where `handler`'s subscription has got to, and when it last moved.
+  Returns where `handler`'s subscription has got to, and when it last moved.
 
-  Returns `nil` if it has never committed a position — which is also the normal
-  state for a subscription started with `start: :latest` on a quiet log, since
-  nothing writes a cursor until the first message is handled.
+  `nil` if it has never committed a position — the normal state for a
+  subscription started with `start: :latest` on a quiet log, since nothing
+  writes a cursor until the first message is handled.
   """
   @spec inspect(module(), keyword()) ::
           {:ok, %{last_seen: non_neg_integer(), updated_at: term()} | nil}
@@ -84,12 +66,12 @@ defmodule DMEx.Handler.Cursors do
   @doc """
   Moves `handler`'s cursor to `id`, so the next connect resumes after it.
 
-  `id: 0` replays the log's whole log. Note this is *not* the same as
-  `reset!/2`: a cursor at 0 still exists, so `start:` stays ignored.
+  `id: 0` replays the whole log — not the same as `reset!/2`, since a cursor at
+  0 still exists and `start:` stays ignored. It replays *everything* after that
+  id, so handlers must tolerate the redelivery.
 
-  A cursor is nothing but a subscription and a position, so this needs no
-  log — it runs from a migration or a console, with no handler running and
-  nothing to resolve a log name against.
+  A cursor is nothing but a subscription and a position, so this runs from a
+  migration or a console with no handler running.
   """
   @spec move!(module(), non_neg_integer(), keyword()) :: :ok
   def move!(handler, id, opts)
@@ -120,17 +102,12 @@ defmodule DMEx.Handler.Cursors do
   end
 
   @doc """
-  Carries the position of subscription `from` over to `to` and removes the old
-  row.
+  Carries the position of subscription `from` over to `to`, removing the old row.
 
-  Both are identifier strings — `"orders/order_handler"`,
-  `"orders/order_projection"` — since `from` is by definition the identity
-  nothing declares any longer.
-
-  Both steps happen in one transaction, so a rename cannot half-apply and leave
-  two cursors — or none. Raises if `to` already has a cursor, since silently
-  overwriting one subscription's position with another's is not a thing to do
-  quietly.
+  Both are identifier strings, since `from` is by definition the identity
+  nothing declares any longer. Both steps happen in one transaction, so a rename
+  cannot half-apply and leave two cursors — or none. Raises if `to` already has
+  a cursor.
 
   Returns `:ok` even when `from` has no cursor: there was nothing to carry, and
   the rename is still correctly applied.
@@ -160,8 +137,8 @@ defmodule DMEx.Handler.Cursors do
     :ok
   end
 
-  # A cursor belongs to one subscription, so a multi-log handler has to say which
-  # one. `DMEx.Handler.log!/2` is what raises when it did not.
+  # A cursor belongs to one subscription, so a multi-log handler has to say
+  # which. `DMEx.Handler.log!/2` raises when it did not.
   defp subscription!(handler, opts) do
     Handler.subscription_id(handler, Handler.log!(handler, opts))
   end

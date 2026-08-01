@@ -3,33 +3,26 @@ defmodule DMEx.Transport.SSE do
   Server-Sent Events over HTTP: the transport for a log that is somebody else's.
 
   Both ends of the wire DMEx defines. The send side encodes rows as
-  `DMEx.Transport.SSE.Frame` blocks and chunks them down a `Plug.Conn`; the receive side
-  owns a Mint connection, decodes what comes back, and turns HTTP into the small
-  vocabulary `DMEx.Handler.Stream` acts on.
+  `DMEx.Transport.SSE.Frame` blocks and chunks them down a `Plug.Conn`; the
+  receive side owns a Mint connection, decodes what comes back, and turns HTTP
+  into the small vocabulary `DMEx.Handler.Stream` acts on.
 
-  Chosen for a `logs:` entry that is a URL. Nothing configures it.
+  Chosen for a `logs:` entry that is a URL. Everything true of a *wire* and of
+  nothing else lives here rather than in the streams:
 
-  ## What lives here rather than in the streams
-
-  Everything that is true of a *wire* and of nothing else:
-
-    * framing and decoding (`DMEx.Transport.SSE.Frame`, `DMEx.Transport.SSE.Decoder`)
-    * the request contract (`DMEx.Handler.Request` — `last-event-id`, the
-      selection path segment)
+    * framing and decoding (`DMEx.Transport.SSE.Frame`,
+      `DMEx.Transport.SSE.Decoder`)
+    * the request contract (`DMEx.Handler.Request`)
     * HTTP status policy: `2xx` proceeds, `404` retries, other `4xx` is fatal,
       `5xx` reconnects
-    * the id chain, which exists to catch a row lost *between* two that arrived —
-      a hazard a wire has and an in-VM read does not
-    * liveness, which is `missed_heartbeats` × the interval the log advertises as
-      SSE's `retry:`
+    * the id chain, which catches a row lost *between* two that arrived — a
+      hazard a wire has and an in-VM read does not
+    * liveness, `missed_heartbeats` × the interval the log advertises as `retry:`
 
-  ## Backpressure
-
-  `Mint.HTTP.stream/2` re-arms `active: :once` itself, so while the owning
-  process is inside a handler it is not calling `stream/2` — nothing is
-  re-armed, the receive window closes, and the log's `chunk/2` blocks on it. The
-  most that can be in flight is one decoded chunk in hand plus one socket message
-  already in the mailbox.
+  **Backpressure.** `Mint.HTTP.stream/2` re-arms `active: :once` itself, so while
+  the owning process is inside a handler nothing is re-armed, the receive window
+  closes, and the log's `chunk/2` blocks. The most that can be in flight is one
+  decoded chunk plus one socket message already in the mailbox.
   """
 
   @behaviour DMEx.Transport
@@ -83,12 +76,11 @@ defmodule DMEx.Transport.SSE do
          config: config,
          decoder: Decoder.new(config.max_frame_bytes),
          # The id the next frame must claim as its predecessor. `:unknown` until
-         # the first frame of a `start: :latest` connection, which is the one
-         # case where the reader cannot know what its own resume token resolved
-         # to.
+         # the first frame of a `start: :latest` connection, the one case where
+         # the reader cannot know what its own resume token resolved to.
          expected_previous: expected_previous(config, cursor),
-         # Responses from one socket message that have not been acted on yet —
-         # see `handle_message/2`.
+         # Responses from one socket message not acted on yet — see
+         # `handle_message/2`.
          pending: []
        }}
     else
@@ -113,11 +105,9 @@ defmodule DMEx.Transport.SSE do
 
   @impl DMEx.Transport
   def liveness(source) do
-    # The log advertises `heartbeat_ms` plus one batch interval as `retry:`,
-    # which is the real upper bound on silence — the throttle runs after the
-    # heartbeat branch. Until that arrives, assume a generous interval rather
-    # than risk dropping a healthy connection from a log that paces itself
-    # slowly.
+    # The log advertises the real upper bound on silence as `retry:`. Until that
+    # arrives, assume a generous interval rather than risk dropping a healthy
+    # connection from a log that paces itself slowly.
     interval = Decoder.retry(source.decoder) || @assumed_retry
 
     source.config.missed_heartbeats * interval
@@ -145,12 +135,11 @@ defmodule DMEx.Transport.SSE do
   # them so the owner runs a whole read's worth in one go — the same shape one
   # `chunk/2` on the other end produced.
   #
-  # A terminal response among them does **not** discard the rows ahead of it.
-  # Those rows are verified, complete and already decoded, and a log that ends
-  # its response right after a gap would otherwise leave the subscription unable
-  # to make progress past the last good row — forever. So the rows are returned
-  # first and the terminal is parked in `:pending`, which the owner collects with
-  # `:continue` once it has run them.
+  # A terminal response among them does **not** discard the rows ahead of it:
+  # those are verified, complete and decoded, and a log ending its response
+  # right after a gap would otherwise leave the subscription unable to progress
+  # past the last good row, forever. So rows are returned first and the terminal
+  # is parked in `:pending`, collected with `:continue`.
   defp responses([], source, rows), do: yield(rows, source)
 
   defp responses([event | rest] = remaining, source, rows) do
@@ -170,12 +159,11 @@ defmodule DMEx.Transport.SSE do
       status in 200..299 ->
         {:cont, source}
 
-      # The one 4xx that is not this client's fault, and the one that can become
-      # valid without anything here changing: the selection matched none of the
-      # log's message types. A handler deployed ahead of the log that will emit
-      # them is legitimately in this state, and the repair is the log's deploy,
-      # so it retries. Loud, because the other cause — a subscription pointed at
-      # the wrong log entirely — looks identical and is a real bug.
+      # The one 4xx that is not this client's fault and can become valid without
+      # anything here changing: the selection matched none of the log's types. A
+      # handler deployed ahead of the log that will emit them is legitimately in
+      # this state, and the repair is the log's deploy. Loud, because the other
+      # cause — a subscription pointed at the wrong log — looks identical.
       status == 404 ->
         Logger.warning(
           "DMEx #{source.subscription} (#{inspect(source.handler)}) got 404 from " <>
@@ -202,15 +190,14 @@ defmodule DMEx.Transport.SSE do
         source = %{source | decoder: decoder}
 
         # Before anything is handed over, so a break is caught while the rows in
-        # *this* push are still just rows — and none of them is run.
+        # *this* push are still just rows and none has run.
         case verify_chain(decoded, source) do
           {:ok, source} -> {:rows, decoded, source}
           {:error, reason} -> {:halt, {:disconnect, reason, source}}
         end
 
       {:error, reason, _decoder} ->
-        # Dropping and reconnecting from the durable cursor costs only a
-        # re-read; a drop is not a delivery event.
+        # Reconnecting from the durable cursor costs only a re-read.
         {:halt, {:disconnect, {:decode_failed, reason}, source}}
     end
   end
@@ -225,10 +212,9 @@ defmodule DMEx.Transport.SSE do
 
   ## The id chain
 
-  # `start: :latest` resolves to the log's tip on the *log*, and the resolved
-  # number never comes back over the wire, so the first frame's claim has nothing
-  # to be checked against. Every other resume position is one this end chose and
-  # can therefore verify.
+  # `start: :latest` resolves to the tip on the *log*, and that number never
+  # comes back over the wire, so the first frame's claim has nothing to be
+  # checked against. Every other resume position is one this end chose.
   defp expected_previous(%{start: :latest}, :none), do: :unknown
   defp expected_previous(_config, :none), do: 0
   defp expected_previous(_config, cursor), do: cursor

@@ -2,71 +2,45 @@ defmodule DMEx.Fingerprint do
   @moduledoc """
   A consumer's message set, encoded as an XOR filter for the request path.
 
-  This is the whole of the selection wire format. A consumer builds one at
-  compile time from the modules its handler matches on, encodes it into the path
-  of the `GET` it opens, and the producer resolves it against its own message
-  types to decide which rows to read. See `guides/fingerprint-spec.md` for the
-  normative encoding, which a non-Elixir consumer has to reproduce exactly.
+  A consumer builds one at compile time from the modules its handler matches on
+  and encodes it into the path of the `GET` it opens; the producer resolves it
+  against its own message types to decide which rows to read.
+  `guides/fingerprint-spec.md` is the normative encoding, which a non-Elixir
+  consumer has to reproduce exactly.
 
-  ## Why a filter rather than the names
+  **A filter rather than the names**, because `message_type`s are
+  fully-qualified module names at 25–40 bytes each and sixty of them already
+  overrun a conservative request line. An
+  [XOR filter](https://arxiv.org/abs/1912.08258) (Graf & Lemire) encodes the same
+  set at ~2.46 bytes per type, which is what makes the URL — and therefore a bare
+  browser `EventSource` with real server-side selection — viable at all. XOR
+  rather than Bloom or cuckoo because the set is **static**: built once, never
+  added to, which is exactly the constraint XOR filters trade mutability for.
 
-  `message_type`s are fully-qualified module names, so enumerating them costs
-  25-40 bytes each and a handler with sixty of them already overruns a
-  conservative request line. An [XOR filter](https://arxiv.org/abs/1912.08258)
-  (Graf & Lemire) encodes the same set at ~2.46 bytes per type at 16-bit
-  fingerprints, which is what makes the URL — and therefore a bare browser
-  `EventSource` with real server-side selection — viable at all.
+  **No false negatives**: every type the consumer selected is delivered. A false
+  positive costs one unwanted type crossing the wire, which the consumer's skip
+  path drops. That asymmetry is why the encoding may never be negotiated —
+  disagreeing on a single constant produces false negatives rather than a
+  garbled filter, and false negatives are silent message loss.
 
-  XOR filters rather than Bloom or cuckoo because the set is **static**: built
-  once from the derived list and never added to. That is exactly the constraint
-  XOR filters trade mutability for, and they are ~15% smaller than a Bloom
-  filter at equal error and faster to query — three lookups, no probing loop.
+  **16-bit fingerprints, pinned and not selectable.** Membership is tested per
+  *type string*, not per row, so a false positive admits one entire message type
+  for the life of a connection — at 8 bits, one unlucky draw is a connection
+  receiving all of the highest-volume type in the system. 16 bits costs 1.23
+  extra bytes per type and cuts that by 256×.
 
-  ## The error direction is the point
-
-  There are **no false negatives**: every type the consumer selected is
-  delivered, always. A false positive costs one unwanted message type crossing
-  the wire, which the consumer's ordinary skip path drops
-  (`DMEx.Handler.Pipeline`, section 2).
-
-  That asymmetry is why membership is worth testing at all, and it is also why
-  the encoding may never be negotiated. Producer and consumer disagreeing on a
-  single constant here does not produce a garbled filter — it produces false
-  negatives, which is silent message loss, and that is the one failure the
-  scheme was chosen for not having.
-
-  ## Sizing, and why 16 bits rather than 8
-
-  Membership is tested on the *type string*, not per row. A false positive
-  therefore does not sprinkle a small fraction of extra rows across the stream —
-  it admits **one entire message type, for the whole life of the connection**.
-  At an 8-bit fingerprint (2⁻⁸ ≈ 0.39%) a producer with 100 types and a consumer
-  selecting 10 expects ~0.35 spurious types, and if the unlucky one is the
-  highest-volume type in the system that connection receives all of it.
-
-  16 bits costs 1.23 extra bytes per type — nothing at these set sizes — and
-  cuts that probability by 256×. So the width is **pinned at 16 and is not
-  selectable**: carrying it would mean framing it alongside the blob, and a
-  leading width byte is indistinguishable from a seed that happens to start with
-  that value unless the framing is pinned as carefully as the hash construction.
-  One width, no negotiation, nothing to get wrong.
-
-  ## Build time and query time are different times
-
-  `build/1` and `encode/1` run **only at compile time**, in
-  `DMEx.Handler`. `decode/1` and `member?/2` run at connect time, in
-  `DMEx.Log.Plug`. Neither side pays for the other's half at runtime, and a
-  filter that cannot be constructed is a compile error rather than a runtime
-  fallback path.
+  `build/1` and `encode/1` run **only at compile time**, in `DMEx.Handler`;
+  `decode/1` and `member?/2` run at connect, in `DMEx.Log.Plug`. So a filter
+  that cannot be constructed is a compile error rather than a runtime fallback.
   """
 
   import Bitwise
 
   @typedoc """
-  A built filter: the seed it was constructed under, the block length its three
-  hash positions are derived from, and the fingerprint array.
+  A built filter: its seed, the block length its three hash positions derive
+  from, and the fingerprint array.
 
-  The array is a binary rather than a list or a tuple, so `member?/2` is three
+  The array is a binary rather than a list, so `member?/2` is three
   `:binary.at/2` reads and `decode/1` is a slice with no per-element work.
   """
   @type t :: %__MODULE__{
@@ -91,20 +65,17 @@ defmodule DMEx.Fingerprint do
   @slack 32
 
   # Peeling is randomized and can fail, at which point the only move is a fresh
-  # seed. It succeeds with high probability and these sets are tiny, so a bound
-  # this small is generous; exhausting it means something is wrong with the
-  # input rather than with the dice.
+  # seed. It succeeds with high probability and these sets are tiny, so
+  # exhausting this means something is wrong with the input, not with the dice.
   @max_attempts 8
 
   @doc """
   Builds a filter over `types`, or says it could not.
 
-  Duplicates are collapsed first — two handler clauses matching the same struct
-  are the same selection — and the resulting set must be non-empty.
+  Duplicates are collapsed first, and the resulting set must be non-empty.
 
   `{:error, :construction_failed}` means peeling did not succeed within
-  #{@max_attempts} seeds. Its only caller turns that into a compile error, so
-  there is no runtime path that has to cope with it.
+  #{@max_attempts} seeds. Its only caller turns that into a compile error.
   """
   @spec build([String.t()]) :: {:ok, t()} | {:error, :empty | :construction_failed}
   def build(types) when is_list(types) do
@@ -141,12 +112,10 @@ defmodule DMEx.Fingerprint do
   Unpadded base64url specifically ([RFC 4648 §5](https://www.rfc-editor.org/rfc/rfc4648#section-5)):
   its alphabet is entirely unreserved in a path segment under
   [RFC 3986](https://www.rfc-editor.org/rfc/rfc3986#section-2.3), so the blob
-  needs no percent-encoding and no segment of it can ever be read as a path
-  separator. Standard base64's `+` and `/` would need both, and `=` padding is
-  noise in a URL.
+  needs no percent-encoding and no part of it can be read as a path separator.
 
-  No length field is carried: the array length falls out of the decoded byte
-  count at a fixed fingerprint width, and the block length falls out of that.
+  No length field is carried: at a fixed fingerprint width the array length
+  falls out of the decoded byte count, and the block length out of that.
   """
   @spec encode(t()) :: String.t()
   def encode(%__MODULE__{seed: seed, fingerprints: fps}) do
@@ -158,8 +127,7 @@ defmodule DMEx.Fingerprint do
 
   Rejects anything that is not base64url, and anything whose decoded length is
   not a 64-bit seed followed by a whole, non-empty number of fingerprints
-  filling three equal blocks. A caller answers `{:error, :invalid}` with a `400`
-  — a client sending a blob DMEx cannot parse has a bug worth hearing about.
+  filling three equal blocks. A caller answers `{:error, :invalid}` with a `400`.
 
   It cannot detect a blob that decodes cleanly but was built under a *different*
   encoding; nothing can, which is why the constants are pinned rather than
@@ -219,15 +187,14 @@ defmodule DMEx.Fingerprint do
     end
   end
 
-  # The peeling phase: repeatedly take a slot holding exactly one key, remove
-  # that key from all three of its slots, and record the pair. A set that peels
-  # completely is one whose fingerprints can be assigned so that every member
-  # resolves; one that does not needs a different seed.
+  # Repeatedly take a slot holding exactly one key, remove that key from all
+  # three of its slots, and record the pair. A set that peels completely is one
+  # whose fingerprints can be assigned so every member resolves; one that does
+  # not needs a different seed.
   #
-  # `:atomics` rather than a map or `:array` because this is the one genuinely
-  # mutable-array-shaped algorithm in DMEx, and it runs over a few thousand
-  # slots at compile time. `signed: false` gives the u64 the XOR accumulator
-  # needs without masking on every write.
+  # `:atomics` because this is the one genuinely mutable-array-shaped algorithm
+  # in DMEx. `signed: false` gives the u64 the XOR accumulator needs without
+  # masking on every write.
   defp peel(keys, seed, capacity, block) do
     counts = :atomics.new(capacity, signed: false)
     xors = :atomics.new(capacity, signed: false)
@@ -266,12 +233,10 @@ defmodule DMEx.Fingerprint do
     end
   end
 
-  # Takes a peeled key out of all three of its slots, and reports which of them
-  # became singletons and are therefore peelable now.
-  #
-  # Checking the counts after all three decrements rather than during is safe
-  # because a key's three positions are always distinct — one per block, and the
-  # blocks are disjoint ranges — so no decrement here can affect another's count.
+  # Takes a peeled key out of all three of its slots, and reports which became
+  # singletons and are therefore peelable now. Checking the counts after all
+  # three decrements is safe because a key's three positions are always distinct
+  # — one per block, and the blocks are disjoint ranges.
   defp remove(hash, counts, xors, block) do
     hash
     |> each_position(block, fn slot ->
@@ -284,9 +249,9 @@ defmodule DMEx.Fingerprint do
   end
 
   # Walks the peel stack in reverse peel order, giving each key the slot it was
-  # peeled from. Every slot it writes is still zero at that point, so XORing all
-  # three positions in is the same as XORing the other two — and the query,
-  # which XORs all three, then recovers the fingerprint exactly.
+  # peeled from. Every slot written is still zero at that point, so XORing all
+  # three positions is the same as XORing the other two — and the query, which
+  # XORs all three, recovers the fingerprint exactly.
   defp assign(stack, capacity, block) do
     fps = :atomics.new(capacity, signed: false)
 
@@ -303,9 +268,8 @@ defmodule DMEx.Fingerprint do
 
   ## Geometry
 
-  # `:atomics` is 1-indexed, and keeping that offset in exactly one place is
-  # what stops it leaking into the peel, the assignment and the query
-  # separately.
+  # `:atomics` is 1-indexed; keeping that offset in one place stops it leaking
+  # into the peel, the assignment and the query separately.
   defp each_position(hash, block, fun) do
     {h0, h1, h2} = positions(hash, block)
 
@@ -337,10 +301,9 @@ defmodule DMEx.Fingerprint do
 
   defp mixed(key, seed), do: fmix64(band(key + seed, @u64))
 
-  # The murmur3 64-bit finalizer. Chosen over splitmix64 or a rotation of the
-  # SHA-256 output because it is the construction the reference XOR filter
-  # implementations use, which is what makes the spec cheap to reproduce in
-  # another language.
+  # The murmur3 64-bit finalizer, over splitmix64 or a rotation of the SHA-256
+  # output: it is what the reference XOR filter implementations use, which makes
+  # the spec cheap to reproduce in another language.
   defp fmix64(x) do
     x = band(bxor(x, bsr(x, 33)) * 0xFF51AFD7ED558CCD, @u64)
     x = band(bxor(x, bsr(x, 33)) * 0xC4CEB9FE1A85EC53, @u64)
@@ -350,15 +313,14 @@ defmodule DMEx.Fingerprint do
 
   ## Encoding
 
-  # The seed is derived from the sorted type list rather than drawn at random,
-  # so the blob is a pure function of the message set: the same handler
-  # compiles to the same URL on every machine and every build, which is what
-  # makes it diffable, cacheable and correlatable in a proxy log. Sorted, so
-  # reordering a handler's clauses cannot mint a new URL.
+  # Derived from the sorted type list rather than drawn at random, so the blob
+  # is a pure function of the message set: the same handler compiles to the same
+  # URL on every machine and every build, which makes it diffable, cacheable and
+  # correlatable in a proxy log. Sorted, so reordering clauses cannot mint a new
+  # URL.
   #
-  # This derivation is DMEx's own convention and *not* part of the wire format —
-  # a producer only ever reads the seed back out of the blob, so another
-  # implementation may choose its seed however it likes.
+  # DMEx's own convention and *not* part of the wire format — a producer only
+  # reads the seed back out of the blob.
   defp seed(types) do
     types
     |> Enum.sort()
@@ -377,9 +339,9 @@ defmodule DMEx.Fingerprint do
     end
   end
 
-  # Two `:binary.at/2` reads rather than a `:binary.part/3` plus a decode: both
-  # are O(1), but this one allocates no sub-binary, and it runs three times per
-  # type per connect.
+  # Two `:binary.at/2` reads rather than `:binary.part/3` plus a decode: both are
+  # O(1), but this allocates no sub-binary and runs three times per type per
+  # connect.
   defp at(fps, index) do
     offset = index * @fingerprint_bytes
 

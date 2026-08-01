@@ -1,6 +1,6 @@
 defmodule DMEx.Handler do
   @moduledoc """
-  What a handler consumes, from whom, and what it does with it.
+  Declares what a subscription consumes, from whom, and what it does with it.
 
       defmodule MyApp.OrderProjection do
         use DMEx.Handler, logs: [:orders], id: :order_projection
@@ -14,220 +14,76 @@ defmodule DMEx.Handler do
         def handle_message(%MyApp.Messages.OrderCancelled{} = message, _metadata), do: :ok
       end
 
-  The module is the complete declaration of a subscription. `DMEx.Supervisor`
-  binds `:orders` to a URL and starts it — the module is never named there, and
-  nothing at the call site repeats what is written here.
+  The module is the complete declaration: `DMEx.Supervisor` binds `:orders` to a
+  URL and starts it, and nothing at that call site repeats what is written here.
+  Each entry in `logs:` is its own subscription — its own connection, cursor and
+  dead messages — all running the same clauses. Operator calls address one
+  cursor, so on a multi-log handler they take a `log:`.
 
-  ## One handler, one subscription per log it names
-
-  `logs:` is a list, and each entry is its own subscription: its own connection,
-  its own cursor, its own dead messages. `logs: [:orders, :returns]` on the
-  module above is `"orders/order_projection"` and `"returns/order_projection"`,
-  running independently — one falling behind or crash-looping says nothing about
-  the other.
-
-  What they share is this module, so the same clauses run over both logs. That is
-  the case it is for: the same projection fed by two applications appending the
-  same message types. Two logs whose messages need *different* handling are two
-  handler modules, because they are two different functions.
-
-  Ordinary operator calls address one cursor, so on a multi-log handler they take
-  a `log:` — see `DMEx.Handler.Cursors` and `DMEx.Handler.DeadMessages`.
-
-  ## The message types are read from the callback, not declared
+  ## The message types are read from the callback
 
   A subscription's message set is derived at compile time from the structs
-  `c:handle_message/2` matches on — `OrderPlaced` and `OrderCancelled` above.
-  There is no option for it, because there is nothing an option could say that
-  the clauses do not already say.
+  `c:handle_message/2` matches on. There is no option for it: a separate list
+  could only *disagree* with the clauses, silently, in either direction.
 
-  It is a `MapSet`, which is what it means: clause order carries no information
-  here, and two clauses matching the same struct are one selection. Neither fact
-  needs a convention when the collection cannot represent them.
+  That set is also the **server-side selection**, encoded as a compile-time
+  `DMEx.Fingerprint` blob in the request path so the log reads only matching
+  rows. Two consequences:
 
-  ## That same set is the server-side selection
+    * **Inclusion is heuristic in one direction only.** No false negatives, so
+      every type you match on is delivered. A false positive admits one extra
+      type, which arrives and is skipped exactly as an unknown type always was.
+    * **A filter matching none of the log's types is a `404`**, which the
+      subscription retries rather than treating as fatal: a handler deployed
+      ahead of the log that will emit its types is legitimately in that state.
 
-  It does two jobs. It resolves a row's `message_type` back to a module on the
-  way in, and — encoded as a `DMEx.Fingerprint` blob at compile time — it is
-  what the log reads only matching rows against. **Nothing new is declared
-  anywhere, by anyone**: no grouping vocabulary to define, append, version,
-  discover and keep in sync, because a name standing for a set of message types
-  can only ever describe what these clauses already say, and the two can
-  disagree.
-
-  Deriving it means they cannot. The selection is exactly the set of types this
-  handler is equipped for, by construction, and any handler selects any set
-  with no log-side curation and nobody to coordinate with.
-
-  The blob is a **compile-time constant** on `__dmex__/0`, so connecting builds
-  nothing, and it is a pure function of the message set — the same handler
-  compiles to the same URL on every machine, and reordering these clauses does
-  not change it.
-
-  Two consequences worth knowing before they bite:
-
-    * **Inclusion is heuristic in one direction only.** There are no false
-      negatives, so every type you match on is delivered. A false positive
-      admits one extra type, which arrives and is skipped exactly as an unknown
-      type always was — see `DMEx.Handler.Pipeline`.
-    * **A filter matching none of the log's types is a `404`.** That is a
-      real signal (usually a handler pointed at the wrong log) but not
-      necessarily an error — a handler deployed ahead of the log that will
-      emit its types is legitimately in this state, so it retries rather than
-      giving up.
-
-  A separate list could only ever *describe* the clauses, and the two could
-  disagree: a subscription naming a type its handler has no clause for is an
-  ordinary typo, and it surfaces as a `FunctionClauseError` on a real message,
-  at runtime, straight into the retry-then-`on_failure` path. With one set,
-  derived, that state is unrepresentable rather than merely discouraged.
-
-  ### What it costs to check, measured
-
-  Confirming each matched struct really is a `DMEx.Message` needs
-  `Code.ensure_compiled!/1`. A clause head does *not* leave the module loaded:
-  the parallel compiler resolves a struct pattern without putting the module in
-  the code server, so `c:DMEx.Message.type/0` is not callable until something
-  blocks on the compilation finishing.
-
-  That blocking does not cost a compile-time dependency. The handler→message
-  edge stays an **export** dependency — `mix xref graph --label compile` shows
-  no edge between them — so editing a message module recompiles its handlers
-  only when its struct or exports change, exactly as the pattern match alone
-  would have. Catching `%DateTime{}` in a clause head is therefore free.
-
-  `Code.ensure_compiled!/1` rather than `Code.ensure_compiled/1`, deliberately:
-  the latter answers `{:error, :unavailable}` for a module caught in a compiler
-  deadlock, which is not the same fact as "this is not a message" and must not
-  be reported as one.
-
-  ### What is rejected, and why
-
-    * **A clause whose first argument is not a struct pattern.** A bare variable
-      says nothing about type, so a handler written only that way would derive
-      an empty list and quietly receive nothing. As a *fallback* alongside
-      struct clauses it is worse than useless: the pipeline only ever delivers
-      the types these clauses declare, so nothing could reach it.
-    * **A struct that is not a `DMEx.Message`.** Matching `%DateTime{}` is a
-      mistake worth naming at compile time.
-    * **No `c:handle_message/2` at all.** There is nothing to derive from.
-
-  ### What it does not check
-
-  Derivation covers **types, not values**. A clause narrowed to
+  Derivation covers **types, not values**: a clause narrowed to
   `%OrderPlaced{status: "paid"}` still declares `OrderPlaced`, so an unpaid one
-  arrives and raises exactly as before. Match the struct and branch inside the
-  body if you want every value handled.
+  arrives and raises. Match the struct and branch inside the body.
+
+  Rejected at compile time: a clause whose first argument is not a struct
+  pattern (a bare variable declares nothing, and cannot serve as a fallback
+  since the pipeline only delivers the declared types); a struct that is not a
+  `DMEx.Message`; and no `c:handle_message/2` at all.
 
   ## Options
 
     * `:logs` — required; the logical names of the logs to read, as atoms or
-      strings. Resolved against `logs:` on `DMEx.Supervisor`, never against a URL
-      written here. A bare name is accepted for the single-log case.
-    * `:id` — required; this handler's own name, as an atom or a string. It is
-      the same for every log, since the log name is the other half of each
-      subscription's identity.
+      strings, resolved against `logs:` on `DMEx.Supervisor`. A bare name is
+      accepted for the single-log case.
+    * `:id` — required; this handler's own name. The same for every log, since
+      the log name is the other half of each subscription's identity.
     * `:selective` — whether the log narrows the stream to this handler's
-      message types. Defaults to `true`.
-    * any `DMEx.Config` handler setting — `:on_failure`, `:max_attempts`,
-      `:start`, `:checkpoint_interval`, the backoffs. Validated here, at compile
-      time; `DMEx.Supervisor.subscribe/2` may override one for a single
-      subscription.
-
-  Those settings live here because nothing lists handler modules any more: a
-  supervision tree names logs, discovery finds the handlers, and a module with
-  no place to be configured from would have no way to say `on_failure: :crash`.
-
-  `selective: false` requests the whole log and filters it here instead, which is
-  how delivery worked before server-side selection existed. It is an escape hatch
-  rather than a tuning knob: what it is for is telling two failures apart when a
-  subscription receives nothing — a log or encoding mismatch, which whole-log
-  delivery fixes immediately, from a log that has genuinely appended nothing,
-  which it does not. Correctness is identical either way, since these clauses
-  still decide which rows run.
-
-  It lives here rather than on `DMEx.Supervisor.subscribe/2` for the same reason
-  everything else about the subscription does: this module is the complete
-  declaration, and nothing at a call site should be able to vary what a
-  subscription *is*.
+      message types. Defaults to `true`. `false` requests the whole log and
+      filters locally: an escape hatch for telling a log or encoding mismatch
+      apart from a log that has genuinely appended nothing.
+    * any `DMEx.Config` handler setting — validated here at compile time;
+      `DMEx.Supervisor.subscribe/2` may override one per subscription.
 
   ## The subscription id is the durable identity
 
-  `"\#{log}/\#{id}"` — `"orders/order_projection"` for the module above —
-  is what keys `dmex_cursors` and half of `dmex_dead_messages`. Both halves must
-  match `~r/\\A[a-z][a-z0-9_]*\\z/`, the same charset `DMEx.Log`'s app key
-  uses, and that restriction is load-bearing: it is what makes `/` an
-  unambiguous separator needing no escaping, so two distinct pairs can never
-  render to one string. The cost is that an id cannot be a UUID and cannot
-  contain a dot or a dash.
+  `"\#{log}/\#{id}"` keys `dmex_cursors` and half of `dmex_dead_messages`. Both
+  halves must match `~r/\\A[a-z][a-z0-9_]*\\z/`, which makes `/` an unambiguous
+  separator needing no escaping — so an id cannot be a UUID, or contain a dot or
+  a dash. Atoms and strings render identically.
 
-  Atoms and strings render identically, so `logs: [:orders]` and
-  `logs: ["orders"]` are the same subscription.
-
-  **Renaming this module is free.** Identity is the declared pair, not the
-  module name, so an ordinary refactor does not reset a cursor. What *does*
-  reset one is changing `id:` or the log's key in the `DMEx.Supervisor` map —
-  both deliberate acts rather than something a refactoring tool does on its own.
-  `DMEx.Handler.Cursors.rename!/3` exists to migrate those.
-
-  ## One handler, one log
-
-  A subscription reads exactly one log, structurally: fanning in from
-  two logs means two handler modules, each with its own id and its own
-  cursor.
-
-  ## A handler sees its message and the publisher's metadata — nothing else
-
-  `c:handle_message/2` takes the decoded struct and the row's `metadata` map.
-  Everything else in the log row stays with DMEx: the `id` that drives
-  resumption and duplicate suppression, the `message_type` that chose this
-  module, the frame's `max_id`. None of that is a property of the *message*, and
-  none of it is something a handler should have to reason about — so a handler
-  is a plain function of its domain data plus whatever context the publisher
-  chose to attach, testable by constructing a struct and a plain map.
+  **Renaming this module is free**, since identity is the declared pair.
+  Changing `id:` or the log's key in `DMEx.Supervisor` does reset a cursor;
+  `DMEx.Handler.Cursors.rename!/3` migrates those. Adding a clause does not: the
+  new type is handled from the tip onward and its history is *not* replayed, so
+  ask for it deliberately with `DMEx.Handler.Cursors.move!/3`.
 
   ## Succeeding is what advances the cursor
 
-  DMEx runs the callback and the `last_seen` update in **one transaction**
-  against the handler's own storage. Returning normally commits both; raising
-  rolls both back, so the message is redelivered. Application code never manages
-  that bookkeeping, and there is no `:ok`/`:error` protocol to remember — the
-  callback's return value is ignored, and raising is how failure is signalled.
+  DMEx runs the callback and the `last_seen` update in **one transaction**.
+  Returning normally commits both; raising rolls both back and the message is
+  redelivered. The return value is ignored: raising is how failure is signalled.
 
-  ## What that does and does not guarantee
-
-  Side effects that go through the handler's **own repo are exactly-once for
-  free**, because they roll back with the same transaction that would have
-  recorded them. Effects that leave that transaction — an HTTP call, a message
-  to another service, a write to a different database — must be idempotent on
-  something in the message or the publisher's metadata, since a crash between
-  the effect landing and the transaction committing is indistinguishable from
-  the message never having been processed.
-
-  Putting external effects in a handler is the case to think twice about; a
-  local write plus a separate outbox is the pattern that stays correct.
-
-  ## Adding a clause handles that type from now on, not from the beginning
-
-  The message set does not participate in the identity, so adding a clause for
-  a new type keeps the cursor exactly where it was: the new type is handled from
-  the tip onward and its history is *not* replayed. That is the cheap default
-  rather than the safe one, chosen because the alternative — minting a new
-  identity per message set — makes a routine additive change silently replay
-  the entire log and orphan that handler's dead messages.
-
-  Server-side selection sharpens this rather than changing it. The cursor is a
-  single id and only ever moves forward, so historical rows of the newly-selected
-  type — everything below `last_seen`, appended while this subscription was not
-  asking for it — were never sent and are not revisited.
-
-  When you do want the history, ask for it deliberately with
-  `DMEx.Handler.Cursors.move!/3`.
-
-  Changing what a subscription receives is therefore editing these clauses: the
-  same edit that makes it *able* to handle a new type is the one that selects
-  it. An ordinary code change, an ordinary deploy, an ordinary reconnect — and
-  no remote definition changing under a running handler.
+  Side effects through the handler's **own repo are exactly-once for free**,
+  because they roll back with the transaction that would have recorded them.
+  Effects that leave it must be idempotent on something in the message or its
+  metadata, since a crash between the effect landing and the commit is
+  indistinguishable from never having processed the message.
   """
 
   alias DMEx.Config
@@ -238,19 +94,10 @@ defmodule DMEx.Handler do
   @typedoc """
   A handler's compile-time declaration, as returned by its `__dmex__/0`.
 
-  `:logs` and `:id` are the two halves of every subscription this handler
-  declares: `subscription_id/2` joins one log to the id, and `subscription_ids/1`
-  gives them all. `:messages` is the set of modules derived from the callback's
-  clauses; a set rather than a list because nothing downstream asks about order
-  or repetition, and both jobs it does — a `message_type => module` lookup and
-  the selection blob — are already invariant under them.
-  `:fingerprint` is those messages' wire types encoded as a `DMEx.Fingerprint`
-  blob — the path segment this subscription requests — or `nil` when
-  `selective: false` asked for the whole log, in which case there is no segment
-  to request.
-
-  There is no separate `:selective` field: a `nil` fingerprint is exactly that
-  answer, and carrying both would be two values that can disagree.
+  `:fingerprint` is the path segment this subscription requests, or `nil` when
+  `selective: false` asked for the whole log. There is no separate `:selective`
+  field: a `nil` fingerprint is that answer, and carrying both would be two
+  values that can disagree.
 
   `:config` is only what this module declared, not a resolved config: resolving
   at compile time would freeze DMEx's defaults into the handler's BEAM file, and
@@ -280,10 +127,9 @@ defmodule DMEx.Handler do
     quote bind_quoted: [opts: opts] do
       @behaviour DMEx.Handler
 
-      # Only what was written at the `use` site. The message set is read off
-      # the callback's own clauses, which cannot happen until they all exist —
-      # hence @before_compile rather than an attribute set right here, and hence
-      # carrying these across in an attribute so they are still in hand then.
+      # Only what was written at the `use` site. The message set is read off the
+      # callback's clauses, which cannot happen until they all exist — hence
+      # @before_compile, and hence carrying these across in an attribute.
       @dmex_declared DMEx.Handler.__declared__(__MODULE__, opts)
 
       @before_compile DMEx.Handler
@@ -299,8 +145,7 @@ defmodule DMEx.Handler do
       This handler's resolved declaration.
 
       Also what makes a module recognisable as a handler, so `subscribe/2` can
-      reject one that is not with a decent message rather than an
-      `UndefinedFunctionError` on the first row.
+      reject one that is not with a decent message.
       """
       @spec __dmex__() :: DMEx.Handler.declaration()
       def __dmex__, do: unquote(Macro.escape(declaration))
@@ -340,21 +185,18 @@ defmodule DMEx.Handler do
       messages: messages,
       config: config,
       # `selective:` is not carried through — a `nil` fingerprint *is* the
-      # answer, and the two together could only ever disagree. The option
-      # exists to decide whether this gets built; nothing downstream asks the
-      # question a second way, and `DMEx.Supervisor` just passes what is here.
-      #
-      # A non-selective handler also never risks the compile error an
-      # unbuildable fingerprint would raise, since it never builds one.
+      # answer, and the two together could only disagree. A non-selective
+      # handler therefore also never risks the compile error an unbuildable
+      # fingerprint would raise.
       fingerprint: if(selective, do: fingerprint!(env, messages))
     }
   end
 
   @doc """
-  Every handler compiled into the applications `DMEx.Discovery` scans.
+  Lists every handler compiled into the applications `DMEx.Discovery` scans.
 
   What `DMEx.Supervisor` starts, so adding a handler module is the whole of
-  adding a subscription. Sorted, so a boot order is at least reproducible.
+  adding a subscription. Sorted, so boot order is reproducible.
   """
   @spec discover(atom() | nil) :: [module()]
   def discover(otp_app \\ nil) do
@@ -365,7 +207,7 @@ defmodule DMEx.Handler do
   end
 
   @doc """
-  Whether `module` was built with `use DMEx.Handler`.
+  Returns whether `module` was built with `use DMEx.Handler`.
 
   `handle_message/2` is half the test because a log module answers `__dmex__/0`
   too, and discovery scans the same applications both live in.
@@ -377,9 +219,9 @@ defmodule DMEx.Handler do
   end
 
   @doc """
-  `handler`'s durable subscription identifier for one of its logs.
+  Builds `handler`'s durable subscription identifier for one of its logs.
 
-  The one place anything turns a declaration into the string `dmex_cursors` and
+  The one place a declaration becomes the string `dmex_cursors` and
   `dmex_dead_messages` are keyed by.
   """
   @spec subscription_id(module(), atom() | String.t()) :: String.t()
@@ -401,7 +243,7 @@ defmodule DMEx.Handler do
   end
 
   @doc """
-  Which of `handler`'s logs a `log:` option means.
+  Resolves which of `handler`'s logs a `log:` option means.
 
   A handler reading one log needs no option; one reading several has to be told,
   since every operator-facing call addresses exactly one cursor.
@@ -427,10 +269,10 @@ defmodule DMEx.Handler do
   end
 
   @doc """
-  `handler`'s declaration, or a raise if it has none.
+  Returns `handler`'s declaration, or raises if it has none.
 
-  The one place anything turns a module into its declaration, so every caller
-  rejects a non-handler with the same message.
+  The one place a module becomes its declaration, so every caller rejects a
+  non-handler with the same message.
   """
   @spec declaration!(module()) :: declaration()
   def declaration!(handler) when is_atom(handler) do
@@ -450,19 +292,11 @@ defmodule DMEx.Handler do
 
   ## Encoding the selection
 
-  # Built here and nowhere else, for two reasons that happen to coincide.
-  #
-  # This is the first point at which it *can* be: `messages!/1` above has just
-  # run `Code.ensure_compiled!/1` on every matched module, which is what makes
-  # `type/0` callable at all — a clause head resolves a struct through the
-  # parallel compiler without putting the module in the code server.
-  #
-  # And it is the right point for it, because the result is then a constant. The
-  # blob is compiled into `__dmex__/0`, so no connect, no reconnect and no
-  # subscription ever builds one, and a fingerprint that cannot be constructed
-  # is a compile error rather than a runtime fallback path somebody has to
-  # specify. It also makes "one URL per deployment" literal rather than
-  # approximate.
+  # The first point at which this *can* happen — `messages!/1` has just run
+  # `Code.ensure_compiled!/1` on every matched module, which is what makes
+  # `type/0` callable — and the right one, since the result is then a constant
+  # compiled into `__dmex__/0` and an unbuildable fingerprint is a compile error
+  # rather than a runtime fallback path.
   defp fingerprint!(env, messages) do
     types = Enum.map(messages, & &1.type())
 
@@ -509,20 +343,16 @@ defmodule DMEx.Handler do
   defp message!(env, {meta, [pattern | _rest], _guards, _body}) do
     module = struct!(env, meta, pattern)
 
-    # Not the cheaper `Code.ensure_loaded?/1`, and the difference is not
-    # cosmetic: expanding `%module{}` in the clause head above resolved the
-    # struct through the parallel compiler *without* putting the module in the
-    # code server, so `type/0` is not callable yet. Only this blocks until the
-    # module is genuinely compiled.
+    # Not the cheaper `Code.ensure_loaded?/1`: expanding `%module{}` in a clause
+    # head resolves the struct through the parallel compiler *without* putting
+    # the module in the code server, so `type/0` is not callable yet. Only this
+    # blocks until the module is genuinely compiled, and it costs no dependency
+    # — the handler→message edge stays an export dependency, and
+    # `mix xref graph --label compile` shows no edge between them.
     #
-    # It costs no dependency, measured rather than assumed — the handler→message
-    # edge stays an export dependency, and `mix xref graph --label compile`
-    # shows no edge between them.
-    #
-    # The bang matters too. `Code.ensure_compiled/1` answers
+    # The bang matters: `Code.ensure_compiled/1` answers
     # `{:error, :unavailable}` for a module caught in a compiler deadlock, which
-    # is not the same fact as "this is not a message" and must not be reported
-    # as one.
+    # is not the same fact as "this is not a message".
     Code.ensure_compiled!(module)
 
     unless DMEx.Message.message?(module), do: raise_not_a_message(env, meta, module)
@@ -594,9 +424,9 @@ defmodule DMEx.Handler do
     end
   end
 
-  # Kept as the declared keyword rather than the resolved map, so DMEx's defaults
-  # are not compiled into every handler — but resolved once here and thrown away,
-  # so a value outside its domain is a compile error rather than a boot failure.
+  # Kept as the declared keyword rather than the resolved map, so DMEx's
+  # defaults are not compiled into every handler — but resolved once here and
+  # discarded, so a bad value is a compile error rather than a boot failure.
   defp config!(module, opts) do
     declared = Keyword.take(opts, Config.handler_keys())
 
@@ -612,9 +442,7 @@ defmodule DMEx.Handler do
     declared
   end
 
-  # One name or several, in declaration order. A list because the subscriptions
-  # it stands for are a set of independent cursors, and nothing downstream cares
-  # which was written first.
+  # One name or several, in declaration order.
   defp logs!(module, opts) do
     logs =
       case Keyword.fetch(opts, :logs) do

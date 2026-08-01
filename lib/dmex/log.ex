@@ -6,10 +6,10 @@ defmodule DMEx.Log do
         use DMEx.Log, repo: MyApp.Repo
       end
 
-  A log module is a handle, not a process pool. It carries which storage
-  adapter and repo an append goes through, and the app key that scopes both the
-  append lock and the notification channel. Name it in `DMEx.Supervisor`'s
-  `logs:` — an application may own several — and mount its endpoint:
+  A log module is a handle, not a process pool. It carries which storage adapter
+  and repo an append goes through, and the app key that scopes both the append
+  lock and the notification channel. Name it in `DMEx.Supervisor`'s `logs:` — an
+  application may own several — and mount its endpoint:
 
       children = [
         MyApp.Repo,
@@ -19,32 +19,21 @@ defmodule DMEx.Log do
       # in a Phoenix router, a Plug.Router, or a bare Plug pipeline
       forward "/stream", to: DMEx.Log.Plug, init_opts: [log: MyApp.Log]
 
-  Appending is then an ordinary database write:
-
       MyApp.Log.append(%MyApp.Messages.OrderPlaced{order_id: 7})
       #=> {:ok, 1042}
 
-  Generic code holding a log module in a variable calls the same function
-  through the variable — `log.append(message)` — so there is no second
-  explicit form to keep in step with this one.
+  Generic code holding a log module in a variable calls through the variable —
+  `log.append(message)` — so there is no second form to keep in step.
 
-  **Appending is just writing a row.** There is no client/server RPC, no broker
-  call, and no network hop on the write path — the insert, plus the notification
-  that wakes live streams afterwards, is the entire story. It is a normal
-  database write against the application's own database, no different from any
-  other write that application makes.
+  **Appending is just writing a row.** No RPC, no broker call, no network hop:
+  the insert plus the notification that wakes live streams is the entire story.
 
-  ## What appending does, and what it deliberately does not
-
-    * The wire type comes from the message's **own module** (`c:DMEx.Message.type/0`),
-      never from a call argument, so it cannot disagree with the struct it
-      describes.
-    * `metadata` is passed through **untouched**. DMEx merges nothing into it,
-      so there are no reserved key names a publisher has to avoid.
-    * Nothing records which log appended the message. `message_type` is
-      fully qualified, so `MyApp.Messages.OrderPlaced` already identifies the
-      appending application on every message — an `origin` field would restate
-      what the type string already establishes.
+    * The wire type comes from the message's **own module**
+      (`c:DMEx.Message.type/0`), never from a call argument, so it cannot
+      disagree with the struct it describes.
+    * `metadata` passes through **untouched**, so there are no reserved keys.
+    * Nothing records which log appended the message. `message_type` is fully
+      qualified, so it already identifies the appending application.
 
   ## Options
 
@@ -54,49 +43,43 @@ defmodule DMEx.Log do
     * `:app` — the app key (see below). Defaults to a name derived from this
       module.
     * `:prefix` — a Postgres schema the DMEx tables live in.
+    * any `DMEx.Config` log setting. An unrecognised option raises at compile
+      time rather than being ignored.
 
   Which application's modules are scanned for the message types this log can
-  append is `otp_app:` on `DMEx.Supervisor`, once for everything — see
-  `DMEx.Log.Messages`.
-
-  Any `DMEx.Config` log setting may also be given here — `max_batch_frequency:`,
-  `max_batch_size:`, `heartbeat_ms:`, `poll_interval:` and the rest. An
-  unrecognised option raises at compile time rather than being ignored.
+  append is `otp_app:` on `DMEx.Supervisor` — see `DMEx.Log.Messages`.
 
   ## The app key
 
-  One string does two jobs, and both are scoped to the *application*, not to
-  this module: it names the `dmex_<app>` notification channel, and it derives
-  the advisory lock that serializes appends.
+  One string does two jobs, both scoped to the *application* rather than to this
+  module: it names the `dmex_<app>` notification channel and derives the
+  advisory lock that serializes appends.
 
-  It defaults to this module's own name, underscored and flattened —
-  `MyApp.Log` becomes `my_app_log` — because that needs no Mix at
-  compile time, works inside umbrellas, and stays stable in a release. Pass
-  `app: :orders` to choose your own; it must match `~r/[a-z][a-z0-9_]*/` and fit
-  in 58 bytes, which is Postgres's 63-byte identifier limit less the `dmex_`
-  prefix.
+  It defaults to this module's own name, underscored and flattened — `MyApp.Log`
+  becomes `my_app_log` — which needs no Mix at compile time, works inside
+  umbrellas, and stays stable in a release. Pass `app: :orders` to choose your
+  own; it must match `~r/[a-z][a-z0-9_]*/` and fit in 58 bytes, Postgres's
+  63-byte identifier limit less the `dmex_` prefix.
 
-  Two applications sharing one database must not share one
-  `dmex_messages` table — the single-log model assumes one writer per table.
-  Give them separate schemas with `:prefix` if they must be co-tenants.
+  Two applications sharing one database must not share one `dmex_messages`
+  table — the single-log model assumes one writer per table. Give them separate
+  schemas with `:prefix` if they must be co-tenants.
 
   ## Why appends are serialized
 
   Postgres allocates sequence values at INSERT time but makes rows visible at
-  COMMIT time, so two concurrent appends can commit out of allocation order.
-  A reader scanning `id > cursor ORDER BY id` would then advance straight over
-  the row that had not committed yet and lose it permanently — silently, since
+  COMMIT time, so two concurrent appends can commit out of allocation order. A
+  reader scanning `id > cursor ORDER BY id` would advance straight over the row
+  that had not committed yet and lose it permanently — silently, since
   `last_seen` moved right over the gap.
 
-  So `append/2` takes a transaction-scoped advisory lock keyed on the app key,
-  and ids commit in the order they were allocated. This costs append
-  concurrency — appends to one log are effectively serial — in exchange for a
-  reader model with no gap-detection logic anywhere in it.
+  So `append/2` takes a transaction-scoped advisory lock keyed on the app key.
+  Appends to one log are effectively serial, in exchange for a reader model with
+  no gap-detection logic in it.
 
   One consequence worth knowing before it bites: an `append/2` made *inside* an
-  enclosing application transaction extends that lock to the whole transaction's
-  lifetime, so a long-running caller serializes every other append in the app
-  for its duration.
+  enclosing transaction extends that lock for the transaction's lifetime, so a
+  long-running caller serializes every other append in the app.
 
   ## Telemetry
 
@@ -138,9 +121,7 @@ defmodule DMEx.Log do
           consumer's handler verbatim. Defaults to `%{}`.
 
       Raises `ArgumentError` if `message` is not a struct built with
-      `use DMEx.Message`, which is a clearer failure than the
-      `UndefinedFunctionError` that calling `type/0` on it would otherwise
-      produce.
+      `use DMEx.Message`.
       """
       @spec append(struct(), keyword()) :: {:ok, pos_integer()} | {:error, term()}
       def append(message, opts \\ []), do: DMEx.Log.__append__(__MODULE__, message, opts)
@@ -218,9 +199,7 @@ defmodule DMEx.Log do
     %{storage: storage, storage_opts: storage_opts, config: config} = log.__dmex__()
 
     # Before any connection can ask for it. Writing a `:persistent_term` forces
-    # a global GC scan, so it happens once here rather than per connect — and
-    # the set is immutable for the life of the node anyway, since the modules
-    # compiled into a release do not change while it runs.
+    # a global GC scan, so it happens once here rather than per connect.
     Messages.refresh(log, Keyword.get(opts, :otp_app))
 
     # Whatever the adapter needs sits between the registry and the dispatcher,
@@ -246,9 +225,8 @@ defmodule DMEx.Log do
 
   ## Appending
 
-  # The body of every `MyApp.Log.append/2`, kept here rather than
-  # generated into each log so `use DMEx.Log` injects a one-line call
-  # and nothing else.
+  # The body of every `MyApp.Log.append/2`, kept here so `use DMEx.Log` injects
+  # a one-line call and nothing else.
   @doc false
   @spec __append__(module(), struct(), keyword()) :: {:ok, pos_integer()} | {:error, term()}
   def __append__(log, message, opts) when is_atom(log) and is_struct(message) do

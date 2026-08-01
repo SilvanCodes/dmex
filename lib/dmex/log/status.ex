@@ -5,63 +5,38 @@ defmodule DMEx.Log.Status do
   Two things about a stream process have to be readable from *outside* it,
   because the interesting case is precisely the one where that process is not
   running: whether it already has a wakeup queued, and by when it expects to be
-  past whatever it is currently blocked in. Both are single machine words, both
-  are written far more often than they are read, and neither may cost a message
-  round trip to a process that might be wedged — so both live in one `:atomics`
-  reference of two slots.
+  past whatever it is blocked in. Both are single machine words written far more
+  often than read, and neither may cost a round trip to a process that might be
+  wedged — so both live in one `:atomics` reference of two slots.
 
-  ## The wakeup flag
+  **The wakeup flag** is what keeps mailbox depth O(1) rather than O(append rate
+  × stall duration): a stalled connection is blocked inside `chunk/2` and cannot
+  service its mailbox while appends keep arriving, and since a wakeup carries no
+  information, N of them and one are the same instruction. So the dispatcher
+  only sends when the flag flips from clear to pending. `:atomics.exchange/3`
+  makes `flip/1` a test-and-set, so two dispatchers cannot both conclude they
+  should send.
 
-  Wakeups are the last place in the log where memory could grow without
-  bound. A stalled connection is blocked inside `chunk/2` and therefore cannot
-  service its mailbox, while appends keep arriving — so `:wakeup` messages
-  would accumulate at the append rate for as long as the stall lasts.
+  `DMEx.Log.Stream` clears its flag *before* issuing its read, never after. An
+  append landing between the clear and the read re-sets the flag and enqueues a
+  wakeup, so the loop runs again and performs a possibly-empty read — spurious
+  wakeups are harmless, missed ones would not be, and clearing afterwards would
+  open a window where an append is both invisible to the read and unable to set
+  the flag.
 
-  Since a wakeup carries no information, N of them and one of them are the same
-  instruction. So each connection gets a one-bit flag, and the dispatcher only
-  sends when it flips from clear to pending. Mailbox depth per connection becomes
-  O(1) rather than O(append rate x stall duration), however long a stall lasts
-  and however many connections stall together — and, usefully, without depending
-  on `stall_timeout` being tuned correctly.
+  **The deadline** exists because a process blocked in `chunk/2` cannot time
+  itself out — nor can one blocked in a read against a database that stopped
+  answering. So the loop states its budget *before* entering each blocking step
+  (`arm/2`) and `DMEx.Log.Watcher` enforces it. A deadline in the past means the
+  loop did not get past a step it expected to clear, which is the whole of
+  "stuck". Deadlines are `System.monotonic_time(:millisecond)`, immune to
+  wall-clock adjustment and directly comparable between writer and reader.
 
-  `:atomics.exchange/3` is what makes `flip/1` a test-and-set rather than a read
-  followed by a write, so two dispatchers cannot both conclude they should send.
-
-  ## The deadline
-
-  **A process blocked in `chunk/2` cannot time itself out, because it is not
-  running.** The same is true of one blocked in a read against a database that
-  has stopped answering. So the loop states its budget *before* entering each
-  blocking step — `arm/2` — and `DMEx.Log.Watcher` is what enforces it. A
-  deadline in the past means the loop did not get past a step it expected to
-  clear, which is the whole of "stuck" and needs no inference about process
-  state.
-
-  Deadlines are `System.monotonic_time(:millisecond)`, so they are immune to
-  wall-clock adjustment and directly comparable between the stream that writes
-  one and the watcher that reads it.
-
-  ## Both live in the connection's registry entry
-
-  The reference is created by `DMEx.Log.Registry.register/2` and stored as
-  the value of that entry. The placement does the cleanup for free: the entry
-  dies with the request process, and the status with it. There is no table to
-  own, no process to own it, and no monitor watching for connections that died
-  mid-stall — a connection cannot outlive its own status, or the other way
-  round.
-
-  The two slots are written by different processes — the dispatcher flips the
-  flag, the stream arms its own deadline — and never contend: `:atomics`
-  operations are per element, not per reference.
-
-  ## Clear before the read, never after
-
-  `DMEx.Log.Stream` clears its flag *before* issuing its read. An append
-  landing between the clear and the read re-sets the flag and enqueues a wakeup,
-  so the loop runs again and performs a possibly-empty read. **Spurious wakeups
-  are harmless; missed ones would not be, and this ordering makes them
-  impossible.** Clearing after the read would open a window where an append is
-  both invisible to the read and unable to set the flag.
+  Both live in the connection's registry entry, created by
+  `DMEx.Log.Registry.register/3`, which does the cleanup for free: a connection
+  cannot outlive its own status. The two slots are written by different
+  processes — the dispatcher flips the flag, the stream arms its deadline — and
+  never contend, since `:atomics` operations are per element.
   """
 
   @flag 1
@@ -79,11 +54,11 @@ defmodule DMEx.Log.Status do
   @type budget :: pos_integer() | :infinity
 
   @doc """
-  A fresh status: flag clear, deadline armed for `budget`.
+  Builds a fresh status: flag clear, deadline armed for `budget`.
 
   Armed rather than blank, so a connection is watched from the instant it
   registers — the connect path writes response headers and the `retry:` frame
-  before the send loop ever runs, and those writes can stall like any other.
+  before the send loop runs, and those writes can stall like any other.
   """
   @spec new(budget()) :: t()
   def new(budget) do
@@ -141,10 +116,9 @@ defmodule DMEx.Log.Status do
   @doc """
   Drops the deadline, so nothing is overdue until the next `arm/2`.
 
-  The watcher does this to a connection it has just reclaimed. Killing is
-  asynchronous and the registry entry outlives the signal by however long the
-  registry takes to process the `:DOWN`, so without this a second sweep could
-  report the same connection again.
+  The watcher does this to a connection it has just reclaimed: killing is
+  asynchronous and the registry entry outlives the signal, so without this a
+  second sweep could report the same connection again.
   """
   @spec disarm(t()) :: :ok
   def disarm(ref), do: arm(ref, :infinity)

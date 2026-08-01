@@ -7,28 +7,21 @@ defmodule DMEx.Transport.SSE.Decoder do
   reads and a read can contain several frames plus part of another. This
   accumulates and dispatches on the blank-line delimiter.
 
-  ## Two things it drops, on purpose
+  **Two things are dropped on purpose.** Heartbeat comments (`: hb`) and the
+  lone `retry:` frame at stream open carry no row, so neither is returned — but
+  the `retry:` value is kept (see `retry/1`), because it is how a consumer
+  learns the interval to measure silence against.
 
-  Heartbeat comments (`: hb`) and the lone `retry:` frame at stream open carry
-  no row. Neither is a delivery event, so neither is returned — but the `retry:`
-  value is kept (see `retry/1`), because it is how a consumer learns the
-  interval to measure silence against.
+  **The buffer is bounded.** A producer that never emits a blank line — broken,
+  hostile, or simply mid-frame when it wedged — would grow it without limit.
+  Exceeding `max_bytes` returns `{:error, :frame_too_large, decoder}`; the caller
+  drops the connection and reconnects from `last_seen`, costing only a re-read.
 
-  ## The buffer is bounded
-
-  A producer that never emits a blank line — broken, hostile, or simply
-  mid-frame when it wedged — would grow this buffer without limit. Exceeding
-  `max_bytes` returns `{:error, :frame_too_large, decoder}`; the caller drops
-  the connection and reconnects from `last_seen`, which costs nothing beyond a
-  re-read since a drop is not a delivery event.
-
-  ## Why it accumulates iodata
-
-  The obvious implementation, `buffer <> chunk`, copies the whole buffer on
-  every chunk — quadratic in the number of chunks, and real TCP reads are small,
-  so a large run of frames arriving in 1 KB pieces would copy far more than it
-  received. Instead chunks are consed onto a list and flattened only when one of
-  them actually contains a line terminator.
+  **It accumulates iodata.** The obvious `buffer <> chunk` copies the whole
+  buffer every chunk — quadratic, and real TCP reads are small, so a large run
+  of frames arriving in 1 KB pieces would copy far more than it received.
+  Instead chunks are consed onto a list and flattened only when one contains a
+  line terminator.
   """
 
   alias DMEx.Transport.SSE.Frame
@@ -49,18 +42,17 @@ defmodule DMEx.Transport.SSE.Decoder do
 
   @type error :: :frame_too_large | {:invalid_json, term()} | {:invalid_data_shape, term()}
 
-  @doc "A decoder that will not buffer more than `max_bytes` of an unterminated frame."
+  @doc "Builds a decoder buffering at most `max_bytes` of an unterminated frame."
   @spec new(pos_integer()) :: t()
   def new(max_bytes \\ 4_194_304) when is_integer(max_bytes) and max_bytes > 0 do
     %__MODULE__{max_bytes: max_bytes}
   end
 
   @doc """
-  The producer's advertised reconnect/heartbeat interval, in ms, or `nil`.
+  Returns the producer's advertised interval in ms, or `nil`.
 
-  Carries `heartbeat_ms` plus one batch interval — the real upper bound on
-  silence — so a
-  consumer reads it as "expect a frame or a comment within this window".
+  The real upper bound on silence — `heartbeat_ms` plus one batch interval — so
+  a consumer reads it as "expect a frame or a comment within this window".
   """
   @spec retry(t()) :: pos_integer() | nil
   def retry(%__MODULE__{retry: retry}), do: retry

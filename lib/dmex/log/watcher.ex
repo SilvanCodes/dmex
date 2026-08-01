@@ -2,65 +2,51 @@ defmodule DMEx.Log.Watcher do
   @moduledoc """
   Reclaims connections that stopped making progress.
 
-  One per log, started by that log's supervisor. It holds no state
-  about any connection: every sweep reads the live set out of
-  `DMEx.Log.Registry`, compares each connection's armed deadline against the
-  clock, and kills whatever is past it.
+  One per log, started by that log's supervisor. It holds no state about any
+  connection: every sweep reads the live set out of `DMEx.Log.Registry`,
+  compares each armed deadline against the clock, and kills whatever is past it.
 
   ## Why anything is needed at all
 
-  The send loop bounds memory by construction — it holds at most the frame it is
-  currently writing, and the next read cannot happen until the previous write
-  returns. What it cannot do is reclaim itself: **a process blocked in `chunk/2`
-  cannot time itself out, because it is not running.** Nor can one blocked in a
-  read against a database that has stopped answering, or waiting on a pool
-  checkout that never returns.
+  The send loop bounds memory by construction, but it cannot reclaim itself:
+  **a process blocked in `chunk/2` cannot time itself out, because it is not
+  running.** Nor can one blocked in a read against a database that stopped
+  answering, or waiting on a pool checkout that never returns.
 
   So the loop states its budget before entering each blocking step (see
-  `DMEx.Log.Status`), and this process enforces it from outside. That is the
-  whole mechanism: no per-connection timer, no progress heuristics, no inspecting
-  another process's state.
-
-  DMEx used to leave this entirely to the socket layer, on the strength of
-  `send_timeout` on the web server's listener. That was a poor contract for a
-  library — it made correctness depend on transport configuration DMEx neither
-  owns nor can verify, and it failed silently when an operator did not set it.
-  It also only ever saw a stalled *socket*; a wedged query looked perfectly
-  healthy to it. Socket options are still worth setting, and
-  `guides/deployment.md` says why, but nothing here depends on them.
+  `DMEx.Log.Status`) and this process enforces it from outside. That is the
+  whole mechanism: no per-connection timer, no progress heuristics, no
+  inspecting another process's state. Socket options are still worth setting and
+  `guides/deployment.md` says why, but nothing here depends on them — a
+  `send_timeout` only ever sees a stalled *socket*, and a wedged query looks
+  perfectly healthy to it.
 
   ## Why the kill is untrappable
 
   `Process.exit(pid, :kill)`, never a gentler reason. An ordinary exit signal
   sent to a process trapping exits becomes a message in its mailbox — and the
-  mailbox is exactly what a wedged process is not servicing, so the signal would
-  be read at precisely the moment it was no longer needed. Killing also frees a
-  process suspended on a busy port, which is what a blocked `chunk/2` is.
+  mailbox is exactly what a wedged process is not servicing. Killing also frees
+  a process suspended on a busy port, which is what a blocked `chunk/2` is.
 
-  What that reclaims: the request process, its registry entry, the database
-  connection it had checked out (the pool monitors its client), and the socket,
-  through the web server's own teardown — the same path a client disconnect
-  takes. **Dropping a connection is not a delivery event**: the log holds no
-  consumer state, the consumer's `last_seen` is durable, and resumption is the
-  same `id > last_seen` read a cold connect does. That is what makes it safe to
-  be blunt.
+  That reclaims the request process, its registry entry, the database connection
+  it had checked out (the pool monitors its client), and the socket through the
+  web server's teardown — the same path a client disconnect takes. **Dropping a
+  connection is not a delivery event**, which is what makes it safe to be blunt.
 
   ## What it cannot see
 
-  A peer that vanished while the kernel still accepts our bytes. Writes keep
-  returning `:ok`, deadlines keep being met, and nothing running inside this VM
-  can tell the difference. Heartbeats mean there is always unacked data in
-  flight, so TCP's own retransmission timeout eventually errors the socket;
-  tuned keepalive shortens that. This is the one case the socket layer still
-  owns.
+  A peer that vanished while the kernel still accepts our bytes: writes keep
+  returning `:ok`, deadlines keep being met, and nothing inside this VM can tell
+  the difference. Heartbeats mean there is always unacked data in flight, so
+  TCP's retransmission timeout eventually errors the socket; tuned keepalive
+  shortens that. This is the one case the socket layer still owns.
 
   ## Where global limits would land
 
-  This process already knows the whole live set for a log, which makes it
-  the seat for the aggregate machinery DMEx deliberately leaves out: a connection
-  budget, `503`/`Retry-After` admission control asked for at connect, and a
-  shedding policy — which can rank candidates by deadline, since it holds every
-  one. See `ROADMAP.md`.
+  This process already knows a log's whole live set, which makes it the seat for
+  the aggregate machinery DMEx leaves out: a connection budget,
+  `503`/`Retry-After` admission control at connect, and a shedding policy that
+  can rank candidates by deadline. See `ROADMAP.md`.
   """
 
   use GenServer
@@ -72,9 +58,8 @@ defmodule DMEx.Log.Watcher do
   @doc """
   Starts a watcher for `log:`.
 
-  Started automatically by the log's own supervisor — and not started at all
-  when that log sets `stall_timeout: :infinity`, since there would be
-  nothing to enforce.
+  Done automatically by the log's own supervisor — and not at all when that log
+  sets `stall_timeout: :infinity`, since there would be nothing to enforce.
   """
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
@@ -130,9 +115,8 @@ defmodule DMEx.Log.Watcher do
     reclaimed = :counters.new(1, [])
 
     # `each/2` runs here rather than in the registry's own processes, so a sweep
-    # costs one atomics read per connection and nothing that can block.
-    # A deadline is a deadline whatever the connection selected, so the
-    # selection is the one thing this pass has no opinion about.
+    # costs one atomics read per connection and nothing that can block. A
+    # deadline is a deadline whatever the connection selected.
     DMEx.Log.Registry.each(state.log, fn pid, status, _selection ->
       if Status.overdue?(status, now) do
         reclaim(state.log, pid, status, now)
