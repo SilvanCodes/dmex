@@ -129,20 +129,27 @@ defmodule DMEx.Storage.PostgresTest do
     end
 
     # The case that makes a stated link necessary rather than merely convenient:
-    # here the delivered ids are 1, 3, 5 and every gap is deliberate.
+    # the delivered rows are every other one, and every gap is deliberate.
     test "a selective read chains over the delivered subsequence, not the id space",
          %{opts: opts} do
-      for n <- 1..6 do
-        type = if rem(n, 2) == 1, do: "A", else: "B"
-        append(opts, type, %{n: n})
-      end
+      ids =
+        for n <- 1..6 do
+          type = if rem(n, 2) == 1, do: "A", else: "B"
+          {:ok, id} = append(opts, type, %{n: n})
+          id
+        end
+
+      # The ids of the "A" rows, taken as assigned rather than assumed to be
+      # `1, 3, 5`: the sequence is shared with every other async test, and it
+      # does not roll back, so only their relative order is ours to rely on.
+      wanted = Enum.take_every(ids, 2)
 
       assert {:ok, rows} = Postgres.read(opts, 0, 100, 1_048_576, ["A"])
 
-      assert length(rows) == 3
+      assert Enum.map(rows, & &1.id) == wanted
       assert chained?(rows, 0)
       # Each link skips the interleaved "B" row rather than pointing at it.
-      assert Enum.zip(rows, tl(rows)) |> Enum.all?(fn {a, b} -> b.id - a.id == 2 end)
+      assert Enum.zip(rows, tl(rows)) |> Enum.all?(fn {a, b} -> b.id - a.id > 1 end)
     end
 
     test "a batch cut short by bytes is still contiguous", %{opts: opts} do
