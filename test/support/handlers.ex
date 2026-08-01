@@ -6,7 +6,7 @@ defmodule DMEx.Test.Handlers do
   can assert on the exact arguments its handler received without any global
   state.
 
-  Every one declares `log: :test`, so `DMEx.Test.Server.logs/1` binds
+  Every one but `Fanned` declares `logs: [:test]`, so `DMEx.Test.Server.logs/1` binds
   the whole file to one runtime URL. Ids are per-module because a subscription
   id keys the cursor and these run concurrently — and the message set is now
   whatever `handle_message/2` matches on, so a handler needed for two different
@@ -39,7 +39,7 @@ defmodule DMEx.Test.Handlers do
 
   defmodule Echo do
     @moduledoc "Reports every message it handles and does nothing else."
-    use DMEx.Handler, log: :test, id: :echo
+    use DMEx.Handler, logs: [:test], id: :echo
 
     alias DMEx.Test.Handlers
     alias DMEx.Test.Messages.OrderPlaced
@@ -60,7 +60,7 @@ defmodule DMEx.Test.Handlers do
     message set is: the handler module is the complete declaration of what the
     subscription *is*, and a call site that could vary it could disagree with it.
     """
-    use DMEx.Handler, log: :test, id: :echo_whole_log, selective: false
+    use DMEx.Handler, logs: [:test], id: :echo_whole_log, selective: false
 
     alias DMEx.Test.Handlers
     alias DMEx.Test.Messages.OrderPlaced
@@ -81,7 +81,7 @@ defmodule DMEx.Test.Handlers do
     declaration now: a handler subscribed to a list that does not contain what
     it matches on is unrepresentable, and the price is a module per combination.
     """
-    use DMEx.Handler, log: :test, id: :echo_all
+    use DMEx.Handler, logs: [:test], id: :echo_all
 
     alias DMEx.Test.Handlers
     alias DMEx.Test.Messages.OrderPlaced
@@ -98,9 +98,30 @@ defmodule DMEx.Test.Handlers do
     end
   end
 
+  defmodule Fanned do
+    @moduledoc """
+    One handler, two logs.
+
+    Its two subscriptions have their own cursors and their own connections; the
+    only thing they share is this module. `:other` is bound alongside `:test`
+    wherever a test starts a supervisor that discovers this file.
+    """
+    use DMEx.Handler, logs: [:test, :other], id: :fanned
+
+    alias DMEx.Test.Handlers
+    alias DMEx.Test.Messages.OrderPlaced
+
+    @impl true
+    def handle_message(%OrderPlaced{} = message, metadata) do
+      send(Handlers.owner(), {:handled, message, metadata})
+
+      :ok
+    end
+  end
+
   defmodule Careful do
     @moduledoc "Declares its own failure policy, for the config-on-the-module path."
-    use DMEx.Handler, log: :test, id: :careful, on_failure: :crash, max_attempts: 5
+    use DMEx.Handler, logs: [:test], id: :careful, on_failure: :crash, max_attempts: 5
 
     alias DMEx.Test.Handlers
     alias DMEx.Test.Messages.OrderPlaced
@@ -115,7 +136,7 @@ defmodule DMEx.Test.Handlers do
 
   defmodule Raising do
     @moduledoc "Always raises, for the failure paths."
-    use DMEx.Handler, log: :test, id: :raising
+    use DMEx.Handler, logs: [:test], id: :raising
 
     alias DMEx.Test.Handlers
     alias DMEx.Test.Messages.OrderPlaced
@@ -135,7 +156,7 @@ defmodule DMEx.Test.Handlers do
     The rollback probe: if the row is gone afterwards, the callback and the
     cursor advance really did share one transaction.
     """
-    use DMEx.Handler, log: :test, id: :writes_then_raises
+    use DMEx.Handler, logs: [:test], id: :writes_then_raises
 
     alias DMEx.Test.Messages.OrderPlaced
     alias DMEx.Test.Repo
@@ -155,7 +176,7 @@ defmodule DMEx.Test.Handlers do
 
   defmodule ChecksTransaction do
     @moduledoc "Reports whether it was invoked inside a transaction."
-    use DMEx.Handler, log: :test, id: :checks_transaction
+    use DMEx.Handler, logs: [:test], id: :checks_transaction
 
     alias DMEx.Test.Handlers
     alias DMEx.Test.Messages.OrderPlaced
@@ -171,7 +192,7 @@ defmodule DMEx.Test.Handlers do
 
   defmodule Slow do
     @moduledoc "Sleeps before reporting, for tests that need a drain in progress."
-    use DMEx.Handler, log: :test, id: :slow
+    use DMEx.Handler, logs: [:test], id: :slow
 
     alias DMEx.Test.Handlers
     alias DMEx.Test.Messages.OrderPlaced
@@ -192,7 +213,7 @@ defmodule DMEx.Test.Handlers do
     The transient failure retries exist for — a deadlock, a blipped downstream —
     as opposed to a handler that is simply broken.
     """
-    use DMEx.Handler, log: :test, id: :fail_times
+    use DMEx.Handler, logs: [:test], id: :fail_times
 
     alias DMEx.Test.Handlers
     alias DMEx.Test.Messages.OrderPlaced
@@ -238,7 +259,7 @@ defmodule DMEx.Test.Handlers do
     suppression cannot cover, and the reason delivery is at-least-once rather
     than exactly-once. Killing the stream on receipt lands squarely inside it.
     """
-    use DMEx.Handler, log: :test, id: :slow_commit
+    use DMEx.Handler, logs: [:test], id: :slow_commit
 
     alias DMEx.Test.Handlers
     alias DMEx.Test.Messages.OrderPlaced

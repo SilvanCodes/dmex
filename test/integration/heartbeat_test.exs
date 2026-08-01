@@ -79,7 +79,7 @@ defmodule DMEx.Integration.HeartbeatTest do
   setup do
     Handlers.report_to(self())
 
-    start_supervised!(Log)
+    start_supervised!({Log, otp_app: :dmex})
     base = Server.start!(plug: Router)
     uri = URI.parse(base)
 
@@ -125,14 +125,17 @@ defmodule DMEx.Integration.HeartbeatTest do
     setup ctx do
       start_supervised!(
         {DMEx.Supervisor,
-         name: TestSupervisor, repo: DMEx.Test.IntegrationRepo, logs: Server.logs(ctx.url)}
+         name: TestSupervisor,
+         otp_app: nil,
+         repo: DMEx.Test.IntegrationRepo,
+         logs: Server.logs(ctx.url)}
       )
 
       :ok
     end
 
     test "stays connected through a long quiet period", _ctx do
-      {:ok, pid} = subscribe()
+      {:ok, [pid]} = subscribe()
 
       {:ok, _} = Log.append(%OrderPlaced{order_id: 1})
       assert_receive {:handled, %OrderPlaced{order_id: 1}, _}, 5_000
@@ -148,7 +151,7 @@ defmodule DMEx.Integration.HeartbeatTest do
     end
 
     test "counts heartbeat bytes as activity, so silence means silence", _ctx do
-      {:ok, pid} = subscribe()
+      {:ok, [pid]} = subscribe()
 
       eventually(fn -> :sys.get_state(pid).conn != nil end)
       before = :sys.get_state(pid).last_activity
@@ -159,7 +162,7 @@ defmodule DMEx.Integration.HeartbeatTest do
     end
 
     test "adopts the log's advertised interval as its deadline", _ctx do
-      {:ok, pid} = subscribe()
+      {:ok, [pid]} = subscribe()
 
       eventually(fn -> Decoder.retry(:sys.get_state(pid).decoder) != nil end)
 
@@ -179,6 +182,7 @@ defmodule DMEx.Integration.HeartbeatTest do
       start_supervised!(
         {DMEx.Supervisor,
          name: SilentHandler,
+         otp_app: nil,
          repo: DMEx.Test.IntegrationRepo,
          logs: Server.logs(base <> "/stream")}
       )
@@ -204,13 +208,14 @@ defmodule DMEx.Integration.HeartbeatTest do
       start_supervised!(
         {DMEx.Supervisor,
          name: PersistentHandler,
+         otp_app: nil,
          repo: DMEx.Test.IntegrationRepo,
          logs: Server.logs(base <> "/stream")}
       )
 
       ref = :telemetry_test.attach_event_handlers(self(), [[:dmex, :handler, :reconnect]])
 
-      {:ok, pid} =
+      {:ok, [pid]} =
         DMEx.Supervisor.subscribe(Handlers.Echo,
           supervisor: PersistentHandler,
           missed_heartbeats: 1,

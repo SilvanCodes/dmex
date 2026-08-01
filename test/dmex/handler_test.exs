@@ -27,11 +27,11 @@ defmodule DMEx.HandlerTest do
       refute Handler.handler?(NoSuchModuleAnywhere)
     end
 
-    test "carries the log, the id, the module and the derived message set" do
+    test "carries the logs, the id, the module and the derived message set" do
       assert %{
                handler: Handlers.EchoAll,
-               log: "test",
-               id: "test/echo_all",
+               logs: ["test"],
+               id: "echo_all",
                messages: messages
              } = Handlers.EchoAll.__dmex__()
 
@@ -72,7 +72,7 @@ defmodule DMEx.HandlerTest do
     test "`selective:` must be a boolean" do
       assert_raise ArgumentError, ~r/:selective in .* must be true .* or false/s, fn ->
         defmodule NotABoolean do
-          use DMEx.Handler, log: :test, id: :not_a_boolean, selective: :sometimes
+          use DMEx.Handler, logs: [:test], id: :not_a_boolean, selective: :sometimes
 
           def handle_message(%OrderPlaced{}, _metadata), do: :ok
         end
@@ -141,32 +141,68 @@ defmodule DMEx.HandlerTest do
     end
   end
 
+  # Every operator-facing call addresses exactly one cursor, so a handler reading
+  # several logs has to be told which — and one reading a single log never does.
+  describe "log!/2" do
+    test "answers the only log when the handler reads one" do
+      assert Handler.log!(Handlers.Echo, []) == "test"
+    end
+
+    test "refuses to guess for a handler reading several" do
+      assert_raise ArgumentError, ~r/reads 2 logs \(test, other\).*`log: :test`/s, fn ->
+        Handler.log!(Handlers.Fanned, [])
+      end
+    end
+
+    test "takes the one the call names, as an atom or a string" do
+      assert Handler.log!(Handlers.Fanned, log: :other) == "other"
+      assert Handler.log!(Handlers.Fanned, log: "test") == "test"
+    end
+
+    test "rejects a log the handler does not read, even when it reads one" do
+      assert_raise ArgumentError, ~r/does not read "elsewhere"/, fn ->
+        Handler.log!(Handlers.Echo, log: :elsewhere)
+      end
+    end
+  end
+
   describe "the subscription id" do
     # **Frozen.** This string is a text primary key in every deployment's
     # database. Changing the separator, the charset or the normalization resets
     # every cursor everywhere, so the literal is asserted rather than derived.
     test "is exactly \"log/id\"" do
-      assert Handler.subscription_id(Handlers.Echo) == "test/echo"
+      assert Handler.subscription_id(Handlers.Echo, :test) == "test/echo"
+    end
+
+    test "is one per log the handler reads" do
+      assert Handler.subscription_ids(Handlers.Echo) == ["test/echo"]
+      assert Handler.subscription_ids(Handlers.Fanned) == ["test/fanned", "other/fanned"]
+    end
+
+    test "rejects a log the handler does not read" do
+      assert_raise ArgumentError, ~r/does not read "elsewhere"/, fn ->
+        Handler.subscription_id(Handlers.Echo, :elsewhere)
+      end
     end
 
     test "renders atoms and strings identically" do
       # Otherwise a config style change would silently mint a second identity.
-      assert declare(log: :orders, id: :order_projection) ==
-               declare(log: "orders", id: "order_projection")
+      assert declare(logs: [:orders], id: :order_projection) ==
+               declare(logs: ["orders"], id: "order_projection")
     end
 
     test "does not depend on the module's name" do
       # The substance of the whole design: renaming a handler is free.
-      first = declare(log: :orders, id: :order_projection)
-      second = declare(log: :orders, id: :order_projection)
+      first = declare(logs: [:orders], id: :order_projection)
+      second = declare(logs: [:orders], id: :order_projection)
 
       assert first == second
-      assert first == "orders/order_projection"
+      assert first == ["orders/order_projection"]
     end
 
     test "rejects a module that is not a handler" do
       assert_raise ArgumentError, ~r/is not a DMEx handler/, fn ->
-        Handler.subscription_id(Handlers.NotAHandler)
+        Handler.subscription_ids(Handlers.NotAHandler)
       end
     end
   end
@@ -208,27 +244,43 @@ defmodule DMEx.HandlerTest do
 
     test "rejects a handler with no handle_message/2 at all" do
       assert_raise ArgumentError, ~r/defines no handle_message\/2/, fn ->
-        compile_raw("log: :orders, id: :some_id", "")
+        compile_raw("logs: [:orders], id: :some_id", "")
       end
     end
   end
 
   describe "validating the options" do
-    test "requires :log" do
-      assert_raise ArgumentError, ~r/requires :log/, fn ->
+    test "requires :logs" do
+      assert_raise ArgumentError, ~r/requires :logs/, fn ->
         compile_raw("id: :some_id", clause())
       end
     end
 
     test "requires :id" do
       assert_raise ArgumentError, ~r/requires :id/, fn ->
-        compile_raw("log: :orders", clause())
+        compile_raw("logs: [:orders]", clause())
+      end
+    end
+
+    test "accepts a bare name as a one-log list" do
+      assert declare(logs: :orders, id: :order_projection) == ["orders/order_projection"]
+    end
+
+    test "rejects an empty :logs" do
+      assert_raise ArgumentError, ~r/names no log/, fn ->
+        compile_raw("logs: [], id: :some_id", clause())
+      end
+    end
+
+    test "rejects a log named twice" do
+      assert_raise ArgumentError, ~r/names "orders" twice/, fn ->
+        compile_raw("logs: [:orders, :orders], id: :some_id", clause())
       end
     end
 
     test "rejects an unknown option" do
       assert_raise ArgumentError, ~r/unknown option \[:url\]/, fn ->
-        compile_raw(~s(log: :orders, id: :some_id, url: "https://x.test"), clause())
+        compile_raw(~s(logs: [:orders], id: :some_id, url: "https://x.test"), clause())
       end
     end
 
@@ -243,14 +295,14 @@ defmodule DMEx.HandlerTest do
         ] do
       test "rejects #{label} in :id" do
         assert_raise ArgumentError, ~r/must be an atom or a string matching/, fn ->
-          compile_raw("log: :orders, id: #{unquote(value)}", clause())
+          compile_raw("logs: [:orders], id: #{unquote(value)}", clause())
         end
       end
     end
 
-    test "rejects a non-identifier :log" do
-      assert_raise ArgumentError, ~r/:log.*must be an atom or a string matching/s, fn ->
-        compile_raw(~s(log: "Orders", id: :some_id), clause())
+    test "rejects a non-identifier log name" do
+      assert_raise ArgumentError, ~r/:logs.*must be an atom or a string matching/s, fn ->
+        compile_raw(~s(logs: ["Orders"], id: :some_id), clause())
       end
     end
   end
@@ -265,10 +317,10 @@ defmodule DMEx.HandlerTest do
     opts
     |> Enum.map_join(", ", fn {key, value} -> "#{key}: #{inspect(value)}" end)
     |> compile_raw(clause())
-    |> Map.fetch!(:id)
+    |> then(&Enum.map(&1.logs, fn log -> log <> "/" <> &1.id end))
   end
 
-  defp compile(body), do: compile_raw("log: :orders, id: :some_id", body)
+  defp compile(body), do: compile_raw("logs: [:orders], id: :some_id", body)
 
   defp messages_of(body), do: body |> compile() |> Map.fetch!(:messages)
 

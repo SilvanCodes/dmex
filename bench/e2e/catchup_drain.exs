@@ -34,7 +34,7 @@ backlog = 20_000
 
 defmodule Bench.CountingHandler do
   @moduledoc false
-  use DMEx.Handler, log: :bench, id: :counting
+  use DMEx.Handler, logs: [:bench], id: :counting
 
   @impl true
   def handle_message(%DMEx.Test.Messages.OrderPlaced{}, _metadata) do
@@ -154,7 +154,7 @@ defmodule Bench.SkippingHandler do
   @moduledoc false
   # Matches a type the log does not contain, so every row is a skip: a lookup,
   # a cursor write and a commit, with no handler.
-  use DMEx.Handler, log: :bench, id: :skipping
+  use DMEx.Handler, logs: [:bench], id: :skipping
 
   @impl true
   def handle_message(%Bench.UnusedMessage{}, _metadata), do: :ok

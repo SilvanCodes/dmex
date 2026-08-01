@@ -28,7 +28,7 @@ defmodule DMEx.Handler.DeadMessagesTest do
     this one — and a discovered pair sharing an id is exactly what
     `DMEx.Supervisor.__startable__!/2` refuses.
     """
-    use DMEx.Handler, log: :test, id: :fail_times
+    use DMEx.Handler, logs: [:test], id: :fail_times
 
     alias DMEx.Test.Handlers
     alias DMEx.Test.Messages.OrderShipped

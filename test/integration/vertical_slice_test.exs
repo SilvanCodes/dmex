@@ -22,7 +22,7 @@ defmodule DMEx.Integration.VerticalSliceTest do
 
   defmodule SecondHandler do
     @moduledoc false
-    use DMEx.Handler, log: :test, id: :second
+    use DMEx.Handler, logs: [:test], id: :second
 
     alias DMEx.Test.Handlers
     alias DMEx.Test.Messages.OrderPlaced
@@ -38,7 +38,7 @@ defmodule DMEx.Integration.VerticalSliceTest do
   setup do
     Handlers.report_to(self())
 
-    start_supervised!(Log)
+    start_supervised!({Log, otp_app: :dmex})
 
     # The server binds port 0, so the log map is necessarily built at
     # runtime — which is exactly why it lives on the child spec rather than in
@@ -47,7 +47,7 @@ defmodule DMEx.Integration.VerticalSliceTest do
 
     start_supervised!(
       {DMEx.Supervisor,
-       name: TestSupervisor, repo: DMEx.Test.IntegrationRepo, logs: Server.logs(url)}
+       name: TestSupervisor, otp_app: nil, repo: DMEx.Test.IntegrationRepo, logs: Server.logs(url)}
     )
 
     %{url: url, storage_opts: Log.__dmex__().storage_opts}
@@ -131,7 +131,7 @@ defmodule DMEx.Integration.VerticalSliceTest do
     # free: the module's name, and the message set.
     defmodule Slice do
       @moduledoc false
-      use DMEx.Handler, log: :test, id: :slice
+      use DMEx.Handler, logs: [:test], id: :slice
 
       alias DMEx.Test.Handlers
       alias DMEx.Test.Messages.OrderPlaced
@@ -146,7 +146,7 @@ defmodule DMEx.Integration.VerticalSliceTest do
 
     defmodule SliceRenamed do
       @moduledoc "Slice after an ordinary module rename — same declaration."
-      use DMEx.Handler, log: :test, id: :slice
+      use DMEx.Handler, logs: [:test], id: :slice
 
       alias DMEx.Test.Handlers
       alias DMEx.Test.Messages.OrderPlaced
@@ -161,7 +161,7 @@ defmodule DMEx.Integration.VerticalSliceTest do
 
     defmodule SliceWidened do
       @moduledoc "Slice with a clause added for a second type — same identity."
-      use DMEx.Handler, log: :test, id: :slice
+      use DMEx.Handler, logs: [:test], id: :slice
 
       alias DMEx.Test.Handlers
       alias DMEx.Test.Messages.OrderPlaced

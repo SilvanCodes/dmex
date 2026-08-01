@@ -11,17 +11,16 @@ defmodule DMEx.Handler.Cursors do
   ## Renaming the handler module is free; changing its declaration is not
 
   `last_seen` is keyed by the identifier a handler declares —
-  `"orders/order_projection"` for a module with `log: :orders,
+  `"orders/order_projection"` for a module with `logs: [:orders],
   id: :order_projection` — not by the module's name. So renaming
   `MyApp.OrderHandler` to `MyApp.Orders.Handler` costs nothing at all, which is
   the point: a rename is something a refactoring tool does without asking.
 
   What does still reset a cursor is changing the *declaration*: a different
-  `id:`, or a different key for that log in `DMEx.Supervisor`'s `log:`
-  map. Both are deliberate acts rather than incidental ones, but the effect is
-  the same — a new identity with no cursor, which then replays the log's
-  log from the beginning. Do it in a migration, next to the code change that
-  causes it:
+  `id:`, or a different key for that log in `DMEx.Supervisor`'s `logs:`. Both
+  are deliberate acts rather than incidental ones, but the effect is the same —
+  a new identity with no cursor, which then replays the log from the beginning.
+  Do it in a migration, next to the code change that causes it:
 
       defmodule MyApp.Repo.Migrations.RenameOrderProjection do
         use Ecto.Migration
@@ -52,7 +51,9 @@ defmodule DMEx.Handler.Cursors do
   ## Options
 
   All four take `repo:` (required), plus optional `storage:` and `prefix:`,
-  the same as `DMEx.Supervisor`.
+  the same as `DMEx.Supervisor`. The three taking a handler module also take
+  `log:`, which a handler reading more than one log must give — a cursor belongs
+  to one `{log, id}` pair, so there is nothing else the call could mean.
 
   ## These do not touch a running subscription
 
@@ -77,7 +78,7 @@ defmodule DMEx.Handler.Cursors do
   def inspect(handler, opts) when is_atom(handler) do
     {storage, storage_opts} = DMEx.Supervisor.storage!(opts)
 
-    storage.cursor(storage_opts, Handler.subscription_id(handler))
+    storage.cursor(storage_opts, subscription!(handler, opts))
   end
 
   @doc """
@@ -94,7 +95,7 @@ defmodule DMEx.Handler.Cursors do
   def move!(handler, id, opts)
       when is_atom(handler) and is_integer(id) and id >= 0 do
     {storage, storage_opts} = DMEx.Supervisor.storage!(opts)
-    subscription = Handler.subscription_id(handler)
+    subscription = subscription!(handler, opts)
 
     {:ok, :ok} =
       storage.transaction(storage_opts, fn ->
@@ -115,7 +116,7 @@ defmodule DMEx.Handler.Cursors do
   def reset!(handler, opts) when is_atom(handler) do
     {storage, storage_opts} = DMEx.Supervisor.storage!(opts)
 
-    :ok = storage.delete_cursor(storage_opts, Handler.subscription_id(handler))
+    :ok = storage.delete_cursor(storage_opts, subscription!(handler, opts))
   end
 
   @doc """
@@ -157,5 +158,11 @@ defmodule DMEx.Handler.Cursors do
       end)
 
     :ok
+  end
+
+  # A cursor belongs to one subscription, so a multi-log handler has to say which
+  # one. `DMEx.Handler.log!/2` is what raises when it did not.
+  defp subscription!(handler, opts) do
+    Handler.subscription_id(handler, Handler.log!(handler, opts))
   end
 end

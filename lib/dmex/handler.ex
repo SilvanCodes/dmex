@@ -3,7 +3,7 @@ defmodule DMEx.Handler do
   What a handler consumes, from whom, and what it does with it.
 
       defmodule MyApp.OrderProjection do
-        use DMEx.Handler, log: :orders, id: :order_projection
+        use DMEx.Handler, logs: [:orders], id: :order_projection
 
         @impl true
         def handle_message(%MyApp.Messages.OrderPlaced{} = message, _metadata) do
@@ -17,6 +17,22 @@ defmodule DMEx.Handler do
   The module is the complete declaration of a subscription. `DMEx.Supervisor`
   binds `:orders` to a URL and starts it — the module is never named there, and
   nothing at the call site repeats what is written here.
+
+  ## One handler, one subscription per log it names
+
+  `logs:` is a list, and each entry is its own subscription: its own connection,
+  its own cursor, its own dead messages. `logs: [:orders, :returns]` on the
+  module above is `"orders/order_projection"` and `"returns/order_projection"`,
+  running independently — one falling behind or crash-looping says nothing about
+  the other.
+
+  What they share is this module, so the same clauses run over both logs. That is
+  the case it is for: the same projection fed by two applications appending the
+  same message types. Two logs whose messages need *different* handling are two
+  handler modules, because they are two different functions.
+
+  Ordinary operator calls address one cursor, so on a multi-log handler they take
+  a `log:` — see `DMEx.Handler.Cursors` and `DMEx.Handler.DeadMessages`.
 
   ## The message types are read from the callback, not declared
 
@@ -105,10 +121,12 @@ defmodule DMEx.Handler do
 
   ## Options
 
-    * `:log` — required; the logical name of the log to read from, as an atom or
-      a string. Resolved against `logs:` on `DMEx.Supervisor`, never against a
-      URL written here.
-    * `:id` — required; this subscription's own name, as an atom or a string.
+    * `:logs` — required; the logical names of the logs to read, as atoms or
+      strings. Resolved against `logs:` on `DMEx.Supervisor`, never against a URL
+      written here. A bare name is accepted for the single-log case.
+    * `:id` — required; this handler's own name, as an atom or a string. It is
+      the same for every log, since the log name is the other half of each
+      subscription's identity.
     * `:selective` — whether the log narrows the stream to this handler's
       message types. Defaults to `true`.
     * any `DMEx.Config` handler setting — `:on_failure`, `:max_attempts`,
@@ -143,8 +161,8 @@ defmodule DMEx.Handler do
   render to one string. The cost is that an id cannot be a UUID and cannot
   contain a dot or a dash.
 
-  Atoms and strings render identically, so `log: :orders` and
-  `log: "orders"` are the same subscription.
+  Atoms and strings render identically, so `logs: [:orders]` and
+  `logs: ["orders"]` are the same subscription.
 
   **Renaming this module is free.** Identity is the declared pair, not the
   module name, so an ordinary refactor does not reset a cursor. What *does*
@@ -215,16 +233,17 @@ defmodule DMEx.Handler do
   alias DMEx.Config
 
   @identifier ~r/\A[a-z][a-z0-9_]*\z/
-  @handler_opts [:log, :id, :selective]
+  @handler_opts [:logs, :id, :selective]
 
   @typedoc """
   A handler's compile-time declaration, as returned by its `__dmex__/0`.
 
-  `:id` is the full composite identifier — `"orders/order_projection"` — not the
-  `id:` half that was declared. `:messages` is the set of modules derived from
-  the callback's clauses; a set rather than a list because nothing downstream
-  asks about order or repetition, and both jobs it does — a `message_type =>
-  module` lookup and the selection blob — are already invariant under them.
+  `:logs` and `:id` are the two halves of every subscription this handler
+  declares: `subscription_id/2` joins one log to the id, and `subscription_ids/1`
+  gives them all. `:messages` is the set of modules derived from the callback's
+  clauses; a set rather than a list because nothing downstream asks about order
+  or repetition, and both jobs it does — a `message_type => module` lookup and
+  the selection blob — are already invariant under them.
   `:fingerprint` is those messages' wire types encoded as a `DMEx.Fingerprint`
   blob — the path segment this subscription requests — or `nil` when
   `selective: false` asked for the whole log, in which case there is no segment
@@ -239,7 +258,7 @@ defmodule DMEx.Handler do
   """
   @type declaration :: %{
           handler: module(),
-          log: String.t(),
+          logs: [String.t()],
           id: String.t(),
           messages: MapSet.t(module()),
           fingerprint: String.t() | nil,
@@ -290,7 +309,7 @@ defmodule DMEx.Handler do
 
   @doc false
   @spec __declared__(module(), keyword()) :: %{
-          log: String.t(),
+          logs: [String.t()],
           id: String.t(),
           selective: boolean(),
           config: keyword()
@@ -298,11 +317,9 @@ defmodule DMEx.Handler do
   def __declared__(module, opts) do
     validate_keys!(module, opts)
 
-    log = identifier!(module, opts, :log)
-
     %{
-      log: log,
-      id: log <> "/" <> identifier!(module, opts, :id),
+      logs: logs!(module, opts),
+      id: fetch_identifier!(module, opts, :id),
       selective: selective!(module, opts),
       config: config!(module, opts)
     }
@@ -311,14 +328,14 @@ defmodule DMEx.Handler do
   @doc false
   @spec __declaration__(Macro.Env.t()) :: declaration()
   def __declaration__(env) do
-    %{log: log, id: id, selective: selective, config: config} =
+    %{logs: logs, id: id, selective: selective, config: config} =
       Module.get_attribute(env.module, :dmex_declared)
 
     messages = messages!(env)
 
     %{
       handler: env.module,
-      log: log,
+      logs: logs,
       id: id,
       messages: messages,
       config: config,
@@ -360,20 +377,75 @@ defmodule DMEx.Handler do
   end
 
   @doc """
-  `handler`'s durable subscription identifier.
+  `handler`'s durable subscription identifier for one of its logs.
 
-  The one place anything turns a module into the string `dmex_cursors` and
+  The one place anything turns a declaration into the string `dmex_cursors` and
   `dmex_dead_messages` are keyed by.
   """
-  @spec subscription_id(module()) :: String.t()
-  def subscription_id(handler) when is_atom(handler) do
+  @spec subscription_id(module(), atom() | String.t()) :: String.t()
+  def subscription_id(handler, log) when is_atom(handler) do
+    declaration = declaration!(handler)
+    log = to_string(log)
+
+    unless log in declaration.logs, do: raise_unknown_log(declaration, log)
+
+    log <> "/" <> declaration.id
+  end
+
+  @doc "Every subscription `handler` declares — one per log it reads."
+  @spec subscription_ids(module()) :: [String.t()]
+  def subscription_ids(handler) when is_atom(handler) do
+    declaration = declaration!(handler)
+
+    Enum.map(declaration.logs, &(&1 <> "/" <> declaration.id))
+  end
+
+  @doc """
+  Which of `handler`'s logs a `log:` option means.
+
+  A handler reading one log needs no option; one reading several has to be told,
+  since every operator-facing call addresses exactly one cursor.
+  """
+  @spec log!(module(), keyword()) :: String.t()
+  def log!(handler, opts) when is_atom(handler) and is_list(opts) do
+    declaration = declaration!(handler)
+
+    case {Keyword.get(opts, :log), declaration.logs} do
+      {nil, [only]} ->
+        only
+
+      {nil, logs} ->
+        raise ArgumentError,
+              "#{inspect(handler)} reads #{length(logs)} logs (#{Enum.join(logs, ", ")}), so " <>
+                "this call has to say which one it means: pass `log: :#{hd(logs)}`."
+
+      {log, _logs} ->
+        log = to_string(log)
+
+        if log in declaration.logs, do: log, else: raise_unknown_log(declaration, log)
+    end
+  end
+
+  @doc """
+  `handler`'s declaration, or a raise if it has none.
+
+  The one place anything turns a module into its declaration, so every caller
+  rejects a non-handler with the same message.
+  """
+  @spec declaration!(module()) :: declaration()
+  def declaration!(handler) when is_atom(handler) do
     unless handler?(handler) do
       raise ArgumentError,
-            "#{inspect(handler)} is not a DMEx handler. " <>
-              "Add `use DMEx.Handler` to it."
+            "#{inspect(handler)} is not a DMEx handler. Add `use DMEx.Handler` to it."
     end
 
-    handler.__dmex__().id
+    handler.__dmex__()
+  end
+
+  defp raise_unknown_log(declaration, log) do
+    raise ArgumentError,
+          "#{inspect(declaration.handler)} does not read #{inspect(log)}. It declares " <>
+            "#{inspect(declaration.logs)}."
   end
 
   ## Encoding the selection
@@ -540,15 +612,50 @@ defmodule DMEx.Handler do
     declared
   end
 
+  # One name or several, in declaration order. A list because the subscriptions
+  # it stands for are a set of independent cursors, and nothing downstream cares
+  # which was written first.
+  defp logs!(module, opts) do
+    logs =
+      case Keyword.fetch(opts, :logs) do
+        {:ok, []} -> raise_no_logs(module)
+        {:ok, logs} when is_list(logs) -> Enum.map(logs, &identifier!(module, :logs, &1))
+        {:ok, one} -> [identifier!(module, :logs, one)]
+        :error -> raise_missing(module, :logs)
+      end
+
+    case logs -- Enum.uniq(logs) do
+      [] ->
+        logs
+
+      [repeated | _] ->
+        raise ArgumentError,
+              "#{inspect(module)} names #{inspect(repeated)} twice in `logs:`. One log is one " <>
+                "subscription, so a repeat could only ever mean one of them."
+    end
+  end
+
+  defp raise_no_logs(module) do
+    raise ArgumentError,
+          "`logs:` in #{inspect(module)} names no log, so there is no subscription to start. " <>
+            "A handler reads at least one: `use DMEx.Handler, logs: [:orders], id: :projection`"
+  end
+
   # Atoms and binaries must render identically — otherwise a config style change
   # would silently mint a second identity and reset a cursor.
-  defp identifier!(module, opts, key) do
+  defp fetch_identifier!(module, opts, key) do
+    case Keyword.fetch(opts, key) do
+      {:ok, value} -> identifier!(module, key, value)
+      :error -> raise_missing(module, key)
+    end
+  end
+
+  defp identifier!(module, key, value) do
     value =
-      case Keyword.fetch(opts, key) do
-        {:ok, value} when is_atom(value) and not is_nil(value) -> Atom.to_string(value)
-        {:ok, value} when is_binary(value) -> value
-        {:ok, other} -> raise_identifier(module, key, other)
-        :error -> raise_missing(module, key)
+      case value do
+        value when is_atom(value) and not is_nil(value) -> Atom.to_string(value)
+        value when is_binary(value) -> value
+        other -> raise_identifier(module, key, other)
       end
 
     unless Regex.match?(@identifier, value), do: raise_identifier(module, key, value)
@@ -559,7 +666,7 @@ defmodule DMEx.Handler do
   defp raise_missing(module, key) do
     raise ArgumentError,
           "`use DMEx.Handler` requires #{inspect(key)} in #{inspect(module)}, e.g. " <>
-            "`use DMEx.Handler, log: :orders, id: :order_projection`"
+            "`use DMEx.Handler, logs: [:orders], id: :order_projection`"
   end
 
   defp selective!(module, opts) do

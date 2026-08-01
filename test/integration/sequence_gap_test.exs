@@ -79,7 +79,7 @@ defmodule DMEx.Integration.SequenceGapTest do
 
     start_supervised!(
       {DMEx.Supervisor,
-       name: TestSupervisor, repo: DMEx.Test.IntegrationRepo, logs: Server.logs(url)}
+       name: TestSupervisor, otp_app: nil, repo: DMEx.Test.IntegrationRepo, logs: Server.logs(url)}
     )
 
     %{url: url}
@@ -118,7 +118,7 @@ defmodule DMEx.Integration.SequenceGapTest do
   test "it keeps retrying rather than dying, and never advances", _ctx do
     ref = :telemetry_test.attach_event_handlers(self(), [[:dmex, :handler, :reconnect]])
 
-    {:ok, pid} = DMEx.Supervisor.subscribe(Handlers.Echo, supervisor: TestSupervisor)
+    {:ok, [pid]} = DMEx.Supervisor.subscribe(Handlers.Echo, supervisor: TestSupervisor)
 
     for _ <- 1..2 do
       assert_receive {[:dmex, :handler, :reconnect], ^ref, _, %{reason: {:sequence_gap, _, _}}},

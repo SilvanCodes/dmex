@@ -12,7 +12,7 @@ end
 
 defmodule DMEx.Integration.SelectionTest.AheadOfLog do
   @moduledoc false
-  use DMEx.Handler, log: :test, id: :ahead_of_log
+  use DMEx.Handler, logs: [:test], id: :ahead_of_log
 
   @impl true
   def handle_message(%DMEx.Integration.SelectionTest.NotYetPublished{}, _metadata), do: :ok
@@ -45,13 +45,16 @@ defmodule DMEx.Integration.SelectionTest do
   setup do
     Handlers.report_to(self())
 
-    start_supervised!(Log)
+    start_supervised!({Log, otp_app: :dmex})
 
     base = Server.start!()
 
     start_supervised!(
       {DMEx.Supervisor,
-       name: TestSupervisor, repo: DMEx.Test.IntegrationRepo, logs: Server.logs(base <> "/stream")}
+       name: TestSupervisor,
+       otp_app: nil,
+       repo: DMEx.Test.IntegrationRepo,
+       logs: Server.logs(base <> "/stream")}
     )
 
     %{base: base}
@@ -167,7 +170,7 @@ defmodule DMEx.Integration.SelectionTest do
       # legitimately in this state, so the repair is the log's deploy —
       # and stopping here would turn a deploy-ordering choice into a
       # permanently dead subscription.
-      {:ok, pid} =
+      {:ok, [pid]} =
         DMEx.Supervisor.subscribe(__MODULE__.AheadOfLog, supervisor: TestSupervisor)
 
       ref = Process.monitor(pid)

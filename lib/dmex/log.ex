@@ -8,12 +8,12 @@ defmodule DMEx.Log do
 
   A log module is a handle, not a process pool. It carries which storage
   adapter and repo an append goes through, and the app key that scopes both the
-  append lock and the notification channel. Hand it to `DMEx.Supervisor` and
-  mount its endpoint:
+  append lock and the notification channel. Name it in `DMEx.Supervisor`'s
+  `logs:` — an application may own several — and mount its endpoint:
 
       children = [
         MyApp.Repo,
-        {DMEx.Supervisor, log: MyApp.Log, repo: MyApp.Repo, logs: []}
+        {DMEx.Supervisor, repo: MyApp.Repo, logs: [orders: MyApp.Log]}
       ]
 
       # in a Phoenix router, a Plug.Router, or a bare Plug pipeline
@@ -54,9 +54,10 @@ defmodule DMEx.Log do
     * `:app` — the app key (see below). Defaults to a name derived from this
       module.
     * `:prefix` — a Postgres schema the DMEx tables live in.
-    * `:otp_app` — the application whose modules are scanned for message types,
-      which is what a subscription's selection filter is resolved against. Defaults
-      to the Mix application being compiled; see `DMEx.Log.Messages`.
+
+  Which application's modules are scanned for the message types this log can
+  append is `otp_app:` on `DMEx.Supervisor`, once for everything — see
+  `DMEx.Log.Messages`.
 
   Any `DMEx.Config` log setting may also be given here — `max_batch_frequency:`,
   `max_batch_size:`, `heartbeat_ms:`, `poll_interval:` and the rest. An
@@ -106,7 +107,7 @@ defmodule DMEx.Log do
   alias DMEx.Config
   alias DMEx.Log.Messages
 
-  @log_opts [:repo, :storage, :app, :prefix, :otp_app]
+  @log_opts [:repo, :storage, :app, :prefix]
   @app_key_format ~r/\A[a-z][a-z0-9_]*\z/
   @app_key_max_bytes 58
 
@@ -162,7 +163,6 @@ defmodule DMEx.Log do
           log: module(),
           repo: module(),
           storage: module(),
-          otp_app: atom(),
           app_key: String.t(),
           channel: String.t(),
           lock: {integer(), integer()},
@@ -187,7 +187,6 @@ defmodule DMEx.Log do
       log: module,
       repo: repo,
       storage: Keyword.get(opts, :storage, DMEx.Storage.Postgres),
-      otp_app: otp_app!(module, opts),
       app_key: app_key,
       channel: channel,
       lock: lock,
@@ -222,7 +221,7 @@ defmodule DMEx.Log do
     # a global GC scan, so it happens once here rather than per connect — and
     # the set is immutable for the life of the node anyway, since the modules
     # compiled into a release do not change while it runs.
-    Messages.refresh(log)
+    Messages.refresh(log, Keyword.get(opts, :otp_app))
 
     # Whatever the adapter needs sits between the registry and the dispatcher,
     # and this module has no idea what it is. Postgres puts a LISTEN connection
@@ -342,32 +341,6 @@ defmodule DMEx.Log do
     end
 
     key
-  end
-
-  # Which OTP application this log's message modules live in — the root of
-  # the scan `DMEx.Log.Messages` runs to answer "what can this log
-  # append". Resolved from Mix at compile time, which is where the answer is
-  # known: `:application.get_application/1` reads it off a *loaded* module, and
-  # nothing is loaded while it is still being defined.
-  defp otp_app!(module, opts) do
-    case Keyword.get(opts, :otp_app) do
-      nil -> derive_otp_app!(module)
-      app when is_atom(app) and not is_nil(app) -> app
-      other -> raise ArgumentError, ":otp_app must be an atom, got: #{inspect(other)}"
-    end
-  end
-
-  defp derive_otp_app!(module) do
-    with true <- Code.ensure_loaded?(Mix.Project),
-         app when not is_nil(app) <- Mix.Project.config()[:app] do
-      app
-    else
-      _ ->
-        raise ArgumentError,
-              "DMEx could not work out which OTP application #{inspect(module)} belongs to, " <>
-                "which is what it scans for message modules. Pass it explicitly: " <>
-                "`use DMEx.Log, repo: MyApp.Repo, otp_app: :my_app`."
-    end
   end
 
   # MyApp.Log -> "my_app/log" -> "my_app_log"

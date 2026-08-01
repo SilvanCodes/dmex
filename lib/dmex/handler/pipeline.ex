@@ -412,12 +412,23 @@ defmodule DMEx.Handler.Pipeline do
       storage: Keyword.fetch!(opts, :storage),
       storage_opts: Keyword.fetch!(opts, :storage_opts),
       handler: handler,
-      subscription: Keyword.get(opts, :subscription, declaration.id),
+      subscription: Keyword.get_lazy(opts, :subscription, fn -> subscription!(declaration) end),
       modules: DMEx.Message.registry(declaration.messages),
       url: Keyword.fetch!(opts, :url),
       cursor: Keyword.get(opts, :cursor, 0),
       pending: false,
       config: Keyword.get_lazy(opts, :config, fn -> DMEx.Config.handler!([]) end)
     }
+  end
+
+  # `DMEx.Handler.Stream` always names the subscription it is running, since it
+  # is one of possibly several the handler declares. A caller that did not — a
+  # test, or a replay — only has an answer when there is exactly one.
+  defp subscription!(%{logs: [only], id: id}), do: only <> "/" <> id
+
+  defp subscription!(%{logs: logs, handler: handler}) do
+    raise ArgumentError,
+          "#{inspect(handler)} reads #{length(logs)} logs (#{Enum.join(logs, ", ")}), so a " <>
+            "pipeline for it has to be built with the `subscription:` it is running."
   end
 end

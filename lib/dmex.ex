@@ -55,11 +55,11 @@ defmodule DMEx do
 
   ## Reading
 
-  A handler module declares a subscription in full — which log, under what name,
-  and, from the structs its clauses match on, for which message types:
+  A handler module declares its subscriptions in full — which logs, under what
+  name, and, from the structs its clauses match on, for which message types:
 
       defmodule MyApp.OrderProjection do
-        use DMEx.Handler, log: :orders, id: :order_projection
+        use DMEx.Handler, logs: [:orders], id: :order_projection
 
         @impl true
         def handle_message(%MyApp.Messages.OrderPlaced{} = message, _metadata) do
@@ -69,25 +69,33 @@ defmodule DMEx do
 
   ## Starting it
 
-  One child, naming this application's own log and the logs it reads:
+  One child, naming every log this application knows about — its own as modules,
+  everyone else's as URLs:
 
       children = [
         MyApp.Repo,
         {DMEx.Supervisor,
-         log: MyApp.Log,
+         otp_app: :my_app,
          repo: MyApp.Repo,
-         logs: [orders: "https://orders.internal/stream"]}
+         logs: [
+           catalogue: MyApp.Log,
+           orders: "https://orders.internal/stream"
+         ]}
       ]
 
   Handler modules are **not** listed: every one compiled into an application
-  that depends on `:dmex` is discovered and started, and one naming a log that
-  `logs:` does not bind stops the boot rather than silently never running.
-  `DMEx.Supervisor.subscribe/2` starts one at runtime instead, taking the same
-  module.
+  that depends on `:dmex` is discovered and started — one subscription per log
+  it names — and one naming a log that `logs:` does not bind stops the boot
+  rather than silently never running. `DMEx.Supervisor.subscribe/2` starts one
+  at runtime instead, taking the same module.
 
   The URLs are static configuration of the reading application — there is
   deliberately no discovery service in that path, since it would reintroduce
   exactly the shared infrastructure DMEx exists to avoid.
+
+  `logs:` is a list, so one handler may read several: each is its own
+  subscription, with its own connection and its own cursor, running the same
+  clauses.
 
   DMEx owns the read position (`last_seen`) on the handler's behalf, keyed by the
   declared `"log/id"` pair, and the log holds no reader state at all. Keying on

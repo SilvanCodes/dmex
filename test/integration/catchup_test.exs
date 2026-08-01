@@ -23,7 +23,7 @@ defmodule DMEx.Integration.CatchupTest do
   setup do
     Handlers.report_to(self())
 
-    start_supervised!(Log)
+    start_supervised!({Log, otp_app: :dmex})
 
     # The server binds port 0, so the log map is necessarily built at
     # runtime — which is exactly why it lives on the child spec rather than in
@@ -32,7 +32,7 @@ defmodule DMEx.Integration.CatchupTest do
 
     start_supervised!(
       {DMEx.Supervisor,
-       name: TestSupervisor, repo: DMEx.Test.IntegrationRepo, logs: Server.logs(url)}
+       name: TestSupervisor, otp_app: nil, repo: DMEx.Test.IntegrationRepo, logs: Server.logs(url)}
     )
 
     seed(@backlog)

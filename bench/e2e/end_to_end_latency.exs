@@ -28,7 +28,7 @@ Helper.section("end_to_end_latency — append to handler, percentiles")
 
 defmodule Bench.LatencyHandler do
   @moduledoc false
-  use DMEx.Handler, log: :bench, id: :latency
+  use DMEx.Handler, logs: [:bench], id: :latency
 
   alias DMEx.Test.Messages.OrderPlaced
 

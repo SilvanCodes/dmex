@@ -21,7 +21,7 @@ defmodule DMEx.Integration.ResumptionTest do
   setup do
     Handlers.report_to(self())
 
-    start_supervised!(Log)
+    start_supervised!({Log, otp_app: :dmex})
 
     # The server binds port 0, so the log map is necessarily built at
     # runtime — which is exactly why it lives on the child spec rather than in
@@ -30,14 +30,14 @@ defmodule DMEx.Integration.ResumptionTest do
 
     start_supervised!(
       {DMEx.Supervisor,
-       name: TestSupervisor, repo: DMEx.Test.IntegrationRepo, logs: Server.logs(url)}
+       name: TestSupervisor, otp_app: nil, repo: DMEx.Test.IntegrationRepo, logs: Server.logs(url)}
     )
 
     %{url: url}
   end
 
   test "killing the stream loses nothing and repeats nothing", _ctx do
-    {:ok, pid} = subscribe(Handlers.Echo)
+    {:ok, [pid]} = subscribe(Handlers.Echo)
 
     for n <- 1..5, do: {:ok, _} = Log.append(%OrderPlaced{order_id: n})
     assert drain(5) == [1, 2, 3, 4, 5]
@@ -64,7 +64,7 @@ defmodule DMEx.Integration.ResumptionTest do
   test "a crash between a handler's effects and its commit redelivers that message", _ctx do
     # SlowCommit reports and then stalls before returning, which holds that
     # window open long enough to kill the process inside it deterministically.
-    {:ok, pid} = subscribe(Handlers.SlowCommit)
+    {:ok, [pid]} = subscribe(Handlers.SlowCommit)
 
     for n <- 1..3, do: {:ok, _} = Log.append(%OrderPlaced{order_id: n})
 
@@ -76,7 +76,7 @@ defmodule DMEx.Integration.ResumptionTest do
   end
 
   test "resumes from the durable cursor rather than from the beginning", _ctx do
-    {:ok, pid} = subscribe(Handlers.Echo)
+    {:ok, [pid]} = subscribe(Handlers.Echo)
 
     for n <- 1..5, do: {:ok, _} = Log.append(%OrderPlaced{order_id: n})
     assert drain(5) == [1, 2, 3, 4, 5]
@@ -91,7 +91,7 @@ defmodule DMEx.Integration.ResumptionTest do
   end
 
   test "messages appended while disconnected are delivered on reconnect", _ctx do
-    {:ok, pid} = subscribe(Handlers.Echo)
+    {:ok, [pid]} = subscribe(Handlers.Echo)
 
     {:ok, _} = Log.append(%OrderPlaced{order_id: 1})
     assert drain(1) == [1]
@@ -108,7 +108,7 @@ defmodule DMEx.Integration.ResumptionTest do
   test "a killed stream mid-batch skips nothing and repeats at most the one in flight", _ctx do
     # The slow handler guarantees the kill lands mid-drain rather than between
     # frames, which is the case duplicate suppression exists for.
-    {:ok, pid} = subscribe(Handlers.Slow)
+    {:ok, [pid]} = subscribe(Handlers.Slow)
 
     for n <- 1..10, do: {:ok, _} = Log.append(%OrderPlaced{order_id: n})
 

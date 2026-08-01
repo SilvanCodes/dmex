@@ -59,14 +59,15 @@ defmodule DMEx.Log.Messages do
   This log's known message types, computing them if they are not cached yet.
 
   The lazy branch exists so `DMEx.Log.Plug` never depends on start order: a
-  log whose supervisor has not run `refresh/1` — in a test that mounts the
+  log whose supervisor has not run `refresh/2` — in a test that mounts the
   plug against a bare log module, say — still answers correctly, just more
-  slowly the first time.
+  slowly the first time. It scans without an `otp_app`, which costs nothing in a
+  release, where the host application declares `:dmex` and is scanned anyway.
   """
   @spec types(module()) :: MapSet.t(String.t())
   def types(log) when is_atom(log) do
     case :persistent_term.get(key(log), nil) do
-      nil -> refresh(log)
+      nil -> refresh(log, nil)
       types -> types
     end
   end
@@ -74,13 +75,13 @@ defmodule DMEx.Log.Messages do
   @doc """
   Rescans and caches this log's message types.
 
-  Called from a log's supervisor. Writing a `:persistent_term` forces
-  a global GC scan, which is why this happens once at boot rather than per
-  connection.
+  Called from a log's supervisor, with the `otp_app:` that `DMEx.Supervisor` was
+  given. Writing a `:persistent_term` forces a global GC scan, which is why this
+  happens once at boot rather than per connection.
   """
-  @spec refresh(module()) :: MapSet.t(String.t())
-  def refresh(log) when is_atom(log) do
-    types = scan(log.__dmex__().otp_app)
+  @spec refresh(module(), atom() | nil) :: MapSet.t(String.t())
+  def refresh(log, otp_app \\ nil) when is_atom(log) do
+    types = scan(otp_app)
 
     :persistent_term.put(key(log), types)
 

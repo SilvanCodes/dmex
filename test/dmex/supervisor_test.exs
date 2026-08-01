@@ -13,14 +13,15 @@ defmodule DMEx.SupervisorTest do
   # retries, which is exactly the behaviour under test for everything except
   # actual delivery — that lives in the integration suite.
   @url "http://127.0.0.1:1/stream"
-  @logs [test: @url]
+  @other "http://127.0.0.1:2/stream"
+  @logs [test: @url, other: @other]
 
   # Modules defined in a `.exs` are not in the application's module list, so
   # discovery never sees these three — which is what lets them declare things a
   # discovered handler is not allowed to.
   defmodule OtherHandler do
     @moduledoc false
-    use DMEx.Handler, log: :test, id: :other
+    use DMEx.Handler, logs: [:test], id: :other
 
     @impl true
     def handle_message(%OrderPlaced{}, _metadata), do: :ok
@@ -28,7 +29,7 @@ defmodule DMEx.SupervisorTest do
 
   defmodule EchoTwin do
     @moduledoc "Declares Handlers.Echo's identity, for the duplicate check."
-    use DMEx.Handler, log: :test, id: :echo
+    use DMEx.Handler, logs: [:test], id: :echo
 
     @impl true
     def handle_message(%OrderPlaced{}, _metadata), do: :ok
@@ -36,7 +37,15 @@ defmodule DMEx.SupervisorTest do
 
   defmodule ElsewhereHandler do
     @moduledoc "Names a log nothing binds."
-    use DMEx.Handler, log: :elsewhere, id: :elsewhere
+    use DMEx.Handler, logs: [:elsewhere], id: :elsewhere
+
+    @impl true
+    def handle_message(%OrderPlaced{}, _metadata), do: :ok
+  end
+
+  defmodule FannedTwin do
+    @moduledoc "Collides with Handlers.Fanned on one of its two logs."
+    use DMEx.Handler, logs: [:other], id: :fanned
 
     @impl true
     def handle_message(%OrderPlaced{}, _metadata), do: :ok
@@ -50,21 +59,36 @@ defmodule DMEx.SupervisorTest do
       assert Process.whereis(DMEx.Supervisor.subscriptions(TestSupervisor))
     end
 
-    # `:dmex` does not depend on `:dmex`, so nothing in this suite is discovered
-    # unless a test asks for it by name. A real application is found because it
-    # does depend on DMEx.
+    # Every test but the discovery ones passes `otp_app: nil`, since this suite
+    # *is* the `:dmex` application and would otherwise start its own fixtures.
     test "discovers nothing when no scanned application has handlers" do
       start_supervisor([])
 
       refute subscribed?("test/echo")
     end
 
-    test "starts every discovered handler" do
+    test "starts every subscription every discovered handler declares" do
       start_supervisor(otp_app: :dmex)
 
-      for handler <- Handler.discover(:dmex) do
-        eventually(fn -> subscribed?(handler.__dmex__().id) end)
+      for handler <- Handler.discover(:dmex),
+          id <- Handler.subscription_ids(handler) do
+        eventually(fn -> subscribed?(id) end)
       end
+
+      # One handler, one subscription per log — two cursors, two connections.
+      assert subscribed?("test/fanned")
+      assert subscribed?("other/fanned")
+    end
+
+    # Which is what an ordinary application gets without saying anything: its own
+    # app is the Mix project, and in a release it declares `:dmex` and is scanned
+    # for that reason instead.
+    test "defaults the scanned application to the Mix project" do
+      start_supervised!(
+        {DMEx.Supervisor, name: TestSupervisor, repo: DMEx.Test.Repo, logs: @logs}
+      )
+
+      eventually(fn -> subscribed?("test/echo") end)
     end
 
     test "discovers the handlers in test/support and nothing else" do
@@ -82,21 +106,33 @@ defmodule DMEx.SupervisorTest do
     end
 
     test "refuses to start when a discovered handler's log is not bound" do
-      assert start_error(otp_app: :dmex, logs: [other: @url]) =~
-               ~r/declares `log: "test"`, which is not in `logs:`/
+      assert start_error(otp_app: :dmex, logs: [other: @other]) =~
+               ~r/reads "test", which is not in `logs:`/
 
-      assert start_error(otp_app: :dmex, logs: [other: @url]) =~ "Known logs: other"
+      assert start_error(otp_app: :dmex, logs: [other: @other]) =~ "Known logs: other"
     end
 
-    test "starts the log module given as `log:`" do
-      start_supervisor(log: DMEx.Test.Log)
+    test "starts a log module bound in logs:" do
+      start_supervisor(logs: [owned: DMEx.Test.Log] ++ @logs)
 
       assert Process.whereis(DMEx.Test.Log.Supervisor)
     end
 
-    test "rejects a `log:` that is not a module" do
-      assert start_error(log: "MyApp.Log") =~
-               "`log:` must be a log module built with `use DMEx.Log`"
+    test "starts an owned log once even when two names point at it" do
+      start_supervisor(logs: [owned: DMEx.Test.Log, mirror: DMEx.Test.Log] ++ @logs)
+
+      assert Process.whereis(DMEx.Test.Log.Supervisor)
+    end
+
+    # DMEx cannot know the URL this application is served on, so an owned log is
+    # not readable by name — it has to be bound to its own public URL as well.
+    test "refuses a discovered handler reading a log this application owns" do
+      assert start_error(otp_app: :dmex, logs: [test: DMEx.Test.Log, other: @other]) =~
+               ~r/reads "test", which is bound to DMEx.Test.Log/
+    end
+
+    test "rejects a logs entry that is neither a module nor a URL" do
+      assert start_error(logs: [owned: Enum]) =~ "which is not a module built with `use DMEx.Log`"
     end
   end
 
@@ -110,8 +146,19 @@ defmodule DMEx.SupervisorTest do
     end
 
     test "refuses a handler naming a log nothing binds, listing the known ones" do
-      assert_raise ArgumentError, ~r/`log: "elsewhere"`.*Known logs: test/s, fn ->
+      assert_raise ArgumentError, ~r/reads "elsewhere".*Known logs: test/s, fn ->
         DMEx.Supervisor.__startable__!([ElsewhereHandler], %{"test" => @url})
+      end
+    end
+
+    # The pair is the identity, so a clash on one log is a clash even when the
+    # handlers read different sets.
+    test "sees a duplicate on any one of a multi-log handler's subscriptions" do
+      assert_raise ArgumentError, ~r/both declare the subscription "other\/fanned"/s, fn ->
+        DMEx.Supervisor.__startable__!(
+          [Handlers.Fanned, FannedTwin],
+          %{"test" => @url, "other" => @other}
+        )
       end
     end
 
@@ -141,12 +188,13 @@ defmodule DMEx.SupervisorTest do
                ~r/URL for "test".*not http or https/s
     end
 
-    test "rejects something that is not a URL at all" do
-      assert start_error(logs: [test: nil]) =~ ~r/URL for "test".*not a non-empty string/s
+    test "rejects something that is neither a URL nor a module" do
+      assert start_error(logs: [test: nil]) =~
+               ~r/URL for "test".*neither a log module nor a non-empty string/s
     end
 
     test "rejects an entry that is not a pair" do
-      assert start_error(logs: ["nope"]) =~ "must be `name: url`"
+      assert start_error(logs: ["nope"]) =~ "must be `name: url_or_module`"
     end
 
     test "rejects a logs option that is not a list" do
@@ -162,21 +210,21 @@ defmodule DMEx.SupervisorTest do
     end
 
     test "starts a subscription and registers it under its declared id" do
-      assert {:ok, pid} = subscribe(Handlers.Echo)
+      assert {:ok, [pid]} = subscribe(Handlers.Echo)
 
       assert Process.alive?(pid)
       assert subscribed?("test/echo")
     end
 
     test "resolves the log name against the supervisor's logs" do
-      {:ok, pid} = subscribe(Handlers.Echo)
+      {:ok, [pid]} = subscribe(Handlers.Echo)
 
       assert :sys.get_state(pid).url == @url
     end
 
     # Two streams on one identity would share and clobber a single cursor.
     test "refuses a second subscription for the same id" do
-      {:ok, first} = subscribe(Handlers.Echo)
+      {:ok, [first]} = subscribe(Handlers.Echo)
 
       assert {:error, {:already_subscribed, "test/echo"}} = subscribe(Handlers.Echo)
 
@@ -206,7 +254,7 @@ defmodule DMEx.SupervisorTest do
     end
 
     test "raises on an unknown log name, listing the known ones" do
-      assert_raise ArgumentError, ~r/`log: "elsewhere"`.*Known logs: test/s, fn ->
+      assert_raise ArgumentError, ~r/reads "elsewhere".*Known logs: other, test/s, fn ->
         subscribe(ElsewhereHandler)
       end
     end
@@ -245,7 +293,7 @@ defmodule DMEx.SupervisorTest do
     end
 
     test "takes the handler's declared config, and lets the call site override it" do
-      {:ok, pid} = subscribe(Handlers.Careful)
+      {:ok, [pid]} = subscribe(Handlers.Careful)
 
       assert :sys.get_state(pid).config.on_failure == :crash
       assert :sys.get_state(pid).config.max_attempts == 5
@@ -253,7 +301,7 @@ defmodule DMEx.SupervisorTest do
       assert :ok = DMEx.Supervisor.unsubscribe(Handlers.Careful, supervisor: TestSupervisor)
       eventually(fn -> not subscribed?("test/careful") end)
 
-      {:ok, pid} = subscribe(Handlers.Careful, on_failure: :skip)
+      {:ok, [pid]} = subscribe(Handlers.Careful, on_failure: :skip)
 
       assert :sys.get_state(pid).config.on_failure == :skip
       assert :sys.get_state(pid).config.max_attempts == 5
@@ -268,7 +316,7 @@ defmodule DMEx.SupervisorTest do
     end
 
     test "stops the subscription and frees the id" do
-      {:ok, pid} = subscribe(Handlers.Echo)
+      {:ok, [pid]} = subscribe(Handlers.Echo)
       ref = Process.monitor(pid)
 
       assert :ok = DMEx.Supervisor.unsubscribe(Handlers.Echo, supervisor: TestSupervisor)
@@ -295,7 +343,7 @@ defmodule DMEx.SupervisorTest do
     test "the child spec's repo becomes the default for every subscription" do
       start_supervisor([])
 
-      {:ok, pid} = subscribe(Handlers.Echo)
+      {:ok, [pid]} = subscribe(Handlers.Echo)
 
       assert :sys.get_state(pid).storage_opts.repo == DMEx.Test.Repo
     end
@@ -304,7 +352,7 @@ defmodule DMEx.SupervisorTest do
       # For an application whose bookkeeping lives in a second repo.
       start_supervisor([])
 
-      {:ok, pid} = subscribe(Handlers.Echo, repo: DMEx.Test.IntegrationRepo)
+      {:ok, [pid]} = subscribe(Handlers.Echo, repo: DMEx.Test.IntegrationRepo)
 
       assert :sys.get_state(pid).storage_opts.repo == DMEx.Test.IntegrationRepo
     end
@@ -325,7 +373,7 @@ defmodule DMEx.SupervisorTest do
     test "call-site logs override the supervisor's" do
       start_supervisor([])
 
-      {:ok, pid} = subscribe(Handlers.Echo, logs: [test: "https://override.test/stream"])
+      {:ok, [pid]} = subscribe(Handlers.Echo, logs: [test: "https://override.test/stream"])
 
       assert :sys.get_state(pid).url == "https://override.test/stream"
     end
@@ -353,7 +401,10 @@ defmodule DMEx.SupervisorTest do
 
     {:error, {%ArgumentError{message: message}, _stacktrace}} =
       DMEx.Supervisor.start_link(
-        Keyword.merge([name: TestSupervisor, repo: DMEx.Test.Repo, logs: @logs], opts)
+        Keyword.merge(
+          [name: TestSupervisor, otp_app: nil, repo: DMEx.Test.Repo, logs: @logs],
+          opts
+        )
       )
 
     message
@@ -364,7 +415,10 @@ defmodule DMEx.SupervisorTest do
   defp start_supervisor(opts) do
     start_supervised!(
       {DMEx.Supervisor,
-       Keyword.merge([name: TestSupervisor, repo: DMEx.Test.Repo, logs: @logs], opts)}
+       Keyword.merge(
+         [name: TestSupervisor, otp_app: nil, repo: DMEx.Test.Repo, logs: @logs],
+         opts
+       )}
     )
   end
 

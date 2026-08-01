@@ -52,7 +52,7 @@ defmodule DMEx.Integration.StallReclaimTest do
   end
 
   setup do
-    start_supervised!(Log)
+    start_supervised!({Log, otp_app: :dmex})
 
     {:ok, server} =
       Bandit.start_link(

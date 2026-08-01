@@ -49,9 +49,11 @@ defmodule DMEx.Handler.DeadMessages do
   ## Options
 
   `repo:` (required), plus optional `storage:` and `prefix:`, the same as
-  `DMEx.Supervisor`. Nothing else: which messages to decode and which subscription
-  a row belongs to both come off the handler module, so there is no second place
-  to keep them in step with the live path.
+  `DMEx.Supervisor`, and `log:` — which a handler reading more than one log must
+  give, since a dead row belongs to one `{log, id}` pair. Nothing else: which
+  messages to decode and which subscription a row belongs to both come off the
+  handler module, so there is no second place to keep them in step with the live
+  path.
   """
 
   alias DMEx.Handler
@@ -69,7 +71,7 @@ defmodule DMEx.Handler.DeadMessages do
   def list(handler, opts) when is_atom(handler) do
     {storage, storage_opts} = DMEx.Supervisor.storage!(opts)
 
-    storage.dead_messages(storage_opts, Handler.subscription_id(handler))
+    storage.dead_messages(storage_opts, subscription!(handler, opts))
   end
 
   @doc """
@@ -86,13 +88,14 @@ defmodule DMEx.Handler.DeadMessages do
   def replay(handler, opts) when is_atom(handler) do
     {storage, storage_opts} = DMEx.Supervisor.storage!(opts)
 
-    declaration = declaration!(handler)
+    declaration = Handler.declaration!(handler)
     modules = Message.registry(declaration.messages)
+    subscription = subscription!(handler, opts)
 
-    {:ok, rows} = storage.dead_messages(storage_opts, declaration.id)
+    {:ok, rows} = storage.dead_messages(storage_opts, subscription)
 
     Enum.reduce(rows, %{replayed: 0, failed: 0}, fn row, counts ->
-      case replay_one(row, declaration, modules, storage, storage_opts) do
+      case replay_one(row, declaration, subscription, modules, storage, storage_opts) do
         :ok -> Map.update!(counts, :replayed, &(&1 + 1))
         :error -> Map.update!(counts, :failed, &(&1 + 1))
       end
@@ -109,22 +112,18 @@ defmodule DMEx.Handler.DeadMessages do
   def discard(handler, id, opts) when is_atom(handler) and is_integer(id) do
     {storage, storage_opts} = DMEx.Supervisor.storage!(opts)
 
-    :ok = storage.delete_dead_message(storage_opts, Handler.subscription_id(handler), id)
+    :ok = storage.delete_dead_message(storage_opts, subscription!(handler, opts), id)
   end
 
   ## Internals
 
-  defp declaration!(handler) do
-    unless Handler.handler?(handler) do
-      raise ArgumentError,
-            "#{inspect(handler)} is not a DMEx handler. " <>
-              "Add `use DMEx.Handler` to it."
-    end
-
-    handler.__dmex__()
+  # A dead message belongs to one subscription, so a multi-log handler has to say
+  # which one. `DMEx.Handler.log!/2` is what raises when it did not.
+  defp subscription!(handler, opts) do
+    Handler.subscription_id(handler, Handler.log!(handler, opts))
   end
 
-  defp replay_one(row, declaration, modules, storage, storage_opts) do
+  defp replay_one(row, declaration, subscription, modules, storage, storage_opts) do
     case Map.fetch(modules, row.message_type) do
       :error ->
         Logger.warning(
@@ -135,11 +134,11 @@ defmodule DMEx.Handler.DeadMessages do
         :error
 
       {:ok, module} ->
-        run(row, module, declaration, storage, storage_opts)
+        run(row, module, declaration, subscription, storage, storage_opts)
     end
   end
 
-  defp run(row, module, declaration, storage, storage_opts) do
+  defp run(row, module, declaration, subscription, storage, storage_opts) do
     # Stored as text, decoded here, exactly as the live path does it.
     message = module.cast(JSON.decode!(row.data))
     metadata = JSON.decode!(row.metadata)
@@ -148,14 +147,14 @@ defmodule DMEx.Handler.DeadMessages do
       storage.transaction(storage_opts, fn ->
         _ = declaration.handler.handle_message(message, metadata)
 
-        :ok = storage.delete_dead_message(storage_opts, declaration.id, row.id)
+        :ok = storage.delete_dead_message(storage_opts, subscription, row.id)
       end)
 
     :ok
   rescue
     exception ->
       Logger.warning(
-        "DMEx replay of dead message #{row.id} for #{declaration.id} failed again: " <>
+        "DMEx replay of dead message #{row.id} for #{subscription} failed again: " <>
           Exception.message(exception)
       )
 

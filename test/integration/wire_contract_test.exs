@@ -23,7 +23,7 @@ defmodule DMEx.Integration.WireContractTest do
   @moduletag :capture_log
 
   setup do
-    start_supervised!(Log)
+    start_supervised!({Log, otp_app: :dmex})
 
     uri = URI.parse(Server.start!())
 

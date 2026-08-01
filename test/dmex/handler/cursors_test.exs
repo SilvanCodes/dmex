@@ -6,7 +6,7 @@ defmodule DMEx.Handler.CursorsTest do
 
   defmodule Old do
     @moduledoc false
-    use DMEx.Handler, log: :orders, id: :old
+    use DMEx.Handler, logs: [:orders], id: :old
 
     @impl true
     def handle_message(%DMEx.Test.Messages.OrderPlaced{}, _metadata), do: :ok
@@ -14,7 +14,15 @@ defmodule DMEx.Handler.CursorsTest do
 
   defmodule New do
     @moduledoc false
-    use DMEx.Handler, log: :orders, id: :new
+    use DMEx.Handler, logs: [:orders], id: :new
+
+    @impl true
+    def handle_message(%DMEx.Test.Messages.OrderPlaced{}, _metadata), do: :ok
+  end
+
+  defmodule Both do
+    @moduledoc "Two logs, so every call here has to say which cursor it means."
+    use DMEx.Handler, logs: [:orders, :returns], id: :both
 
     @impl true
     def handle_message(%DMEx.Test.Messages.OrderPlaced{}, _metadata), do: :ok
@@ -47,7 +55,7 @@ defmodule DMEx.Handler.CursorsTest do
     # so an ordinary rename carries its cursor with it.
     defmodule Renamed do
       @moduledoc false
-      use DMEx.Handler, log: :orders, id: :old
+      use DMEx.Handler, logs: [:orders], id: :old
 
       @impl true
       def handle_message(%DMEx.Test.Messages.OrderPlaced{}, _metadata), do: :ok
@@ -147,6 +155,24 @@ defmodule DMEx.Handler.CursorsTest do
       assert :ok = Cursors.rename!(@old, @new, ctx.opts)
 
       assert {:ok, nil} = Postgres.last_seen(ctx.storage_opts, @new)
+    end
+  end
+
+  # A cursor is one {log, id} pair, so a handler reading several has to name one.
+  describe "a handler reading several logs" do
+    test "refuses a call that does not say which cursor", ctx do
+      assert_raise ArgumentError, ~r/reads 2 logs/, fn -> Cursors.inspect(Both, ctx.opts) end
+
+      assert_raise ArgumentError, ~r/reads 2 logs/, fn -> Cursors.move!(Both, 0, ctx.opts) end
+
+      assert_raise ArgumentError, ~r/reads 2 logs/, fn -> Cursors.reset!(Both, ctx.opts) end
+    end
+
+    test "addresses the cursor `log:` names, and only that one", ctx do
+      :ok = Cursors.move!(Both, 7, [log: :returns] ++ ctx.opts)
+
+      assert {:ok, %{last_seen: 7}} = Cursors.inspect(Both, [log: :returns] ++ ctx.opts)
+      assert {:ok, nil} = Cursors.inspect(Both, [log: :orders] ++ ctx.opts)
     end
   end
 end
