@@ -14,9 +14,14 @@ defmodule DMEx.Supervisor do
 
   One list, two kinds of entry. A **module** is a log this application owns and
   appends to, started here and served over `DMEx.Log.Plug`; a **URL** is someone
-  else's log, read by whichever handlers name it. Both are just names as far as a
-  handler is concerned, which is what lets a log move between the two — an
-  application that grows its own copy of a feed changes one entry.
+  else's log. Both are just names as far as a handler is concerned, which is what
+  lets a log move between the two — an application that grows its own copy of a
+  feed changes one entry and nothing else.
+
+  **The binding also chooses the transport**, which is why nothing configures
+  one: a module is read in this VM (`DMEx.Transport.Local`), a URL is read over
+  HTTP (`DMEx.Transport.SSE`). Reading a log this application owns costs a query
+  and a handler call — no socket, no framing, no round trip through itself.
 
   Handlers are **not** listed. Every `use DMEx.Handler` module compiled into an
   application that depends on `:dmex` is discovered and started, one subscription
@@ -24,9 +29,8 @@ defmodule DMEx.Supervisor do
   id, which message types, how it handles failure — is declared on the handler
   module. All this needs to say is what each log name means.
 
-  A discovered handler naming a log that is not bound here stops the boot, and so
-  does one naming a log this application owns: a handler reads over HTTP, so an
-  owned log has to be bound to its own public URL to be read locally.
+  A discovered handler naming a log that is not bound here stops the boot: a
+  typo'd log name is otherwise a subscription that silently never exists.
 
   Code deciding at runtime can still start one by hand:
 
@@ -187,12 +191,15 @@ defmodule DMEx.Supervisor do
     declaration
     |> logs_of(opts)
     |> Enum.reduce_while({:ok, []}, fn log, {:ok, pids} ->
+      {transport, origin} = transport!(declaration, log, bound)
+
       child =
         [
           handler: handler,
           subscription: log <> "/" <> declaration.id,
           fingerprint: declaration.fingerprint,
-          url: url!(declaration, log, bound),
+          transport: transport,
+          origin: origin,
           registry: registry(supervisor),
           config: config
         ] ++ storage
@@ -293,7 +300,7 @@ defmodule DMEx.Supervisor do
   @spec __startable__!([module()], %{String.t() => String.t() | module()}) :: [module()]
   def __startable__!(handlers, logs) do
     reject_duplicate_ids!(handlers)
-    reject_unreadable_logs!(handlers, logs)
+    reject_unbound_logs!(handlers, logs)
 
     handlers
   end
@@ -321,9 +328,9 @@ defmodule DMEx.Supervisor do
     :ok
   end
 
-  defp reject_unreadable_logs!(handlers, logs) do
+  defp reject_unbound_logs!(handlers, logs) do
     for handler <- handlers, log <- Handler.declaration!(handler).logs do
-      _ = url!(handler.__dmex__(), log, logs)
+      _ = transport!(handler.__dmex__(), log, logs)
     end
 
     :ok
@@ -331,10 +338,14 @@ defmodule DMEx.Supervisor do
 
   ## Log resolution
 
-  defp url!(declaration, log, logs) do
+  # The binding is the whole of the choice: a URL is somebody else's log and is
+  # read over HTTP, a module is one this application owns and is read in this
+  # VM. There is no transport option anywhere, because there is nothing left for
+  # one to say.
+  defp transport!(declaration, log, logs) do
     case Map.fetch(logs, log) do
-      {:ok, url} when is_binary(url) -> url
-      {:ok, module} -> raise_owned(declaration, log, module)
+      {:ok, url} when is_binary(url) -> {DMEx.Transport.SSE, url}
+      {:ok, module} when is_atom(module) -> {DMEx.Transport.Local, module}
       :error -> raise_unbound(declaration, log, logs)
     end
   end
@@ -350,18 +361,6 @@ defmodule DMEx.Supervisor do
         {DMEx.Supervisor,
          repo: MyApp.Repo,
          logs: [#{log}: "https://.../stream"]}
-    """
-  end
-
-  defp raise_owned(declaration, log, module) do
-    raise ArgumentError, """
-    #{inspect(declaration.handler)} reads #{inspect(log)}, which is bound to \
-    #{inspect(module)} — a log this application owns and appends to.
-
-    A handler reads over HTTP, and DMEx cannot know the URL this application is \
-    served on. Bind a second name to it to read it locally:
-
-        logs: [#{log}: #{inspect(module)}, #{log}_stream: "https://this-app/stream"]
     """
   end
 

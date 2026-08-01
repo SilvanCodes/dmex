@@ -1,4 +1,4 @@
-defmodule DMEx.SSE.Decoder do
+defmodule DMEx.Transport.SSE.Decoder do
   @moduledoc """
   Turns a stream of arbitrary byte runs into whole log rows.
 
@@ -31,7 +31,7 @@ defmodule DMEx.SSE.Decoder do
   them actually contains a line terminator.
   """
 
-  alias DMEx.SSE.Frame
+  alias DMEx.Transport.SSE.Frame
 
   # The SSE specification's line terminators are CR, LF and CRLF only, so a
   # blank line is one of exactly these three.

@@ -5,7 +5,7 @@ defmodule DMEx.Storage.Postgres do
   Raw SQL through `Ecto.Adapters.SQL.query/4` rather than Ecto schemas. Two
   reasons, and the first is not negotiable: `data::text` cannot be expressed as
   a schema load, and the whole point of the read is that `jsonb` comes back as
-  the text `DMEx.SSE.Frame` splices verbatim. The second is that there is no schema
+  the text `DMEx.Transport.SSE.Frame` splices verbatim. The second is that there is no schema
   to reuse — DMEx owns three tables nothing else queries.
 
   ## No JSON library is ever required

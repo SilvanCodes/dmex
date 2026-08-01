@@ -171,8 +171,8 @@ stopping the way it stops on a `400`.
 ## The wire contract
 
 This is the part a third-party client implements against, so it is spelled out
-here rather than left to the code. `DMEx.SSE.Frame` encodes and parses it;
-`DMEx.SSE.Decoder` handles chunk-boundary reassembly.
+here rather than left to the code. `DMEx.Transport.SSE.Frame` encodes and parses it;
+`DMEx.Transport.SSE.Decoder` handles chunk-boundary reassembly.
 
 **`GET /stream`** and **`GET /stream/<blob>`**, both mounted by
 `DMEx.Log.Plug` through one prefix `forward`. The bare form is the whole
@@ -405,7 +405,7 @@ data plus whatever context the publisher attached, testable by constructing a
 struct and a map.
 
 **12. A gap in delivery is detected, never stepped over.** Every frame states
-its predecessor and `DMEx.Handler.Stream` refuses one that does not claim the
+its predecessor and `DMEx.Transport.SSE` refuses one that does not claim the
 row it last saw, before duplicate suppression gets a chance to hide it. Without
 this the cursor model has a hole it cannot see: the cursor is the only record of
 what was processed, so a message lost between two that arrived would have its id
@@ -442,12 +442,16 @@ each log supervises.
 | `DMEx.Log.Watcher` | sweeps deadlines and reclaims connections that stopped making progress. |
 
 None of them ever holds message data on a connection's behalf. The connections
-themselves are web-server request processes running `DMEx.Log.Stream`.
+themselves are processes running `DMEx.Log.Stream`: a web-server request process
+when the reader is remote, and the reader process `DMEx.Transport.Local` starts
+when it is in this VM. Both register in the same registry, so wakeups, pacing
+and stall reclaim treat them identically.
 
 **Subscriptions.** `DMEx.Supervisor` supervises one `DMEx.Handler.Stream` per
-subscription under a `DMEx.Handler.Supervisor`, each owning one outbound
-connection and one cursor, and running `DMEx.Handler.Pipeline` inline on the
-rows it decodes. There is nothing else in a subscription — no queue process, no
+subscription under a `DMEx.Handler.Supervisor`, each owning one cursor and one
+`DMEx.Transport`, and running `DMEx.Handler.Pipeline` inline on the rows that
+transport yields. The transport is inferred from the log's binding — a module is
+read in this VM, a URL over HTTP — and nothing configures one. There is nothing else in a subscription — no queue process, no
 controller, no drain loop. Restart intensity is set never to trip: a subscription that crash-loops — on a poison message
 under `on_failure: :crash`, or on a repo that is down — does so on its own, at a
 pace set by jittered backoff, and its siblings never notice.

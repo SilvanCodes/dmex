@@ -207,7 +207,7 @@ defmodule DMEx.Handler.DeadMessagesTest do
         storage: DMEx.Storage.Postgres,
         storage_opts: ctx.storage_opts,
         handler: @handler,
-        url: @url,
+        origin: @url,
         cursor: id - 1,
         config: Config.handler!(on_failure: :dead_message, max_attempts: 1)
       )

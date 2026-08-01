@@ -17,14 +17,24 @@ defmodule DMEx.Log.Stream do
 
   ## Batching is a write batch, not a wire construct
 
-  One read's rows are encoded as one frame each and handed to `chunk/2`
-  together, as a single iodata list. So `max_batch_size`, `max_batch_bytes` and
-  `max_batch_frequency` still bound how much work one connection does per
-  iteration and how often it reads — but nothing about that reaches the consumer, which sees a
-  plain run of one-row frames and cannot tell how many arrived in one write.
+  One read's rows are handed to the transport together, in one
+  `c:DMEx.Transport.write/2`.
+  So `max_batch_size`, `max_batch_bytes` and `max_batch_frequency` still bound
+  how much work one connection does per iteration and how often it reads — but
+  nothing about that reaches the reader, which sees a plain run of one-row
+  frames and cannot tell how many arrived in one write.
 
   That is the point: it makes batching a log-side concern entirely, with no
-  matching consumer-side configuration to keep in step.
+  matching reader-side configuration to keep in step.
+
+  ## What is done with those rows is the transport's
+
+  This module reads, paces, tracks the cursor and holds the deadlines. It never
+  frames anything and never touches a socket: `c:DMEx.Transport.write/2` is
+  handed the rows and reports back whether the sink is still there.
+  `DMEx.Transport.SSE` encodes them as frames and chunks them down a `Plug.Conn`;
+  `DMEx.Transport.Local` hands them straight to a handler's pipeline in this VM.
+  Everything below is identical either way.
 
   ## Four properties, and they are the whole reason for this shape
 
@@ -42,10 +52,10 @@ defmodule DMEx.Log.Stream do
       Backpressure is structural rather than monitored: overload is not detected
       and handled, it is unrepresentable.
 
-    * **A stalled consumer stalls its own loop and nothing else.** If the
-      consumer stops reading, its receive window closes, `chunk/2` blocks, and
-      this connection simply stops making progress. It reads no more rows,
-      allocates no more memory, and issues no more queries.
+    * **A stalled reader stalls its own loop and nothing else.** If the reader
+      stops taking rows, `c:DMEx.Transport.write/2` blocks and this connection
+      simply stops making progress. It reads no more rows, allocates no more
+      memory, and issues no more queries.
 
     * **The cursor is the only source of truth.** A wakeup is a hint that work
       may exist, never a carrier of work. Missing one costs latency and never
@@ -53,8 +63,8 @@ defmodule DMEx.Log.Stream do
 
   ## Every blocking step is taken under a deadline
 
-  What the loop cannot do is reclaim itself: a process blocked in `chunk/2`
-  cannot time itself out, because it is not running. So before each step that can
+  What the loop cannot do is reclaim itself: a process blocked in a write cannot
+  time itself out, because it is not running. So before each step that can
   block — the read, either write, the idle wait, the throttle — it arms a
   deadline in its `DMEx.Log.Status`, and `DMEx.Log.Watcher` kills it if
   the step does not clear in time. Each budget is `stall_timeout` plus however
@@ -74,15 +84,13 @@ defmodule DMEx.Log.Stream do
   range scans a second against the pool, whatever the append rate is doing —
   which is why the ceiling is a rate rather than a reaction to load.
 
-  **All three are the log's, and only the log's.** A consumer asks for
-  nothing and is told nothing: it reads what arrives, and the socket's receive
-  window is the only thing it says back. Pacing protects the log's
-  database, memory and request processes, which is exactly the party that should
-  be choosing it.
+  **All three are the log's, and only the log's.** A reader asks for nothing and
+  is told nothing: it takes what arrives, and how fast it takes it is the only
+  thing it says back. Pacing protects the log's database, memory and request
+  processes, which is exactly the party that should be choosing it.
   """
 
   alias DMEx.Log.Status
-  alias DMEx.SSE.Frame
 
   require Logger
 
@@ -91,6 +99,7 @@ defmodule DMEx.Log.Stream do
           required(:storage) => module(),
           required(:storage_opts) => DMEx.Storage.opts(),
           required(:log) => module(),
+          required(:transport) => module(),
           required(:cursor) => non_neg_integer(),
           required(:batch_interval) => non_neg_integer(),
           required(:max_batch_size) => pos_integer(),
@@ -103,13 +112,14 @@ defmodule DMEx.Log.Stream do
         }
 
   @doc """
-  Runs the send loop until the connection closes, then returns the conn.
+  Runs the send loop until the sink closes, then returns it.
 
-  Called inline from the request process, because on the log side the
-  request *is* the stream: `chunk/2` works naturally, the socket closes when the
-  process dies, and the web server's own supervision covers it.
+  Called inline from whichever process owns the sink — a web server's request
+  process for `DMEx.Transport.SSE`, since there the request *is* the stream, or
+  the reader process `DMEx.Transport.Local` starts. Either way the loop is
+  sequential and blocking, which is what makes reads gated on sends.
   """
-  @spec loop(Plug.Conn.t(), state()) :: Plug.Conn.t()
+  @spec loop(DMEx.Transport.sink(), state()) :: DMEx.Transport.sink()
   def loop(conn, state) do
     # Both cleared *before* the read, never after. An append landing between the
     # clear and the read is picked up by that read; one landing after the read
@@ -161,21 +171,27 @@ defmodule DMEx.Log.Stream do
     end
   end
 
-  @doc false
-  @spec initial_state(
-          module(),
-          non_neg_integer(),
-          Status.t() | nil,
-          DMEx.Log.Registry.selection()
-        ) :: state()
-  def initial_state(log, cursor, status \\ nil, selection \\ :all) do
+  @doc """
+  Builds the loop's state for one connection.
+
+  ## Options
+
+    * `:transport` — required; the `DMEx.Transport` this loop writes through.
+    * `:cursor` — where to resume from. Defaults to `0`, the whole log.
+    * `:status` — this connection's `DMEx.Log.Status`, or `nil` for a loop no
+      watcher is holding a deadline against.
+    * `:selection` — the message types to read, as `t:DMEx.Log.Registry.selection/0`.
+  """
+  @spec initial_state(module(), keyword()) :: state()
+  def initial_state(log, opts) do
     %{storage: storage, storage_opts: storage_opts, config: config} = log.__dmex__()
 
     %{
       log: log,
+      transport: Keyword.fetch!(opts, :transport),
       storage: storage,
       storage_opts: storage_opts,
-      cursor: cursor,
+      cursor: Keyword.get(opts, :cursor, 0),
       # The reciprocal of `max_batch_frequency`, taken once here rather than per
       # iteration: the operator chooses a rate, the loop sleeps out a period.
       batch_interval: DMEx.Config.batch_interval(config),
@@ -184,13 +200,13 @@ defmodule DMEx.Log.Stream do
       max_batch_bytes: config.max_batch_bytes,
       stall_timeout: config.stall_timeout,
       last_sent_at: nil,
-      status: status,
+      status: Keyword.get(opts, :status),
       # Expanded once at connect and fixed for the connection's lifetime: a
       # consumer wanting a different selection asks for a different resource,
       # which is a different URL and therefore a different connection. As a list
       # rather than the registry's `MapSet`, because this is a query parameter
       # now, not a membership test.
-      types: types(selection)
+      types: types(Keyword.get(opts, :selection, :all))
     }
   end
 
@@ -220,7 +236,7 @@ defmodule DMEx.Log.Stream do
         {:empty, conn, state}
 
       {:ok, rows} ->
-        send_frames(conn, state, rows)
+        send_rows(conn, state, rows)
 
       {:error, reason} ->
         # The database is the log; if it cannot be read there is nothing to send
@@ -233,23 +249,22 @@ defmodule DMEx.Log.Stream do
     end
   end
 
-  # One frame per row, all of them in one `chunk/2`. Writing them individually
-  # would multiply the syscalls and the deadline arming by `max_batch_size` for
-  # bytes that are going out together anyway.
+  # A whole read's rows in one call, never one at a time: writing them
+  # individually would multiply the syscalls and the deadline arming by
+  # `max_batch_size` for rows that are going out together anyway.
   #
   # Nothing is trimmed here. The read came back already bounded in bytes as well
   # as in rows (see `c:DMEx.Storage.read/5`), so these rows *are* the write —
   # there is no surplus in hand to discard, which is the point: trimming here
   # would mean the surplus had already been materialised.
-  defp send_frames(conn, state, rows) do
-    frames = Enum.map(rows, &Frame.encode_row/1)
+  defp send_rows(conn, state, rows) do
     last_id = rows |> List.last() |> Map.fetch!(:id)
 
-    case chunk(conn, state, frames) do
-      {:ok, conn} ->
+    case write(conn, state, rows) do
+      {:ok, conn, measurements} ->
         :telemetry.execute(
           [:dmex, :stream, :write],
-          %{rows: length(rows), bytes: IO.iodata_length(frames)},
+          Map.put(measurements, :rows, length(rows)),
           %{log: state.log}
         )
 
@@ -261,12 +276,14 @@ defmodule DMEx.Log.Stream do
     end
   end
 
-  # A frame's own bytes are its liveness signal, so a heartbeat is owed only
+  # Rows of its own are a stream's liveness signal, so a heartbeat is owed only
   # when the wait expired with nothing to send.
   defp maybe_heartbeat(conn, _state, false), do: {:ok, conn}
 
   defp maybe_heartbeat(conn, state, true) do
-    case chunk(conn, state, Frame.encode_heartbeat()) do
+    arm(state)
+
+    case state.transport.heartbeat(conn) do
       {:ok, conn} ->
         :telemetry.execute([:dmex, :stream, :heartbeat], %{}, %{log: state.log})
 
@@ -317,13 +334,13 @@ defmodule DMEx.Log.Stream do
   ## Deadlines
 
   # Every write goes through here, so every write is made under a deadline the
-  # watcher can see. This is the step the whole mechanism exists for: a consumer
-  # that stops reading closes its receive window, the output buffer fills, and
-  # this call blocks with no way to time itself out.
-  defp chunk(conn, state, iodata) do
+  # watcher can see. This is the step the whole mechanism exists for: a reader
+  # that stops taking rows — a closed receive window, a handler that never
+  # returns — blocks this call with no way for it to time itself out.
+  defp write(conn, state, rows) do
     arm(state)
 
-    Plug.Conn.chunk(conn, iodata)
+    state.transport.write(conn, rows)
   end
 
   # `stall_timeout` is the budget for the blocking itself; `extra` is however

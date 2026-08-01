@@ -160,6 +160,16 @@ defmodule DMEx.Handler.Pipeline do
   require Logger
 
   @typedoc """
+  One row as a transport yields it: string-keyed, with `data` and `metadata`
+  decoded one level.
+
+  Turning `data` into a message struct is the message module's job, here, per
+  row — so what a transport produces is the same shape whether it parsed a frame
+  or read the columns directly.
+  """
+  @type row :: %{String.t() => term()}
+
+  @typedoc """
   Everything processing a row needs, built once per subscription.
 
   `:cursor` is the in-memory read position — the authority for duplicate
@@ -177,7 +187,7 @@ defmodule DMEx.Handler.Pipeline do
           required(:handler) => module(),
           required(:subscription) => String.t(),
           required(:modules) => %{String.t() => module()},
-          required(:url) => String.t(),
+          required(:origin) => term(),
           required(:cursor) => non_neg_integer(),
           required(:pending) => boolean(),
           required(:config) => DMEx.Config.handler()
@@ -186,7 +196,7 @@ defmodule DMEx.Handler.Pipeline do
   @doc """
   Runs one row through the pipeline and returns the updated state.
 
-  The row is a decoded log row from a `DMEx.SSE.Frame` — string-keyed, with `data`
+  The row is a `t:row/0` as a transport yields it — string-keyed, with `data`
   and `metadata` already one level decoded.
 
   Read `:cursor` off the result for the new read position, and `:pending` for
@@ -225,7 +235,7 @@ defmodule DMEx.Handler.Pipeline do
     :telemetry.execute(
       [:dmex, :handler, :checkpoint],
       %{id: cursor},
-      %{subscription: state.subscription, handler: state.handler, url: state.url}
+      %{subscription: state.subscription, handler: state.handler, origin: state.origin}
     )
 
     {:ok, %{state | pending: false}}
@@ -256,7 +266,7 @@ defmodule DMEx.Handler.Pipeline do
       subscription: state.subscription,
       handler: state.handler,
       message_type: Map.fetch!(row, "message_type"),
-      url: state.url,
+      origin: state.origin,
       id: id,
       attempt: attempt
     }
@@ -331,7 +341,7 @@ defmodule DMEx.Handler.Pipeline do
       })
   end
 
-  # The row arrived through `DMEx.SSE.Frame`, which decodes one level, so `data`
+  # The row was decoded one level by whichever transport produced it, so `data`
   # and `metadata` are terms here and the storage adapter wants JSON text.
   defp encode(nil), do: "{}"
   defp encode(value), do: JSON.encode!(value)
@@ -339,7 +349,7 @@ defmodule DMEx.Handler.Pipeline do
   defp report(state, row, id, exception, attempts, mode) do
     Logger.error(fn ->
       "DMEx #{state.subscription} (#{inspect(state.handler)}) gave up on message #{id} " <>
-        "(#{Map.fetch!(row, "message_type")}) from #{state.url} after #{attempts} " <>
+        "(#{Map.fetch!(row, "message_type")}) from #{inspect(state.origin)} after #{attempts} " <>
         "attempt(s): #{Exception.message(exception)} — on_failure: #{mode}"
     end)
 
@@ -350,7 +360,7 @@ defmodule DMEx.Handler.Pipeline do
         subscription: state.subscription,
         handler: state.handler,
         message_type: Map.fetch!(row, "message_type"),
-        url: state.url,
+        origin: state.origin,
         on_failure: mode,
         reason: Exception.message(exception)
       }
@@ -367,7 +377,7 @@ defmodule DMEx.Handler.Pipeline do
         subscription: state.subscription,
         handler: state.handler,
         message_type: Map.fetch!(row, "message_type"),
-        url: state.url
+        origin: state.origin
       }
     )
 
@@ -414,7 +424,7 @@ defmodule DMEx.Handler.Pipeline do
       handler: handler,
       subscription: Keyword.get_lazy(opts, :subscription, fn -> subscription!(declaration) end),
       modules: DMEx.Message.registry(declaration.messages),
-      url: Keyword.fetch!(opts, :url),
+      origin: Keyword.fetch!(opts, :origin),
       cursor: Keyword.get(opts, :cursor, 0),
       pending: false,
       config: Keyword.get_lazy(opts, :config, fn -> DMEx.Config.handler!([]) end)

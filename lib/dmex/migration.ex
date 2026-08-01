@@ -174,7 +174,7 @@ defmodule DMEx.Migration do
     # the primary key at once.
     create_if_not_exists(index(:dmex_messages, [:message_type, :id], prefix: prefix))
 
-    # `DMEx.SSE.Frame` writes this column straight onto an `event:` line, and SSE
+    # `DMEx.Transport.SSE.Frame` writes this column straight onto an `event:` line, and SSE
     # field lines have no escaping: a CR or LF in here would end the line and
     # split the frame. Everything else on the wire is protected by JSON's grammar
     # forbidding raw control characters inside strings; this column is not

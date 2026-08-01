@@ -102,7 +102,7 @@ defmodule DMEx.Log.WatcherTest do
 
   defp state(opts, status) do
     %{
-      SendLoop.initial_state(Log, 0, status)
+      SendLoop.initial_state(Log, transport: DMEx.Transport.SSE, status: status)
       | storage: Stub,
         storage_opts: opts
     }

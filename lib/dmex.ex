@@ -89,6 +89,13 @@ defmodule DMEx do
   rather than silently never running. `DMEx.Supervisor.subscribe/2` starts one
   at runtime instead, taking the same module.
 
+  **The binding chooses the transport, and nothing else configures one.** A log
+  bound to a module is read in this VM (`DMEx.Transport.Local`) — a query and a
+  handler call, with no socket, no framing and no round trip through this
+  application's own web server. A log bound to a URL is read over HTTP
+  (`DMEx.Transport.SSE`). A handler cannot tell the difference, so moving a feed
+  from someone else's application into this one is a change to one entry.
+
   The URLs are static configuration of the reading application — there is
   deliberately no discovery service in that path, since it would reintroduce
   exactly the shared infrastructure DMEx exists to avoid.

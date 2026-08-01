@@ -267,7 +267,7 @@ defmodule DMEx.Handler.PipelineFailureTest do
       storage: DMEx.Storage.Postgres,
       storage_opts: ctx.storage_opts,
       handler: Keyword.fetch!(opts, :handler),
-      url: @url,
+      origin: @url,
       cursor: 0,
       # A short backoff: these tests are about which terminal action runs, not
       # about how long the schedule waits.

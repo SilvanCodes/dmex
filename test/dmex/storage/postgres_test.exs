@@ -59,7 +59,7 @@ defmodule DMEx.Storage.PostgresTest do
       assert length(rows) == 4
     end
 
-    test "returns every field DMEx.SSE.Frame needs, and nothing else", %{opts: opts} do
+    test "returns every field DMEx.Transport.SSE.Frame needs, and nothing else", %{opts: opts} do
       {:ok, id} = append(opts, "MyApp.Messages.OrderPlaced", %{order_id: 7})
 
       assert {:ok, [row]} = Postgres.read(opts, id - 1, 1, 1_048_576, :all)
@@ -71,7 +71,7 @@ defmodule DMEx.Storage.PostgresTest do
       assert row.message_type == "MyApp.Messages.OrderPlaced"
     end
 
-    # This is the splice invariant. DMEx.SSE.Frame.encode_row/1 copies these two
+    # This is the splice invariant. DMEx.Transport.SSE.Frame.encode_row/1 copies these two
     # columns into the wire frame byte-for-byte without parsing them, so an
     # adapter that let its driver decode jsonb into a map would hand Frame a map
     # where it expects text and build a wrong frame.

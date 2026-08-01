@@ -11,7 +11,7 @@
 # the pipeline.
 
 alias DMEx.BenchHelper, as: Helper
-alias DMEx.SSE.Frame
+alias DMEx.Transport.SSE.Frame
 
 Helper.section("frame_parse — consumer-side decode ceiling")
 

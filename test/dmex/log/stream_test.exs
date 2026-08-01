@@ -12,6 +12,84 @@ defmodule DMEx.Log.StreamTest do
     %{opts: Stub.new()}
   end
 
+  # The loop reads, paces and tracks a cursor; what happens to a read's rows is
+  # the transport's, and this is the whole of that seam.
+  defmodule StubTransport do
+    @moduledoc false
+    @behaviour DMEx.Transport
+
+    @impl DMEx.Transport
+    def write(%{owner: owner, limit: limit, sent: sent} = sink, rows) do
+      send(owner, {:wrote, rows})
+
+      if sent + 1 >= limit do
+        {:error, :closed}
+      else
+        {:ok, %{sink | sent: sent + 1}, %{rows: :ignored, bytes: 42}}
+      end
+    end
+
+    @impl DMEx.Transport
+    def heartbeat(%{owner: owner} = sink) do
+      send(owner, :heartbeat)
+
+      {:ok, sink}
+    end
+
+    @impl DMEx.Transport
+    def connect(_opts), do: {:error, :not_a_receiver}
+    @impl DMEx.Transport
+    def handle_message(_message, _source), do: :unknown
+    @impl DMEx.Transport
+    def close(_source), do: :ok
+    @impl DMEx.Transport
+    def liveness(_source), do: :infinity
+  end
+
+  describe "the transport seam" do
+    test "hands a whole read's rows over in one write", %{opts: opts} do
+      Stub.put_rows(opts, 3)
+
+      run_with(opts, chunks: 1)
+
+      assert_received {:wrote, rows}
+      assert Enum.map(rows, & &1.id) == [1, 2, 3]
+
+      # Storage rows, not frames: framing is the transport's business and the
+      # loop never sees a byte.
+      assert %{id: 1, message_type: _, data: _, metadata: _, inserted_at: _, previous_id: _} =
+               hd(rows)
+    end
+
+    test "reports the transport's own measurements alongside the row count", %{opts: opts} do
+      ref = :telemetry_test.attach_event_handlers(self(), [[:dmex, :stream, :write]])
+
+      # Two writes: the first succeeds and is measured, the second is refused and
+      # ends the loop.
+      Stub.put_rows(opts, 2)
+      run_with(opts, chunks: 2, max_batch_size: 1)
+
+      assert_receive {[:dmex, :stream, :write], ^ref, measurements, _metadata}, 1_000
+
+      # The loop's own count wins over anything a transport claims for it.
+      assert measurements == %{rows: 1, bytes: 42}
+    end
+
+    test "a transport that reports the sink closed ends the loop", %{opts: opts} do
+      Stub.put_rows(opts, 10)
+
+      start_loop(opts, transport: StubTransport, chunks: 1, max_batch_size: 1)
+
+      assert_receive {:done, _}, 2_000
+    end
+
+    test "asks for a heartbeat when a wait expires with nothing to send", %{opts: opts} do
+      start_loop(opts, transport: StubTransport, heartbeat_ms: 10, chunks: 5)
+
+      assert_receive :heartbeat, 1_000
+    end
+  end
+
   describe "reading and framing" do
     # One frame per row, one `chunk/2` per read. Batching is a write batch and
     # nothing the consumer can observe: it sees three ordinary one-row frames.
@@ -417,19 +495,29 @@ defmodule DMEx.Log.StreamTest do
   # really arrive: in the loop's mailbox, not the test's.
   defp start_loop(opts, test_opts) do
     parent = self()
-    chunks = Keyword.get(test_opts, :chunks, 1)
-
-    conn = ClosingAdapter.conn(parent, chunks, state: :chunked)
 
     state = state(opts, test_opts)
-    pid = spawn(fn -> send(parent, {:done, SendLoop.loop(conn, state)}) end)
+    sink = sink(parent, test_opts)
+    pid = spawn(fn -> send(parent, {:done, SendLoop.loop(sink, state)}) end)
 
     on_exit(fn -> Process.exit(pid, :kill) end)
 
     pid
   end
 
-  # Runs the loop to completion and returns the conn it finished with.
+  # The SSE transport's sink is a conn that stops accepting after N writes; the
+  # stub's is a plain map that does the same, since the loop only ever hands it
+  # back to the transport.
+  defp sink(parent, test_opts) do
+    chunks = Keyword.get(test_opts, :chunks, 1)
+
+    case Keyword.get(test_opts, :transport, DMEx.Transport.SSE) do
+      StubTransport -> %{owner: parent, limit: chunks, sent: 0}
+      DMEx.Transport.SSE -> ClosingAdapter.conn(parent, chunks, state: :chunked)
+    end
+  end
+
+  # Runs the loop to completion and returns the sink it finished with.
   defp run(opts, test_opts) do
     start_loop(opts, test_opts)
 
@@ -438,9 +526,14 @@ defmodule DMEx.Log.StreamTest do
     conn
   end
 
+  defp run_with(opts, test_opts) do
+    run(opts, Keyword.put(test_opts, :transport, StubTransport))
+  end
+
   defp state(opts, test_opts) do
     %{
       log: __MODULE__,
+      transport: Keyword.get(test_opts, :transport, DMEx.Transport.SSE),
       storage: Stub,
       storage_opts: opts,
       cursor: Keyword.get(test_opts, :cursor, 0),

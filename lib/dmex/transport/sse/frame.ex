@@ -1,4 +1,4 @@
-defmodule DMEx.SSE.Frame do
+defmodule DMEx.Transport.SSE.Frame do
   @moduledoc """
   The SSE wire format: one frame per log row.
 
@@ -73,30 +73,17 @@ defmodule DMEx.SSE.Frame do
   one `data:` line with no base64 and no escaping pass.
   """
 
-  @typedoc """
-  A log row on the producer's side, as `c:DMEx.Storage.read/5` returns it.
-
-  `:previous_id` is not a column — it is the id of the row before this one in
-  the *delivered* sequence, which only the read knows. `nil` where there is no
-  sequence to speak of, as when replaying a dead message.
-  """
-  @type row :: %{
-          required(:id) => pos_integer(),
-          required(:previous_id) => non_neg_integer() | nil,
-          required(:message_type) => String.t(),
-          required(:data) => iodata(),
-          required(:metadata) => iodata(),
-          required(:inserted_at) => DateTime.t() | NaiveDateTime.t()
-        }
+  @typedoc "A log row on the log's side, as `c:DMEx.Storage.read/5` returns it."
+  @type row :: DMEx.Storage.row()
 
   @typedoc """
-  A log row on the consumer's side, as `parse/1` yields it.
+  A log row on the reader's side, as `parse/1` yields it.
 
   String-keyed and one level decoded — `data` and `metadata` are maps, and
   turning `data` into a message struct is the message module's job, later, in
   the pipeline.
   """
-  @type decoded_row :: %{String.t() => term()}
+  @type decoded_row :: DMEx.Handler.Pipeline.row()
 
   @typedoc """
   One parsed frame block.

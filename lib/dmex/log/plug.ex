@@ -2,6 +2,10 @@ defmodule DMEx.Log.Plug do
   @moduledoc """
   Serves a log as an SSE stream.
 
+  The HTTP half of `DMEx.Transport.SSE`: this mount is what a subscription
+  bound to a URL connects to. A subscription in the same application reads the
+  log directly and never comes here — see `DMEx.Transport.Local`.
+
   Mount it wherever you mount plugs — a Phoenix router, a `Plug.Router`, or a
   bare Bandit/Cowboy pipeline:
 
@@ -99,7 +103,7 @@ defmodule DMEx.Log.Plug do
   alias DMEx.Log.Params
   alias DMEx.Log.Status
   alias DMEx.Log.Stream, as: SendLoop
-  alias DMEx.SSE.Frame
+  alias DMEx.Transport.SSE.Frame
 
   @behaviour Plug
 
@@ -214,7 +218,15 @@ defmodule DMEx.Log.Plug do
 
     case advertise_retry(conn, config, status) do
       {:ok, conn} ->
-        SendLoop.loop(conn, SendLoop.initial_state(log, cursor, status, selection))
+        SendLoop.loop(
+          conn,
+          SendLoop.initial_state(log,
+            transport: DMEx.Transport.SSE,
+            cursor: cursor,
+            status: status,
+            selection: selection
+          )
+        )
 
       {:error, _reason} ->
         conn

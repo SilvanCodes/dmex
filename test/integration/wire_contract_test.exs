@@ -15,10 +15,10 @@ defmodule DMEx.Integration.WireContractTest do
 
   use DMEx.IntegrationCase
 
-  alias DMEx.SSE.Frame
   alias DMEx.Test.IntegrationLog, as: Log
   alias DMEx.Test.Messages.OrderPlaced
   alias DMEx.Test.Server
+  alias DMEx.Transport.SSE.Frame
 
   @moduletag :capture_log
 

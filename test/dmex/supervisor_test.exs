@@ -124,11 +124,22 @@ defmodule DMEx.SupervisorTest do
       assert Process.whereis(DMEx.Test.Log.Supervisor)
     end
 
-    # DMEx cannot know the URL this application is served on, so an owned log is
-    # not readable by name — it has to be bound to its own public URL as well.
-    test "refuses a discovered handler reading a log this application owns" do
-      assert start_error(otp_app: :dmex, logs: [test: DMEx.Test.Log, other: @other]) =~
-               ~r/reads "test", which is bound to DMEx.Test.Log/
+    # The binding is the whole of the choice: a module is read in this VM, a URL
+    # over HTTP. Nothing names a transport anywhere.
+    test "reads a log this application owns in this VM" do
+      start_supervisor(logs: [test: DMEx.Test.Log, other: @other])
+
+      assert {:ok, [pid]} = subscribe(Handlers.Echo)
+
+      assert %{transport: DMEx.Transport.Local, origin: DMEx.Test.Log} = :sys.get_state(pid)
+    end
+
+    test "reads a log bound to a URL over HTTP" do
+      start_supervisor([])
+
+      assert {:ok, [pid]} = subscribe(Handlers.Echo)
+
+      assert %{transport: DMEx.Transport.SSE, origin: @url} = :sys.get_state(pid)
     end
 
     test "rejects a logs entry that is neither a module nor a URL" do
@@ -219,7 +230,7 @@ defmodule DMEx.SupervisorTest do
     test "resolves the log name against the supervisor's logs" do
       {:ok, [pid]} = subscribe(Handlers.Echo)
 
-      assert :sys.get_state(pid).url == @url
+      assert :sys.get_state(pid).origin == @url
     end
 
     # Two streams on one identity would share and clobber a single cursor.
@@ -375,7 +386,7 @@ defmodule DMEx.SupervisorTest do
 
       {:ok, [pid]} = subscribe(Handlers.Echo, logs: [test: "https://override.test/stream"])
 
-      assert :sys.get_state(pid).url == "https://override.test/stream"
+      assert :sys.get_state(pid).origin == "https://override.test/stream"
     end
   end
 

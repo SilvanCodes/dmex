@@ -58,7 +58,7 @@ defmodule DMEx.Log.Params do
     * **`<previous>/<current>`** — the ordinary case, because that is what a
       frame's `id:` field carries and what any SSE client echoes back verbatim.
       Only `current` is used; the predecessor is a consumer-side integrity check
-      (see `DMEx.SSE.Frame`) and means nothing to a log, which resumes from
+      (see `DMEx.Transport.SSE.Frame`) and means nothing to a log, which resumes from
       a position rather than verifying one.
     * **an integer id** — resume after it. What a client constructs by hand, and
       what everything sent before the chain existed looks like.

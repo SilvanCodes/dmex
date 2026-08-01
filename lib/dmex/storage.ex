@@ -37,7 +37,7 @@ defmodule DMEx.Storage do
 
   ### `c:read/5` must return `data` and `metadata` as JSON *text*
 
-  `DMEx.SSE.Frame.encode_row/1` splices those two columns into the wire frame
+  `DMEx.Transport.SSE.Frame.encode_row/1` splices those two columns into the wire frame
   byte-for-byte, without parsing them. An adapter that lets its driver decode
   `jsonb` into an Elixir map hands `Frame` a map where it expects text, and the
   frame it builds is wrong — so the cast belongs in the query (`data::text`),
@@ -72,8 +72,24 @@ defmodule DMEx.Storage do
           optional(:prefix) => String.t() | nil
         }
 
-  @typedoc "A log row, exactly as `DMEx.SSE.Frame` expects one."
-  @type row :: DMEx.SSE.Frame.row()
+  @typedoc """
+  One row of a log, as `c:read/5` returns it.
+
+  `:previous_id` is not a column — it is the id of the row before this one in
+  the *delivered* sequence, which only the read knows. `nil` where there is no
+  sequence to speak of, as when replaying a dead message.
+
+  `:data` and `:metadata` are JSON text: a transport that puts them on a wire
+  splices them verbatim, and one that hands them to a pipeline decodes them.
+  """
+  @type row :: %{
+          required(:id) => pos_integer(),
+          required(:previous_id) => non_neg_integer() | nil,
+          required(:message_type) => String.t(),
+          required(:data) => iodata(),
+          required(:metadata) => iodata(),
+          required(:inserted_at) => DateTime.t() | NaiveDateTime.t()
+        }
 
   @doc """
   Appends one message and returns its assigned id.
@@ -136,7 +152,7 @@ defmodule DMEx.Storage do
   unless that would mean returning nothing.*
 
   The bound is on payload bytes, not on encoded frame bytes: framing is
-  `DMEx.SSE.Frame`'s concern and a storage adapter should not know about it. A
+  `DMEx.Transport.SSE.Frame`'s concern and a storage adapter should not know about it. A
   caller wanting a wire figure adds its own per-row constant — roughly 130 bytes
   of SSE scaffolding and ISO 8601 timestamp per row, at the time of writing.
 

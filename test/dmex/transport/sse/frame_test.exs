@@ -1,8 +1,8 @@
-defmodule DMEx.SSE.FrameTest do
+defmodule DMEx.Transport.SSE.FrameTest do
   use DMEx.Case, async: true
   use ExUnitProperties
 
-  alias DMEx.SSE.Frame
+  alias DMEx.Transport.SSE.Frame
 
   @at ~U[2026-07-27 10:31:04.221Z]
 

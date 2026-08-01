@@ -79,12 +79,19 @@ The handler module is the whole declaration, and it is never listed anywhere:
 every handler compiled into an application that depends on `:dmex` is discovered
 and started — one subscription per log in its `logs:`, each with its own cursor —
 and one naming a log that `logs:` does not bind stops the boot rather than
-silently never running. The message types are not written down twice
-either — they are read at compile time from the structs `handle_message/2`
-matches on, and each is checked to be a `DMEx.Message` there, so a handler
-subscribed to a type it has no clause for is unrepresentable rather than a
-runtime `FunctionClauseError`. `logs:` binds names to modules and URLs, so a URL appears once
-rather than at every subscription site.
+silently never running.
+
+The binding also chooses how the log is read, which is why nothing configures a
+transport: a **module** is read in this VM — a query and a handler call, no
+socket and no framing — and a **URL** is read over HTTP. A handler cannot tell
+which it got.
+
+The message types are not written down twice either — they are read at compile
+time from the structs `handle_message/2` matches on, and each is checked to be a
+`DMEx.Message` there, so a handler subscribed to a type it has no clause for is
+unrepresentable rather than a runtime `FunctionClauseError`. `logs:` binds names
+to modules and URLs, so a URL appears once rather than at every subscription
+site.
 
 A subscription's durable identity is the declared `"orders/order_projection"`
 pair rather than the module name — so renaming the module is free, and only

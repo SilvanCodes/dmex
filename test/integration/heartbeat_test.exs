@@ -13,10 +13,10 @@ defmodule DMEx.Integration.HeartbeatTest do
 
   use DMEx.IntegrationCase
 
-  alias DMEx.SSE.Decoder
   alias DMEx.Test.Handlers
   alias DMEx.Test.Messages.OrderPlaced
   alias DMEx.Test.Server
+  alias DMEx.Transport.SSE.Decoder
 
   @moduletag :capture_log
 
@@ -153,7 +153,7 @@ defmodule DMEx.Integration.HeartbeatTest do
     test "counts heartbeat bytes as activity, so silence means silence", _ctx do
       {:ok, [pid]} = subscribe()
 
-      eventually(fn -> :sys.get_state(pid).conn != nil end)
+      eventually(fn -> :sys.get_state(pid).source != nil end)
       before = :sys.get_state(pid).last_activity
 
       # Nothing is appended for the whole wait, yet activity advances: a
@@ -164,11 +164,11 @@ defmodule DMEx.Integration.HeartbeatTest do
     test "adopts the log's advertised interval as its deadline", _ctx do
       {:ok, [pid]} = subscribe()
 
-      eventually(fn -> Decoder.retry(:sys.get_state(pid).decoder) != nil end)
+      eventually(fn -> retry(pid) != nil end)
 
       # Read off the wire rather than assumed: the log's own heartbeat plus
       # its own batch interval, neither of which this consumer had any say in.
-      assert Decoder.retry(:sys.get_state(pid).decoder) == @heartbeat + 200
+      assert retry(pid) == @heartbeat + 200
     end
   end
 
@@ -231,6 +231,15 @@ defmodule DMEx.Integration.HeartbeatTest do
   end
 
   ## Helpers
+
+  # The advertised interval lives in the transport's decoder now — the
+  # subscription itself only asks it how long silence may last.
+  defp retry(pid) do
+    case :sys.get_state(pid).source do
+      %{decoder: decoder} -> Decoder.retry(decoder)
+      nil -> nil
+    end
+  end
 
   defp subscribe do
     DMEx.Supervisor.subscribe(Handlers.Echo, supervisor: TestSupervisor)

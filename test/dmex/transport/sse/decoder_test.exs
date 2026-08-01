@@ -1,10 +1,10 @@
-defmodule DMEx.SSE.DecoderTest do
+defmodule DMEx.Transport.SSE.DecoderTest do
   use DMEx.Case, async: true
   use ExUnitProperties
 
-  alias DMEx.SSE.Decoder
-  alias DMEx.SSE.Frame
   alias DMEx.Test.Storage, as: Stub
+  alias DMEx.Transport.SSE.Decoder
+  alias DMEx.Transport.SSE.Frame
 
   describe "whole rows" do
     test "a frame arriving in one chunk yields one row" do

@@ -2,11 +2,13 @@ defmodule DMEx.Handler.Request do
   @moduledoc """
   What a subscription says on connect, and what it hears back.
 
-  The handler's half of the contract `DMEx.Log.Params` implements on the
-  log's — and split out for the same reason: it is pure, so it can be
-  tested without a socket, and having both ends of the wire contract expressed
-  as data rather than buried in a process makes it obvious when one drifts from
-  the other.
+  The reading half of the contract `DMEx.Log.Params` implements on the log's —
+  and split out for the same reason: it is pure, so it can be tested without a
+  socket, and having both ends of the wire contract expressed as data rather
+  than buried in a process makes it obvious when one drifts from the other.
+
+  Used by `DMEx.Transport.SSE`, which is the only transport with a request to
+  make at all.
 
   One header goes out, and it is one SSE already defines:
 

@@ -1,4 +1,4 @@
-# The O(n^2) buffer-append trap, and the reason `DMEx.SSE.Decoder` accumulates
+# The O(n^2) buffer-append trap, and the reason `DMEx.Transport.SSE.Decoder` accumulates
 # iodata rather than concatenating binaries.
 #
 # Chunk boundaries are not frame boundaries, so a decoder has to hold a partial
@@ -10,7 +10,7 @@
 # is dramatically worse than the 64 KB one, the accumulation is quadratic.
 
 alias DMEx.BenchHelper, as: Helper
-alias DMEx.SSE.Decoder
+alias DMEx.Transport.SSE.Decoder
 
 Helper.section("sse_decode — is the accumulation linear in bytes?")
 
@@ -41,7 +41,7 @@ end
 
 Benchee.run(
   %{
-    "DMEx.SSE.Decoder (iodata)" => fn chunks ->
+    "DMEx.Transport.SSE.Decoder (iodata)" => fn chunks ->
       Enum.reduce(chunks, Decoder.new(), fn chunk, decoder ->
         {:ok, _frames, decoder} = Decoder.push(decoder, chunk)
         decoder

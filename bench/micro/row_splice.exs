@@ -1,6 +1,6 @@
 # The load-bearing design comparison.
 #
-# `DMEx.SSE.Frame` splices each row's stored `data` and `metadata` into the frame as
+# `DMEx.Transport.SSE.Frame` splices each row's stored `data` and `metadata` into the frame as
 # text, exactly as the read returned them, rather than letting the driver decode
 # `jsonb` into a map and re-encoding it. The claim is that this makes the
 # log's per-row work "a memcpy" — and since every connection issues its own
@@ -15,7 +15,7 @@
 # adapter contract (`data::text`) in a way that is otherwise inconvenient.
 
 alias DMEx.BenchHelper, as: Helper
-alias DMEx.SSE.Frame
+alias DMEx.Transport.SSE.Frame
 
 Helper.section("row_splice — splicing stored JSON vs. decoding and re-encoding")
 

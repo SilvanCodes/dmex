@@ -97,7 +97,7 @@ defmodule DMEx.BenchHelper do
   def frame_bytes(count, payload_bytes) do
     count
     |> rows(payload_bytes)
-    |> Enum.map(&DMEx.SSE.Frame.encode_row/1)
+    |> Enum.map(&DMEx.Transport.SSE.Frame.encode_row/1)
     |> IO.iodata_to_binary()
   end
 

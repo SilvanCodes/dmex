@@ -99,7 +99,7 @@ defmodule DMEx.Handler.PipelineTest do
                       %{handler: Handlers.Echo} = metadata}
 
       assert metadata.message_type == "SomeOtherApp.Messages.Unknown"
-      assert metadata.url == @url
+      assert metadata.origin == @url
     end
   end
 
@@ -343,7 +343,7 @@ defmodule DMEx.Handler.PipelineTest do
       storage: DMEx.Storage.Postgres,
       storage_opts: ctx.storage_opts,
       handler: Keyword.fetch!(opts, :handler),
-      url: @url,
+      origin: @url,
       cursor: Keyword.get(opts, :cursor, 0),
       config: DMEx.Config.handler!(on_failure: :crash)
     )

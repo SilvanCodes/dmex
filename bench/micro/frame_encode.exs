@@ -1,4 +1,4 @@
-# Is `DMEx.SSE.Frame.encode_row/1` O(bytes) — a memcpy over iodata — or does it
+# Is `DMEx.Transport.SSE.Frame.encode_row/1` O(bytes) — a memcpy over iodata — or does it
 # carry meaningful per-row overhead?
 #
 # Two things happen per row that are not copying: an `Integer.to_string/1` for
@@ -10,7 +10,7 @@
 # how long the log spends building the largest write it will ever send.
 
 alias DMEx.BenchHelper, as: Helper
-alias DMEx.SSE.Frame
+alias DMEx.Transport.SSE.Frame
 
 Helper.section("frame_encode — log-side framing cost")
 
