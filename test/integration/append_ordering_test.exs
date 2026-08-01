@@ -15,9 +15,9 @@ defmodule DMEx.Integration.AppendOrderingTest do
   use DMEx.IntegrationCase
 
   alias DMEx.Storage.Postgres
-  alias DMEx.Test.IntegrationProducer, as: Producer
+  alias DMEx.Test.IntegrationLog, as: Log
+  alias DMEx.Test.Log, as: UnitLog
   alias DMEx.Test.Messages.OrderPlaced
-  alias DMEx.Test.Producer, as: UnitProducer
   alias Ecto.Adapters.SQL
 
   @writers 8
@@ -25,11 +25,11 @@ defmodule DMEx.Integration.AppendOrderingTest do
   @total @writers * @per_writer
 
   describe "the lock itself" do
-    test "publish takes a transaction-scoped advisory lock on the producer's key" do
-      {classid, objid} = Producer.__dmex__().lock
+    test "append takes a transaction-scoped advisory lock on the log's key" do
+      {classid, objid} = Log.__dmex__().lock
 
       Repo.transaction(fn ->
-        {:ok, _id} = Producer.publish(%OrderPlaced{order_id: 1})
+        {:ok, _id} = Log.append(%OrderPlaced{order_id: 1})
 
         # Still held *inside* the transaction. A lock released at the end of the
         # INSERT would let a later-allocated id commit first, which is the exact
@@ -49,9 +49,9 @@ defmodule DMEx.Integration.AppendOrderingTest do
     end
 
     test "the lock is released by COMMIT, not left behind" do
-      {classid, objid} = Producer.__dmex__().lock
+      {classid, objid} = Log.__dmex__().lock
 
-      {:ok, _} = Producer.publish(%OrderPlaced{order_id: 1})
+      {:ok, _} = Log.append(%OrderPlaced{order_id: 1})
 
       assert [[0]] =
                SQL.query!(
@@ -61,16 +61,16 @@ defmodule DMEx.Integration.AppendOrderingTest do
                ).rows
     end
 
-    test "two producers with different app keys take different locks" do
+    test "two logs with different app keys take different locks" do
       # Co-tenants in one database must not serialize against each other.
-      {_classid, objid} = Producer.__dmex__().lock
-      {_classid, other_objid} = UnitProducer.__dmex__().lock
+      {_classid, objid} = Log.__dmex__().lock
+      {_classid, other_objid} = UnitLog.__dmex__().lock
 
       refute objid == other_objid
     end
   end
 
-  describe "concurrent publishes" do
+  describe "concurrent appends" do
     @tag timeout: 120_000
     test "a cursor-following reader never skips a row" do
       parent = self()
@@ -87,7 +87,7 @@ defmodule DMEx.Integration.AppendOrderingTest do
               # A randomised gap between allocating the id and committing is
               # what makes out-of-order commits likely rather than theoretical.
               Repo.transaction(fn ->
-                {:ok, _} = Producer.publish(%OrderPlaced{order_id: w * 1000 + n})
+                {:ok, _} = Log.append(%OrderPlaced{order_id: w * 1000 + n})
                 Process.sleep(:rand.uniform(3))
               end)
             end
@@ -107,7 +107,7 @@ defmodule DMEx.Integration.AppendOrderingTest do
     end
   end
 
-  # Reads exactly as the producer's send loop does — `id > cursor ORDER BY id
+  # Reads exactly as the log's send loop does — `id > cursor ORDER BY id
   # LIMIT n`, advancing the cursor to the last id seen and never looking back.
   # That is what makes a skipped row unrecoverable, and what this observes.
   defp follow(parent, cursor, acc) do
@@ -134,5 +134,5 @@ defmodule DMEx.Integration.AppendOrderingTest do
     end
   end
 
-  defp storage_opts, do: Producer.__dmex__().storage_opts
+  defp storage_opts, do: Log.__dmex__().storage_opts
 end

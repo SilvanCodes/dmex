@@ -2,7 +2,7 @@
 
 A decentralized, broker-less message queue over plain HTTP and Server-Sent Events.
 
-Every application that publishes messages owns and persists its own append-only
+Every application that appends messages owns and persists its own append-only
 message log — one ordinary SQL table — and streams it directly to consumers over
 HTTP. There is no broker process, no cluster to operate, and no shared
 infrastructure between applications.
@@ -14,7 +14,7 @@ infrastructure between applications.
 - **Persistently replayable** — consumption never removes anything. Any consumer
   can start, or restart, from any point in history.
 
-> **Status: pre-release, under active development.** Not yet published to Hex.
+> **Status: pre-release, under active development.** Not yet appended to Hex.
 > See [ARCHITECTURE.md](ARCHITECTURE.md) for the design — the wire contract, the
 > invariants everything rests on, and where each one lives in the code — and
 > [ROADMAP.md](ROADMAP.md) for what is designed but deliberately not built yet:
@@ -22,7 +22,7 @@ infrastructure between applications.
 
 ## What works today
 
-Publish → `LISTEN`/`NOTIFY` → SSE frame → decode → handler → durable cursor,
+Append → `LISTEN`/`NOTIFY` → SSE frame → decode → handler → durable cursor,
 with resumption, duplicate suppression, catch-up, heartbeats, bounded retries
 and all three failure modes — covered end to end over a real socket.
 
@@ -37,9 +37,9 @@ which a non-Elixir consumer can implement against.
 # migration
 def up, do: DMEx.Migration.up()
 
-# producer
-defmodule MyApp.Producer do
-  use DMEx.Producer, repo: MyApp.Repo
+# appending
+defmodule MyApp.Log do
+  use DMEx.Log, repo: MyApp.Repo
 end
 
 defmodule MyApp.Messages.OrderPlaced do
@@ -50,33 +50,37 @@ defmodule MyApp.Messages.OrderPlaced do
 end
 
 # in a Phoenix router, a Plug.Router, or a bare Bandit/Cowboy pipeline
-forward "/stream", to: DMEx.Producer.Plug, init_opts: [producer: MyApp.Producer]
+forward "/stream", to: DMEx.Log.Plug, init_opts: [log: MyApp.Log]
 
-MyApp.Producer.publish(%MyApp.Messages.OrderPlaced{order_id: 7})
+MyApp.Log.append(%MyApp.Messages.OrderPlaced{order_id: 7})
 #=> {:ok, 1042}
 ```
 
 ```elixir
-# consumer
+# reading
 defmodule MyApp.OrderProjection do
-  use DMEx.Consumer.Handler, producer: :orders, id: :order_projection
+  use DMEx.Handler, log: :orders, id: :order_projection
 
   @impl true
   def handle_message(%MyApp.Messages.OrderPlaced{} = message, _metadata), do: :ok
 end
 
-{DMEx.Consumer,
+# the whole supervision-tree declaration
+{DMEx.Supervisor,
+ log: MyApp.Log,
  repo: MyApp.Repo,
- producer: %{orders: "https://orders.internal/stream"},
- handlers: [MyApp.OrderProjection]}
+ logs: [orders: "https://orders.internal/stream"]}
 ```
 
-The handler module is the whole declaration. The message types are not written
-down twice: they are read at compile time from the structs `handle_message/2`
-matches on, and each is checked to be a `DMEx.Message` there — so a handler
+The handler module is the whole declaration, and it is never listed anywhere:
+every handler compiled into an application that depends on `:dmex` is discovered
+and started, and one naming a log that `logs:` does not bind stops the boot
+rather than silently never running. The message types are not written down twice
+either — they are read at compile time from the structs `handle_message/2`
+matches on, and each is checked to be a `DMEx.Message` there, so a handler
 subscribed to a type it has no clause for is unrepresentable rather than a
-runtime `FunctionClauseError`. The consumer binds names to URLs, so a URL
-appears once rather than at every subscription site.
+runtime `FunctionClauseError`. `logs:` binds names to URLs, so a URL appears once
+rather than at every subscription site.
 
 A subscription's durable identity is the declared `"orders/order_projection"`
 pair rather than the module name — so renaming the module is free, and only
@@ -105,12 +109,12 @@ are exhausted, `on_failure` decides:
 dead row *is* a log row, so replay is handing it back rather than rebuilding a
 message from parts:
 
-    DMEx.Consumer.DeadMessages.list(MyApp.OrderProjection, repo: MyApp.Repo)
-    DMEx.Consumer.DeadMessages.replay(MyApp.OrderProjection, repo: MyApp.Repo)
+    DMEx.Handler.DeadMessages.list(MyApp.OrderProjection, repo: MyApp.Repo)
+    DMEx.Handler.DeadMessages.replay(MyApp.OrderProjection, repo: MyApp.Repo)
 
 Nothing about the failure is stored — no exception, no attempt count. A failure
 is an event, not a property of the message, so it lives in your logs and in
-`[:dmex, :consumer, :failed]`. The one column that differs from the log is
+`[:dmex, :handler, :failed]`. The one column that differs from the log is
 `inserted_at`: on this table it is when the row landed here, which is the axis
 anything pruning it has to work along.
 

@@ -3,27 +3,27 @@ defmodule DMEx.Integration.WireContractTest do
   The HTTP contract, exercised by a raw client rather than by DMEx's own.
 
   Because the protocol is just HTTP plus SSE, any SSE-capable client can consume
-  a DMEx stream. These tests speak to the producer with a bare Mint connection —
+  a DMEx stream. These tests speak to the log with a bare Mint connection —
   no DMEx consumer anywhere — so what they assert is the wire contract a
   third-party client would be written against.
 
   **There is nothing to negotiate.** A request carries a path and, optionally,
   `Last-Event-ID`; a response carries the ordinary SSE headers and a run of
-  frames. Everything about pacing is the producer's configuration and never
+  frames. Everything about pacing is the log's configuration and never
   appears on the wire, which is why this file no longer has a negotiation half.
   """
 
   use DMEx.IntegrationCase
 
   alias DMEx.SSE.Frame
-  alias DMEx.Test.IntegrationProducer, as: Producer
+  alias DMEx.Test.IntegrationLog, as: Log
   alias DMEx.Test.Messages.OrderPlaced
   alias DMEx.Test.Server
 
   @moduletag :capture_log
 
   setup do
-    start_supervised!(Producer)
+    start_supervised!(Log)
 
     uri = URI.parse(Server.start!())
 
@@ -54,12 +54,12 @@ defmodule DMEx.Integration.WireContractTest do
       {200, _headers, body} = request(ctx, [])
 
       # heartbeat_ms + one batch interval, since the throttle runs after the heartbeat
-      # branch and the sum is the real upper bound on silence. Both are producer
+      # branch and the sum is the real upper bound on silence. Both are log
       # configuration, so this number is the same for every client.
       assert body =~ "retry: 15010"
     end
 
-    # A producer must not reject a request over a header it does not define —
+    # A log must not reject a request over a header it does not define —
     # that is how a client shipped against a later version breaks against an
     # earlier one for no reason.
     test "ignores a header it does not define", ctx do
@@ -69,7 +69,7 @@ defmodule DMEx.Integration.WireContractTest do
 
   describe "resumption" do
     setup ctx do
-      for n <- 1..5, do: {:ok, _} = Producer.publish(%OrderPlaced{order_id: n})
+      for n <- 1..5, do: {:ok, _} = Log.append(%OrderPlaced{order_id: n})
 
       ctx
     end
@@ -142,7 +142,7 @@ defmodule DMEx.Integration.WireContractTest do
 
   ## A minimal SSE client
 
-  # Reads for `collect_for` ms and returns whatever the producer sent, which is
+  # Reads for `collect_for` ms and returns whatever the log sent, which is
   # how a streaming response is observed without waiting for an end that never
   # comes.
   defp request(ctx, headers, collect_for \\ 400) do

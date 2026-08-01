@@ -53,8 +53,8 @@ defmodule DMEx.MixProject do
       # making it optional would mean guarding every emit site for no benefit.
       {:telemetry, "~> 1.2"},
 
-      # Everything else is optional. A consumer-only application has no reason
-      # to carry Postgrex, and a producer-only one has no reason to carry Mint.
+      # Everything else is optional. A read-only application has no reason
+      # to carry Postgrex, and an append-only one has no reason to carry Mint.
       {:ecto_sql, "~> 3.12", optional: true},
       {:postgrex, "~> 0.19", optional: true},
       {:plug, "~> 1.16", optional: true},

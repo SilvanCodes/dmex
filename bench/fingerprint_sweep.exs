@@ -22,7 +22,7 @@ alias DMEx.Fingerprint
 
 # Two separate things, and conflating them is what makes the number useless.
 #
-# The **ratio** models the roadmap's worked example: a producer knowing ~10x
+# The **ratio** models the roadmap's worked example: a log knowing ~10x
 # the types a consumer selects. That is the operationally meaningful figure —
 # how much extra traffic a real subscription admits.
 #
@@ -93,7 +93,7 @@ results =
       """
     end
 
-    # Claim 2, from the reader's side: of everything the producer knows, how
+    # Claim 2, from the reader's side: of everything the log knows, how
     # much did this filter admit? N is the floor; anything above it is spurious.
     false_positives =
       stranger_hashes

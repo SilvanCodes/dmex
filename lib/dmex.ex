@@ -2,9 +2,9 @@ defmodule DMEx do
   @moduledoc """
   A decentralized, broker-less message queue over plain HTTP and Server-Sent Events.
 
-  Every application that publishes messages owns and persists its own append-only
-  message log — one ordinary SQL table — and streams it directly to consumers over
-  HTTP. There is no broker process, no cluster to operate, and no shared
+  Every application that appends messages owns and persists its own append-only
+  message log — one ordinary SQL table — and streams it directly to its readers
+  over HTTP. There is no broker process, no cluster to operate, and no shared
   infrastructure between applications.
 
   See `ARCHITECTURE.md` for the full design and the reasoning behind it.
@@ -20,16 +20,16 @@ defmodule DMEx do
         def down, do: DMEx.Migration.down()
       end
 
-  Pass `tables: [:producer]` or `tables: [:consumer]` if the application only
+  Pass `tables: [:log]` or `tables: [:subscriptions]` if the application only
   plays one of the two roles. See `DMEx.Migration`.
 
-  ## Publishing
+  ## Appending
 
-  A producing application declares a producer module and one module per message
+  An application that appends declares a log module and one module per message
   type:
 
-      defmodule MyApp.Producer do
-        use DMEx.Producer, repo: MyApp.Repo
+      defmodule MyApp.Log do
+        use DMEx.Log, repo: MyApp.Repo
       end
 
       defmodule MyApp.Messages.OrderPlaced do
@@ -39,29 +39,27 @@ defmodule DMEx do
         defstruct [:order_id, :customer_id, :total]
       end
 
-  Add the producer to your supervision tree and mount its endpoint — from a
-  Phoenix router, a `Plug.Router`, or a bare Bandit/Cowboy pipeline:
+  Mount its endpoint — from a Phoenix router, a `Plug.Router`, or a bare
+  Bandit/Cowboy pipeline:
 
-      children = [MyApp.Repo, MyApp.Producer]
+      forward "/stream", to: DMEx.Log.Plug, init_opts: [log: MyApp.Log]
 
-      forward "/stream", to: DMEx.Producer.Plug, init_opts: [producer: MyApp.Producer]
+  Appending is then just a row written to the application's own database:
 
-  Publishing is then just a row written to the application's own database:
-
-      MyApp.Producer.publish(%MyApp.Messages.OrderPlaced{order_id: 7})
+      MyApp.Log.append(%MyApp.Messages.OrderPlaced{order_id: 7})
       #=> {:ok, 1042}
 
-  Generic code that does not have a particular producer module in hand calls it
-  through a variable — `producer.publish(message)` — rather than through a
-  second, explicit publishing API.
+  Generic code that does not have a particular log module in hand calls it
+  through a variable — `log.append(message)` — rather than through a second,
+  explicit appending API.
 
-  ## Consuming
+  ## Reading
 
-  A consuming application implements a handler and declares its subscriptions in
-  its supervision tree:
+  A handler module declares a subscription in full — which log, under what name,
+  and, from the structs its clauses match on, for which message types:
 
       defmodule MyApp.OrderProjection do
-        use DMEx.Consumer.Handler, producer: :orders, id: :order_projection
+        use DMEx.Handler, log: :orders, id: :order_projection
 
         @impl true
         def handle_message(%MyApp.Messages.OrderPlaced{} = message, _metadata) do
@@ -69,58 +67,67 @@ defmodule DMEx do
         end
       end
 
-      {DMEx.Consumer,
-       repo: MyApp.Repo,
-       producer: %{orders: "https://orders.internal/stream"},
-       handlers: [MyApp.OrderProjection]}
+  ## Starting it
 
-  The handler module is the whole declaration — which producer, under what name,
-  and, from the structs its clauses match on, for which message types — and the
-  consumer binds producer names to URLs.
-  `DMEx.Consumer.subscribe/2` starts one at runtime instead, taking the same
-  module. The URLs are static configuration of the consuming application — there
-  is deliberately no discovery service in that path, since it would reintroduce
+  One child, naming this application's own log and the logs it reads:
+
+      children = [
+        MyApp.Repo,
+        {DMEx.Supervisor,
+         log: MyApp.Log,
+         repo: MyApp.Repo,
+         logs: [orders: "https://orders.internal/stream"]}
+      ]
+
+  Handler modules are **not** listed: every one compiled into an application
+  that depends on `:dmex` is discovered and started, and one naming a log that
+  `logs:` does not bind stops the boot rather than silently never running.
+  `DMEx.Supervisor.subscribe/2` starts one at runtime instead, taking the same
+  module.
+
+  The URLs are static configuration of the reading application — there is
+  deliberately no discovery service in that path, since it would reintroduce
   exactly the shared infrastructure DMEx exists to avoid.
 
-  DMEx owns the read position (`last_seen`) on the consumer's behalf, keyed by
-  the declared `"producer/id"` pair, and the producer holds no consumer state at
-  all. Keying on the declaration rather than the module name is what makes
-  renaming a handler free.
+  DMEx owns the read position (`last_seen`) on the handler's behalf, keyed by the
+  declared `"log/id"` pair, and the log holds no reader state at all. Keying on
+  the declaration rather than the module name is what makes renaming a handler
+  free.
 
   ## Three things worth knowing before you build on it
 
     * **A subscription receives the types its handler matches on, and there is
       still no filter option.** The selection is *derived* from the
       `handle_message/2` clauses, encoded into the request path at compile time,
-      and resolved by the producer against its own message modules — so nothing
-      is declared anywhere to make it happen, and no separate list can drift
-      from the clauses. Inclusion is heuristic in one direction only: never a
-      false negative, and an occasional extra type arrives and is skipped
-      exactly as an unknown type always was. See `DMEx.Fingerprint` and
+      and resolved by the log against its own message modules — so nothing is
+      declared anywhere to make it happen, and no separate list can drift from
+      the clauses. Inclusion is heuristic in one direction only: never a false
+      negative, and an occasional extra type arrives and is skipped exactly as an
+      unknown type always was. See `DMEx.Fingerprint` and
       `guides/fingerprint-spec.md`.
 
     * **Delivery is at-least-once.** The handler call and the cursor advance
-      share one transaction, so side effects that go through the consumer's own
+      share one transaction, so side effects that go through the reader's own
       repo are exactly-once for free. Effects that leave that transaction must
       be idempotent: a crash between them landing and the commit is
       indistinguishable from never having processed the message.
 
-    * **Publishing is serialized per application.** An advisory lock held to
+    * **Appending is serialized per application.** An advisory lock held to
       COMMIT is what keeps every reader's `id > cursor` scan sound. It costs
-      publish concurrency, and a `publish/2` inside a long enclosing transaction
+      append concurrency, and an `append/2` inside a long enclosing transaction
       extends that lock for the transaction's lifetime.
 
   ## Telemetry
 
-  `[:dmex, :publish, :start | :stop | :exception]`, `[:dmex, :stream, :connect]`,
+  `[:dmex, :append, :start | :stop | :exception]`, `[:dmex, :stream, :connect]`,
   `[:dmex, :stream, :write]`, `[:dmex, :dispatcher, :broadcast]`,
-  `[:dmex, :consumer, :message, :start | :stop | :exception]`,
-  `[:dmex, :consumer, :skip]`, `[:dmex, :consumer, :lag]`,
-  `[:dmex, :consumer, :reconnect]`. `DMEx.Telemetry` documents all of them.
+  `[:dmex, :handler, :message, :start | :stop | :exception]`,
+  `[:dmex, :handler, :skip]`, `[:dmex, :handler, :lag]`,
+  `[:dmex, :handler, :reconnect]`. `DMEx.Telemetry` documents all of them.
 
-  The two most useful in practice: `[:dmex, :consumer, :lag]` carries how stale
-  the rows this subscription is handling are, and `[:dmex, :consumer, :skip]`
-  fires for every row the consumer had no module for — without it, a consumer
+  The two most useful in practice: `[:dmex, :handler, :lag]` carries how stale
+  the rows this subscription is handling are, and `[:dmex, :handler, :skip]`
+  fires for every row it had no module for — without it, a subscription
   discarding most of a stream and one discarding the single type it wanted look
   identical.
   """

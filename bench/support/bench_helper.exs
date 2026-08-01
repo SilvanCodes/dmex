@@ -22,29 +22,29 @@ defmodule DMEx.BenchHelper do
   end
 
   @doc """
-  Starts the integration producer, tolerating one already running.
+  Starts the integration log, tolerating one already running.
 
   `mix bench.e2e` requires every file into one VM, so each has to be safe both
   standalone and second in line.
   """
-  def start_producer! do
-    case DMEx.Test.IntegrationProducer.start_link() do
+  def start_log! do
+    case DMEx.Test.IntegrationLog.start_link() do
       {:ok, pid} -> pid
       {:error, {:already_started, pid}} -> pid
     end
   end
 
   @doc """
-  Starts a named consumer bound to `url` as producer `:bench`, tolerating one
+  Starts a named DMEx.Supervisor bound to `url` as log `:bench`, tolerating one
   already running.
 
   The server binds an ephemeral port, so the map cannot be a literal.
   """
-  def start_consumer!(name, url) do
-    case DMEx.Consumer.start_link(
+  def start_supervisor!(name, url) do
+    case DMEx.Supervisor.start_link(
            name: name,
            repo: DMEx.Test.IntegrationRepo,
-           producer: %{bench: url}
+           logs: [bench: url]
          ) do
       {:ok, pid} -> pid
       {:error, {:already_started, pid}} -> pid

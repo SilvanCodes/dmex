@@ -114,7 +114,7 @@ defmodule DMEx.Storage.Postgres do
   # `previous_id` is what lets a consumer prove nothing went missing between two
   # rows. It cannot be `id - 1`: a selective read returns a sparse subset of the
   # id space, so consecutive delivered rows are routinely far apart, and only the
-  # producer knows which gaps it created on purpose. `lag/3` states it.
+  # log knows which gaps it created on purpose. `lag/3` states it.
   #
   # **The outer filter** is where the bound is. `prefix_bytes + bytes <= $3` is
   # inclusive, so the rows that come back never total more than the budget —
@@ -178,11 +178,11 @@ defmodule DMEx.Storage.Postgres do
   end
 
   @impl DMEx.Storage
-  def published_since(opts, cursor) when is_integer(cursor) and cursor >= 0 do
+  def appended_since(opts, cursor) when is_integer(cursor) and cursor >= 0 do
     repo = Map.fetch!(opts, :repo)
 
     # One statement for both halves the poll needs. `array_agg(DISTINCT ...)`
-    # over a window bounded by one poll interval of publishes is a range scan on
+    # over a window bounded by one poll interval of appends is a range scan on
     # the primary key, and on an idle log — the case that has to stay cheap,
     # since this runs once per interval per app — it touches nothing and both
     # columns come back NULL.
@@ -273,7 +273,7 @@ defmodule DMEx.Storage.Postgres do
     repo = Map.fetch!(opts, :repo)
 
     # `inserted_at` is left to the column default — it records when this row
-    # landed here, not when the message was published.
+    # landed here, not when the message was appended.
     sql = """
     INSERT INTO #{table(opts, @dead_messages)}
            (subscription, id, message_type, data, metadata)
@@ -373,7 +373,7 @@ defmodule DMEx.Storage.Postgres do
     :exit, reason -> {:error, reason}
   end
 
-  defp notifier(opts), do: opts |> Map.fetch!(:producer) |> Module.concat("Notifications")
+  defp notifier(opts), do: opts |> Map.fetch!(:log) |> Module.concat("Notifications")
 
   ## Append steps
 

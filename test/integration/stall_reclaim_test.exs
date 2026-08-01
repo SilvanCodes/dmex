@@ -6,21 +6,21 @@ defmodule DMEx.Integration.StallReclaimTest do
   `send_timeout` on the web server's listener, set correctly, or a wedged
   request process held forever. Here the listener is left alone — the only
   socket options set are the small buffers that make the stall arrive in
-  milliseconds rather than megabytes — and `DMEx.Producer.Watcher` is what
+  milliseconds rather than megabytes — and `DMEx.Log.Watcher` is what
   reclaims the connection.
   """
 
   use DMEx.IntegrationCase
 
-  alias DMEx.Producer.Watcher
+  alias DMEx.Log.Watcher
   alias DMEx.Test.Messages.OrderPlaced
 
   @stall_timeout 300
   @check_interval 50
 
-  defmodule Producer do
+  defmodule Log do
     @moduledoc false
-    use DMEx.Producer,
+    use DMEx.Log,
       repo: DMEx.Test.IntegrationRepo,
       app: :dmex_stall,
       heartbeat_ms: 60_000,
@@ -31,7 +31,7 @@ defmodule DMEx.Integration.StallReclaimTest do
 
   defmodule Patient do
     @moduledoc "Same log, no watcher: `stall_timeout: :infinity` starts none."
-    use DMEx.Producer,
+    use DMEx.Log,
       repo: DMEx.Test.IntegrationRepo,
       app: :dmex_stall_patient,
       stall_timeout: :infinity
@@ -44,7 +44,7 @@ defmodule DMEx.Integration.StallReclaimTest do
     plug(:match)
     plug(:dispatch)
 
-    forward("/stream", to: DMEx.Producer.Plug, init_opts: [producer: Producer])
+    forward("/stream", to: DMEx.Log.Plug, init_opts: [log: Log])
 
     match _ do
       send_resp(conn, 404, "not found")
@@ -52,7 +52,7 @@ defmodule DMEx.Integration.StallReclaimTest do
   end
 
   setup do
-    start_supervised!(Producer)
+    start_supervised!(Log)
 
     {:ok, server} =
       Bandit.start_link(
@@ -83,21 +83,20 @@ defmodule DMEx.Integration.StallReclaimTest do
 
     socket = connect(ctx.port)
 
-    eventually(fn -> DMEx.Producer.Registry.count(Producer) == 1 end)
+    eventually(fn -> DMEx.Log.Registry.count(Log) == 1 end)
 
-    # Enough bytes that the consumer's receive window closes and the producer's
+    # Enough bytes that the consumer's receive window closes and the log's
     # write blocks with nothing able to time it out from inside.
-    publish(200)
+    append(200)
 
-    assert_receive {[:dmex, :stream, :reclaim], ^ref, %{overdue_by: overdue_by},
-                    %{producer: Producer}},
+    assert_receive {[:dmex, :stream, :reclaim], ^ref, %{overdue_by: overdue_by}, %{log: Log}},
                    @stall_timeout + @check_interval + 2_000
 
     assert overdue_by >= 0
 
     # The request process died, so its registry entry went with it — and the
     # socket closed, which is the only notification a stalled consumer can get.
-    eventually(fn -> DMEx.Producer.Registry.count(Producer) == 0 end)
+    eventually(fn -> DMEx.Log.Registry.count(Log) == 0 end)
     assert eventually(fn -> :gen_tcp.recv(socket, 0, 100) == {:error, :closed} end)
   end
 
@@ -106,24 +105,24 @@ defmodule DMEx.Integration.StallReclaimTest do
 
     ctx.port |> connect() |> read_in_background()
 
-    eventually(fn -> DMEx.Producer.Registry.count(Producer) == 1 end)
+    eventually(fn -> DMEx.Log.Registry.count(Log) == 1 end)
 
     # Reading happens in its own process, so the consumer keeps draining while
-    # this one publishes. A test that read only afterwards would be a stalled
-    # consumer for the duration of the publish loop.
-    publish(200)
+    # this one appends. A test that read only afterwards would be a stalled
+    # consumer for the duration of the append loop.
+    append(200)
     Process.sleep(@stall_timeout * 3)
 
     refute_received {[:dmex, :stream, :reclaim], ^ref, _, _}
-    assert DMEx.Producer.Registry.count(Producer) == 1
+    assert DMEx.Log.Registry.count(Log) == 1
   end
 
   describe "in the supervision tree" do
-    test "a producer with a stall timeout gets a watcher" do
-      assert is_pid(Process.whereis(Watcher.name(Producer)))
+    test "a log with a stall timeout gets a watcher" do
+      assert is_pid(Process.whereis(Watcher.name(Log)))
     end
 
-    test "a producer that opted out does not" do
+    test "a log that opted out does not" do
       start_supervised!(Patient)
 
       refute Process.whereis(Watcher.name(Patient))
@@ -141,12 +140,12 @@ defmodule DMEx.Integration.StallReclaimTest do
     socket
   end
 
-  defp publish(count) do
+  defp append(count) do
     # ~1 KB per message, so the frame cap is hit repeatedly rather than once.
     note = String.duplicate("x", 1_000)
 
     for id <- 1..count do
-      {:ok, _} = Producer.publish(%OrderPlaced{order_id: id, customer_id: note, total: 1})
+      {:ok, _} = Log.append(%OrderPlaced{order_id: id, customer_id: note, total: 1})
     end
   end
 

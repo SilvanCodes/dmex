@@ -2,7 +2,7 @@ defmodule DMEx.Test.Storage do
   @moduledoc """
   An in-memory `DMEx.Storage` for tests that have no business touching Postgres.
 
-  Everything on the producer's HTTP path — header parsing, the send loop, frame
+  Everything on the log's HTTP path — header parsing, the send loop, frame
   shaping — is logic over what a read returned, so testing it against a real
   database buys nothing and costs `async: true`. This stub lets those tests run
   in parallel with no sandbox at all.
@@ -60,7 +60,7 @@ defmodule DMEx.Test.Storage do
   @spec put_rows(DMEx.Storage.opts(), [DMEx.Storage.row()] | non_neg_integer()) :: :ok
   def put_rows(opts, rows), do: update(opts, &%{&1 | rows: rows(rows)})
 
-  @doc "Appends rows to the stub, as a publish would."
+  @doc "Appends rows to the stub, as an append would."
   @spec add_rows(DMEx.Storage.opts(), [DMEx.Storage.row()]) :: :ok
   def add_rows(opts, rows), do: update(opts, &%{&1 | rows: &1.rows ++ rows})
 
@@ -180,7 +180,7 @@ defmodule DMEx.Test.Storage do
   end
 
   @impl DMEx.Storage
-  def published_since(opts, cursor) do
+  def appended_since(opts, cursor) do
     Agent.get(store(opts), fn state ->
       case Enum.filter(state.rows, &(&1.id > cursor)) do
         [] -> {:ok, {nil, []}}

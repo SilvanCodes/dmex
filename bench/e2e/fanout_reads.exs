@@ -1,10 +1,10 @@
 # The `C x P` read amplification, and where it actually binds.
 #
 # Every connection issues its own reads, so C connections at the tip with
-# publish rate P cost up to `C x P` reads per second. `ARCHITECTURE.md` says the
+# append rate P cost up to `C x P` reads per second. `ARCHITECTURE.md` says the
 # binding constraint in practice is **database connection-pool contention**
 # rather than raw query load, and asks for the realistic connection ceiling per
-# producer. This is that measurement.
+# log. This is that measurement.
 #
 # Three things to read off it:
 #
@@ -16,10 +16,10 @@
 #     idle column should be flat in C.
 #   * **Where pool checkout queueing appears.** That is the connection ceiling,
 #     and the number that would justify partitioning the pool so stream reads
-#     cannot starve publish writes.
+#     cannot starve append writes.
 
 alias DMEx.BenchHelper, as: Helper
-alias DMEx.Test.IntegrationProducer, as: Producer
+alias DMEx.Test.IntegrationLog, as: Log
 alias DMEx.Test.Messages.OrderPlaced
 
 Helper.section("fanout_reads — read amplification and pool contention")
@@ -27,11 +27,11 @@ Helper.section("fanout_reads — read amplification and pool contention")
 Helper.start_repo!()
 Helper.reset_log!()
 
-Helper.start_producer!()
+Helper.start_log!()
 
 port = Helper.start_server!() |> URI.parse() |> Map.fetch!(:port)
 
-# Counted from the producer's own telemetry rather than inferred, so this is
+# Counted from the log's own telemetry rather than inferred, so this is
 # what the loop really did.
 counter = :counters.new(2, [:write_concurrency])
 
@@ -54,7 +54,7 @@ counter = :counters.new(2, [:write_concurrency])
 )
 
 # A deliberately dumb SSE client: it reads and discards. The point is to hold a
-# connection open and let the producer do its per-connection work.
+# connection open and let the log do its per-connection work.
 connect = fn ->
   spawn(fn ->
     {:ok, conn} = Mint.HTTP.connect(:http, "127.0.0.1", port, mode: :active)
@@ -74,8 +74,8 @@ connect = fn ->
   end)
 end
 
-for connections <- [10, 50, 200], publish_rate <- [0, 100] do
-  Helper.section("C=#{connections} connections, P=#{publish_rate}/s")
+for connections <- [10, 50, 200], append_rate <- [0, 100] do
+  Helper.section("C=#{connections} connections, P=#{append_rate}/s")
 
   clients = for _ <- 1..connections, do: connect.()
   # Let every connection finish its catch-up read and settle at the tip.
@@ -84,16 +84,16 @@ for connections <- [10, 50, 200], publish_rate <- [0, 100] do
   :counters.put(counter, 1, 0)
   :counters.put(counter, 2, 0)
 
-  publisher =
-    if publish_rate > 0 do
+  appender =
+    if append_rate > 0 do
       spawn(fn ->
-        interval = max(div(1_000, publish_rate), 1)
+        interval = max(div(1_000, append_rate), 1)
 
         Stream.repeatedly(fn ->
-          {:ok, _} = Producer.publish(%OrderPlaced{order_id: 1})
+          {:ok, _} = Log.append(%OrderPlaced{order_id: 1})
           Process.sleep(interval)
         end)
-        |> Enum.take(publish_rate * 5)
+        |> Enum.take(append_rate * 5)
       end)
     end
 
@@ -103,14 +103,14 @@ for connections <- [10, 50, 200], publish_rate <- [0, 100] do
   queries = :counters.get(counter, 2)
 
   IO.puts("  frames sent:      #{frames} (#{div(frames, 5)}/s)")
-  IO.puts("  producer queries: #{queries} (#{div(queries, 5)}/s)")
+  IO.puts("  log queries: #{queries} (#{div(queries, 5)}/s)")
 
   IO.puts(
     "  per connection:   #{Float.round(frames / connections / 5, 2)} frames/s " <>
       "(max_batch_frequency caps this at 5.0/s)"
   )
 
-  if publisher, do: Process.exit(publisher, :kill)
+  if appender, do: Process.exit(appender, :kill)
   Enum.each(clients, &Process.exit(&1, :kill))
   Process.sleep(500)
 end

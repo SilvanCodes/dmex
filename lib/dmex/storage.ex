@@ -2,7 +2,7 @@ defmodule DMEx.Storage do
   @moduledoc """
   The behaviour both halves of DMEx read and write through.
 
-  One behaviour covers both sides deliberately. A producer appends to and reads
+  One behaviour covers both sides deliberately. A log appends to and reads
   from `dmex_messages`; a consumer reads and writes its own `dmex_cursors` and
   `dmex_dead_messages`. Those are different tables serving different roles, but
   they are the same *kind* of thing — a few keyed statements against an ordinary
@@ -13,7 +13,7 @@ defmodule DMEx.Storage do
 
   Every callback takes an `t:opts/0` map, built once and threaded through. There
   is no adapter process and no adapter state: an adapter is a module of
-  functions over this map, so the same adapter serves every producer and every
+  functions over this map, so the same adapter serves every log and every
   subscription in an application without any of them sharing anything.
 
   ## Three contracts that are correctness, not style
@@ -43,7 +43,7 @@ defmodule DMEx.Storage do
   frame it builds is wrong — so the cast belongs in the query (`data::text`),
   not in a post-processing step.
 
-  This is what makes the producer's per-row work a memcpy rather than a decode
+  This is what makes the log's per-row work a memcpy rather than a decode
   plus an encode. Since every connection issues its own read, that cost would
   otherwise be paid once per connection for the same rows.
 
@@ -51,22 +51,22 @@ defmodule DMEx.Storage do
 
   It returns `nil`, not `0`, when a subscription has never committed anything. That
   is what makes `start: :latest` meaningful exactly once: a subscription with no
-  cursor resolves `:latest` against the producer's tip, and one with a cursor —
+  cursor resolves `:latest` against the log's tip, and one with a cursor —
   even at 0 — ignores `:start` entirely, because the durable position is always
   the authority.
   """
 
   @typedoc """
-  Everything an adapter needs, built once by the producer module or the
+  Everything an adapter needs, built once by the log module or the
   subscription and passed to every call.
 
   `:repo` is the only universally-required key. `:lock` and `:channel` are
-  producer-side (they scope the append lock and the notification channel);
+  log-side (they scope the append lock and the notification channel);
   `:prefix` is the optional schema both sides may live in.
   """
   @type opts :: %{
           required(:repo) => module(),
-          optional(:producer) => module(),
+          optional(:log) => module(),
           optional(:lock) => {integer(), integer()},
           optional(:channel) => String.t(),
           optional(:prefix) => String.t() | nil
@@ -87,7 +87,7 @@ defmodule DMEx.Storage do
   owns is merged into `metadata`.
 
   A caller already inside a transaction extends that lock to the enclosing
-  transaction's lifetime, which serializes every other publish in the app for
+  transaction's lifetime, which serializes every other append in the app for
   its duration. That is a documented consequence, not a bug.
   """
   @callback append(opts(), type :: String.t(), data :: binary(), metadata :: binary()) ::
@@ -105,7 +105,7 @@ defmodule DMEx.Storage do
   afterwards satisfies the letter of this and defeats the purpose: `limit` rows
   of large payloads are fully materialised in the caller's memory before
   anything trims them, which is precisely the unbounded-growth failure the
-  producer's send loop is built to exclude. Only the database can bound that
+  log's send loop is built to exclude. Only the database can bound that
   before it is spent.
 
   ### `limit` is not redundant, and an adapter must not treat it as advisory
@@ -158,7 +158,7 @@ defmodule DMEx.Storage do
 
   It cannot be inferred as `id - 1`. A selective read returns a sparse subset of
   the id space, so consecutive delivered rows are routinely far apart, and only
-  the producer knows which of those gaps it created on purpose. Stating the link
+  the log knows which of those gaps it created on purpose. Stating the link
   explicitly is what makes a *deliberate* gap and a *lost* row distinguishable
   at all.
 
@@ -170,7 +170,7 @@ defmodule DMEx.Storage do
 
   `types` is `:all` for a whole-log subscription — the primary key serves that
   directly — or an explicit list, already expanded from a consumer's filter by
-  `DMEx.Producer.Plug`. An adapter must issue these as **two different
+  `DMEx.Log.Plug`. An adapter must issue these as **two different
   statements** rather than one with a nullable predicate: a
   `($4 IS NULL OR message_type = ANY($4))` shape is a correct query and a
   ruinous plan, since it defeats the index on both branches.
@@ -196,20 +196,20 @@ defmodule DMEx.Storage do
   @callback max_id(opts()) :: {:ok, non_neg_integer()} | {:error, term()}
 
   @doc """
-  What has been published since `cursor`: the new highest id, and the distinct
+  What has been appended since `cursor`: the new highest id, and the distinct
   message types among those rows.
 
-  `DMEx.Producer.Dispatcher`'s poll, which broadcasts only when the id moves and
+  `DMEx.Log.Dispatcher`'s poll, which broadcasts only when the id moves and
   needs the types to route that broadcast. Returns `{nil, []}` when nothing has
-  been published since — which is the common case on an idle log and must stay
+  been appended since — which is the common case on an idle log and must stay
   cheap, since it runs once per poll interval per application.
 
   The types are what make the poll route as precisely as the notification path
   does. Without them the poll would have to wake every connection on any log
-  publishing more than once per interval, which is exactly the amplification the
+  appending more than once per interval, which is exactly the amplification the
   routing exists to remove.
   """
-  @callback published_since(opts(), cursor :: non_neg_integer()) ::
+  @callback appended_since(opts(), cursor :: non_neg_integer()) ::
               {:ok, {non_neg_integer() | nil, [String.t()]}} | {:error, term()}
 
   @doc """
@@ -217,7 +217,7 @@ defmodule DMEx.Storage do
   committed one.
 
   Keyed by the subscription's declared identifier — `"orders/order_projection"`,
-  the `\#{producer}/\#{id}` pair from `DMEx.Consumer.Handler` — rather than by the
+  the `\#{log}/\#{id}` pair from `DMEx.Handler` — rather than by the
   handler module, so renaming the module does not mint a new subscription. See
   the module documentation for why `nil` and `0` must not be conflated.
   """
@@ -276,7 +276,7 @@ defmodule DMEx.Storage do
 
   @doc """
   Removes one dead message, identified the way it is keyed: by subscription and
-  log id. A subscription reads exactly one producer's log, so its own ids cannot
+  log id. A subscription reads exactly one log, so its own ids cannot
   collide.
 
   Called inside `c:transaction/2` by a replay, so that a message is dropped from
@@ -290,7 +290,7 @@ defmodule DMEx.Storage do
 
   `c:last_seen/2` answers the read path's question — where am I — and returns
   only the id. This answers an operator's: when did this last move? Used by
-  `DMEx.Consumer.Cursors`, not by the stream.
+  `DMEx.Handler.Cursors`, not by the stream.
   """
   @callback cursor(opts(), subscription :: String.t()) ::
               {:ok,
@@ -307,25 +307,25 @@ defmodule DMEx.Storage do
   @callback delete_cursor(opts(), subscription :: String.t()) :: :ok | {:error, term()}
 
   @doc """
-  Processes this adapter needs running alongside a producer.
+  Processes this adapter needs running alongside a log.
 
-  Started by the producer's own supervisor, before `DMEx.Producer.Dispatcher`. Postgres
+  Started by the log's own supervisor, before `DMEx.Log.Dispatcher`. Postgres
   returns a `Postgrex.Notifications` connection here — a `LISTEN` connection
   cannot be shared with the pool, since it must stay checked out for its whole
   life — and an engine with no notification mechanism returns `[]`.
 
   This callback exists so that **nothing outside an adapter knows how that
-  adapter is wired**. Before it, `DMEx.Producer` compared the configured storage
+  adapter is wired**. Before it, `DMEx.Log` compared the configured storage
   module against `DMEx.Storage.Postgres` by name and carried a list of
   Postgrex-specific connection options, which made adding a second engine an
-  edit to the producer rather than a new adapter.
+  edit to the log rather than a new adapter.
   """
   @callback child_specs(opts()) :: [Supervisor.child_spec() | {module(), term()} | module()]
 
   @doc """
-  Subscribes the calling process to this producer's publish notifications.
+  Subscribes the calling process to this log's append notifications.
 
-  Returns the pid to monitor, so `DMEx.Producer.Dispatcher` can re-establish the
+  Returns the pid to monitor, so `DMEx.Log.Dispatcher` can re-establish the
   subscription if it dies. `:unsupported` is the honest answer for an engine
   with no notification mechanism at all — the dispatcher then runs polling-only
   without warning, since nothing is wrong.

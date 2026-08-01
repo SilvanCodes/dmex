@@ -1,6 +1,6 @@
 defmodule DMEx.Test.Server do
   @moduledoc """
-  A real Bandit server mounting `DMEx.Producer.Plug`, for the integration suite.
+  A real Bandit server mounting `DMEx.Log.Plug`, for the integration suite.
 
   Binds port 0 and reports what it got, so tests can run in parallel with each
   other and with anything else on the machine. The router is the same
@@ -16,8 +16,8 @@ defmodule DMEx.Test.Server do
     plug(:dispatch)
 
     forward("/stream",
-      to: DMEx.Producer.Plug,
-      init_opts: [producer: DMEx.Test.IntegrationProducer]
+      to: DMEx.Log.Plug,
+      init_opts: [log: DMEx.Test.IntegrationLog]
     )
 
     match _ do
@@ -60,13 +60,13 @@ defmodule DMEx.Test.Server do
   end
 
   @doc """
-  The producer map binding `:test` — the name every `DMEx.Test.Handlers` module
+  The log map binding `:test` — the name every `DMEx.Test.Handlers` module
   declares — to `url`.
 
-  The reason the map lives on the `DMEx.Consumer` child spec rather than in
+  The reason the map lives on the `DMEx.Supervisor` child spec rather than in
   application config, stated as code: the port is 0 until the server is running,
   so this cannot be a literal anywhere.
   """
-  @spec producers(String.t()) :: %{atom() => String.t()}
-  def producers(url), do: %{test: url}
+  @spec logs(String.t()) :: keyword(String.t())
+  def logs(url), do: [test: url]
 end

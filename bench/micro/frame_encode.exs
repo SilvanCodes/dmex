@@ -7,12 +7,12 @@
 # if they vanish beside the copy, the module is done.
 #
 # The ns/row figure this produces is also what sizes the write byte cap: it says
-# how long the producer spends building the largest write it will ever send.
+# how long the log spends building the largest write it will ever send.
 
 alias DMEx.BenchHelper, as: Helper
 alias DMEx.SSE.Frame
 
-Helper.section("frame_encode — producer-side framing cost")
+Helper.section("frame_encode — log-side framing cost")
 
 inputs =
   for batch <- [1, 100, 1_000],

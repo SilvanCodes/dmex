@@ -2,18 +2,17 @@ defmodule DMEx.Integration.HeartbeatTest do
   @moduledoc """
   Keeping a quiet stream alive, and noticing when it is not.
 
-  When a connection is caught up and the log is quiet, the producer sends
-  nothing for as long as nobody publishes — potentially hours. Heartbeats do
+  When a connection is caught up and the log is quiet, the log sends
+  nothing for as long as nobody appends — potentially hours. Heartbeats do
   three jobs: they stop idle-connection timeouts in intermediaries from killing
   a healthy stream, they let a consumer tell "nothing new to send" from
   "connection is dead but the socket never closed", and they keep unacked data
   on the wire, which is what bounds how long a peer that vanished without a FIN
-  can go unnoticed — the one stall the producer's watcher cannot see.
+  can go unnoticed — the one stall the log's watcher cannot see.
   """
 
   use DMEx.IntegrationCase
 
-  alias DMEx.Consumer
   alias DMEx.SSE.Decoder
   alias DMEx.Test.Handlers
   alias DMEx.Test.Messages.OrderPlaced
@@ -23,9 +22,9 @@ defmodule DMEx.Integration.HeartbeatTest do
 
   @heartbeat 150
 
-  defmodule Producer do
+  defmodule Log do
     @moduledoc "Beats fast enough that a test does not sit through 15 seconds of it."
-    use DMEx.Producer,
+    use DMEx.Log,
       repo: DMEx.Test.IntegrationRepo,
       app: :dmex_heartbeat,
       heartbeat_ms: 150,
@@ -40,8 +39,8 @@ defmodule DMEx.Integration.HeartbeatTest do
     plug(:dispatch)
 
     forward("/stream",
-      to: DMEx.Producer.Plug,
-      init_opts: [producer: DMEx.Integration.HeartbeatTest.Producer]
+      to: DMEx.Log.Plug,
+      init_opts: [log: DMEx.Integration.HeartbeatTest.Log]
     )
 
     match _ do
@@ -53,7 +52,7 @@ defmodule DMEx.Integration.HeartbeatTest do
     @moduledoc """
     Opens a stream, advertises an interval, and then never writes again.
 
-    A producer whose loop wedged after `send_chunked`, or a connection an
+    A log whose loop wedged after `send_chunked`, or a connection an
     intermediary has quietly stopped forwarding. Nothing at the socket layer
     reports either.
     """
@@ -80,7 +79,7 @@ defmodule DMEx.Integration.HeartbeatTest do
   setup do
     Handlers.report_to(self())
 
-    start_supervised!(Producer)
+    start_supervised!(Log)
     base = Server.start!(plug: Router)
     uri = URI.parse(base)
 
@@ -102,7 +101,7 @@ defmodule DMEx.Integration.HeartbeatTest do
       # heartbeat_ms + one batch interval, because the loop's throttle runs after the
       # heartbeat branch — that sum is the real upper bound on silence, and a
       # consumer measuring against heartbeat_ms alone would disconnect a healthy
-      # producer.
+      # log.
       assert body =~ "retry: #{@heartbeat + 200}"
     end
 
@@ -113,7 +112,7 @@ defmodule DMEx.Integration.HeartbeatTest do
     end
 
     test "a stream with something to send sends the frame, not a heartbeat", ctx do
-      {:ok, _} = Producer.publish(%OrderPlaced{order_id: 1})
+      {:ok, _} = Log.append(%OrderPlaced{order_id: 1})
 
       body = collect(ctx, 300)
 
@@ -125,8 +124,8 @@ defmodule DMEx.Integration.HeartbeatTest do
   describe "a DMEx consumer on a quiet stream" do
     setup ctx do
       start_supervised!(
-        {Consumer,
-         name: TestConsumer, repo: DMEx.Test.IntegrationRepo, producer: Server.producers(ctx.url)}
+        {DMEx.Supervisor,
+         name: TestSupervisor, repo: DMEx.Test.IntegrationRepo, logs: Server.logs(ctx.url)}
       )
 
       :ok
@@ -135,7 +134,7 @@ defmodule DMEx.Integration.HeartbeatTest do
     test "stays connected through a long quiet period", _ctx do
       {:ok, pid} = subscribe()
 
-      {:ok, _} = Producer.publish(%OrderPlaced{order_id: 1})
+      {:ok, _} = Log.append(%OrderPlaced{order_id: 1})
       assert_receive {:handled, %OrderPlaced{order_id: 1}, _}, 5_000
 
       ref = Process.monitor(pid)
@@ -144,7 +143,7 @@ defmodule DMEx.Integration.HeartbeatTest do
       # and it must not die — which is the entire reason heartbeats exist.
       refute_receive {:DOWN, ^ref, :process, ^pid, _}, @heartbeat * 10
 
-      {:ok, _} = Producer.publish(%OrderPlaced{order_id: 2})
+      {:ok, _} = Log.append(%OrderPlaced{order_id: 2})
       assert_receive {:handled, %OrderPlaced{order_id: 2}, _}, 5_000
     end
 
@@ -154,23 +153,23 @@ defmodule DMEx.Integration.HeartbeatTest do
       eventually(fn -> :sys.get_state(pid).conn != nil end)
       before = :sys.get_state(pid).last_activity
 
-      # Nothing is published for the whole wait, yet activity advances: a
+      # Nothing is appended for the whole wait, yet activity advances: a
       # heartbeat comment is bytes, and bytes are what liveness measures.
       eventually(fn -> :sys.get_state(pid).last_activity != before end, 5_000, 50)
     end
 
-    test "adopts the producer's advertised interval as its deadline", _ctx do
+    test "adopts the log's advertised interval as its deadline", _ctx do
       {:ok, pid} = subscribe()
 
       eventually(fn -> Decoder.retry(:sys.get_state(pid).decoder) != nil end)
 
-      # Read off the wire rather than assumed: the producer's own heartbeat plus
+      # Read off the wire rather than assumed: the log's own heartbeat plus
       # its own batch interval, neither of which this consumer had any say in.
       assert Decoder.retry(:sys.get_state(pid).decoder) == @heartbeat + 200
     end
   end
 
-  describe "a producer that opens a stream and then goes silent" do
+  describe "a log that opens a stream and then goes silent" do
     # Exactly the failure heartbeats exist to expose, and the one no other
     # mechanism can see: the socket stays open, nothing closes, and nothing ever
     # arrives. Dropping it costs only a re-read from the durable cursor.
@@ -178,21 +177,21 @@ defmodule DMEx.Integration.HeartbeatTest do
       base = Server.start!(plug: SilentPlug)
 
       start_supervised!(
-        {Consumer,
-         name: SilentConsumer,
+        {DMEx.Supervisor,
+         name: SilentHandler,
          repo: DMEx.Test.IntegrationRepo,
-         producer: Server.producers(base <> "/stream")}
+         logs: Server.logs(base <> "/stream")}
       )
 
-      ref = :telemetry_test.attach_event_handlers(self(), [[:dmex, :consumer, :reconnect]])
+      ref = :telemetry_test.attach_event_handlers(self(), [[:dmex, :handler, :reconnect]])
 
       {:ok, _pid} =
-        Consumer.subscribe(Handlers.Echo,
-          consumer: SilentConsumer,
+        DMEx.Supervisor.subscribe(Handlers.Echo,
+          supervisor: SilentHandler,
           missed_heartbeats: 1
         )
 
-      assert_receive {[:dmex, :consumer, :reconnect], ^ref, measurements, metadata}, 15_000
+      assert_receive {[:dmex, :handler, :reconnect], ^ref, measurements, metadata}, 15_000
       assert {:silent_for, silent_for} = metadata.reason
       # It advertised 100ms and one missed interval was allowed.
       assert silent_for >= 100
@@ -203,24 +202,24 @@ defmodule DMEx.Integration.HeartbeatTest do
       base = Server.start!(plug: SilentPlug)
 
       start_supervised!(
-        {Consumer,
-         name: PersistentConsumer,
+        {DMEx.Supervisor,
+         name: PersistentHandler,
          repo: DMEx.Test.IntegrationRepo,
-         producer: Server.producers(base <> "/stream")}
+         logs: Server.logs(base <> "/stream")}
       )
 
-      ref = :telemetry_test.attach_event_handlers(self(), [[:dmex, :consumer, :reconnect]])
+      ref = :telemetry_test.attach_event_handlers(self(), [[:dmex, :handler, :reconnect]])
 
       {:ok, pid} =
-        Consumer.subscribe(Handlers.Echo,
-          consumer: PersistentConsumer,
+        DMEx.Supervisor.subscribe(Handlers.Echo,
+          supervisor: PersistentHandler,
           missed_heartbeats: 1,
           reconnect_backoff: 50,
           reconnect_backoff_max: 100
         )
 
-      assert_receive {[:dmex, :consumer, :reconnect], ^ref, _, _}, 15_000
-      assert_receive {[:dmex, :consumer, :reconnect], ^ref, _, _}, 15_000
+      assert_receive {[:dmex, :handler, :reconnect], ^ref, _, _}, 15_000
+      assert_receive {[:dmex, :handler, :reconnect], ^ref, _, _}, 15_000
 
       assert Process.alive?(pid)
     end
@@ -229,7 +228,7 @@ defmodule DMEx.Integration.HeartbeatTest do
   ## Helpers
 
   defp subscribe do
-    Consumer.subscribe(Handlers.Echo, consumer: TestConsumer)
+    DMEx.Supervisor.subscribe(Handlers.Echo, supervisor: TestSupervisor)
   end
 
   # A bare Mint client that reads for a while and returns whatever arrived.

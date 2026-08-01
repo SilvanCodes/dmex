@@ -3,7 +3,7 @@ defmodule DMEx.Message do
   Defines a message type.
 
   Each message a producer emits is its own Elixir module — one struct per
-  message type, owned by the publishing application:
+  message type, owned by the appending application:
 
       defmodule MyApp.Messages.OrderPlaced do
         use DMEx.Message
@@ -26,7 +26,7 @@ defmodule DMEx.Message do
   The *full* name is what guarantees uniqueness across every producer in a
   network — two unrelated applications can each have their own
   `Messages.OrderPlaced` without their wire types colliding — and it is why
-  nothing records "which producer published this": the type string already says.
+  nothing records "which producer appended this": the type string already says.
 
   ## `c:cast/1` — the read-side inverse
 
@@ -92,7 +92,7 @@ defmodule DMEx.Message do
       @behaviour DMEx.Message
 
       # Evaluated at compile time, so `type/0` is a constant rather than an
-      # `inspect/1` call on every publish.
+      # `inspect/1` call on every append.
       @dmex_message_type inspect(__MODULE__)
 
       @impl true
@@ -142,13 +142,13 @@ defmodule DMEx.Message do
   @doc """
   Whether `module` was built with `use DMEx.Message`.
 
-  The mirror of `DMEx.Consumer.Handler.handler?/1`, and used for the same
+  The mirror of `DMEx.Handler.handler?/1`, and used for the same
   reason: a handler matching on a struct that is not a message should be
   rejected by name rather than blow up as an `UndefinedFunctionError` on
   `type/0`.
 
   `Code.ensure_loaded?/1`, so this answers for a module that is already
-  available and never blocks. `DMEx.Consumer.Handler` calls it at compile time
+  available and never blocks. `DMEx.Handler` calls it at compile time
   on the structs a handler matches on, and does its own
   `Code.ensure_compiled!/1` first — the parallel compiler resolves a struct
   pattern without loading the module, so nothing else would have made `type/0`
@@ -168,7 +168,7 @@ defmodule DMEx.Message do
   inferred by atomizing whatever string the producer sent.
 
   Takes the `MapSet` a handler's `:messages` already is (see
-  `t:DMEx.Consumer.Handler.declaration/0`), so the only collision left to report
+  `t:DMEx.Handler.declaration/0`), so the only collision left to report
   is the real one: two *different* modules claiming one type, which can only
   happen if `c:type/0` has been overridden, since the default derives from the
   module name.

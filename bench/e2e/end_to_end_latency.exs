@@ -1,11 +1,11 @@
-# Publish-to-handler latency, and the one number that reveals a broken wakeup path.
+# Append-to-handler latency, and the one number that reveals a broken wakeup path.
 #
-# End to end this composes: NOTIFY delivery, the producer's batch interval, one
+# End to end this composes: NOTIFY delivery, the log's batch interval, one
 # read, frame encode, the wire, frame parse, cast, and the consumer's per-message
 # transaction commit.
 #
 # **Read the quiet case first.** On a stream that has been idle, the batch
-# window owes the arriving message nothing — the producer's loop is parked in
+# window owes the arriving message nothing — the log's loop is parked in
 # `await_wakeup/1` and the NOTIFY wakes it immediately — so latency should be
 # single-digit milliseconds. Two failures show up here and nowhere else:
 #
@@ -18,27 +18,26 @@
 #
 # The busy case should then average about half a batch interval and peak at one
 # whole window, because a message waits for the next frame boundary and those
-# are uniformly distributed relative to publishes.
+# are uniformly distributed relative to appends.
 
 alias DMEx.BenchHelper, as: Helper
-alias DMEx.Consumer
-alias DMEx.Test.IntegrationProducer, as: Producer
+alias DMEx.Test.IntegrationLog, as: Log
 alias DMEx.Test.Messages.OrderPlaced
 
-Helper.section("end_to_end_latency — publish to handler, percentiles")
+Helper.section("end_to_end_latency — append to handler, percentiles")
 
 defmodule Bench.LatencyHandler do
   @moduledoc false
-  use DMEx.Consumer.Handler, producer: :bench, id: :latency
+  use DMEx.Handler, log: :bench, id: :latency
 
   alias DMEx.Test.Messages.OrderPlaced
 
   @impl true
   def handle_message(%OrderPlaced{order_id: sent_at}, _metadata) do
     # Stamped *here*, in the handler, at the moment of delivery. Stamping it in
-    # the receiving process instead would measure "publish to whenever the
-    # benchmark got round to reading its mailbox", which on a run that publishes
-    # before it collects is the publishing loop's own duration.
+    # the receiving process instead would measure "append to whenever the
+    # benchmark got round to reading its mailbox", which on a run that appends
+    # before it collects is the appending loop's own duration.
     send(
       :persistent_term.get(:bench_latency_owner),
       {:arrived, sent_at, System.monotonic_time(:microsecond)}
@@ -51,17 +50,17 @@ end
 Helper.start_repo!()
 Helper.reset_log!()
 
-Helper.start_producer!()
+Helper.start_log!()
 
 :persistent_term.put(:bench_latency_owner, self())
 
 url = Helper.start_server!() <> "/stream"
 
-Helper.start_consumer!(Bench.Consumer, url)
+Helper.start_supervisor!(Bench.Supervisor, url)
 
-{:ok, _} = Consumer.subscribe(Bench.LatencyHandler, consumer: Bench.Consumer)
+{:ok, _} = DMEx.Supervisor.subscribe(Bench.LatencyHandler, supervisor: Bench.Supervisor)
 
-# The publish timestamp travels inside the message, so both ends are read from
+# The append timestamp travels inside the message, so both ends are read from
 # the same monotonic clock on the same node — no clock skew to reason about.
 percentiles = fn label, latencies ->
   sorted = Enum.sort(latencies)
@@ -83,12 +82,12 @@ await = fn sent_at ->
   end
 end
 
-# One in flight at a time, with a gap: the stream is idle when each publish
+# One in flight at a time, with a gap: the stream is idle when each append
 # lands, so this isolates wakeup latency from framing.
 quiet = fn count, interval_ms ->
   for _ <- 1..count do
     sent_at = System.monotonic_time(:microsecond)
-    {:ok, _} = Producer.publish(%OrderPlaced{order_id: sent_at})
+    {:ok, _} = Log.append(%OrderPlaced{order_id: sent_at})
     latency = await.(sent_at)
     Process.sleep(interval_ms)
     latency
@@ -97,22 +96,22 @@ end
 
 # Publishes first, arrivals after — deliberately *not* one at a time.
 #
-# Measuring a busy stream with a synchronous publish/await loop measures the
-# wrong thing: every publish would land immediately after the frame that
+# Measuring a busy stream with a synchronous append/await loop measures the
+# wrong thing: every append would land immediately after the frame that
 # delivered its predecessor, so every message would wait a full interval and the
 # answer would always be that interval, whatever the code did. Firing
-# them independently spreads publishes across the window the way real traffic
+# them independently spreads appends across the window the way real traffic
 # does, which is what makes the expected average half an interval.
 #
 # The rate is also deliberately kept *below* what the consumer can drain. Push
 # past that and this stops measuring framing and starts measuring backlog: at
-# 500 back-to-back publishes against a consumer doing ~155 rows/s, p50 comes out
+# 500 back-to-back appends against a consumer doing ~155 rows/s, p50 comes out
 # near two seconds, which is a queueing figure rather than a latency one.
 busy = fn count, interval_ms ->
   sent =
     for _ <- 1..count do
       sent_at = System.monotonic_time(:microsecond)
-      {:ok, _} = Producer.publish(%OrderPlaced{order_id: sent_at})
+      {:ok, _} = Log.append(%OrderPlaced{order_id: sent_at})
       Process.sleep(interval_ms)
       sent_at
     end
@@ -123,8 +122,8 @@ end
 # Let the subscription connect before timing anything.
 Process.sleep(500)
 
-IO.puts("\nlatency from publish to handler:\n")
-percentiles.("quiet (one publish per 200ms, stream idle between) ", quiet.(50, 200))
+IO.puts("\nlatency from append to handler:\n")
+percentiles.("quiet (one append per 200ms, stream idle between) ", quiet.(50, 200))
 percentiles.("busy  (50/s, several messages per frame)           ", busy.(150, 20))
 
 IO.puts("""
@@ -132,8 +131,8 @@ IO.puts("""
   Quiet is wakeup latency: NOTIFY, one read, encode, the wire, and the
   consumer's commit — the batch window owes an idle stream nothing.
   Busy should average about half a batch interval, since a message waits for the next
-  frame boundary and those are uniformly distributed relative to publishes. If
-  it comes out far higher, the publish rate has exceeded what the consumer can
+  frame boundary and those are uniformly distributed relative to appends. If
+  it comes out far higher, the append rate has exceeded what the consumer can
   drain and the number is queueing delay rather than framing delay — check it
   against bench/e2e/catchup_drain.exs.
 """)

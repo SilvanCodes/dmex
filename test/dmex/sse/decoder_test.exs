@@ -104,7 +104,7 @@ defmodule DMEx.SSE.DecoderTest do
   end
 
   describe "the buffer bound" do
-    # A producer that never emits a blank line — broken, hostile, or simply
+    # A log that never emits a blank line — broken, hostile, or simply
     # mid-frame when it wedged — would otherwise grow this without limit.
     test "an unterminated frame past max_bytes is refused" do
       decoder = Decoder.new(100)
@@ -179,7 +179,7 @@ defmodule DMEx.SSE.DecoderTest do
 
   defp push(decoder, chunk), do: Decoder.push(decoder, chunk)
 
-  # One frame per row, exactly as the producer's send loop writes them.
+  # One frame per row, exactly as the log's send loop writes them.
   defp frame_bytes(range) do
     range
     |> Enum.map(&Frame.encode_row(Stub.row(&1)))

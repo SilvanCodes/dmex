@@ -18,12 +18,12 @@ neither can one blocked in a read against a database that has stopped
 answering.
 
 So every blocking step of the loop states a deadline before it enters, and
-`DMEx.Producer.Watcher` — one process per producer, started with it — kills
-whatever is past its deadline. Two settings, on your producer module:
+`DMEx.Log.Watcher` — one process per log, started with it — kills
+whatever is past its deadline. Two settings, on your log module:
 
 ```elixir
-defmodule MyApp.Producer do
-  use DMEx.Producer,
+defmodule MyApp.Log do
+  use DMEx.Log,
     repo: MyApp.Repo,
     stall_timeout: 30_000,       # budget for any one blocking step
     stall_check_interval: 1_000  # how often the watcher sweeps
@@ -200,7 +200,7 @@ knob that bounds it:
 worst-case reads per second  =  open streams x max_batch_frequency
 ```
 
-**That figure does not depend on your publish rate.** A connection reads at most
+**That figure does not depend on your append rate.** A connection reads at most
 `max_batch_frequency` times a second whether the log is idle or saturated, which
 is what makes the ceiling knowable before you hit it rather than after. The
 binding constraint in practice is **pool contention**, not raw query load.

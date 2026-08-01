@@ -12,7 +12,7 @@
 DMEx is a decentralized message queue: a simpler, embeddable alternative to
 RabbitMQ with **no single point of failure**. There is no broker process, no
 cluster to operate, and no shared infrastructure between applications. Every
-application that publishes messages owns and persists its own append-only
+application that appends messages owns and persists its own append-only
 message log, and streams it directly to consumers over plain HTTP using
 Server-Sent Events.
 
@@ -44,13 +44,13 @@ A bare `GET /stream` still streams the whole log, which is what a browser
   Postgres/SQLite-agnostic engine abstraction.
 - [commanded/commanded](https://github.com/commanded/commanded) and
   [commanded/eventstore](https://github.com/commanded/eventstore) — one module
-  per message type, owned by the publishing application, over an append-only
+  per message type, owned by the appending application, over an append-only
   Postgres log.
 
 ## The log
 
 Each application owns exactly **one** append-only log: a single, totally-ordered
-stream of every message it has ever published, in one plain SQL table. See
+stream of every message it has ever appended, in one plain SQL table. See
 `DMEx.Migration` for the shipped DDL.
 
 ```sql
@@ -65,8 +65,8 @@ CREATE TABLE dmex_messages (
 
 - `id` is the offset, and the only ordering and resumption mechanism. `bigint`,
   not `int`: a log nothing deletes from outgrows 2³¹.
-- `message_type` is the publishing module's fully-qualified name, which is why
-  nothing records *who* published a row — `MyApp.Messages.OrderPlaced` already
+- `message_type` is the appending module's fully-qualified name, which is why
+  nothing records *who* appended a row — `MyApp.Messages.OrderPlaced` already
   says so, structurally, on every message.
 - `data` and `metadata` are JSON. `metadata` is entirely publisher-owned; DMEx
   writes nothing of its own into it, so there are no reserved keys.
@@ -80,7 +80,7 @@ CREATE TABLE dmex_messages (
 
 **A row says what a message *is*, never who might want it — and that restraint
 is load-bearing.** The table is immutable, so any grouping stamped into a row at
-publish time would be immutable too: fixed message by message, unable to apply
+append time would be immutable too: fixed message by message, unable to apply
 to history, and unable to follow the readers as they change. That is a *filing*
 decision, made by and for whoever reads the log, welded into the *record of what
 happened*, and the two have different lifetimes.
@@ -95,12 +95,12 @@ message set becomes a fingerprint the producer resolves against its own types.
 A subscription receives the message types its handler can decode, and nothing
 new is declared anywhere to make that happen.
 
-**The selection is the handler's clauses.** `DMEx.Consumer.Handler` already
+**The selection is the handler's clauses.** `DMEx.Handler` already
 derives a subscription's message set at compile time from the structs
 `handle_message/2` matches on — it has to, or a consumer could not turn a
 `message_type` back into a struct at all. That set gains a second job. A name
 standing for a set of types would be a second vocabulary somebody has to define,
-publish, version, discover and keep in sync, and every one of those costs is
+append, version, discover and keep in sync, and every one of those costs is
 paid to describe something the consumer has already said. Worse, the two can
 disagree: naming a type the handler cannot decode, or omitting one it can, both
 silently. Derived, that state is unrepresentable.
@@ -132,10 +132,10 @@ false negatives, and a false-positive rate of 14.65 ± 1.85 per million against
 its log contains. `SELECT DISTINCT message_type` goes stale silently — a
 producer can know a type it has not yet emitted, and first emission involves no
 restart and no reconnect — while the module set changes only on deploy, and a
-deploy takes every SSE connection with it. `DMEx.Producer.Messages` scans the
+deploy takes every SSE connection with it. `DMEx.Log.Messages` scans the
 producer's OTP application and every loaded application depending on `:dmex`,
 which is exactly the set whose modules could contain a `use DMEx.Message`. The
-result only has to be a *superset* of what the producer publishes: an extra type
+result only has to be a *superset* of what the producer appends: an extra type
 never matches, a missing one is silent loss.
 
 **Not a partitioning.** There is still one totally-ordered log and one id
@@ -147,15 +147,15 @@ it went to somebody else, which costs nothing to resume from: `(message_type,
 id)` makes the next read an index seek, the same price whether the next matching
 row is one id away or ten million.
 
-**Publishing is untouched.** `publish/3` keeps its signature and writes the same
+**Appending is untouched.** `append/3` keeps its signature and writes the same
 columns; message modules still take no options. A publisher does not know, and
 does not need to know, who is selecting its types.
 
 **The escape hatch is on the handler, not the call site.** `selective: false` in
-`use DMEx.Consumer.Handler` requests the whole log and filters locally, the way
+`use DMEx.Handler` requests the whole log and filters locally, the way
 delivery worked before this existed. It is there to tell two failures apart when
 a subscription receives nothing — a producer or encoding mismatch, which
-whole-log delivery fixes immediately, from a producer that has published nothing,
+whole-log delivery fixes immediately, from a producer that has appended nothing,
 which it does not. It lives on the module for the same reason the producer, the
 id and the message set do: the module is the complete declaration of what a
 subscription *is*, and nothing at a `subscribe/2` call site should be able to
@@ -175,7 +175,7 @@ here rather than left to the code. `DMEx.SSE.Frame` encodes and parses it;
 `DMEx.SSE.Decoder` handles chunk-boundary reassembly.
 
 **`GET /stream`** and **`GET /stream/<blob>`**, both mounted by
-`DMEx.Producer.Plug` through one prefix `forward`. The bare form is the whole
+`DMEx.Log.Plug` through one prefix `forward`. The bare form is the whole
 log; the blob narrows it to the message types a consumer's filter admits (see
 [Message-type selection](#message-type-selection) and
 `guides/fingerprint-spec.md`). There is still no application segment and no
@@ -186,7 +186,7 @@ identifies the app.
 blob decode. `stats` is reserved and not yet implemented, answered `404`. A
 segment that is neither reserved nor decodable is a `400`.
 
-**Request headers** — validated by `DMEx.Producer.Params`:
+**Request headers** — validated by `DMEx.Log.Params`:
 
 | header | meaning |
 | --- | --- |
@@ -243,7 +243,7 @@ data: {"data":{"order_id":7},"metadata":{"trace_id":"abc"},"inserted_at":"2026-0
 | `message_type` | `event:` | it *is* the event name, so `addEventListener("MyApp.Messages.OrderShipped", …)` works in a browser |
 | `data` | inside `data:` | the publisher's payload, verbatim |
 | `metadata` | inside `data:` | the publisher's metadata, verbatim |
-| `inserted_at` | inside `data:` | publish time, which is what the consumer's lag signal is measured against |
+| `inserted_at` | inside `data:` | append time, which is what the consumer's lag signal is measured against |
 
 - **There is no batch envelope and no `max_id`.** Batching is still real — the
   producer encodes a whole read's rows and hands them to `chunk/2` in one call —
@@ -258,7 +258,7 @@ data: {"data":{"order_id":7},"metadata":{"trace_id":"abc"},"inserted_at":"2026-0
 - **`message_type` is constrained by the schema**, because it goes on an
   `event:` line and SSE field lines have no escaping. `dmex_messages` carries a
   CHECK constraint restricting it to `[A-Za-z0-9_.]+` — exactly an Elixir module
-  name's charset — so a type that could split a frame cannot be published.
+  name's charset — so a type that could split a frame cannot be appended.
 - **How far behind is `now - inserted_at`**, in milliseconds, rather than an id
   difference against a tip the wire no longer carries. It compares two machines'
   clocks, so it is an NTP-accurate seconds-scale signal and not a finer one.
@@ -293,17 +293,17 @@ Everything else is detail. These are the properties the design is built to have,
 and each one names where it is enforced.
 
 **1. Appends are serialized per app.** Postgres allocates sequence values at
-INSERT time but makes rows visible at COMMIT time, so two concurrent publishes
+INSERT time but makes rows visible at COMMIT time, so two concurrent appends
 can commit out of allocation order — and a reader scanning `id > cursor ORDER BY
 id` would advance straight over the row that had not committed yet and lose it
 **permanently and silently**. Every read path here is such a cursor, so
-`DMEx.Producer` appends under a transaction-scoped advisory lock keyed on the
-app (`DMEx.Storage.Postgres`). The cost is publish concurrency; the purchase is
+`DMEx.Log` appends under a transaction-scoped advisory lock keyed on the
+app (`DMEx.Storage.Postgres`). The cost is append concurrency; the purchase is
 a reader model with no gap-detection logic anywhere in it. (SQLite is
 single-writer already.)
 
 **2. The producer's memory per connection is one batch, bounded in rows *and*
-bytes.** The send loop in `DMEx.Producer.Stream` holds at most the rows it is
+bytes.** The send loop in `DMEx.Log.Stream` holds at most the rows it is
 writing, and there is no accumulator anywhere. Two bounds rather than one,
 because a row costs heap in two independent ways: its payload, which
 `max_batch_bytes` counts, and a fixed cost of roughly a kilobyte for the map,
@@ -333,18 +333,18 @@ issues no more queries.
 producer-side supervisor. In both Bandit and Cowboy the connection process owns
 the socket, so `chunk/2` works naturally, the socket closes when the process
 dies, and reclaiming a connection means killing the process that is blocked in
-the write. `DMEx.Producer.Plug` runs the loop inline.
+the write. `DMEx.Log.Plug` runs the loop inline.
 
 **5. Every blocking step is taken under a deadline.** A process blocked in
 `chunk/2` cannot time itself out, because it is not running — nor can one
 blocked in a read against a database that stopped answering. So the loop arms a
-deadline in its `DMEx.Producer.Status` before each blocking step, and
-`DMEx.Producer.Watcher` kills whatever is past one. This needs no transport
+deadline in its `DMEx.Log.Status` before each blocking step, and
+`DMEx.Log.Watcher` kills whatever is past one. This needs no transport
 configuration, and it reaches the wedges a socket timeout structurally cannot
 see. See [the deployment guide](guides/deployment.md) for sizing and for the
 socket options that tighten it.
 
-**6. A wakeup is a hint, never a carrier of work.** `DMEx.Producer.Dispatcher`
+**6. A wakeup is a hint, never a carrier of work.** `DMEx.Log.Dispatcher`
 broadcasts a bare atom on `NOTIFY` or on a poll that saw the tip move; each
 stream reads from its own cursor to whatever is there now. Missing one costs
 latency (bounded by the poll interval) and never correctness, so there is no
@@ -359,7 +359,7 @@ aggressive about reclaiming, and why there is no in-band "you are being dropped"
 frame — it would have to be written to the very socket that is stalled.
 
 **8. The consumer has no buffer, and that is what makes the backpressure
-exact.** `DMEx.Consumer.Stream` runs each row through the pipeline **inline, on
+exact.** `DMEx.Handler.Stream` runs each row through the pipeline **inline, on
 the socket path**, as it is decoded. There is no queue, no drain loop and no
 explicit socket gate: `Mint.HTTP.stream/2` re-arms `active: :once` itself, so
 while the process is inside a handler nothing is re-armed, the TCP receive
@@ -385,8 +385,8 @@ mid-subscription.
 `max_batch_frequency` is **how hard one connection may hammer the database**,
 and it is a ceiling rather than a reaction to load: a hundred connections at the
 default five reads per second is five hundred short range scans a second against
-the pool, whatever the publish rate is doing. That number is knowable in advance
-precisely because it does not depend on how much anyone publishes. The producer
+the pool, whatever the append rate is doing. That number is knowable in advance
+precisely because it does not depend on how much anyone appends. The producer
 is the party whose database, memory and request processes all three settings
 protect, so it is the party that chooses them. See
 [the deployment guide](guides/deployment.md) for the one sizing rule that ties a
@@ -394,7 +394,7 @@ producer's `max_batch_size` to consumers it does not control.
 
 **10. Batching is a write batch, never a processing unit.** The producer encodes
 a read's rows as one frame each and writes them together; the consumer sees a
-plain run of one-row frames and runs each through `DMEx.Consumer.Pipeline`
+plain run of one-row frames and runs each through `DMEx.Handler.Pipeline`
 separately — its own transaction, its own handler call, its own `last_seen`
 advance, its own failure handling. A mid-batch failure rolls back exactly one
 message, and nothing on the wire records that a batch happened.
@@ -405,12 +405,12 @@ data plus whatever context the publisher attached, testable by constructing a
 struct and a map.
 
 **12. A gap in delivery is detected, never stepped over.** Every frame states
-its predecessor and `DMEx.Consumer.Stream` refuses one that does not claim the
+its predecessor and `DMEx.Handler.Stream` refuses one that does not claim the
 row it last saw, before duplicate suppression gets a chance to hide it. Without
 this the cursor model has a hole it cannot see: the cursor is the only record of
 what was processed, so a message lost between two that arrived would have its id
 put permanently behind the cursor by the next row's advance — never re-read,
-never recorded, and indistinguishable from never having been published.
+never recorded, and indistinguishable from never having been appended.
 
 TCP does not silently drop bytes mid-stream, so what this actually defends
 against is a mangling intermediary, a third-party producer whose read skips
@@ -421,32 +421,32 @@ rows becomes a visible reconnect loop making no progress, which is the correct
 failure where silently advancing was not.
 
 **13. A subscription's identity is its declaration, not its module name.** The
-`"producer/id"` pair in `use DMEx.Consumer.Handler` keys the cursor, so renaming
+`"log/id"` pair in `use DMEx.Handler` keys the cursor, so renaming
 a module is free and only changing the declaration costs a migration
-(`DMEx.Consumer.Cursors`). The message set is deliberately *not* part of it:
+(`DMEx.Handler.Cursors`). The message set is deliberately *not* part of it:
 adding a clause for a new type handles it from the tip onward rather than
 silently replaying the entire log.
 
 ## The process map
 
 Everything is per-connection; nothing is pooled or shared except the small set
-each producer supervises.
+each log supervises.
 
-**Producer.** `MyApp.Producer` (via `DMEx.Producer`) supervises:
+**The log.** `MyApp.Log` (via `DMEx.Log`) supervises:
 
 | module | role |
 | --- | --- |
-| `DMEx.Producer.Registry` | one entry per open stream, holding that connection's `DMEx.Producer.Status` — its wakeup flag and deadline. The entry dies with the request process, so nothing has to clean up. |
+| `DMEx.Log.Registry` | one entry per open stream, holding that connection's `DMEx.Log.Status` — its wakeup flag and deadline. The entry dies with the request process, so nothing has to clean up. |
 | `DMEx.Storage` children | whatever the adapter needs; Postgres puts its `LISTEN` connection here. |
-| `DMEx.Producer.Dispatcher` | holds `LISTEN`, runs the poll timer, broadcasts wakeups. |
-| `DMEx.Producer.Watcher` | sweeps deadlines and reclaims connections that stopped making progress. |
+| `DMEx.Log.Dispatcher` | holds `LISTEN`, runs the poll timer, broadcasts wakeups. |
+| `DMEx.Log.Watcher` | sweeps deadlines and reclaims connections that stopped making progress. |
 
 None of them ever holds message data on a connection's behalf. The connections
-themselves are web-server request processes running `DMEx.Producer.Stream`.
+themselves are web-server request processes running `DMEx.Log.Stream`.
 
-**Consumer.** `DMEx.Consumer` supervises one `DMEx.Consumer.Stream` per
-subscription under a `DMEx.Consumer.Supervisor`, each owning one outbound
-connection and one cursor, and running `DMEx.Consumer.Pipeline` inline on the
+**Subscriptions.** `DMEx.Supervisor` supervises one `DMEx.Handler.Stream` per
+subscription under a `DMEx.Handler.Supervisor`, each owning one outbound
+connection and one cursor, and running `DMEx.Handler.Pipeline` inline on the
 rows it decodes. There is nothing else in a subscription — no queue process, no
 controller, no drain loop. Restart intensity is set never to trip: a subscription that crash-loops — on a poison message
 under `on_failure: :crash`, or on a repo that is down — does so on its own, at a
@@ -521,10 +521,10 @@ it has established so far:
 
 - **The append lock is nearly free uncontended and expensive under contention** —
   ~1.13x at concurrency 1–2, ~4.8x at 8, ~5.8x at 32, with locked throughput
-  *falling* as concurrency rises. Publish concurrency buys an application
+  *falling* as concurrency rises. Append concurrency buys an application
   nothing; batch work into fewer, larger messages instead.
 - **Per-connection pacing holds exactly as designed** — 5.2 writes/s against a
-  200 ms window regardless of publish rate, and an idle log costs one query per
+  200 ms window regardless of append rate, and an idle log costs one query per
   poll interval per *app* (1/s flat at both 10 and 200 connections), which is
   the thundering-herd guard working.
 - **No pool queueing appeared at 200 concurrent streams** on a developer
@@ -572,7 +572,7 @@ it has established so far:
 - **Auth / access control** — who may read a producer's endpoint, and how is
   that enforced? Nothing here answers this.
 - **Sharing message modules across independent applications.** `DMEx.Message`
-  assumes the consumer has the *same* Elixir module the producer published
+  assumes the consumer has the *same* Elixir module the producer appended
   from, so it derives the same `message_type` and decodes into the same struct.
   That is a given inside one umbrella and an open problem between separate
   teams, repos and languages. The options — a shared package, a self-describing
@@ -582,7 +582,7 @@ it has established so far:
   first step of the second. One constraint to carry into the decision: dropping
   `origin` rests on `message_type` being app-prefixed, so any option that leads
   to shared, non-app-prefixed module names (`MyOrg.Messages.OrderPlaced`
-  published by several apps) reopens the question of how a consumer knows which
+  appended by several apps) reopens the question of how a consumer knows which
   application a message came from.
 - **Cross-node clustering** — if a producer application itself runs as a
   multi-node OTP cluster, how are the log's single-writer property and the
@@ -615,14 +615,14 @@ it has established so far:
   could have drifted (a reconnect and a clean stop) both flush first. A handled
   message needs no flush of its own because
   `advance/3` is absolute and subsumes the pending run below it, so the
-  handler/cursor transaction is untouched. See `DMEx.Consumer.Pipeline`,
+  handler/cursor transaction is untouched. See `DMEx.Handler.Pipeline`,
   section 2a. Server-side selection has since removed most of the motivation —
   a selective stream carries few rows it does not want — but the skip path is
   still live for filter false positives and `selective: false` handlers, so this stays
   worth having.
 - **Where the read-amplification ceiling actually is**, and whether the pool
-  wants partitioning so stream reads cannot starve publish writes. Type-routed
-  wakeups moved the ceiling rather than settling it: a publish now wakes only
+  wants partitioning so stream reads cannot starve append writes. Type-routed
+  wakeups moved the ceiling rather than settling it: an append now wakes only
   the connections that selected its type, so the amplification is per-type
   rather than per-connection, and where *that* binds has not been measured.
 - **Whether a slow consumer needs anything beyond the receive window.** With no
@@ -664,7 +664,7 @@ it has established so far:
   and the module set changes only on deploy, which is safe because a deploy
   takes every connection with it — on one node. A connection pinned to a node
   running old code can outlive a node running new code that has begun
-  publishing a type the old node's expansion does not know. That belongs to the
+  appending a type the old node's expansion does not know. That belongs to the
   cross-node clustering question above, not to selection.
 - **`:skip` visibility** — `:skip` drops a message with no DMEx-side record
   beyond telemetry, unlike `:dead_message`. Intentional as a "bring your own

@@ -8,6 +8,6 @@
 
 Code.require_file("support/bench_helper.exs", __DIR__)
 
-for file <- ~w(publish_throughput end_to_end_latency fanout_reads catchup_drain) do
+for file <- ~w(append_throughput end_to_end_latency fanout_reads catchup_drain) do
   Code.require_file("e2e/#{file}.exs", __DIR__)
 end

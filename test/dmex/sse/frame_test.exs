@@ -157,7 +157,7 @@ defmodule DMEx.SSE.FrameTest do
 
     # A message needs all three, so a block missing any of them is not one. That
     # is not an error: per the SSE specification an event is dispatched only when
-    # the data buffer is non-empty, and a producer may send whatever else it
+    # the data buffer is non-empty, and a log may send whatever else it
     # likes.
     test "a block short of id, event or data is ignored rather than rejected" do
       assert {:ok, :ignore} = Frame.parse(~s(event: T\ndata: {"data":{}}))
@@ -172,7 +172,7 @@ defmodule DMEx.SSE.FrameTest do
       assert {:ok, :ignore} = Frame.parse(~s(id: abc/5\nevent: T\ndata: {"data":{}}))
     end
 
-    # What a producer predating the chain sends, and what a DMEx consumer
+    # What a log predating the chain sends, and what a DMEx consumer
     # refuses — but parsing it is the generic SSE behaviour.
     test "a bare id parses with no predecessor" do
       assert {:ok, {:message, %{"id" => 5, "previous_id" => nil}}} =

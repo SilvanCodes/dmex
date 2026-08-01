@@ -2,7 +2,7 @@ defmodule DMEx.Test.ClosingAdapter do
   @moduledoc """
   A `Plug.Conn` adapter that reports the socket closed after N chunks.
 
-  The producer's send loop only returns when its connection closes, so a test
+  The log's send loop only returns when its connection closes, so a test
   that wants the loop to *finish* needs a conn that eventually stops accepting
   chunks. Every chunk is forwarded to the owning process as `{:chunk, binary}`,
   which is also how tests observe the wire bytes.

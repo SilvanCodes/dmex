@@ -17,16 +17,16 @@ defmodule DMEx.Migration do
 
   ## Which tables
 
-  An application is usually a producer, a consumer, or both, and it only needs
-  the tables for the roles it plays:
+  An application usually appends, subscribes, or both, and it only needs the
+  tables for the roles it plays:
 
-      DMEx.Migration.up(tables: [:producer])   # dmex_messages
-      DMEx.Migration.up(tables: [:consumer])   # dmex_cursors, dmex_dead_messages
-      DMEx.Migration.up()                      # both, the default
+      DMEx.Migration.up(tables: [:log])            # dmex_messages
+      DMEx.Migration.up(tables: [:subscriptions])  # dmex_cursors, dmex_dead_messages
+      DMEx.Migration.up()                          # both, the default
 
   ## Options
 
-    * `:tables` — `[:producer, :consumer]` (default both)
+    * `:tables` — `[:log, :subscriptions]` (default both)
     * `:prefix` — a Postgres schema to create the tables in. Also creates the
       schema itself if it does not exist.
 
@@ -49,7 +49,7 @@ defmodule DMEx.Migration do
 
   It is not free. Appends are serialized per app, so index maintenance sits on
   the one write path that cannot be parallelized away. The cost is one index
-  entry per publish, paid by every producer whether or not anyone selects
+  entry per append, paid by every producer whether or not anyone selects
   against it; it is accepted because the alternative is that server-side
   selection saves bandwidth and no database work at all.
 
@@ -63,13 +63,13 @@ defmodule DMEx.Migration do
 
   The charset is exactly what an Elixir module name uses, so any legal
   `DMEx.Message` passes. It is a database constraint rather than a check in the
-  publish path because it has to hold for every writer of the table, including a
+  append path because it has to hold for every writer of the table, including a
   backfill or a psql session.
   """
 
   use Ecto.Migration
 
-  @tables [:producer, :consumer]
+  @tables [:log, :subscriptions]
 
   @doc "Creates the DMEx tables. See the module documentation for options."
   @spec up(keyword()) :: :ok
@@ -78,8 +78,8 @@ defmodule DMEx.Migration do
 
     if prefix, do: execute("CREATE SCHEMA IF NOT EXISTS \"#{prefix}\"")
 
-    if :producer in tables, do: up_producer(prefix)
-    if :consumer in tables, do: up_consumer(prefix)
+    if :log in tables, do: up_log(prefix)
+    if :subscriptions in tables, do: up_subscriptions(prefix)
 
     :ok
   end
@@ -94,12 +94,12 @@ defmodule DMEx.Migration do
   def down(opts \\ []) when is_list(opts) do
     %{tables: tables, prefix: prefix} = validate!(opts)
 
-    if :consumer in tables do
+    if :subscriptions in tables do
       drop_if_exists(table(:dmex_dead_messages, prefix: prefix))
       drop_if_exists(table(:dmex_cursors, prefix: prefix))
     end
 
-    if :producer in tables do
+    if :log in tables do
       drop_if_exists(table(:dmex_messages, prefix: prefix))
     end
 
@@ -120,7 +120,7 @@ defmodule DMEx.Migration do
 
   ## The DDL
 
-  defp up_producer(prefix) do
+  defp up_log(prefix) do
     create_if_not_exists table(:dmex_messages, primary_key: false, prefix: prefix) do
       # bigint, not int: a log nothing deletes from outgrows 2^31, and every
       # consumer cursor in the network is denominated in this column.
@@ -167,7 +167,7 @@ defmodule DMEx.Migration do
     # selectivity where it would be the slower plan. Both branches are correct;
     # nothing forces the choice.
     #
-    # It costs an index write per publish, paid by every producer whether or not
+    # It costs an index write per append, paid by every producer whether or not
     # anyone selects against it, and it is the reason a whole-log read is issued
     # as a *separate statement* — see `DMEx.Storage.Postgres.read/5`. Folding
     # both into one query with a nullable predicate would defeat this index and
@@ -182,7 +182,7 @@ defmodule DMEx.Migration do
     #
     # `[A-Za-z0-9_.]` is exactly what an Elixir module name uses, so a legal
     # `DMEx.Message` always passes and nothing legitimate is turned away. A
-    # constraint rather than a validation in the publish path because it must
+    # constraint rather than a validation in the append path because it must
     # hold for *every* writer of this table, including a backfill or a psql
     # session.
     #
@@ -206,10 +206,10 @@ defmodule DMEx.Migration do
   defp qualified(name, nil), do: ~s("#{name}")
   defp qualified(name, prefix), do: ~s("#{prefix}"."#{name}")
 
-  defp up_consumer(prefix) do
+  defp up_subscriptions(prefix) do
     create_if_not_exists table(:dmex_cursors, primary_key: false, prefix: prefix) do
       # The identifier a handler declares — "orders/order_projection", the
-      # `producer/id` pair from `use DMEx.Consumer.Handler` — so it is the key
+      # `log/id` pair from `use DMEx.Handler` — so it is the key
       # rather than a surrogate id. The resulting unique index is what enforces
       # "one cursor per subscription" in storage, not only in the process
       # registry.
@@ -217,8 +217,8 @@ defmodule DMEx.Migration do
       # Keying on the declaration rather than the handler's module name is what
       # makes renaming that module free. What still costs a migration is
       # changing the declaration itself — a different `id:`, or a different key
-      # in the consumer's producer map — which is what
-      # `DMEx.Consumer.Cursors.rename!/3` is for.
+      # in the reader's `logs:` — which is what
+      # `DMEx.Handler.Cursors.rename!/3` is for.
       #
       # Both halves are `[a-z][a-z0-9_]*`, so "/" separates them unambiguously
       # and two distinct pairs can never render to one string.
@@ -230,7 +230,7 @@ defmodule DMEx.Migration do
     # **Structurally a message log.** Everything below `subscription` is
     # `dmex_messages` — the same column names, types and meanings, with `id`
     # still the producer's own log id and `inserted_at` still the original
-    # publish time. So a dead row *is* a log row: replaying one needs no
+    # append time. So a dead row *is* a log row: replaying one needs no
     # reshaping, no field lifting and no second decode path, and duplicate
     # suppression still means what it always meant.
     #
@@ -259,13 +259,13 @@ defmodule DMEx.Migration do
       add(:metadata, :jsonb, null: false, default: fragment("'{}'::jsonb"))
 
       # The one column that does *not* mean what it means in the log: when this
-      # row landed here, not when the message was published. Defaulted the same
+      # row landed here, not when the message was appended. Defaulted the same
       # way, so nothing has to supply it.
       #
-      # The producer's publish time is genuinely lost, and that is the trade:
+      # The producer's append time is genuinely lost, and that is the trade:
       # this table grows forever like the log does, and pruning it needs an axis
-      # that answers "how long has this been sitting here". Publish time cannot
-      # answer that — a message published a year ago and abandoned this morning
+      # that answers "how long has this been sitting here". Append time cannot
+      # answer that — a message appended a year ago and abandoned this morning
       # would look ancient. Nothing downstream misses it: a handler is given its
       # struct and the publisher's metadata, never the row's timestamps, so a
       # replayed message cannot tell the difference.

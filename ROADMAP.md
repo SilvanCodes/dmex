@@ -58,7 +58,7 @@ goes stale silently and the deploy boundary is what makes the former safe.
   starting with that value unless framed as carefully as the hash construction,
   and the sweep (below) shows 16 is comfortably right.
 - *Filter construction failure.* Construction moved to compile time, in
-  `DMEx.Consumer.Handler`, so a filter that cannot peel within 8 derived seeds
+  `DMEx.Handler`, so a filter that cannot peel within 8 derived seeds
   is a **compile error naming the handler**. There is no runtime fallback path
   to specify, and the blob is a constant rather than something rebuilt per
   connect.
@@ -73,8 +73,8 @@ shipped:
   document's own sizing argument is why: filter inclusion is heuristic, and a
   false positive admits one entire message type for the whole life of a
   connection. Unknown types are an expected consequence of that, not a fault.
-  `DMEx.Consumer.Pipeline`'s skip path is unchanged — it still advances the
-  cursor and invokes nothing — and `[:dmex, :consumer, :skip]` already carries
+  `DMEx.Handler.Pipeline`'s skip path is unchanged — it still advances the
+  cursor and invokes nothing — and `[:dmex, :handler, :skip]` already carries
   `message_type`, which is what makes a false-positive type nameable without
   turning it into an error.
 - *"No rejecting a filter that matches nothing."* **Reversed.** An empty
@@ -82,7 +82,7 @@ shipped:
   log, so a silent empty stream is the worst of the options; it is a `404`. The
   case this document raised against that is real, though — a consumer deployed
   ahead of the producer that will emit its types is legitimately in that state —
-  so the `404` is **retryable**: `DMEx.Consumer.Stream` reconnects under the
+  so the `404` is **retryable**: `DMEx.Handler.Stream` reconnects under the
   ordinary backoff and logs a warning, rather than stopping the way it stops on
   a `400`. Producer-side validation is otherwise still absent, and nothing
   consumer-supplied is atomized.
@@ -139,12 +139,12 @@ reading the whole log, and one endpoint answers all of them:
   beginning of the log*, replaying every already-processed message of every
   other type on the way. `min_id` for the newly-added type is exactly how far
   back it needs to go, and nothing further.
-- **Whether the producer publishes the type at all.** Selection is
+- **Whether the producer appends the type at all.** Selection is
   deliberately unvalidated (see
   [message-type selection](ARCHITECTURE.md#message-type-selection)) — a filter naming a type the
   producer has never emitted matches nothing, silently, which is correct
   behaviour and an awful debugging experience. Stats is where "I am selecting a
-  type this producer does not publish" becomes visible, out of band, without
+  type this producer does not append" becomes visible, out of band, without
   weakening the no-validation rule on the stream itself.
 - **What the type vocabulary even is, for a non-Elixir consumer.** A consumer
   in another language has to know the fully-qualified module-name strings to
@@ -162,9 +162,9 @@ reading the whole log, and one endpoint answers all of them:
 
 - **It is not a source for filter expansion.** Stats reports what the *log
   contains*; expansion must resolve against what the producer's *code knows*,
-  and the two differ exactly when a deployed type has not been published yet.
+  and the two differ exactly when a deployed type has not been appended yet.
   Using stats as the expansion source reintroduces the staleness failure
-  `DMEx.Producer.Messages` exists to avoid — silent false negatives, the one
+  `DMEx.Log.Messages` exists to avoid — silent false negatives, the one
   failure mode the whole selection design is built to exclude. The endpoint is
   for humans and for consumer-side tooling, never for the producer's own read
   path.
@@ -188,7 +188,7 @@ per-distinct-type index probe — but only if the planner takes it. Postgres doe
 this well with a skip/loose scan and poorly without one, and which it picks is
 worth `EXPLAIN`ing on a real log rather than assuming.
 
-Caching is the other half, and unchanged: the answer moves only when a publish
+Caching is the other half, and unchanged: the answer moves only when an append
 introduces a new type or extends a range, and callers are humans and
 deploy-time tooling rather than a hot path, so a short producer-side TTL is
 almost free and removes the question of a consumer hammering it.
@@ -201,7 +201,7 @@ reserved in the `/stream` namespace and answers `404` until it is built.
 
 ### Open, if and when stats lands
 
-- **Whether it is on by default.** The endpoint publishes the producer's type
+- **Whether it is on by default.** The endpoint appends the producer's type
   vocabulary and, through id ranges, a rough shape of its traffic — to anyone
   who can reach the mount. That is strictly less than the stream itself
   discloses, so on a mount that is already open it leaks nothing new; on a
@@ -215,7 +215,7 @@ reserved in the `/stream` namespace and answers `404` until it is built.
   estimate from planner statistics, or not at all.
 - **Timestamps as well as ids.** `min(inserted_at)`/`max(inserted_at)` per type
   would let an operator reason in wall-clock terms ("when did we start
-  publishing this?"), which is what a human actually wants when choosing a
+  appending this?"), which is what a human actually wants when choosing a
   rewind point. The counter-argument is that `inserted_at` is explicitly
   observability-only and never an ordering key (see
   [The log](ARCHITECTURE.md#the-log)), and putting it in an endpoint
@@ -239,7 +239,7 @@ reserved in the `/stream` namespace and answers `404` until it is built.
 ## Global Resource Limits
 
 v1 defends a producer **per connection** and not at all in aggregate. The send
-loop makes unbounded memory growth unrepresentable, and `DMEx.Producer.Watcher`
+loop makes unbounded memory growth unrepresentable, and `DMEx.Log.Watcher`
 reclaims any connection that stops making progress (see
 [the invariants](ARCHITECTURE.md#the-invariants)). What neither
 touches is many individually-healthy connections adding up to more than the
@@ -249,7 +249,7 @@ pressure has no way to say no.
 The reason this is a roadmap entry rather than a new design is that the seat
 for it already exists. The watcher runs one process per producer, sweeps the
 live set on an interval, and holds every connection's deadline. A budget is a
-counter and a policy on a process that is already there; `DMEx.Producer.Plug`
+counter and a policy on a process that is already there; `DMEx.Log.Plug`
 is already the single place a connect attempt passes through before
 registering. Nothing about v1 has to move to make room.
 
@@ -365,7 +365,7 @@ Worth recording rather than resolving: compressing a response that mixes
 attacker-influenced content with content the attacker should not learn leaks
 through length (the BREACH/CRIME family). The setting here is unlike the classic
 one — no per-request reflection, no secret to extract token by token — and it
-requires an adversary who can both publish into a producer's log and observe the
-sizes of someone else's stream. That is a question about who may publish and who
+requires an adversary who can both append into a producer's log and observe the
+sizes of someone else's stream. That is a question about who may append and who
 may read, and it belongs with
 [auth](ARCHITECTURE.md#open-questions).

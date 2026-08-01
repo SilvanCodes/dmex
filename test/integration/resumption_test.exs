@@ -2,7 +2,7 @@ defmodule DMEx.Integration.ResumptionTest do
   @moduledoc """
   Dropping a connection is not a delivery event.
 
-  Nothing is lost and nothing is skipped when a stream dies: the producer holds
+  Nothing is lost and nothing is skipped when a stream dies: the log holds
   no consumer state, the consumer's `last_seen` is durable, and resumption is
   the same `id > cursor` read a cold connect does. It costs a reconnect and a
   re-read, nothing more.
@@ -10,10 +10,9 @@ defmodule DMEx.Integration.ResumptionTest do
 
   use DMEx.IntegrationCase
 
-  alias DMEx.Consumer
   alias DMEx.Storage.Postgres
   alias DMEx.Test.Handlers
-  alias DMEx.Test.IntegrationProducer, as: Producer
+  alias DMEx.Test.IntegrationLog, as: Log
   alias DMEx.Test.Messages.OrderPlaced
   alias DMEx.Test.Server
 
@@ -22,16 +21,16 @@ defmodule DMEx.Integration.ResumptionTest do
   setup do
     Handlers.report_to(self())
 
-    start_supervised!(Producer)
+    start_supervised!(Log)
 
-    # The server binds port 0, so the producer map is necessarily built at
+    # The server binds port 0, so the log map is necessarily built at
     # runtime — which is exactly why it lives on the child spec rather than in
     # application config.
     url = Server.start!() <> "/stream"
 
     start_supervised!(
-      {Consumer,
-       name: TestConsumer, repo: DMEx.Test.IntegrationRepo, producer: Server.producers(url)}
+      {DMEx.Supervisor,
+       name: TestSupervisor, repo: DMEx.Test.IntegrationRepo, logs: Server.logs(url)}
     )
 
     %{url: url}
@@ -40,15 +39,15 @@ defmodule DMEx.Integration.ResumptionTest do
   test "killing the stream loses nothing and repeats nothing", _ctx do
     {:ok, pid} = subscribe(Handlers.Echo)
 
-    for n <- 1..5, do: {:ok, _} = Producer.publish(%OrderPlaced{order_id: n})
+    for n <- 1..5, do: {:ok, _} = Log.append(%OrderPlaced{order_id: n})
     assert drain(5) == [1, 2, 3, 4, 5]
     await_cursor(5)
 
     # The supervisor restarts it, it re-reads its persisted cursor, and the
-    # producer's ordinary range scan picks up from exactly there.
+    # log's ordinary range scan picks up from exactly there.
     Process.exit(pid, :kill)
 
-    for n <- 6..10, do: {:ok, _} = Producer.publish(%OrderPlaced{order_id: n})
+    for n <- 6..10, do: {:ok, _} = Log.append(%OrderPlaced{order_id: n})
 
     assert drain(5) == [6, 7, 8, 9, 10]
     refute_receive {:handled, _, _}, 200
@@ -67,7 +66,7 @@ defmodule DMEx.Integration.ResumptionTest do
     # window open long enough to kill the process inside it deterministically.
     {:ok, pid} = subscribe(Handlers.SlowCommit)
 
-    for n <- 1..3, do: {:ok, _} = Producer.publish(%OrderPlaced{order_id: n})
+    for n <- 1..3, do: {:ok, _} = Log.append(%OrderPlaced{order_id: n})
 
     assert_receive {:handled, %OrderPlaced{order_id: 1}, _}, 5_000
     Process.exit(pid, :kill)
@@ -79,7 +78,7 @@ defmodule DMEx.Integration.ResumptionTest do
   test "resumes from the durable cursor rather than from the beginning", _ctx do
     {:ok, pid} = subscribe(Handlers.Echo)
 
-    for n <- 1..5, do: {:ok, _} = Producer.publish(%OrderPlaced{order_id: n})
+    for n <- 1..5, do: {:ok, _} = Log.append(%OrderPlaced{order_id: n})
     assert drain(5) == [1, 2, 3, 4, 5]
     await_cursor(5)
 
@@ -91,17 +90,17 @@ defmodule DMEx.Integration.ResumptionTest do
     refute_receive {:handled, _, _}, 1_000
   end
 
-  test "messages published while disconnected are delivered on reconnect", _ctx do
+  test "messages appended while disconnected are delivered on reconnect", _ctx do
     {:ok, pid} = subscribe(Handlers.Echo)
 
-    {:ok, _} = Producer.publish(%OrderPlaced{order_id: 1})
+    {:ok, _} = Log.append(%OrderPlaced{order_id: 1})
     assert drain(1) == [1]
     await_cursor(1)
 
     Process.exit(pid, :kill)
 
     # The log *is* the buffer. Nothing had to be held for this consumer.
-    for n <- 2..6, do: {:ok, _} = Producer.publish(%OrderPlaced{order_id: n})
+    for n <- 2..6, do: {:ok, _} = Log.append(%OrderPlaced{order_id: n})
 
     assert drain(5) == [2, 3, 4, 5, 6]
   end
@@ -111,7 +110,7 @@ defmodule DMEx.Integration.ResumptionTest do
     # frames, which is the case duplicate suppression exists for.
     {:ok, pid} = subscribe(Handlers.Slow)
 
-    for n <- 1..10, do: {:ok, _} = Producer.publish(%OrderPlaced{order_id: n})
+    for n <- 1..10, do: {:ok, _} = Log.append(%OrderPlaced{order_id: n})
 
     assert_receive {:handled, %OrderPlaced{order_id: 1}}, 5_000
     assert_receive {:handled, %OrderPlaced{order_id: 2}}, 5_000
@@ -129,10 +128,10 @@ defmodule DMEx.Integration.ResumptionTest do
   test "the cursor is what a restarted stream reads, and it is committed per message", _ctx do
     subscribe(Handlers.Echo)
 
-    for n <- 1..3, do: {:ok, _} = Producer.publish(%OrderPlaced{order_id: n})
+    for n <- 1..3, do: {:ok, _} = Log.append(%OrderPlaced{order_id: n})
     drain(3)
 
-    {:ok, tip} = Postgres.max_id(Producer.__dmex__().storage_opts)
+    {:ok, tip} = Postgres.max_id(Log.__dmex__().storage_opts)
 
     eventually(fn -> cursor() == {:ok, tip} end)
   end
@@ -140,9 +139,9 @@ defmodule DMEx.Integration.ResumptionTest do
   ## Helpers
 
   defp subscribe(handler, opts \\ []) do
-    Consumer.subscribe(
+    DMEx.Supervisor.subscribe(
       handler,
-      Keyword.merge([consumer: TestConsumer], opts)
+      Keyword.merge([supervisor: TestSupervisor], opts)
     )
   end
 

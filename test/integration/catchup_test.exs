@@ -9,9 +9,8 @@ defmodule DMEx.Integration.CatchupTest do
 
   use DMEx.IntegrationCase
 
-  alias DMEx.Consumer
   alias DMEx.Test.Handlers
-  alias DMEx.Test.IntegrationProducer, as: Producer
+  alias DMEx.Test.IntegrationLog, as: Log
   alias DMEx.Test.Messages.OrderPlaced
   alias DMEx.Test.Server
   alias Ecto.Adapters.SQL
@@ -24,16 +23,16 @@ defmodule DMEx.Integration.CatchupTest do
   setup do
     Handlers.report_to(self())
 
-    start_supervised!(Producer)
+    start_supervised!(Log)
 
-    # The server binds port 0, so the producer map is necessarily built at
+    # The server binds port 0, so the log map is necessarily built at
     # runtime — which is exactly why it lives on the child spec rather than in
     # application config.
     url = Server.start!() <> "/stream"
 
     start_supervised!(
-      {Consumer,
-       name: TestConsumer, repo: DMEx.Test.IntegrationRepo, producer: Server.producers(url)}
+      {DMEx.Supervisor,
+       name: TestSupervisor, repo: DMEx.Test.IntegrationRepo, logs: Server.logs(url)}
     )
 
     seed(@backlog)
@@ -44,7 +43,7 @@ defmodule DMEx.Integration.CatchupTest do
   test "drains a large backlog in order, in writes no larger than requested", _ctx do
     ref = :telemetry_test.attach_event_handlers(self(), [[:dmex, :stream, :write]])
 
-    {:ok, _} = Consumer.subscribe(Handlers.Echo, consumer: TestConsumer)
+    {:ok, _} = DMEx.Supervisor.subscribe(Handlers.Echo, supervisor: TestSupervisor)
 
     ids =
       for _ <- 1..@backlog do
@@ -56,25 +55,25 @@ defmodule DMEx.Integration.CatchupTest do
 
     # `max_batch_size` is a hard cap on how much one write carries, however far
     # behind the consumer is — the loop reads with it as the LIMIT every time.
-    # It is the *producer's* setting, so this is the producer's default.
+    # It is the *log's* setting, so this is the log's default.
     write_sizes = collect_write_sizes(ref)
 
     assert write_sizes != []
-    assert Enum.max(write_sizes) <= DMEx.Config.producer!([]).max_batch_size
+    assert Enum.max(write_sizes) <= DMEx.Config.log!([]).max_batch_size
   end
 
   # How far behind is answered from `inserted_at`, which every row carries
   # anyway — no `max_id` on the wire, no HEAD preflight, and no separate backlog
-  # endpoint. A consumer draining a backlog is handling rows published a while
+  # endpoint. A consumer draining a backlog is handling rows appended a while
   # ago, and that is exactly what this measures.
   test "the rows a catching-up consumer handles are visibly stale", _ctx do
-    ref = :telemetry_test.attach_event_handlers(self(), [[:dmex, :consumer, :lag]])
+    ref = :telemetry_test.attach_event_handlers(self(), [[:dmex, :handler, :lag]])
 
     seeded_at = System.monotonic_time(:millisecond)
 
-    {:ok, _} = Consumer.subscribe(Handlers.Echo, consumer: TestConsumer)
+    {:ok, _} = DMEx.Supervisor.subscribe(Handlers.Echo, supervisor: TestSupervisor)
 
-    assert_receive {[:dmex, :consumer, :lag], ^ref, %{lag: lag, rows: rows}, metadata}, 30_000
+    assert_receive {[:dmex, :handler, :lag], ^ref, %{lag: lag, rows: rows}, metadata}, 30_000
 
     # The backlog was seeded before the subscription started, so every row in it
     # is older than the subscription is.
@@ -84,7 +83,7 @@ defmodule DMEx.Integration.CatchupTest do
     assert metadata.subscription == "test/echo"
   end
 
-  # The producer's memory bound, over a real socket. `max_batch_size` alone is
+  # The log's memory bound, over a real socket. `max_batch_size` alone is
   # not one: 500 rows is half a megabyte at 1 KB each and half a gigabyte at
   # 1 MB each, and the difference is entirely the payloads a publisher happens
   # to send.
@@ -95,14 +94,14 @@ defmodule DMEx.Integration.CatchupTest do
     # 1 MiB byte budget is what has to bind instead.
     seed_large(200, 8_192)
 
-    {:ok, _} = Consumer.subscribe(Handlers.Echo, consumer: TestConsumer)
+    {:ok, _} = DMEx.Supervisor.subscribe(Handlers.Echo, supervisor: TestSupervisor)
 
     # Drain the small backlog and then the large rows behind it.
     for _ <- 1..(@backlog + 200), do: assert_receive({:handled, %OrderPlaced{}, _}, 30_000)
 
     writes = collect_writes(ref)
-    budget = DMEx.Config.producer!([]).max_batch_bytes
-    rows_limit = DMEx.Config.producer!([]).max_batch_size
+    budget = DMEx.Config.log!([]).max_batch_bytes
+    rows_limit = DMEx.Config.log!([]).max_batch_size
 
     # The claim, over every write the connection made: payload bytes never
     # exceed the budget. The slack is SSE framing, which the storage bound does
@@ -132,7 +131,7 @@ defmodule DMEx.Integration.CatchupTest do
     )
   end
 
-  # Seeded with one statement rather than @backlog publishes: this test is about
+  # Seeded with one statement rather than @backlog appends: this test is about
   # the read path, and appends are deliberately serialized.
   defp seed(count) do
     SQL.query!(

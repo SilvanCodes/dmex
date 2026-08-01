@@ -8,7 +8,7 @@ defmodule DMEx.MigrationTest do
   describe "option validation" do
     test "rejects an unknown table" do
       assert_raise ArgumentError, ~r/:tables must be a non-empty list/, fn ->
-        Migration.up(tables: [:producer, :nonsense])
+        Migration.up(tables: [:log, :nonsense])
       end
     end
 
@@ -20,7 +20,7 @@ defmodule DMEx.MigrationTest do
 
     test "rejects a non-list" do
       assert_raise ArgumentError, ~r/:tables must be a non-empty list/, fn ->
-        Migration.down(tables: :producer)
+        Migration.down(tables: :log)
       end
     end
   end
@@ -64,7 +64,7 @@ defmodule DMEx.MigrationTest do
       #
       # It is not free: appends are serialized per app, so this index's
       # maintenance sits on the one write path that cannot be parallelized away,
-      # and every producer pays it whether or not anyone selects against it.
+      # and every log pays it whether or not anyone selects against it.
       assert indexes("dmex_messages") == [
                "dmex_messages_message_type_id_index",
                "dmex_messages_pkey"
@@ -96,7 +96,7 @@ defmodule DMEx.MigrationTest do
 
   describe "dmex_cursors" do
     test "the declared subscription identifier is the primary key" do
-      # The `producer/id` pair a handler declares *is* the subscription's
+      # The `log/id` pair a handler declares *is* the subscription's
       # identity, so the resulting unique index also enforces "one cursor per
       # subscription" in storage, not only in the process registry — and keying
       # on the declaration rather than the module name is what makes renaming
@@ -112,26 +112,26 @@ defmodule DMEx.MigrationTest do
     end
 
     # A cursor is a subscription and a position, and nothing else: which host
-    # that subscription's producer name resolves to is the consumer's runtime
+    # that subscription's log name resolves to is the consumer's runtime
     # configuration, so repointing it is a config change rather than a data
     # migration.
-    test "records nothing about the producer it read from" do
+    test "records nothing about the log it read from" do
       assert column_missing?("dmex_cursors", "producer_url")
     end
   end
 
   describe "dmex_dead_messages" do
     # The table is shared across every subscription, so a row has to say which
-    # one owns it — and a subscription reads exactly one producer's log, so its
+    # one owns it — and a subscription reads exactly one log, so its
     # own log ids cannot collide.
-    test "is keyed by subscription and the producer's own log id" do
+    test "is keyed by subscription and the log's own id" do
       assert primary_key("dmex_dead_messages") == ["subscription", "id"]
     end
 
     # This is the property the whole shape exists for: a dead row *is* a log
     # row, so replaying one needs no reshaping and no second decode path.
     # `inserted_at` is the same column with a different meaning — when the row
-    # landed here rather than when the message was published — so it is asserted
+    # landed here rather than when the message was appended — so it is asserted
     # separately below.
     test "carries the message log's columns, with the same types" do
       for name <- ~w(id message_type data metadata inserted_at) do
@@ -143,9 +143,9 @@ defmodule DMEx.MigrationTest do
       end
     end
 
-    # Publish time is not recoverable from this table, deliberately: pruning
-    # needs to know how long a row has sat here, and a message published a year
-    # ago but abandoned this morning would look ancient by publish time.
+    # Append time is not recoverable from this table, deliberately: pruning
+    # needs to know how long a row has sat here, and a message appended a year
+    # ago but abandoned this morning would look ancient by append time.
     test "stamps its own insertion time rather than requiring one" do
       assert %{"column_default" => default} = column("dmex_dead_messages", "inserted_at")
 

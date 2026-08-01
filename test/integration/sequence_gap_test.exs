@@ -7,16 +7,15 @@ defmodule DMEx.Integration.SequenceGapTest do
   whatever row it just handled — so if the row before that never arrived, its id
   is behind the cursor from then on, it will never be re-read, and nothing
   anywhere records that it existed. Silent, permanent, and indistinguishable
-  from the producer having published nothing.
+  from the log having appended nothing.
 
-  The producer therefore states each frame's predecessor and the consumer checks
+  The log therefore states each frame's predecessor and the consumer checks
   it. These tests serve a stream with a genuine hole in it — a hand-written plug
-  rather than a real producer, because a correct producer cannot produce one.
+  rather than a real log, because a correct log cannot produce one.
   """
 
   use DMEx.IntegrationCase
 
-  alias DMEx.Consumer
   alias DMEx.Storage.Postgres
   alias DMEx.Test.Handlers
   alias DMEx.Test.Messages.OrderPlaced
@@ -25,7 +24,7 @@ defmodule DMEx.Integration.SequenceGapTest do
   @moduletag :capture_log
 
   # Frame 2 is simply never written. Frame 3 chains honestly — it says its
-  # predecessor was 2 — which is exactly what a producer sends and exactly what
+  # predecessor was 2 — which is exactly what a log sends and exactly what
   # the consumer must notice it never received.
   defmodule GappedStream do
     @moduledoc false
@@ -79,29 +78,29 @@ defmodule DMEx.Integration.SequenceGapTest do
     url = Server.start!(plug: GappedRouter) <> "/stream"
 
     start_supervised!(
-      {Consumer,
-       name: TestConsumer, repo: DMEx.Test.IntegrationRepo, producer: Server.producers(url)}
+      {DMEx.Supervisor,
+       name: TestSupervisor, repo: DMEx.Test.IntegrationRepo, logs: Server.logs(url)}
     )
 
     %{url: url}
   end
 
   test "a frame that never arrives breaks the chain instead of being skipped", _ctx do
-    ref = :telemetry_test.attach_event_handlers(self(), [[:dmex, :consumer, :reconnect]])
+    ref = :telemetry_test.attach_event_handlers(self(), [[:dmex, :handler, :reconnect]])
 
-    {:ok, _} = Consumer.subscribe(Handlers.Echo, consumer: TestConsumer)
+    {:ok, _} = DMEx.Supervisor.subscribe(Handlers.Echo, supervisor: TestSupervisor)
 
     # The frame before the hole is handled normally.
     assert_receive {:handled, %OrderPlaced{order_id: 1}, _}, 5_000
 
     # The frame after it names a predecessor this subscription never saw.
-    assert_receive {[:dmex, :consumer, :reconnect], ^ref, _measurements,
+    assert_receive {[:dmex, :handler, :reconnect], ^ref, _measurements,
                     %{reason: {:sequence_gap, 1, 2}}},
                    5_000
   end
 
   test "the message after the hole is not handled, so the cursor cannot step over it", _ctx do
-    {:ok, _} = Consumer.subscribe(Handlers.Echo, consumer: TestConsumer)
+    {:ok, _} = DMEx.Supervisor.subscribe(Handlers.Echo, supervisor: TestSupervisor)
 
     assert_receive {:handled, %OrderPlaced{order_id: 1}, _}, 5_000
 
@@ -113,16 +112,16 @@ defmodule DMEx.Integration.SequenceGapTest do
   end
 
   # Recovery is a re-read from the durable cursor rather than a crash: if the
-  # gap was transport damage it repairs itself, and if the producer really does
+  # gap was transport damage it repairs itself, and if the log really does
   # skip rows the same break recurs and the subscription is a visible loop
   # making no progress — which is the correct failure, loudly.
   test "it keeps retrying rather than dying, and never advances", _ctx do
-    ref = :telemetry_test.attach_event_handlers(self(), [[:dmex, :consumer, :reconnect]])
+    ref = :telemetry_test.attach_event_handlers(self(), [[:dmex, :handler, :reconnect]])
 
-    {:ok, pid} = Consumer.subscribe(Handlers.Echo, consumer: TestConsumer)
+    {:ok, pid} = DMEx.Supervisor.subscribe(Handlers.Echo, supervisor: TestSupervisor)
 
     for _ <- 1..2 do
-      assert_receive {[:dmex, :consumer, :reconnect], ^ref, _, %{reason: {:sequence_gap, _, _}}},
+      assert_receive {[:dmex, :handler, :reconnect], ^ref, _, %{reason: {:sequence_gap, _, _}}},
                      10_000
     end
 

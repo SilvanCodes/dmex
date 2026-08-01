@@ -2,26 +2,26 @@ defmodule DMEx.Config do
   @moduledoc """
   Every default DMEx ships, in one place.
 
-  DMEx reads **no global application config**. A producer's settings are `use`
-  options on its producer module, a subscription's are `subscribe/2` options,
+  DMEx reads **no global application config**. A log's settings are `use`
+  options on its log module, a subscription's are `subscribe/2` options,
   and both are resolved exactly once — at compile time or at subscription
-  start — never per publish, per request, or per row.
+  start — never per append, per request, or per row.
 
   A resolved config is a plain map, and the defaults below are the whole of the
-  vocabulary: `producer!/1` and `consumer!/1` copy across only keys they know
+  vocabulary: `log!/1` and `handler!/1` copy across only keys they know
   and validate what they copied, so an unrecognised key cannot silently become
   a setting.
 
-  Nothing is negotiated. A producer paces its own connections and a consumer
+  Nothing is negotiated. A log paces its own connections and a handler
   configures its own retries and liveness, so every setting below has exactly
   one owner and exactly one lifetime — there is no "requested" value anywhere to
   drift from an "effective" one.
 
-  Three settings bound one read, and they are the whole of a producer's
+  Three settings bound one read, and they are the whole of a log's
   self-protection: `max_batch_frequency` bounds **how often** it reads,
   `max_batch_size` **how many rows** come back, `max_batch_bytes` **how many
   payload bytes** they carry. The first protects the database; the other two
-  protect the producer's heap, and neither does it alone.
+  protect the log's heap, and neither does it alone.
 
   ## Why the heap needs both a row bound and a byte bound
 
@@ -51,19 +51,19 @@ defmodule DMEx.Config do
   turning a bounded read into a full scan of the log's tail. The row limit is
   what makes the byte bound cheap, not merely what accompanies it.
 
-  ## Producer defaults
+  ## Log defaults
 
   | setting | default | why |
   | --- | --- | --- |
   | `max_batch_frequency` | `5` | reads per second — **how hard one connection is allowed to hammer the database**. Five is sub-perceptible added latency (a message waits `1 / 2f` on average, 100 ms here) while capping a connection's query rate at something a pool can absorb hundreds of times over. Any positive number: `0.2` is one read every five seconds, for a stream that would rather be cheap than prompt. |
-  | `max_batch_size` | `500` | rows per read. Bounds the **per-row** heap cost — about a kilobyte each once decoded and framed, which no byte budget can see — and is what bounds the running sum that enforces `max_batch_bytes`. It also has to satisfy the sizing rule in `guides/deployment.md`: one write must drain in well under `stall_timeout` at the slowest consumer's rate, and a handler's cost is per message rather than per byte, which is why that rule is stated in rows. |
+  | `max_batch_size` | `500` | rows per read. Bounds the **per-row** heap cost — about a kilobyte each once decoded and framed, which no byte budget can see — and is what bounds the running sum that enforces `max_batch_bytes`. It also has to satisfy the sizing rule in `guides/deployment.md`: one write must drain in well under `stall_timeout` at the slowest handler's rate, and a handler's cost is per message rather than per byte, which is why that rule is stated in rows. |
   | `heartbeat_ms` | `15_000` | ms; half the most common 30 s proxy idle timeout, so two heartbeats fit inside every window. |
   | `poll_interval` | `1_000` | ms; Oban stager parity. This is the worst-case wakeup latency when a `NOTIFY` is lost, and it costs one `max(id)` index descent per app per second. |
-  | `max_batch_bytes` | `1_048_576` | **payload** bytes per read, enforced inside the query rather than by trimming afterwards (see `c:DMEx.Storage.read/5`). Bounds the half of the heap cost that scales with message size: 500 rows is half a megabyte at 1 KB each and half a gigabyte at 1 MB each, and a row count alone cannot tell those apart. Together with `max_batch_size` this is the memory bound per open stream — see above for why it takes both. Also what lets `stall_timeout` be tight without false-positiving on a large write to a slow-but-alive consumer. One row larger than this is still delivered on its own, since refusing it would wedge the stream permanently. |
-  | `stall_timeout` | `30_000` | ms; the budget for any one blocking step of the send loop — a write, a read, or the wait around either. Generous on purpose: this is on by default, and killing a healthy slow consumer costs a reconnect and a fresh catch-up read, where a wedged connection lingering 30 s costs one request process. At the 1 MiB write cap it tolerates a consumer draining a full write at ~280 kbit/s. `:infinity` runs no watcher at all. |
-  | `stall_check_interval` | `1_000` | ms; how often `DMEx.Producer.Watcher` sweeps, so a stall is reclaimed within `stall_timeout + stall_check_interval`. A sweep is one atomics read per open connection and no query, so this is cheap enough to leave at a second. |
+  | `max_batch_bytes` | `1_048_576` | **payload** bytes per read, enforced inside the query rather than by trimming afterwards (see `c:DMEx.Storage.read/5`). Bounds the half of the heap cost that scales with message size: 500 rows is half a megabyte at 1 KB each and half a gigabyte at 1 MB each, and a row count alone cannot tell those apart. Together with `max_batch_size` this is the memory bound per open stream — see above for why it takes both. Also what lets `stall_timeout` be tight without false-positiving on a large write to a slow-but-alive handler. One row larger than this is still delivered on its own, since refusing it would wedge the stream permanently. |
+  | `stall_timeout` | `30_000` | ms; the budget for any one blocking step of the send loop — a write, a read, or the wait around either. Generous on purpose: this is on by default, and killing a healthy slow handler costs a reconnect and a fresh catch-up read, where a wedged connection lingering 30 s costs one request process. At the 1 MiB write cap it tolerates a handler draining a full write at ~280 kbit/s. `:infinity` runs no watcher at all. |
+  | `stall_check_interval` | `1_000` | ms; how often `DMEx.Log.Watcher` sweeps, so a stall is reclaimed within `stall_timeout + stall_check_interval`. A sweep is one atomics read per open connection and no query, so this is cheap enough to leave at a second. |
 
-  ## Consumer defaults
+  ## Handler defaults
 
   | setting | default | why |
   | --- | --- | --- |
@@ -75,20 +75,20 @@ defmodule DMEx.Config do
   | `retry_backoff_max` | `5_000` | ms; cap on that schedule. |
   | `reconnect_backoff` | `500` | ms; base for the jittered reconnect schedule. Bounds a crash-loop's reconnect rate against a *different application's* database. |
   | `reconnect_backoff_max` | `30_000` | ms; cap on that schedule. |
-  | `max_frame_bytes` | `4_194_304` | bytes; the largest unterminated frame the decoder will buffer. A frame is **one row**, so this has to exceed the largest single message any producer sends — not its whole batch, which arrives as a run of separate frames. Generous because a consumer cannot know a third party's payload sizes. Exceeding it drops the connection, which costs only a re-read. |
-  | `missed_heartbeats` | `3` | silences of the producer's advertised interval before giving up — long enough that one GC pause on the producer is not a disconnect. |
+  | `max_frame_bytes` | `4_194_304` | bytes; the largest unterminated frame the decoder will buffer. A frame is **one row**, so this has to exceed the largest single message any log sends — not its whole batch, which arrives as a run of separate frames. Generous because a handler cannot know a third party's payload sizes. Exceeding it drops the connection, which costs only a re-read. |
+  | `missed_heartbeats` | `3` | silences of the log's advertised interval before giving up — long enough that one GC pause on the log is not a disconnect. |
 
   ## Where these numbers came from
 
   The design fixes the *mechanisms* and leaves every constant to be chosen. The
   values above are those choices; each row's "why" is the reasoning, and any of
-  them can be overridden per producer or per subscription.
+  them can be overridden per log or per subscription.
 
   Whether they are right *under real load* is still open — most have only been
   exercised against benchmarks and a deliberately slow test handler.
   """
 
-  @producer_defaults [
+  @log_defaults [
     max_batch_frequency: 5,
     max_batch_size: 500,
     heartbeat_ms: 15_000,
@@ -98,7 +98,7 @@ defmodule DMEx.Config do
     stall_check_interval: 1_000
   ]
 
-  @consumer_defaults [
+  @handler_defaults [
     start: :beginning,
     checkpoint_interval: 1_000,
     on_failure: :dead_message,
@@ -111,8 +111,8 @@ defmodule DMEx.Config do
     missed_heartbeats: 3
   ]
 
-  @typedoc "A producer's resolved configuration."
-  @type producer :: %{
+  @typedoc "A log's resolved configuration."
+  @type log :: %{
           max_batch_frequency: number(),
           max_batch_size: pos_integer(),
           heartbeat_ms: pos_integer(),
@@ -123,7 +123,7 @@ defmodule DMEx.Config do
         }
 
   @typedoc "A subscription's resolved configuration."
-  @type consumer :: %{
+  @type handler :: %{
           start: :beginning | :latest | non_neg_integer(),
           checkpoint_interval: pos_integer(),
           on_failure: :crash | :skip | :dead_message,
@@ -137,52 +137,52 @@ defmodule DMEx.Config do
         }
 
   @doc """
-  Builds a validated producer config from `use DMEx.Producer` options.
+  Builds a validated log config from `use DMEx.Log` options.
 
   Ignores keys that are not config settings — `:repo`, `:storage`, `:app` and
-  `:prefix` are the producer module's own concerns — so the caller can hand its
+  `:prefix` are the log module's own concerns — so the caller can hand its
   whole option list over without splitting it first. Rejecting a *misspelled*
-  key is therefore the caller's job, and `DMEx.Producer` does it by checking the
-  option list against its own keys plus `producer_keys/0` before calling here.
+  key is therefore the caller's job, and `DMEx.Log` does it by checking the
+  option list against its own keys plus `log_keys/0` before calling here.
 
   Raises `ArgumentError` on a value outside its setting's domain.
   """
-  @spec producer!(keyword()) :: producer()
-  def producer!(opts) when is_list(opts) do
-    @producer_defaults
+  @spec log!(keyword()) :: log()
+  def log!(opts) when is_list(opts) do
+    @log_defaults
     |> cast!(opts)
-    |> validate_producer!()
+    |> validate_log!()
   end
 
   @doc """
-  Builds a validated consumer config from `subscribe/2` options.
+  Builds a validated handler config from `subscribe/2` options.
 
-  Ignores keys that are not config settings — `:consumer`, `:producer`,
+  Ignores keys that are not config settings — `:handler`, `:log`,
   `:repo`, `:storage` and `:prefix` belong to the subscription rather than to
-  its pacing, and the producer, id and message types belong to the handler
-  module. As with `producer!/1`, rejecting a
-  misspelled key is the caller's job; `DMEx.Consumer.subscribe/2` does it.
+  its pacing, and the log, id and message types belong to the handler
+  module. As with `log!/1`, rejecting a
+  misspelled key is the caller's job; `DMEx.Supervisor.subscribe/2` does it.
   """
-  @spec consumer!(keyword()) :: consumer()
-  def consumer!(opts) when is_list(opts) do
-    @consumer_defaults
+  @spec handler!(keyword()) :: handler()
+  def handler!(opts) when is_list(opts) do
+    @handler_defaults
     |> cast!(opts)
-    |> validate_consumer!()
+    |> validate_handler!()
   end
 
   @doc """
-  The effective heartbeat interval a producer advertises, in ms.
+  The effective heartbeat interval a log advertises, in ms.
 
   This is `heartbeat_ms + batch_interval(config)`, not `heartbeat_ms`, because
   the loop's throttle runs *after* the heartbeat branch — so the sum, not the
   interval, is the real upper bound on silence. It travels as SSE's `retry:`
   field, which means a generic client reads it as a reconnect delay and a DMEx
-  consumer reads it as "expect a frame or a comment within this window".
+  handler reads it as "expect a frame or a comment within this window".
 
-  Both halves are producer configuration, so every connection to one producer is
+  Both halves are log configuration, so every connection to one log is
   advertised the same interval.
   """
-  @spec effective_heartbeat(producer()) :: pos_integer()
+  @spec effective_heartbeat(log()) :: pos_integer()
   def effective_heartbeat(config) do
     config.heartbeat_ms + batch_interval(config)
   end
@@ -199,26 +199,26 @@ defmodule DMEx.Config do
   distinguishable and above ~2 000 Hz stop throttling at all. That is the honest
   resolution of `Process.sleep/1` rather than a limit worth enforcing.
   """
-  @spec batch_interval(producer()) :: non_neg_integer()
+  @spec batch_interval(log()) :: non_neg_integer()
   def batch_interval(config), do: round(1_000 / config.max_batch_frequency)
 
-  @doc "Every producer setting name."
-  @spec producer_keys() :: [atom()]
-  def producer_keys, do: Keyword.keys(@producer_defaults)
+  @doc "Every log setting name."
+  @spec log_keys() :: [atom()]
+  def log_keys, do: Keyword.keys(@log_defaults)
 
-  @doc "Every consumer setting name."
-  @spec consumer_keys() :: [atom()]
-  def consumer_keys, do: Keyword.keys(@consumer_defaults)
+  @doc "Every handler setting name."
+  @spec handler_keys() :: [atom()]
+  def handler_keys, do: Keyword.keys(@handler_defaults)
 
   @doc """
-  Every default, as `%{producer: keyword(), consumer: keyword()}`.
+  Every default, as `%{log: keyword(), handler: keyword()}`.
 
   Exists so the documentation tables above can be tested against the code rather
   than trusted.
   """
-  @spec defaults() :: %{producer: keyword(), consumer: keyword()}
+  @spec defaults() :: %{log: keyword(), handler: keyword()}
   def defaults do
-    %{producer: Enum.sort(@producer_defaults), consumer: Enum.sort(@consumer_defaults)}
+    %{log: Enum.sort(@log_defaults), handler: Enum.sort(@handler_defaults)}
   end
 
   ## Casting
@@ -233,7 +233,7 @@ defmodule DMEx.Config do
 
   ## Validation
 
-  defp validate_producer!(config) do
+  defp validate_log!(config) do
     positive_number!(config, :max_batch_frequency)
 
     for field <- [
@@ -251,7 +251,7 @@ defmodule DMEx.Config do
     config
   end
 
-  defp validate_consumer!(config) do
+  defp validate_handler!(config) do
     for field <- [
           :max_attempts,
           :retry_backoff,
@@ -271,7 +271,7 @@ defmodule DMEx.Config do
     config
   end
 
-  # The one setting that may be switched off rather than tuned: a producer whose
+  # The one setting that may be switched off rather than tuned: a log whose
   # streams legitimately block longer than any budget worth naming would rather
   # have no watcher than a wrong one, and `:infinity` says so explicitly.
   defp validate_stall_timeout!(:infinity), do: :ok

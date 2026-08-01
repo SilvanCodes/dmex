@@ -7,7 +7,7 @@ defmodule DMEx.FingerprintTest do
   nothing downstream can detect or recover from it — so it is asserted as a
   property over generated sets, not sampled with a few examples.
 
-  The fixed vectors exist for the same reason. Producer and consumer must agree
+  The fixed vectors exist for the same reason. Log and consumer must agree
   on the encoding *exactly*, and disagreement does not produce a garbled filter
   that fails loudly — it produces false negatives. A vector pinned to a literal
   string is what makes changing the hash, the width or the byte order break a

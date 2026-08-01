@@ -15,7 +15,7 @@ defmodule DMEx.SSE.Frame do
   | `message_type` | `event:` | it *is* the event name, so `addEventListener("MyApp.Messages.OrderPlaced", …)` works in a browser |
   | `data` | inside `data:` | the publisher's payload, verbatim |
   | `metadata` | inside `data:` | the publisher's metadata, verbatim |
-  | `inserted_at` | inside `data:` | publish time, which is what the consumer's lag signal is measured against |
+  | `inserted_at` | inside `data:` | append time, which is what the consumer's lag signal is measured against |
 
   There is no batch envelope and no frame-level `max_id`. Batching is still real
   — the producer writes a whole read's worth of frames in one `chunk/2` — but it
@@ -42,7 +42,7 @@ defmodule DMEx.SSE.Frame do
 
   **`Last-Event-ID` therefore carries the pair too.** A generic client stores
   whatever was in `id:` and echoes it back verbatim, so a producer must accept
-  `1041/1042` and resume after `1042`. See `DMEx.Producer.Params`.
+  `1041/1042` and resume after `1042`. See `DMEx.Log.Params`.
 
   ## `event:` carries the message type, and the type is constrained for it
 
@@ -55,7 +55,7 @@ defmodule DMEx.SSE.Frame do
   So the log constrains it instead: `dmex_messages` carries a CHECK constraint
   restricting `message_type` to `[A-Za-z0-9_.]`, which is exactly the charset an
   Elixir module name uses. A type that cannot be written on an `event:` line
-  cannot be published in the first place. See `DMEx.Migration`.
+  cannot be appended in the first place. See `DMEx.Migration`.
 
   ## Encoding
 

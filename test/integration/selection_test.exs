@@ -1,18 +1,18 @@
 # Defined in the test file rather than in test/support deliberately: modules
 # compiled by ExUnit at runtime are not in `:application.get_key(:dmex,
-# :modules)`, so this is a message type the producer's scan genuinely cannot
-# see — which is exactly the consumer-deployed-ahead-of-its-producer case.
+# :modules)`, so this is a message type the log's scan genuinely cannot
+# see — which is exactly the consumer-deployed-ahead-of-its-log case.
 defmodule DMEx.Integration.SelectionTest.NotYetPublished do
   @moduledoc false
   use DMEx.Message
 
-  # No `@derive JSON.Encoder`: nothing ever publishes this, which is the point.
+  # No `@derive JSON.Encoder`: nothing ever appends this, which is the point.
   defstruct [:order_id]
 end
 
-defmodule DMEx.Integration.SelectionTest.AheadOfProducer do
+defmodule DMEx.Integration.SelectionTest.AheadOfLog do
   @moduledoc false
-  use DMEx.Consumer.Handler, producer: :test, id: :ahead_of_producer
+  use DMEx.Handler, log: :test, id: :ahead_of_log
 
   @impl true
   def handle_message(%DMEx.Integration.SelectionTest.NotYetPublished{}, _metadata), do: :ok
@@ -25,18 +25,17 @@ defmodule DMEx.Integration.SelectionTest do
 
   The unit suites pin each half — the encoding, the path routing, the wakeup
   routing. This is the one that pins that they compose: a consumer's handler
-  clauses become a blob in the request path, the producer resolves it against
+  clauses become a blob in the request path, the log resolves it against
   its own compiled message modules, and only matching rows are read and sent.
   """
 
   use DMEx.IntegrationCase
 
-  alias DMEx.Consumer
   alias DMEx.Fingerprint
-  alias DMEx.Producer.Messages
+  alias DMEx.Log.Messages
   alias DMEx.Storage.Postgres
   alias DMEx.Test.Handlers
-  alias DMEx.Test.IntegrationProducer, as: Producer
+  alias DMEx.Test.IntegrationLog, as: Log
   alias DMEx.Test.Messages.OrderPlaced
   alias DMEx.Test.Messages.OrderShipped
   alias DMEx.Test.Server
@@ -46,15 +45,13 @@ defmodule DMEx.Integration.SelectionTest do
   setup do
     Handlers.report_to(self())
 
-    start_supervised!(Producer)
+    start_supervised!(Log)
 
     base = Server.start!()
 
     start_supervised!(
-      {Consumer,
-       name: TestConsumer,
-       repo: DMEx.Test.IntegrationRepo,
-       producer: Server.producers(base <> "/stream")}
+      {DMEx.Supervisor,
+       name: TestSupervisor, repo: DMEx.Test.IntegrationRepo, logs: Server.logs(base <> "/stream")}
     )
 
     %{base: base}
@@ -68,7 +65,7 @@ defmodule DMEx.Integration.SelectionTest do
 
       assert {:ok, 200, headers, _ref} = connect(base <> "/stream/" <> fingerprint)
 
-      # Exactly one of the producer's three message types matched.
+      # Exactly one of the log's three message types matched.
       assert header(headers, "dmex-matched-messages") == "1"
       assert header(headers, "content-type") =~ "text/event-stream"
     end
@@ -82,8 +79,8 @@ defmodule DMEx.Integration.SelectionTest do
       assert header(headers, "dmex-matched-messages") == nil
     end
 
-    test "a fingerprint over every type the producer knows matches all of them", %{base: base} do
-      types = Producer |> Messages.types() |> MapSet.to_list()
+    test "a fingerprint over every type the log knows matches all of them", %{base: base} do
+      types = Log |> Messages.types() |> MapSet.to_list()
       {:ok, fingerprint} = Fingerprint.build(types)
 
       assert {:ok, 200, headers, _ref} =
@@ -106,7 +103,7 @@ defmodule DMEx.Integration.SelectionTest do
       assert body =~ "reserved"
     end
 
-    test "a fingerprint matching none of the producer's types is a 404", %{base: base} do
+    test "a fingerprint matching none of the log's types is a 404", %{base: base} do
       {:ok, fingerprint} = Fingerprint.build(["Some.Other.App.Messages.Whatever"])
 
       assert {:ok, 404, _headers, body} =
@@ -118,11 +115,11 @@ defmodule DMEx.Integration.SelectionTest do
 
   describe "delivery" do
     test "only the selected types cross the wire", %{base: _base} do
-      {:ok, _} = Consumer.subscribe(Handlers.Echo, consumer: TestConsumer)
+      {:ok, _} = DMEx.Supervisor.subscribe(Handlers.Echo, supervisor: TestSupervisor)
 
-      {:ok, _} = Producer.publish(%OrderShipped{order_id: 1, carrier: "dhl"})
-      {:ok, _} = Producer.publish(%OrderPlaced{order_id: 2})
-      {:ok, id} = Producer.publish(%OrderPlaced{order_id: 3})
+      {:ok, _} = Log.append(%OrderShipped{order_id: 1, carrier: "dhl"})
+      {:ok, _} = Log.append(%OrderPlaced{order_id: 2})
+      {:ok, id} = Log.append(%OrderPlaced{order_id: 3})
 
       assert_receive {:handled, %OrderPlaced{order_id: 2}, _}, 5_000
       assert_receive {:handled, %OrderPlaced{order_id: 3}, _}, 5_000
@@ -131,12 +128,12 @@ defmodule DMEx.Integration.SelectionTest do
       eventually(fn -> cursor("test/echo") == {:ok, id} end)
     end
 
-    test "the producer reads only matching rows, not all of them", %{base: base} do
+    test "the log reads only matching rows, not all of them", %{base: base} do
       # The point of resolving server-side rather than filtering after the
       # bytes arrive: unselected rows are never read, never framed and never
       # sent. Asserted on the wire, since that is where it is observable.
-      for n <- 1..20, do: {:ok, _} = Producer.publish(%OrderShipped{order_id: n, carrier: "dhl"})
-      {:ok, _} = Producer.publish(%OrderPlaced{order_id: 99})
+      for n <- 1..20, do: {:ok, _} = Log.append(%OrderShipped{order_id: n, carrier: "dhl"})
+      {:ok, _} = Log.append(%OrderPlaced{order_id: 99})
 
       %{fingerprint: fingerprint} = Handlers.Echo.__dmex__()
 
@@ -150,11 +147,11 @@ defmodule DMEx.Integration.SelectionTest do
       # Not a partitioning: there is still one log and one id sequence, so a
       # selective subscription sees a sparse subset of the same ids rather than
       # a space of its own.
-      {:ok, _} = Consumer.subscribe(Handlers.Echo, consumer: TestConsumer)
-      {:ok, _} = Consumer.subscribe(Handlers.EchoAll, consumer: TestConsumer)
+      {:ok, _} = DMEx.Supervisor.subscribe(Handlers.Echo, supervisor: TestSupervisor)
+      {:ok, _} = DMEx.Supervisor.subscribe(Handlers.EchoAll, supervisor: TestSupervisor)
 
-      {:ok, _} = Producer.publish(%OrderShipped{order_id: 1, carrier: "dhl"})
-      {:ok, placed} = Producer.publish(%OrderPlaced{order_id: 2})
+      {:ok, _} = Log.append(%OrderShipped{order_id: 1, carrier: "dhl"})
+      {:ok, placed} = Log.append(%OrderPlaced{order_id: 2})
 
       assert_receive {:handled, %OrderPlaced{order_id: 2}, _}, 5_000
       assert_receive {:handled, %OrderShipped{order_id: 1}, _}, 5_000
@@ -166,12 +163,12 @@ defmodule DMEx.Integration.SelectionTest do
     end
 
     test "a 404 is retried rather than killing the subscription", %{base: _base} do
-      # A consumer deployed ahead of the producer that will emit its types is
-      # legitimately in this state, so the repair is the producer's deploy —
+      # A consumer deployed ahead of the log that will emit its types is
+      # legitimately in this state, so the repair is the log's deploy —
       # and stopping here would turn a deploy-ordering choice into a
       # permanently dead subscription.
       {:ok, pid} =
-        Consumer.subscribe(__MODULE__.AheadOfProducer, consumer: TestConsumer)
+        DMEx.Supervisor.subscribe(__MODULE__.AheadOfLog, supervisor: TestSupervisor)
 
       ref = Process.monitor(pid)
 

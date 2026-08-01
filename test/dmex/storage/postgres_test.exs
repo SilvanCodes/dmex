@@ -5,7 +5,7 @@ defmodule DMEx.Storage.PostgresTest do
 
   alias DMEx.Storage.Postgres
 
-  # Declared subscription identifiers, the shape DMEx.Consumer.Handler renders.
+  # Declared subscription identifiers, the shape DMEx.Handler renders.
   @some "orders/some"
   @one "orders/one"
   @two "billing/two"
@@ -124,7 +124,7 @@ defmodule DMEx.Storage.PostgresTest do
       assert {:ok, [row | _]} = Postgres.read(opts, second, 100, 1_048_576, :all)
 
       # Not `row.id - 1`, and not the log's first id: exactly what was asked for,
-      # which is what proves the producer resumed where the consumer said.
+      # which is what proves the log resumed where the consumer said.
       assert row.previous_id == second
     end
 
@@ -168,7 +168,7 @@ defmodule DMEx.Storage.PostgresTest do
     end
   end
 
-  # The bound that makes the producer's "memory per connection is one batch"
+  # The bound that makes the log's "memory per connection is one batch"
   # claim true in bytes and not only in rows. It has to hold *in the query*: a
   # read that returns `limit` rows and lets the caller trim them has already
   # spent the memory the bound exists to cap.
@@ -351,17 +351,17 @@ defmodule DMEx.Storage.PostgresTest do
   end
 
   # These two are why nothing outside this module knows how Postgres delivers a
-  # wakeup. Before them, DMEx.Producer compared the storage module against this
+  # wakeup. Before them, DMEx.Log compared the storage module against this
   # one by name and carried a list of Postgrex connection options.
   describe "child_specs/1" do
-    test "supplies a notification connection named after the producer", %{opts: opts} do
-      opts = Map.put(opts, :producer, DMEx.Test.Producer)
+    test "supplies a notification connection named after the log", %{opts: opts} do
+      opts = Map.put(opts, :log, DMEx.Test.Log)
 
       assert [%{id: id, start: {Postgrex.Notifications, :start_link, [conn_opts]}}] =
                Postgres.child_specs(opts)
 
-      assert id == DMEx.Test.Producer.Notifications
-      assert conn_opts[:name] == DMEx.Test.Producer.Notifications
+      assert id == DMEx.Test.Log.Notifications
+      assert conn_opts[:name] == DMEx.Test.Log.Notifications
       assert conn_opts[:auto_reconnect] == true
       assert conn_opts[:database] == "dmex_test"
     end
@@ -371,7 +371,7 @@ defmodule DMEx.Storage.PostgresTest do
       # prefix — and handing those to Postgrex would be a connection that fails
       # to start rather than one that runs without notifications.
       [%{start: {_, _, [conn_opts]}}] =
-        Postgres.child_specs(Map.put(opts, :producer, DMEx.Test.Producer))
+        Postgres.child_specs(Map.put(opts, :log, DMEx.Test.Log))
 
       for key <- [:pool, :pool_size, :telemetry_prefix, :otp_app, :log, :scheme, :url] do
         refute Keyword.has_key?(conn_opts, key), "#{inspect(key)} leaked into Postgrex opts"
@@ -384,7 +384,7 @@ defmodule DMEx.Storage.PostgresTest do
     # so a missing notifier must be an error value rather than an exit that
     # takes the dispatcher down with it.
     test "reports a notifier that is not running instead of exiting", %{opts: opts} do
-      opts = Map.put(opts, :producer, DMEx.Test.Producer)
+      opts = Map.put(opts, :log, DMEx.Test.Log)
 
       assert {:error, :not_running} = Postgres.listen(opts)
     end
@@ -409,7 +409,7 @@ defmodule DMEx.Storage.PostgresTest do
       assert %DateTime{} = inserted_at
     end
 
-    test "two subscriptions may give up on the same producer row", %{opts: opts} do
+    test "two subscriptions may give up on the same log row", %{opts: opts} do
       assert :ok = Postgres.dead_message(opts, dead_attrs(subscription: @one))
       assert :ok = Postgres.dead_message(opts, dead_attrs(subscription: @two))
 

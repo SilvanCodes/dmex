@@ -27,7 +27,7 @@ defmodule DMEx.Fingerprint do
   There are **no false negatives**: every type the consumer selected is
   delivered, always. A false positive costs one unwanted message type crossing
   the wire, which the consumer's ordinary skip path drops
-  (`DMEx.Consumer.Pipeline`, section 2).
+  (`DMEx.Handler.Pipeline`, section 2).
 
   That asymmetry is why membership is worth testing at all, and it is also why
   the encoding may never be negotiated. Producer and consumer disagreeing on a
@@ -54,8 +54,8 @@ defmodule DMEx.Fingerprint do
   ## Build time and query time are different times
 
   `build/1` and `encode/1` run **only at compile time**, in
-  `DMEx.Consumer.Handler`. `decode/1` and `member?/2` run at connect time, in
-  `DMEx.Producer.Plug`. Neither side pays for the other's half at runtime, and a
+  `DMEx.Handler`. `decode/1` and `member?/2` run at connect time, in
+  `DMEx.Log.Plug`. Neither side pays for the other's half at runtime, and a
   filter that cannot be constructed is a compile error rather than a runtime
   fallback path.
   """
