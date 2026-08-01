@@ -49,11 +49,10 @@ jobs:
       - run: mix compile --warnings-as-errors
       - run: mix credo --strict
 
-      # Unit suite first (fast, sandboxed), then the integration suite, which
-      # needs a real non-sandboxed database: LISTEN/NOTIFY only fires at COMMIT
-      # and the append-ordering test needs genuinely concurrent transactions.
-      # DMEX_POSTGRES_INTEGRATION_URL is derived from this by config/test.exs,
-      # so the two can never drift onto different hosts.
+      # Unit suite first (sandboxed), then the integration suite, which needs a
+      # real non-sandboxed database — see config/test.exs. The integration URL
+      # is derived from this one by rewriting the trailing /dmex_test, which is
+      # why this value must keep that database name.
       - run: mix test
         env:
           DMEX_POSTGRES_URL: postgres://postgres:postgres@localhost:5432/dmex_test

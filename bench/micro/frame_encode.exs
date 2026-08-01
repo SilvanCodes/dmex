@@ -5,8 +5,6 @@
 # the id, and a `JSON.encode_to_iodata!/1` for the ISO8601 timestamp. If those
 # dominate at small payloads, precomputing the timestamp string is worth doing;
 # if they vanish beside the copy, the module is done.
-#
-
 
 alias DMEx.BenchHelper, as: Helper
 alias DMEx.Transport.SSE.Frame

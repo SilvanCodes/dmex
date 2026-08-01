@@ -2,9 +2,9 @@
 
 > The code is the spec of record, except for the wire encodings in `guides/`,
 > which are normative. This is the map: the wire contract a third-party client
-> implements against, the invariants the design rests on, and where each lives. Module docs describe their own mechanism; the reasoning that
-> spans modules is here. [ROADMAP.md](ROADMAP.md) covers what is designed but
-> not built.
+> implements against, the invariants the design rests on, and where each lives.
+> Module docs describe their own mechanism; the reasoning that spans modules is
+> here. [ROADMAP.md](ROADMAP.md) covers what is designed but not built.
 
 ## Overview
 
