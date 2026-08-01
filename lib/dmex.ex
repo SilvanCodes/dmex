@@ -33,10 +33,7 @@ defmodule DMEx do
       end
 
       defmodule MyApp.Messages.OrderPlaced do
-        use DMEx.Message
-
-        @derive JSON.Encoder
-        defstruct [:order_id, :customer_id, :total]
+        use DMEx.Message, [:order_id, :customer_id, :total]
       end
 
   Mount its endpoint — from a Phoenix router, a `Plug.Router`, or a bare

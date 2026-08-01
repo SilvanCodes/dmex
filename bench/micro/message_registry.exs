@@ -17,8 +17,7 @@ Helper.section("message_registry — per-row type resolution")
 for n <- 1..1_000 do
   Code.eval_string("""
   defmodule Bench.Messages.M#{n} do
-    use DMEx.Message
-    defstruct [:id]
+    use DMEx.Message, [:id]
   end
   """)
 end

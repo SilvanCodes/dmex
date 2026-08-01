@@ -3,26 +3,17 @@ defmodule DMEx.Test.Messages do
 
   defmodule OrderPlaced do
     @moduledoc false
-    use DMEx.Message
-
-    @derive JSON.Encoder
-    defstruct [:order_id, :customer_id, :total]
+    use DMEx.Message, [:order_id, :customer_id, :total]
   end
 
   defmodule OrderShipped do
     @moduledoc false
-    use DMEx.Message
-
-    @derive JSON.Encoder
-    defstruct [:order_id, carrier: "unknown"]
+    use DMEx.Message, [:order_id, carrier: "unknown"]
   end
 
   defmodule WithCustomCast do
     @moduledoc false
-    use DMEx.Message
-
-    @derive JSON.Encoder
-    defstruct [:order_id, :placed_at]
+    use DMEx.Message, [:order_id, :placed_at]
 
     @impl true
     def cast(data) when is_map(data) do

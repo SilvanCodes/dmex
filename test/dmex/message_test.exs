@@ -158,15 +158,69 @@ defmodule DMEx.MessageTest do
     end
   end
 
-  describe "use DMEx.Message" do
-    test "rejects options, since there is nothing to configure" do
-      assert_raise ArgumentError, ~r/takes no options/, fn ->
-        defmodule WithOptions do
+  describe "use DMEx.Message fields" do
+    test "generates the struct from a list of atoms" do
+      assert Map.from_struct(%OrderPlaced{}) == %{order_id: nil, customer_id: nil, total: nil}
+    end
+
+    test "generates the struct from a mixed list, keeping the declared defaults" do
+      assert Map.from_struct(%OrderShipped{}) == %{order_id: nil, carrier: "unknown"}
+    end
+
+    test "generates the JSON.Encoder derivation, so the struct is appendable as-is" do
+      encoded = JSON.encode!(%OrderPlaced{order_id: 7, customer_id: 3, total: 1999})
+
+      assert JSON.decode!(encoded) == %{"order_id" => 7, "customer_id" => 3, "total" => 1999}
+    end
+
+    test "generates a t/0 type over the declared fields" do
+      spec = type_spec(OrderShipped)
+
+      assert spec =~ "OrderShipped"
+      assert spec =~ "order_id: term()"
+      assert spec =~ "carrier: term()"
+    end
+
+    test "no fields yields a struct with no fields" do
+      defmodule Marker do
+        @moduledoc false
+        use DMEx.Message
+      end
+
+      # `struct/1` rather than `%Marker{}`: the module is defined in this very
+      # compilation context, so the literal cannot be expanded here.
+      marker = struct(Marker)
+
+      assert Map.from_struct(marker) == %{}
+      assert Marker.cast(%{"anything" => 1}) == marker
+
+      # No JSON assertion: protocols are consolidated by the time a test defines
+      # a module, so the generated `@derive` cannot install an implementation
+      # here — Elixir says as much in a warning. The derivation is covered by
+      # the compiled message modules above.
+    end
+
+    test "rejects anything defstruct would not take" do
+      assert_raise ArgumentError, ~r/in the shape defstruct takes them/, fn ->
+        defmodule BadFields do
           @moduledoc false
-          use DMEx.Message, type: "custom"
-          defstruct []
+          use DMEx.Message, "order_id"
+        end
+      end
+
+      assert_raise ArgumentError, ~r/in the shape defstruct takes them/, fn ->
+        defmodule BadField do
+          @moduledoc false
+          use DMEx.Message, [:order_id, "carrier"]
         end
       end
     end
+  end
+
+  defp type_spec(module) do
+    {:ok, types} = Code.Typespec.fetch_types(module)
+    {:type, type} = Enum.find(types, &match?({:type, {:t, _, []}}, &1))
+
+    type |> Code.Typespec.type_to_quoted() |> Macro.to_string()
   end
 end
