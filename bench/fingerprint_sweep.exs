@@ -3,7 +3,7 @@
 #
 #     MIX_ENV=test mix bench.fingerprint
 #
-# Three claims rest on numbers nothing had ever checked:
+# Three claims this sweep checks:
 #
 #   1. **No false negatives, ever.** The whole scheme was chosen for this. A
 #      single miss anywhere in the range is a hard failure here, not a data

@@ -3,8 +3,7 @@ defmodule DMEx.Handler.Pipeline do
   Processes one row: suppress, resolve, decode, handle, advance.
 
   Every handler-side semantic lives here, and the order of operations *is* the
-  specification. Separate from `DMEx.Handler.Stream` so it can be tested against
-  a real database with no socket in sight.
+  specification.
 
   ## 1. Duplicate suppression, by id
 
@@ -17,31 +16,26 @@ defmodule DMEx.Handler.Pipeline do
 
   ## 2. An unknown message type is skipped, not an error
 
-  Server-side selection makes this rare rather than obsolete: a filter false
-  positive admits one entire message type for the life of a connection, and a
-  handler declared `selective: false` asks for the whole log outright. So this
-  path is a live defence rather than dead code, and an unknown type is **not** a
-  fault.
-
-  Such a row advances the cursor exactly as a handled one does — it must, or a
-  handler would wedge forever on the first type it does not know. Skips get a
-  telemetry event, because a handler silently discarding most of a stream and
-  one silently discarding the single type it wanted look identical otherwise.
+  An unknown type is **not** a fault: a filter false positive admits one, and a
+  handler declared `selective: false` asks for the whole log outright. Such a
+  row advances the cursor exactly as a handled one does — it must, or a handler
+  would wedge forever on the first type it does not know — and emits
+  `[:dmex, :handler, :skip]`.
 
   ## 2a. A skip's advance is coalesced; a handled message's is not
 
-  A skip runs no handler, so its advance is atomic with *nothing*. Paying a
-  transaction per skipped row buys nothing, and on a mostly-skipped stream it is
-  the entire cost of consuming: ~250 rows/s against ~2 400 for the same bytes
-  read and discarded. So a skip advances `:cursor`, sets `:pending`, and returns
-  without touching the database; the run is persisted by `flush/1` on a
-  `checkpoint_interval` timer and before anything re-reads the durable cursor.
+  A skip runs no handler, so its advance is atomic with *nothing*, and on a
+  mostly-skipped stream a transaction per row is the entire cost of consuming
+  (measured — see ARCHITECTURE's *What has been measured*). So a skip advances
+  `:cursor`, sets `:pending`, and returns without touching the database; the run
+  is persisted by `flush/1` on a `checkpoint_interval` timer and before anything
+  re-reads the durable cursor.
 
   **A handled message commits immediately and needs no flush.**
   `c:DMEx.Storage.advance/3` sets `last_seen` absolutely, so advancing to a
   handled row's id *subsumes* every pending skip below it — skips at 5, 6, 7
-  followed by a handled 8 leave the cursor at 8 either way. That is why
-  coalescing costs section 5 nothing.
+  followed by a handled 8 leave the cursor at 8 either way. So coalescing leaves
+  the handler/cursor transaction untouched.
 
   A crash with a pending run costs re-reading and re-skipping those rows,
   bounded by `checkpoint_interval`. Nothing is lost and nothing is handled
@@ -49,24 +43,20 @@ defmodule DMEx.Handler.Pipeline do
 
   ## 3. Decoding happens outside the transaction
 
-  `c:DMEx.Message.cast/1` is CPU work, not IO, and holding a connection across
-  it would inflate transaction time — and therefore lock time — for nothing.
+  `c:DMEx.Message.cast/1` is CPU work, not IO, and holding a connection across it
+  would inflate transaction time — and therefore lock time — for nothing.
 
   ## 4. Failures are retried a bounded number of times, then resolved
 
-  When a handler raises the transaction rolls back and the message is still in
-  hand, so retrying is calling it again. Worth a few attempts, since a deadlock
-  or a blipped downstream is transient and reconnecting the whole subscription
-  would be absurdly heavy. What it must not become is a way to hide a
-  permanently-failing handler, so the count is small and the schedule short —
-  and jittered, because a shared downstream fails every handler at once.
+  A raise rolls the transaction back with the message still in hand, so a retry
+  is just calling the handler again — worth `max_attempts` tries for a transient
+  deadlock or a blipped downstream. Jittered, because a shared downstream fails
+  every handler at once.
 
   ## 5. The handler and the cursor share one transaction
 
   `handle_message/2` succeeding is what advances `last_seen`, both in one
-  transaction against the handler's own storage, so DMEx's bookkeeping cannot
-  drift from the callback. If the handler raises, the transaction rolls back,
-  the cursor does not move, and the exception propagates.
+  transaction. A raise rolls both back and propagates.
 
   ## 6. `on_failure` is the terminal action, and there are three
 
@@ -80,8 +70,7 @@ defmodule DMEx.Handler.Pipeline do
   skipped. The default because it is the only mode refusing both bad outcomes:
   one message a handler cannot process is not a reason for every *later* message
   to stop arriving, nor a reason to lose the failing one. What is stored is the
-  message and only the message; the exception and attempt count go to the log
-  and `[:dmex, :handler, :failed]`, which is what keeps the row replayable.
+  message and only the message — see `DMEx.Migration`.
 
   **`:crash`** re-raises with the original stacktrace and without advancing, so a
   pending run of skips is re-skipped after the restart. The supervisor restarts
@@ -89,8 +78,8 @@ defmodule DMEx.Handler.Pipeline do
   *before* this one — and the log's range scan re-streams the message that
   killed it, forever. Choose it when later messages must not be processed
   without this one, or when a loud alarm beats a growing table nobody watches.
-  Reconnect backoff keeps the loop off the log's database, and
-  `DMEx.Handler.Supervisor`'s restart budget keeps it off its siblings.
+  Reconnect backoff keeps the loop off the log's database and off its siblings;
+  `DMEx.Handler.Supervisor` deliberately sets no restart budget.
 
   **`:skip`** advances past the failing message without the handler having
   succeeded. Nothing durable is recorded: the log line and
@@ -141,7 +130,7 @@ defmodule DMEx.Handler.Pipeline do
   Propagates whatever the handler raises once retries are exhausted and
   `on_failure` says `:crash`.
   """
-  @spec run(map(), t()) :: {:ok, t()}
+  @spec run(row(), t()) :: {:ok, t()}
   def run(row, state) do
     id = Map.fetch!(row, "id")
 
@@ -155,9 +144,8 @@ defmodule DMEx.Handler.Pipeline do
   @doc """
   Persists a coalesced run of skips, if there is one.
 
-  A no-op when nothing is pending, which is the common case: a handled message
-  clears the marker on its way past, since its own advance already covered the
-  skips below it.
+  A no-op when nothing is pending — a handled message's own advance already
+  covered the skips below it.
   """
   @spec flush(t()) :: {:ok, t()}
   def flush(%{pending: false} = state), do: {:ok, state}
@@ -190,9 +178,6 @@ defmodule DMEx.Handler.Pipeline do
     attempt(row, id, message, metadata, state, 1)
   end
 
-  # One attempt, one telemetry span, so no span ever covers backoff: an
-  # attempt's duration is what the handler costs, a retry sequence's is mostly
-  # sleeping.
   defp attempt(row, id, message, metadata, state, attempt) do
     telemetry = %{
       subscription: state.subscription,
@@ -205,15 +190,11 @@ defmodule DMEx.Handler.Pipeline do
 
     :telemetry.span([:dmex, :handler, :message], telemetry, fn ->
       commit!(state, fn ->
-        # The return value is deliberately ignored: raising is how a handler
-        # signals failure, so there is no :ok/:error protocol to get wrong.
         _ = state.handler.handle_message(message, metadata)
 
         advance!(state, id)
       end)
 
-      # Cleared rather than flushed: the advance just committed is absolute, so
-      # it already carried every skip below this row.
       {{:ok, %{state | cursor: id, pending: false}}, telemetry}
     end)
   rescue
@@ -246,9 +227,6 @@ defmodule DMEx.Handler.Pipeline do
 
   defp give_up(state, row, id, exception, attempts, mode) do
     commit!(state, fn ->
-      # One transaction, deliberately: the dead-message row and the advance past
-      # it are the same fact, and a state where one landed without the other is
-      # not one anybody could act on.
       if mode == :dead_message, do: record_dead!(state, row, id)
 
       advance!(state, id)

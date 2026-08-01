@@ -5,11 +5,8 @@ someone implementing a DMEx consumer in another language. Where this and the
 Elixir code disagree, this document is what a producer expects.
 
 **Nothing here may be negotiated.** The blob carries a seed and a fingerprint
-array; every other parameter — the fingerprint width, the hash construction, the
-byte order, and the fact that the hashed key is the UTF-8 `message_type` string
-— is fixed. This is the one place producer and consumer must agree exactly, and
-the reason is the failure mode: disagreement does not produce a garbled filter
-that fails loudly, it produces **false negatives**, which is silent message
+array; every other parameter is fixed. Disagreement does not produce a filter
+that fails loudly — it produces **false negatives**, which is silent message
 loss.
 
 ## What the filter is
@@ -86,7 +83,7 @@ Each key maps to exactly three slots, one in each block:
 
 ```
 rotl64(x, r) = ((x << r) | (x >> (64 - r)))          // 64-bit rotate left
-reduce(x, m) = (uint32(x) * m) >> 32                 // Lemire's fastrange
+reduce(x, m) = ((x & 0xFFFFFFFF) * m) >> 32          // Lemire's fastrange
 
 h0 = reduce(h,             block)
 h1 = reduce(rotl64(h, 21), block) +     block
@@ -95,8 +92,9 @@ h2 = reduce(rotl64(h, 42), block) + 2 * block
 fingerprint(h) = (h ^ (h >> 32)) & 0xFFFF
 ```
 
-`reduce` maps a 32-bit value into `[0, m)` with a multiply and a shift. It is
-**not** `x % m`, and substituting a modulo changes which slots a key lands in.
+`reduce` maps the **low** 32 bits of `x` into `[0, m)` with a multiply and a
+shift. It is **not** `x % m`, and substituting a modulo — or taking the high 32
+bits — changes which slots a key lands in.
 
 ## 5. Membership
 
@@ -140,7 +138,8 @@ matches the wrong things, which is why the parameters above are fixed.
 
 ## 7. Construction (consumers only)
 
-Standard XOR filter peeling. Duplicate types must be removed first.
+Standard XOR filter peeling. Duplicate types must be removed first, and the set
+must be non-empty.
 
 1. **Count.** For every key, compute `h` and its three positions, and for each
    position increment a counter and XOR `h` into an accumulator.
@@ -148,7 +147,8 @@ Standard XOR filter peeling. Duplicate types must be removed first.
    accumulator at that slot is the one remaining key `h`. Push `(h, slot)` onto
    a stack, then remove `h` from all three of its positions — decrementing each
    counter and XORing `h` out of each accumulator — queueing any position whose
-   counter thereby becomes 1.
+   counter thereby becomes 1. **Re-check the counter when a slot comes off the
+   queue**: an earlier peel may have emptied it since it was queued.
 3. **Check.** If every key was peeled, continue. Otherwise retry with a new seed
    (§8); construction is randomized and can fail.
 4. **Assign.** Walk the stack in **reverse peel order** (i.e. pop it). For each
@@ -190,10 +190,10 @@ Each is the complete blob for the given type set, under §8's seed derivation.
 | `["A.B", "C.D", "E.F"]` | `0x9b673d3aa5d72acd` | 36 | `m2c9OqXXKs0AAAAAAAAAAAAAAAB7wNzAAAAAAAAAtPQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA` |
 | `["MyApp.Messages.OrderPlaced", "MyApp.Messages.OrderShipped"]` | `0x4e8bcd4f1869cca4` | 36 | `TovNTxhpzKQAAAAAAAAAAJJHAAAAAAAAAAAAAP2XAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA` |
 
-An implementation reproducing §1–§6 agrees with a DMEx producer even if it picks
+An implementation reproducing §1–§7 agrees with a DMEx producer even if it picks
 different seeds; matching the blobs above additionally confirms §8.
 
-## 10. Measured behaviour
+## 10. Measured behaviour (informative)
 
 From `mix bench.fingerprint`, an 86-point sweep over set sizes 1–2000:
 
@@ -205,13 +205,10 @@ From `mix bench.fingerprint`, an 86-point sweep over set sizes 1–2000:
 | bytes per type | 2.493 raw at n = 2000 | 2.46 asymptotically |
 | chars per type | 3.329 after base64url | — |
 
-`recovered / encoded` models the operationally meaningful figure: against a
-producer knowing ten times the types a consumer selects, how much does the
-consumer actually admit? A flat 1.0 with rare single-type excursions is the
-argument for 16-bit fingerprints. At 8 bits the same universe would admit a
-spurious type at roughly every other point, and one unlucky draw means a
-connection receives an entire high-volume type it never asked for, for as long
-as it stays connected.
+`recovered / encoded` is the operationally meaningful figure: against a producer
+knowing ten times the types a consumer selects, how much does the consumer
+actually admit? See ARCHITECTURE.md for why this is the argument for 16-bit
+rather than 8-bit fingerprints.
 
 ## 11. Size limits
 
@@ -219,11 +216,6 @@ The blob lands in the request line, and therefore in every access-log line of
 every intermediary. nginx's `large_client_header_buffers` and Apache's
 `LimitRequestLine` both default to about 8 KB, which puts the ceiling at
 **roughly 2 400 message types**.
-
-This is why the filter is load-bearing rather than an optimization: spelled-out
-module names at 25–40 bytes each would exhaust a conservative 2 KB request line
-at around sixty types, which is an entirely ordinary handler. The filter is what
-makes the URL viable, and the URL is what makes browser consumers viable.
 
 Exceeding the limit fails loudly — a `414` at connect — rather than silently
 truncating a selection.
@@ -242,11 +234,9 @@ currently holds one name:
 
 A segment that is neither a reserved name nor a decodable blob is a `400`. A
 filter that decodes but matches none of the producer's known message types is a
-`404`, which a consumer should **retry** rather than treat as fatal: a consumer
-deployed ahead of the producer that will emit its types is legitimately in that
-state, and the repair is the producer's next deploy.
+`404`, which a consumer should **retry** rather than treat as fatal.
 
 An **empty** segment — the trailing slash in `GET /stream/` — is the same
-resource as `GET /stream`: the whole log. A trailing slash is the kind of thing
-that creeps into a configured URL, and answering it with a fatal `400` would let
-one stray character kill a subscription permanently.
+resource as `GET /stream`: the whole log.
+
+Any method other than `GET` is a `405` with an `Allow: GET` header.

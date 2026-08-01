@@ -30,23 +30,14 @@ defmodule DMEx.Log.Watcher do
 
   That reclaims the request process, its registry entry, the database connection
   it had checked out (the pool monitors its client), and the socket through the
-  web server's teardown — the same path a client disconnect takes. **Dropping a
-  connection is not a delivery event**, which is what makes it safe to be blunt.
+  web server's teardown. Dropping a connection is not a delivery event
+  (ARCHITECTURE invariant 7), which is what makes it safe to be blunt.
 
   ## What it cannot see
 
-  A peer that vanished while the kernel still accepts our bytes: writes keep
-  returning `:ok`, deadlines keep being met, and nothing inside this VM can tell
-  the difference. Heartbeats mean there is always unacked data in flight, so
-  TCP's retransmission timeout eventually errors the socket; tuned keepalive
-  shortens that. This is the one case the socket layer still owns.
-
-  ## Where global limits would land
-
-  This process already knows a log's whole live set, which makes it the seat for
-  the aggregate machinery DMEx leaves out: a connection budget,
-  `503`/`Retry-After` admission control at connect, and a shedding policy that
-  can rank candidates by deadline. See `ROADMAP.md`.
+  A peer that vanished while the kernel still accepts our bytes: deadlines keep
+  being met and nothing inside this VM can tell. TCP keepalive is the only
+  lever — see `guides/deployment.md`.
   """
 
   use GenServer
@@ -130,9 +121,6 @@ defmodule DMEx.Log.Watcher do
   defp reclaim(log, pid, status, now) do
     overdue_by = now - Status.deadline(status)
 
-    # Disarmed before the signal, not after: the kill is asynchronous and the
-    # entry survives until the registry processes the `:DOWN`, so an overlapping
-    # sweep would otherwise report this connection a second time.
     Status.disarm(status)
 
     :telemetry.execute(

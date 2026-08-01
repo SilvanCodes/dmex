@@ -2,19 +2,14 @@ defmodule DMEx.Handler.Request do
   @moduledoc """
   What a subscription says on connect.
 
-  The reading half of the contract `DMEx.Log.Params` implements on the log's,
-  and split out for the same reason: it is pure, so both ends of the wire
-  contract are data rather than buried in a process. Used by
-  `DMEx.Transport.SSE`, the only transport with a request to make.
+  The consumer half of the contract `DMEx.Log.Params` validates on the log side,
+  kept pure so both ends are data rather than buried in a process. Used by
+  `DMEx.Transport.SSE`.
 
-  One header goes out, `last-event-id`, and it is one SSE already defines.
-  **DMEx adds no request headers of its own**, so this request is
-  byte-identical to what a browser's `EventSource` sends for the same URL.
-
-  The durable cursor is always the authority; `start:` answers only "where does
-  this handler begin when it has no cursor yet". `:beginning` sends **no header
-  at all** rather than `0` — what a fresh `EventSource` does, and what the log
-  reads as the whole log.
+  The only header DMEx contributes is `last-event-id`, alongside the `accept`
+  every SSE client sends. `start: :beginning` sends no `last-event-id` at all
+  rather than `0` — what a fresh `EventSource` does, and what the log reads as
+  the whole log.
   """
 
   alias DMEx.Config

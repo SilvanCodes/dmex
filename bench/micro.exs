@@ -2,8 +2,7 @@
 #
 #     MIX_ENV=test mix bench.micro
 #
-# Each file states the design claim it is testing. None of these run in CI —
-# benchmarks are for decisions, not regressions.
+# Each file states the question it answers.
 
 Code.require_file("support/bench_helper.exs", __DIR__)
 

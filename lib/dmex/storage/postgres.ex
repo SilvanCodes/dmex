@@ -2,11 +2,10 @@ defmodule DMEx.Storage.Postgres do
   @moduledoc """
   The Postgres implementation of `DMEx.Storage`.
 
-  Raw SQL through `Ecto.Adapters.SQL.query/4` rather than Ecto schemas, for two
-  reasons. `data::text` cannot be expressed as a schema load, and the whole
-  point of the read is that `jsonb` comes back as the text
-  `DMEx.Transport.SSE.Frame` splices verbatim. And there is no schema to reuse —
-  DMEx owns three tables nothing else queries.
+  Raw SQL through `Ecto.Adapters.SQL.query/4` rather than Ecto schemas:
+  `data::text` cannot be expressed as a schema load, and the whole point of the
+  read is that `jsonb` comes back as the text `DMEx.Transport.SSE.Frame` splices
+  verbatim.
 
   ## No JSON library is ever required
 
@@ -14,17 +13,11 @@ defmodule DMEx.Storage.Postgres do
   `column::text`, so Postgrex is never asked to encode or decode `jsonb` and
   DMEx never needs `config :postgrex, :json_library`.
 
-  **The double cast is load-bearing, and `$n::jsonb` is the trap.** Postgres
-  infers a parameter's type from where it is used, so `$n::jsonb` makes it
-  describe that parameter as `jsonb` — at which point Postgrex helpfully encodes
-  the Elixir binary *through its own JSON codec*, storing the string
-  `"{\\"order_id\\":7}"` rather than the object `{"order_id": 7}`. Going through
-  `::text` first pins the parameter to `text`, so the bytes reach Postgres
-  untouched and Postgres does the parse.
-
-  That failure is silent — the insert succeeds, the row is valid `jsonb`, and
-  only a consumer decoding the payload notices — so a test asserts
-  `jsonb_typeof(data) = 'object'`.
+  The double cast is load-bearing and `$n::jsonb` is the trap: Postgres would
+  describe the parameter as `jsonb`, at which point Postgrex encodes the binary
+  through its own JSON codec and stores a *string* rather than an object. Going
+  through `::text` pins the parameter and Postgres does the parse. The failure
+  is silent, so a test asserts `jsonb_typeof(data) = 'object'`.
   """
 
   @behaviour DMEx.Storage
@@ -62,9 +55,6 @@ defmodule DMEx.Storage.Postgres do
     end
   end
 
-  # No default for `types`: a default here defines a `read/4` that is not in the
-  # behaviour, so `@impl` would be silently vouching for an arity nothing
-  # implements.
   @impl DMEx.Storage
   def read(opts, cursor, limit, max_bytes, :all)
       when is_integer(cursor) and cursor >= 0 and is_integer(limit) and limit > 0 and
@@ -75,16 +65,11 @@ defmodule DMEx.Storage.Postgres do
   def read(opts, cursor, limit, max_bytes, types)
       when is_integer(cursor) and cursor >= 0 and is_integer(limit) and limit > 0 and
              is_integer(max_bytes) and max_bytes > 0 and is_list(types) do
-    # A separate statement rather than `($4 IS NULL OR message_type = ANY($4))`
-    # on the one above. The nullable form is a correct query and a ruinous plan:
-    # Postgres cannot use either index through it, so the unfiltered read would
-    # regress to pay for a predicate it never uses.
+    # A separate statement, not a nullable predicate — see `c:DMEx.Storage.read/5`.
     query(opts, read_sql(opts, "AND message_type = ANY($4)"), [cursor, limit, max_bytes, types])
   end
 
-  # Public only so `DMEx.Storage.PostgresTest` can EXPLAIN the real statement:
-  # the plan shape is load-bearing (see `read_sql/2` below) and a test that
-  # restated the SQL would prove nothing about it.
+  # Public so `DMEx.Storage.PostgresTest` can EXPLAIN the real statement.
   @doc false
   def __read_sql__(opts, predicate), do: read_sql(opts, predicate)
 
@@ -104,15 +89,11 @@ defmodule DMEx.Storage.Postgres do
   # the first row. And `previous_id` via `lag/3`, defaulting to the cursor so
   # the first row of a page links back to what the caller asked to resume after.
   #
-  # **The outer filter** is where the bound is. `prefix_bytes + bytes <= $3` is
-  # inclusive, so the rows never total more than the budget — an exclusive
-  # `prefix_bytes < $3` would admit a row whose own size pushes the total past
-  # it, which is a bound that does not bound.
-  #
-  # `OR prefix_bytes = 0` is the deliberate exception that stops a single
-  # oversized row from wedging the subscription forever. It identifies the first
-  # row exactly: `message_type` is `NOT NULL` and constrained to one or more
-  # characters, so every row contributes at least one byte.
+  # **The outer filter** applies the byte bound — inclusive, plus
+  # `prefix_bytes = 0` so one oversized row cannot wedge the subscription. That
+  # identifies the first row exactly: `message_type` is `NOT NULL` and at least
+  # one character, so every row contributes at least one byte. See
+  # `c:DMEx.Storage.read/5`.
   #
   # The ORDER BY is repeated at the top because a filter over a subquery does
   # not contractually preserve its ordering, and ordering here is a delivery
@@ -168,10 +149,9 @@ defmodule DMEx.Storage.Postgres do
   def appended_since(opts, cursor) when is_integer(cursor) and cursor >= 0 do
     repo = Map.fetch!(opts, :repo)
 
-    # One statement for both halves the poll needs. `array_agg(DISTINCT ...)`
-    # over a window bounded by one poll interval of appends is a primary-key
-    # range scan, and on an idle log it touches nothing and both columns come
-    # back NULL.
+    # One statement for both halves the poll needs: a primary-key range scan
+    # over one poll interval of appends. On an idle log `max(id)` is NULL, which
+    # is the empty case.
     sql = """
     SELECT max(id), coalesce(array_agg(DISTINCT message_type), '{}')
       FROM #{table(opts, @messages)}
@@ -258,8 +238,6 @@ defmodule DMEx.Storage.Postgres do
   def dead_message(opts, attrs) when is_map(attrs) do
     repo = Map.fetch!(opts, :repo)
 
-    # `inserted_at` is left to the column default — it records when this row
-    # landed here, not when the message was appended.
     sql = """
     INSERT INTO #{table(opts, @dead_messages)}
            (subscription, id, message_type, data, metadata)
@@ -284,8 +262,8 @@ defmodule DMEx.Storage.Postgres do
   def dead_messages(opts, subscription) when is_binary(subscription) do
     repo = Map.fetch!(opts, :repo)
 
-    # The same projection `read/5` uses, because the columns are the same
-    # columns — which is the whole point of the table's shape.
+    # `read/5`'s columns minus `previous_id`, which a dead row has no delivered
+    # sequence for.
     sql = """
     SELECT id, message_type, data::text, metadata::text, inserted_at
       FROM #{table(opts, @dead_messages)}

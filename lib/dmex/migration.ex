@@ -65,7 +65,7 @@ defmodule DMEx.Migration do
   end
 
   @doc """
-  Drops the DMEx tables.
+  Drops the DMEx tables. A `:prefix` schema itself is left in place.
 
   Note what this destroys: `dmex_messages` is an append-only log nothing else
   keeps a copy of, and dropping it is not recoverable from any consumer.

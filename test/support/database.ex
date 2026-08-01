@@ -2,10 +2,8 @@ defmodule DMEx.Test.Database do
   @moduledoc """
   Database availability probing and setup for the test suites.
 
-  Most of DMEx's units — frame encoding and parsing, message casting, the queue,
-  the control law — are pure and need no database at all. Rather than making the
-  whole suite unrunnable without one, tests that need Postgres are tagged
-  `:database` and excluded when none is reachable.
+  Tests needing Postgres are tagged `:database` and excluded when none is
+  reachable, so the pure units still run without one.
   """
 
   alias Ecto.Adapters.Postgres
@@ -56,8 +54,9 @@ defmodule DMEx.Test.Database do
           could not create storage for #{inspect(repo)}: #{inspect(reason)}
 
           It is configured for #{config[:hostname]}:#{config[:port]}/#{config[:database]}.
-          If that host is wrong, set DMEX_POSTGRES_URL (the integration database
-          is derived from it) or DMEX_POSTGRES_INTEGRATION_URL explicitly.
+          If that host is wrong, set DMEX_POSTGRES_URL and/or
+          DMEX_POSTGRES_INTEGRATION_URL — see config/test.exs for how the second
+          is derived from the first.
           """
       end
     end)

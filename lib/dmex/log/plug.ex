@@ -19,8 +19,8 @@ defmodule DMEx.Log.Plug do
       consumer's filter admits. See `DMEx.Fingerprint` for the blob and
       `DMEx.Log.Messages` for what it is resolved against.
 
-  There is no application segment and no query string: a log application owns
-  exactly one log, and its hostname already identifies the app.
+  There is no application segment and no query string: one mount serves exactly
+  one log.
 
   ## Selection is resolved once, at connect
 
@@ -58,11 +58,8 @@ defmodule DMEx.Log.Plug do
 
   Beyond the ordinary SSE set:
 
-    * **`x-accel-buffering: no`** — nginx proxies with `proxy_buffering on` by
-      default, holding response bytes until its buffer fills. On an SSE stream
-      that converts pacing into "whenever the buffer happens to fill" and
-      swallows heartbeats, so a healthy stream looks dead to both the consumer
-      and the proxy's idle timeout. nginx-specific and ignored elsewhere.
+    * **`x-accel-buffering: no`** — nginx-specific; stops it buffering the
+      stream. See `guides/deployment.md`.
     * **`dmex-matched-messages`** — on a selective stream only, how many of the
       log's types the filter admitted.
 
@@ -73,12 +70,10 @@ defmodule DMEx.Log.Plug do
 
   A `400` for a malformed `Last-Event-ID` or a path segment that is neither a
   reserved name nor a decodable filter. A `404` for a reserved sub-resource that
-  is not implemented, or a filter matching none of this log's message types.
+  is not implemented, or a filter matching none of this log's message types. A
+  `405` with `allow: GET` for any other method.
 
-  There is no `503`/`Retry-After` admission control: DMEx has no aggregate
-  budget to enforce one against. `DMEx.Log.Watcher` is where one would be
-  enforced if it existed, and this is where it would be asked, before
-  registering. See `ROADMAP.md`.
+  There is no `503`/`Retry-After` admission control — see `ROADMAP.md`.
   """
 
   alias DMEx.Config
@@ -118,9 +113,6 @@ defmodule DMEx.Log.Plug do
   def call(conn, %{log: log}) do
     config = log.__dmex__().config
 
-    # `conn.path_info` is what the mount handed us — Plug's `forward` strips the
-    # prefix — so the one-line `forward "/stream", to: DMEx.Log.Plug` mount
-    # routes `/stream/<blob>` with no routing change at all.
     case Params.parse(conn.path_info, conn.req_headers) do
       {:ok, params} -> select(conn, log, params, config)
       {:error, {:reserved, _name} = error} -> not_found(conn, Params.describe(error))
@@ -145,7 +137,6 @@ defmodule DMEx.Log.Plug do
       |> MapSet.new()
 
     if MapSet.size(selection) == 0 do
-      # Deliberately loud, and retryable rather than fatal — see the moduledoc.
       not_found(
         conn,
         "this filter matched none of the message types #{inspect(log)} knows about"

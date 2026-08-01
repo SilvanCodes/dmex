@@ -6,11 +6,9 @@ defmodule DMEx.Test.Handlers do
   can assert on the exact arguments its handler received without any global
   state.
 
-  Every one but `Fanned` declares `logs: [:test]`, so `DMEx.Test.Server.logs/1` binds
-  the whole file to one runtime URL. Ids are per-module because a subscription
-  id keys the cursor and these run concurrently — and the message set is now
-  whatever `handle_message/2` matches on, so a handler needed for two different
-  sets of types is two modules.
+  `Fanned` is the only one on two logs (`:test` and `:other`); the rest are on
+  `:test` alone, which `DMEx.Test.Server.logs/1` binds. Ids are per-module: the
+  id keys the cursor and these run concurrently.
   """
 
   @key :dmex_test_handler_owner

@@ -1,4 +1,5 @@
-# The load-bearing design comparison.
+# Is splicing stored JSON text really cheaper than decode-and-re-encode, and by
+# how much per connection?
 #
 # `DMEx.Transport.SSE.Frame` splices each row's stored `data` and `metadata` into the frame as
 # text, exactly as the read returned them, rather than letting the driver decode
@@ -24,7 +25,7 @@ inputs =
     {"500 rows x #{payload}B", Helper.rows(500, payload)}
   end
 
-# What DMEx would have to do if `read/4` returned driver-decoded maps: parse each
+# What DMEx would have to do if `read/5` returned driver-decoded maps: parse each
 # row's payload back out of storage and re-serialize every frame.
 reencode = fn rows ->
   messages =

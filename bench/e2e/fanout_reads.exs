@@ -1,10 +1,8 @@
 # The `C x P` read amplification, and where it actually binds.
 #
 # Every connection issues its own reads, so C connections at the tip with
-# append rate P cost up to `C x P` reads per second. `ARCHITECTURE.md` says the
-# binding constraint in practice is **database connection-pool contention**
-# rather than raw query load, and asks for the realistic connection ceiling per
-# log. This is that measurement.
+# append rate P cost up to `C x P` reads per second. Where does that actually
+# bind — query load, or pool checkout?
 #
 # Three things to read off it:
 #

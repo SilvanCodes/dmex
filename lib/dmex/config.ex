@@ -119,7 +119,8 @@ defmodule DMEx.Config do
   Builds a validated handler config from `subscribe/2` options.
 
   Ignores keys that are not config settings. As with `log!/1`, rejecting a
-  misspelled key is the caller's job; `DMEx.Supervisor.subscribe/2` does it.
+  misspelled key is the caller's job; `use DMEx.Handler` and
+  `DMEx.Supervisor.subscribe/2` both do it.
   """
   @spec handler!(keyword()) :: handler()
   def handler!(opts) when is_list(opts) do

@@ -71,21 +71,14 @@ defmodule DMEx.MixProject do
   end
 
   defp aliases do
-    # Integration tests need a real, non-sandboxed database: LISTEN/NOTIFY only
-    # fires at COMMIT, and the append-ordering test needs genuinely concurrent
-    # transactions. Both are invisible or impossible inside the Ecto sandbox.
     [
       test: ["test --exclude integration"],
       "test.integration": ["test --only integration"],
       "test.all": ["test --include integration"],
-      # Benchmarks are for decisions, not regressions, so they are not in CI.
-      # They run in :test so test/support — repos, message modules, the storage
-      # stub — is on the path.
+      # In :test so test/support — repos, message modules, the storage stub —
+      # is on the path.
       "bench.micro": ["run bench/micro.exs"],
       "bench.e2e": ["run bench/e2e.exs"],
-      # Not a benchmark but the same kind of thing: a one-off sweep answering
-      # what the selection filter's error rate and size actually are, rather
-      # than what they are claimed to be.
       "bench.fingerprint": ["run bench/fingerprint_sweep.exs"]
     ]
   end

@@ -10,9 +10,9 @@ defmodule DMEx.Message do
       end
 
   `use DMEx.Message` takes the fields in exactly the shape `defstruct/1` takes
-  them and generates the three things every appendable message needs: the
-  `defstruct`, the `@derive JSON.Encoder`, and a `t/0` type whose fields are all
-  `term()` — a field list says what the fields are and never what they hold.
+  them and generates the `defstruct`, the `@derive JSON.Encoder`, `c:type/0`,
+  `c:cast/1`, and a `t/0` type whose fields are all `term()` — a field list says
+  what the fields are and never what they hold.
   Omit them entirely for a message carrying no data.
 
   Because `@derive` and `t/0` are generated with the struct, a message module

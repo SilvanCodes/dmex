@@ -2,9 +2,9 @@ defmodule DMEx.Log.Dispatcher do
   @moduledoc """
   Tells a log's live streams that something was appended.
 
-  One per log, started by that log's supervisor. It holds the `LISTEN`
-  connection and runs a poll timer; on either signal it broadcasts a bare
-  `:wakeup` across `DMEx.Log.Registry`.
+  One per log, started by that log's supervisor. It subscribes to the adapter's
+  notification connection and runs a poll timer; on either signal it broadcasts
+  a bare `:wakeup` across `DMEx.Log.Registry`.
 
   **Belt and suspenders.** `NOTIFY` gives low latency; the poll makes dispatch
   *robust*. A missed or coalesced notification costs up to one poll interval of
@@ -31,10 +31,8 @@ defmodule DMEx.Log.Dispatcher do
   is why the poll asks for distinct types and not just `max(id)`: the
   notification path cannot advance `last_announced`, since it is handed no id,
   so on a log appending more than once per interval the poll independently sees
-  movement and broadcasts too. Unrouted, that broadcast would wake every
-  connection every second regardless of selection — buying nothing on exactly
-  the busy logs where routing matters. Duplicate wakeups across the two paths
-  are fine: a spurious wakeup costs one read that finds nothing.
+  movement and broadcasts too. Duplicate wakeups are fine: a spurious one costs
+  a read that finds nothing.
   """
 
   use GenServer
@@ -75,13 +73,8 @@ defmodule DMEx.Log.Dispatcher do
     }
 
     # Seeded from the current tip, so a dispatcher starting against a log with
-    # history does not announce that history as new.
-    #
-    # In init/1 rather than handle_continue/2, deliberately: the latter leaves a
-    # window between "the dispatcher is started" and "the baseline is taken", and
-    # an append landing in it is read into the baseline and therefore never
-    # announced, so connected streams wait out a full heartbeat. It costs one
-    # index descent on a blocking start.
+    # history does not announce it. In `init/1` so no append can land before the
+    # baseline is taken; costs one index descent on a blocking start.
     {:ok, %{state | last_announced: current_max_id(state)}, {:continue, :listen}}
   end
 
@@ -195,7 +188,6 @@ defmodule DMEx.Log.Dispatcher do
       %{
         streams: DMEx.Log.Registry.count(state.log),
         woken: :counters.get(woken, 1),
-        # A count, so it belongs in measurements rather than metadata.
         types: length(types)
       },
       %{log: state.log}
@@ -204,8 +196,7 @@ defmodule DMEx.Log.Dispatcher do
     state
   end
 
-  # A whole-log subscription is concerned with every append, which is what
-  # keeps a bare `EventSource` working exactly as it did before routing existed.
+  # A whole-log subscription is concerned with every append.
   defp concerns?(:all, _types), do: true
   defp concerns?(selection, types), do: Enum.any?(types, &MapSet.member?(selection, &1))
 

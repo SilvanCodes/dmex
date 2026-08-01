@@ -6,10 +6,6 @@ defmodule DMEx.Handler.Stream do
   position, and runs every row the transport yields through
   `DMEx.Handler.Pipeline`, in order, one at a time.
 
-  What the transport is never appears here. That is the point of the split:
-  connecting, framing, decoding and liveness are protocol facts, while a cursor,
-  a pipeline and a checkpoint are not.
-
   ## Resumption is entirely cursor-driven
 
   On every connect — first or thousandth — the stream reads its durable
@@ -19,12 +15,9 @@ defmodule DMEx.Handler.Stream do
 
   ## Reconnects are jittered
 
-  Backoff lives here rather than in the supervisor, so a subscription that
-  crash-loops on a poison message does so at backoff pace instead of as fast as
-  a `DynamicSupervisor` will restart it. Each restart triggers a fresh log-side
-  read — against a *different application's* database when the transport is a
-  wire — so an un-backed-off crash-loop is something DMEx inflicts on someone
-  else.
+  `DMEx.Handler.Supervisor` sets no restart budget, so the pacing is here: each
+  restart triggers a fresh read against a *different application's* database
+  when the transport is a wire.
 
   One retry policy covers every transport: a transport says only whether an
   event ends this connection (`{:disconnect, reason, source}`) or the
@@ -43,9 +36,9 @@ defmodule DMEx.Handler.Stream do
   ## Skips are checkpointed on a timer, not per row
 
   `DMEx.Handler.Pipeline` defers a skipped row's cursor advance. This process
-  settles it: a `checkpoint_interval` timer armed for the process's whole life
-  rather than per connection, plus a flush before each of the two points that
-  re-read the durable cursor — a reconnect and `terminate/2`.
+  settles it: a `checkpoint_interval` timer, armed per process rather than per
+  connection, plus a flush before a reconnect (which re-reads the durable
+  cursor) and in `terminate/2` (so a clean stop does not discard skips).
 
   The `terminate/2` half only works because this process **traps exits**: a
   non-trapping child of a `DynamicSupervisor` is killed outright by
@@ -55,10 +48,8 @@ defmodule DMEx.Handler.Stream do
   ## Backpressure is the absence of a buffer
 
   Rows run through the pipeline **inline**, one at a time, as the transport
-  yields them. There is no queue and no drain loop, and the transport's contract
-  is that producing the next batch is blocked until this one is done — the
-  socket's receive window for `DMEx.Transport.SSE`, a synchronous call for
-  `DMEx.Transport.Local`. The most that can be in flight is one batch.
+  yields them: no queue, no drain loop, at most one batch in flight —
+  ARCHITECTURE invariant 8.
   """
 
   use GenServer
@@ -88,8 +79,6 @@ defmodule DMEx.Handler.Stream do
   def init(opts) do
     subscription = Keyword.fetch!(opts, :subscription)
 
-    # Without this the flush in `terminate/2` is dead code, and a linked
-    # reader's exit never arrives as a message.
     Process.flag(:trap_exit, true)
 
     # Before anything opens, which is what enforces one live stream per
@@ -119,7 +108,7 @@ defmodule DMEx.Handler.Stream do
           attempt: 0
         }
 
-        # Armed once for the process's whole life: a pending run of skips
+        # Per process rather than per connection: a pending run of skips
         # outlives a disconnect.
         {:ok, schedule_checkpoint(state), {:continue, :connect}}
 
@@ -190,9 +179,8 @@ defmodule DMEx.Handler.Stream do
     end
   end
 
-  # The local transport's handoff. Running the batch inside the call is what
-  # makes the reader block until it is done, which is the whole of the
-  # backpressure on that path.
+  # The local transport's handoff: running the batch inside the call is what
+  # makes the reader block until it is done.
   @impl GenServer
   def handle_call({:rows, rows}, _from, state) do
     state = touch(state)
@@ -261,8 +249,6 @@ defmodule DMEx.Handler.Stream do
 
   ## Running
 
-  # Inline, one row at a time. That *is* the backpressure: while this runs the
-  # transport cannot deliver more, so the log's write blocks.
   defp run(row, state) do
     {:ok, pipeline} = Pipeline.run(row, %{state.pipeline | cursor: cursor_of(state)})
 
@@ -272,14 +258,7 @@ defmodule DMEx.Handler.Stream do
   defp cursor_of(%{cursor: :none}), do: 0
   defp cursor_of(%{cursor: cursor}), do: cursor
 
-  # How far behind the tip this handler is, in ms rather than ids: the wire
-  # carries no `max_id` to subtract from, and `inserted_at` answers the question
-  # the id difference was a proxy for. Once per batch rather than per row, so it
-  # samples at the rate rows actually arrive.
-  #
-  # It compares the log's clock against this one, so it is only as good as the
-  # two machines' NTP agreement — fine for a seconds-scale signal, not for
-  # anything finer.
+  # Once per batch rather than per row, so it samples at the rate rows arrive.
   defp report_lag([], _state), do: :ok
 
   defp report_lag(rows, state) do
@@ -347,8 +326,6 @@ defmodule DMEx.Handler.Stream do
 
   ## Checkpointing
 
-  # A no-op unless a coalesced run of skips is outstanding, so the timer costs
-  # nothing on a stream whose rows are all handled.
   defp flush(state) do
     {:ok, pipeline} = Pipeline.flush(state.pipeline)
 

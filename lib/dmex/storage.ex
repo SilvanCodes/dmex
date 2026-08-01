@@ -186,7 +186,7 @@ defmodule DMEx.Storage do
   duplicate suppression happens in the pipeline, which is the authority, and an
   operator resetting a cursor deliberately needs this to go both ways.
   """
-  @callback advance(opts(), subscription :: String.t(), id :: pos_integer()) :: :ok
+  @callback advance(opts(), subscription :: String.t(), id :: non_neg_integer()) :: :ok
 
   @doc """
   Records a message its handler gave up on.

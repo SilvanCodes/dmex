@@ -30,8 +30,9 @@ defmodule DMEx.Fingerprint do
   extra bytes per type and cuts that by 256×.
 
   `build/1` and `encode/1` run **only at compile time**, in `DMEx.Handler`;
-  `decode/1` and `member?/2` run at connect, in `DMEx.Log.Plug`. So a filter
-  that cannot be constructed is a compile error rather than a runtime fallback.
+  `decode/1` runs at connect in `DMEx.Log.Params` and `member?/2` in
+  `DMEx.Log.Plug`. So a filter that cannot be constructed is a compile error
+  rather than a runtime fallback.
   """
 
   import Bitwise
@@ -40,8 +41,8 @@ defmodule DMEx.Fingerprint do
   A built filter: its seed, the block length its three hash positions derive
   from, and the fingerprint array.
 
-  The array is a binary rather than a list, so `member?/2` is three
-  `:binary.at/2` reads and `decode/1` is a slice with no per-element work.
+  The array is a binary rather than a list, so `member?/2` is three O(1) reads and
+  `decode/1` is a slice with no per-element work.
   """
   @type t :: %__MODULE__{
           seed: non_neg_integer(),
@@ -143,7 +144,7 @@ defmodule DMEx.Fingerprint do
     end
   end
 
-  @doc "How many fingerprint slots the array holds. For diagnostics and the sweep."
+  @doc "How many fingerprint slots the array holds. For `bench/fingerprint_sweep.exs`."
   @spec slots(t()) :: pos_integer()
   def slots(%__MODULE__{block: block}), do: block * 3
 

@@ -15,29 +15,14 @@ defmodule DMEx.Log.Messages do
   consumer genuinely selected. That is a false negative, which is silent message
   loss.
 
-  Compiled modules have no such gap. That set changes only on deploy, and a
-  deploy takes down the web server and with it every SSE connection, since the
-  request process *is* the stream. Every affected consumer reconnects and
+  Compiled modules have no such gap: that set changes only on deploy, and a deploy
+  takes every SSE connection with it, so every affected consumer reconnects and
   re-expands.
 
-  The intuitive reading, and the trap: that a type the log has only just begun
-  appending must have been unknown to the consumer too, and so could only be a
-  false positive. It does not hold — the two vocabularies are independent, and a
-  consumer deployed ahead of its log legitimately names types not yet emitted.
-  What saves it is the deploy boundary, not the definition.
-
-  ## A superset is free; a subset is silent loss
-
-  This set only has to *contain* everything the log might append: an extra type
-  never matches any filter and costs nothing, while a missing one is a false
-  negative. Deriving the list precisely — from `append/2` call sites, say —
-  would be exact about a question where exactness has no value, and blind to
-  every dynamic call site. A scan of loadable modules cannot omit a type the log
-  can append, because appending one requires its module to be loadable.
-
-  Scanned applications are `DMEx.Discovery`'s set, the same one handler
-  discovery reads. Cached in `:persistent_term` because the set is immutable for
-  the life of the node, so connect-time expansion is a lookup rather than a
+  The set only has to *contain* everything the log might append: an extra type
+  matches no filter, a missing one is silent loss. Scanned applications are
+  `DMEx.Discovery`'s set, cached in `:persistent_term` because the set is
+  immutable for the life of the node, so expansion is a lookup rather than a
   scan.
   """
 

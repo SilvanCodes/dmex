@@ -1,8 +1,8 @@
 # DMEx — Architecture
 
-> The code is the spec of record. This is the map: the wire contract a
-> third-party client implements against, the invariants the design rests on, and
-> where each lives. Module docs describe their own mechanism; the reasoning that
+> The code is the spec of record, except for the wire encodings in `guides/`,
+> which are normative. This is the map: the wire contract a third-party client
+> implements against, the invariants the design rests on, and where each lives. Module docs describe their own mechanism; the reasoning that
 > spans modules is here. [ROADMAP.md](ROADMAP.md) covers what is designed but
 > not built.
 
@@ -37,9 +37,9 @@ it appended, in one table. `DMEx.Migration` ships the DDL.
 
 ```sql
 CREATE TABLE dmex_messages (
-  id            bigserial   PRIMARY KEY,        -- SQLite: INTEGER PRIMARY KEY AUTOINCREMENT
-  message_type  text        NOT NULL,
-  data          jsonb       NOT NULL,           -- SQLite: text CHECK (json_valid(data))
+  id            bigserial   PRIMARY KEY,
+  message_type  text        NOT NULL CHECK (message_type ~ '^[A-Za-z0-9_.]+$'),
+  data          jsonb       NOT NULL,
   metadata      jsonb       NOT NULL DEFAULT '{}',
   inserted_at   timestamptz NOT NULL DEFAULT now()
 );
@@ -57,31 +57,28 @@ CREATE TABLE dmex_messages (
   escaping.
 
 **Two indexes, one per read shape.** The primary key serves a whole-log
-`id > cursor` range scan. `(message_type, id)` serves a selective one, and the
-planner takes it when the selection is rare enough to be worth it (measured: at
-0.1% of a log yes; at 1% and above it prefers the primary key, which is cheaper
-there). Both branches are correct.
+`id > cursor` range scan; `(message_type, id)` serves a selective one, and the
+planner takes whichever is cheaper (see *What has been measured*).
 
-**A row says what a message *is*, never who might want it.** The table is
-immutable, so any grouping stamped in at append time would be immutable too:
-fixed message by message, unable to apply to history, unable to follow readers
-as they change. That is a *filing* decision welded into the *record of what
-happened*, and the two have different lifetimes. So `message_type` is the only
-classification a row carries, and who wants what is resolved at read time.
+**A row says what a message *is*, never who might want it.** A grouping stamped
+in at append time would be immutable with the table: fixed message by message,
+unable to apply to history or to follow readers as they change. So
+`message_type` is the only classification a row carries, and who wants what is
+resolved at read time.
 
 ## Message-type selection
 
 **The selection is the handler's clauses.** `DMEx.Handler` already derives a
 subscription's message set at compile time from the structs `handle_message/2`
 matches on — it has to, or a consumer could not turn a `message_type` back into
-a struct. That set gains a second job. A name standing for a set of types would
+a struct. That set is also the selection. A name standing for a set of types would
 be a second vocabulary to define, version, discover and keep in sync, and the
 two can disagree: naming a type the handler cannot decode, or omitting one it
 can, both silently. Derived, that state is unrepresentable.
 
 **It travels as an XOR filter in the path.** Module names run 25–40 bytes each,
 so spelling them out exhausts a conservative request line at around sixty types.
-A 16-bit XOR filter encodes the same set at ~2.5 bytes per type, putting the
+A 16-bit XOR filter encodes the same set at ~2.46 bytes per type, putting the
 ceiling near 2 400. The blob is built at compile time and is a pure function of
 the message set, so it is a constant on `__dmex__/0` and the same handler
 compiles to the same URL everywhere. `guides/fingerprint-spec.md` is the
@@ -109,9 +106,8 @@ cursor lags the log by however much of it went to somebody else, which costs
 nothing to resume from: `(message_type, id)` makes the next read an index seek,
 the same price whether the next matching row is one id away or ten million.
 
-**Appending is untouched.** `append/2` keeps its signature and writes the same
-columns; message modules take no options. A publisher does not know, and does
-not need to know, who selects its types.
+**Selection does not reach the append path.** A publisher does not know, and
+does not need to know, who selects its types.
 
 **The escape hatch is on the handler.** `selective: false` requests the whole
 log and filters locally. It exists to tell two failures apart when a
@@ -135,13 +131,14 @@ handles chunk-boundary reassembly.
 
 **`GET /stream`** and **`GET /stream/<blob>`**, both mounted by `DMEx.Log.Plug`
 through one prefix `forward`. The bare form is the whole log; the blob narrows
-it. There is no application segment and no query string: a producer owns exactly
-one log, and the hostname identifies the app.
+it. There is no application segment and no query string: one mount serves
+exactly one log, and the mount path plus hostname identify it.
 
 `/stream/...` is a namespace with a closed reserved list matched *before* any
 blob decode. `stats` is reserved and not yet implemented, answered `404`. A
 segment that is neither reserved nor decodable is a `400`. A trailing slash is
-the same resource as the bare mount.
+the same resource as the bare mount. Any method other than `GET` is a `405`
+with an `Allow: GET` header.
 
 **Request headers**, validated by `DMEx.Log.Params`:
 
@@ -170,7 +167,7 @@ different selection is a different resource — so it belongs in the path:
 **The response** is `text/event-stream` with `Cache-Control: no-cache`,
 `X-Accel-Buffering: no` (nginx buffers by default, which would swallow both
 pacing and heartbeats), and `Connection: keep-alive` on HTTP/1.1. A selective
-stream additionally carries **`DMEx-Matched-Messages`**, the count of the
+stream additionally carries **`dmex-matched-messages`**, the count of the
 producer's own types the filter admitted. It is the only DMEx header anywhere,
 and it is diagnostic: the blob cannot be reversed, so this is the one thing that
 makes a subscription legible from outside — a count of `0` where ten types were
@@ -203,8 +200,8 @@ data: {"data":{"order_id":7},"metadata":{"trace_id":"abc"},"inserted_at":"2026-0
   hands to its parser. JSON's grammar forbids raw control characters inside
   strings, which is what makes it safe to splice stored `jsonb` text in with no
   escaping pass.
-- **How far behind is `now - inserted_at`**, in milliseconds, rather than an id
-  difference against a tip the wire no longer carries. It compares two machines'
+- **How far behind is `now - inserted_at`**, in milliseconds: the wire carries no
+  tip to subtract from. It compares two machines'
   clocks, so it is an NTP-accurate seconds-scale signal and not a finer one.
 - **`id:` is a link, not a number.** `1041/1042` reads "the row before me was
   1041, I am 1042", and a consumer refuses a frame that does not claim the row
@@ -215,8 +212,7 @@ data: {"data":{"order_id":7},"metadata":{"trace_id":"abc"},"inserted_at":"2026-0
 
 The cost of putting the type on `event:` is that `EventSource.onmessage` stops
 firing — named events need `addEventListener`, which is the ordinary way to
-write an `EventSource` against a typed stream. `curl -N` reads better than it
-did: the type is on its own line.
+write an `EventSource` against a typed stream. `curl -N` shows the type on its own line.
 
 **Heartbeats** are SSE comment frames (`: hb`) on an idle interval, ignored by
 every spec-compliant client. `retry:` is sent at stream open carrying the
@@ -330,8 +326,9 @@ processed, so a message lost between two that arrived would have its id put
 permanently behind the cursor by the next row's advance.
 
 TCP does not silently drop bytes mid-stream, so what this defends against is a
-mangling intermediary, a third-party producer whose read skips rows, and DMEx's
-own decoder, which discards any frame block missing `id:`, `event:` or `data:`.
+mangling intermediary, a third-party producer whose read skips rows, and
+`DMEx.Transport.SSE.Frame.parse/1`, which discards any block missing `id:`,
+`event:` or `data:`.
 A break drops the connection and re-reads from the durable cursor: transport
 damage repairs itself, and a producer that really does skip rows becomes a
 visible reconnect loop making no progress.
@@ -354,7 +351,7 @@ each log supervises.
 | --- | --- |
 | `DMEx.Log.Registry` | one entry per open stream, holding that connection's `DMEx.Log.Status` (wakeup flag and deadline) and its selection. The entry dies with the request process. |
 | `DMEx.Storage` children | whatever the adapter needs; Postgres puts its `LISTEN` connection here. |
-| `DMEx.Log.Dispatcher` | holds `LISTEN`, runs the poll timer, broadcasts wakeups. |
+| `DMEx.Log.Dispatcher` | subscribes to the adapter's notification connection, runs the poll timer, broadcasts wakeups. |
 | `DMEx.Log.Watcher` | sweeps deadlines and reclaims connections that stopped making progress. |
 
 None ever holds message data on a connection's behalf. The connections
@@ -418,7 +415,8 @@ of scope.
 
 - **No narrowing a selection below the handler's message set** — a consumer that
   can decode twenty types but only wants five receives fifteen it discards, or
-  splits into two handlers and two cursors.
+  splits into two handlers and two cursors. An explicit override on
+  `subscribe/2` is open.
 - **No aggregate budget or admission control** — no cap on open connections, no
   `503`/`Retry-After`. Per-connection protection is complete (invariants 2, 3,
   5); aggregate pressure from many individually-healthy connections is not
@@ -445,9 +443,9 @@ of scope.
 - **The consumer is commit-bound on the rows it *handles*, not on the rows it
   skips.** A client that reads and discards sustains ~2 500 rows/s; a real
   consumer with a no-op handler manages ~265 rows/s, and that is the transaction
-  it shares with the handler — the guarantee, not overhead. Coalescing skip
-  advances took a fully-skipping consumer to ~2 515 rows/s: 20 000 skipped rows
-  cost 7 cursor writes rather than 20 000.
+  it shares with the handler — the guarantee, not overhead. A fully-skipping consumer sustains
+  ~2 515 rows/s, because coalescing turns 20 000 skipped rows into 7 cursor
+  writes.
 
   At ~265 rows/s a million-row log of entirely handled messages takes roughly an
   hour to replay, and that is the figure "arbitrarily replayable" should be
@@ -516,9 +514,8 @@ of scope.
   `max_batch_size / slowest-consumer-rows-per-second` has to stay well under
   `stall_timeout`. See [the deployment guide](guides/deployment.md).
 - **Where the read-amplification ceiling actually is**, and whether the pool
-  wants partitioning so stream reads cannot starve append writes. Type-routed
-  wakeups made the amplification per-type rather than per-connection; where
-  *that* binds has not been measured.
+  wants partitioning so stream reads cannot starve append writes. Amplification is per-type rather than
+  per-connection, and where it binds has not been measured.
 - **Whether a slow consumer needs anything beyond the receive window.** With no
   consumer-side buffer, a consumer too slow for its producer's pacing stops
   reading, is reclaimed, reconnects, and does it again. That is correct and costs
@@ -530,23 +527,6 @@ of scope.
   client. Any SSE-capable client can consume a stream, and one that bounds
   neither its socket nor its queue is indistinguishable to the producer from a
   genuinely fast one. Documented caveat, or something detectable?
-- **What triggers reopening [aggregate limits](ROADMAP.md#global-resource-limits)**
-  — a connection-count threshold, an observed incident, or memory pressure the
-  per-connection bounds demonstrably failed to contain? Worth deciding the
-  tripwire before rediscovering the need in production.
-- **Whether `max_batch_bytes` wants to be adaptive per connection.** It is a
-  producer-wide constant, so a connection serving a consumer on a slow link gets
-  the same budget as one on a fast one. That is the same "one owner" trade
-  invariant 9 makes deliberately.
-- **Whether a selection should be narrowable below the handler's message set.**
-  "Your module list is your subscription" is the simpler rule and it is what
-  ships; an explicit override on `subscribe/2` is the escape hatch for a decode
-  vocabulary genuinely wider than its interest.
-- **Whether a selective cursor wants a second cursor**, and it is probably
-  answered by the index rather than open. `(message_type, id)` makes resuming
-  from a lagging sparse cursor an index seek costing the same whether the next
-  matching row is one id away or ten million — so the lag is visible but not
-  expensive. Worth revisiting only if a real deployment shows otherwise.
 - **`:skip` visibility** — `:skip` drops a message with no DMEx-side record
   beyond telemetry, unlike `:dead_message`. Intentional as a "bring your own
   observability" mode, or should it always leave a trace?

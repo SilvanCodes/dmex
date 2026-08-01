@@ -7,10 +7,10 @@ defmodule DMEx.Transport.SSE.Decoder do
   reads and a read can contain several frames plus part of another. This
   accumulates and dispatches on the blank-line delimiter.
 
-  **Two things are dropped on purpose.** Heartbeat comments (`: hb`) and the
-  lone `retry:` frame at stream open carry no row, so neither is returned — but
-  the `retry:` value is kept (see `retry/1`), because it is how a consumer
-  learns the interval to measure silence against.
+  **Blocks carrying no row are dropped**: heartbeat comments, the `retry:` frame
+  at stream open, and anything `DMEx.Transport.SSE.Frame.parse/1` finds
+  incomplete. The `retry:` value is kept (see `retry/1`), because it is how a
+  consumer learns the interval to measure silence against.
 
   **The buffer is bounded.** A producer that never emits a blank line — broken,
   hostile, or simply mid-frame when it wedged — would grow it without limit.
@@ -26,8 +26,8 @@ defmodule DMEx.Transport.SSE.Decoder do
 
   alias DMEx.Transport.SSE.Frame
 
-  # The SSE specification's line terminators are CR, LF and CRLF only, so a
-  # blank line is one of exactly these three.
+  # CR, LF and CRLF are the SSE line terminators. These three cover every blank
+  # line a real producer emits, including DMEx's own "\n\n".
   @delimiters ["\r\n\r\n", "\n\n", "\r\r"]
   @terminators ["\r", "\n"]
 
@@ -49,10 +49,8 @@ defmodule DMEx.Transport.SSE.Decoder do
   end
 
   @doc """
-  Returns the producer's advertised interval in ms, or `nil`.
-
-  The real upper bound on silence — `heartbeat_ms` plus one batch interval — so
-  a consumer reads it as "expect a frame or a comment within this window".
+  Returns the producer's advertised interval in ms, or `nil` — the upper bound
+  on silence a consumer measures against.
   """
   @spec retry(t()) :: pos_integer() | nil
   def retry(%__MODULE__{retry: retry}), do: retry

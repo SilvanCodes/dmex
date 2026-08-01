@@ -10,22 +10,15 @@ defmodule DMEx.Transport do
 
   Both ends are on one module on purpose: they are the two halves of one wire
   format, and splitting them would make it possible to configure a sender no
-  receiver understands.
-
-  **A transport is never configured, only inferred.** A `logs:` entry resolving
-  to a **module** is read in this VM (`DMEx.Transport.Local`); one resolving to
-  a **URL** is read over HTTP (`DMEx.Transport.SSE`). There is no `transport:`
-  option, because the binding already says everything one could: an application
-  does not read its own log over a socket, and cannot read a URL any other way.
+  receiver understands. A transport is inferred from a `logs:` binding, never
+  configured — see `DMEx.Supervisor`.
 
   ## What a transport must preserve
 
   **No buffer.** At most one batch may be in flight, and producing the next must
-  be blocked until the current one has been handled. `DMEx.Transport.SSE` gets
-  this from TCP — while the pipeline runs, the socket is not re-armed and the
-  log's `chunk/2` blocks; `DMEx.Transport.Local` gets it from a synchronous
-  call. A transport that queues rows for later has replaced a structural
-  guarantee with a bound somebody has to choose.
+  be blocked until the current one has been handled. A transport that queues
+  rows for later has replaced a structural guarantee with a bound somebody has
+  to choose.
 
   **Rows are handled in the process that owns the cursor.** `c:handle_message/2`
   runs inside `DMEx.Handler.Stream` and its rows are run inline there. A
@@ -46,8 +39,8 @@ defmodule DMEx.Transport do
   row count the loop already knows — `%{bytes: n}` where bytes are a meaningful
   quantity, `%{}` where they are not.
 
-  **This call is where backpressure lives.** It must not return until the rows
-  have been taken, since the loop reads again as soon as it does.
+  It must not return until the rows have been taken, since the loop reads again
+  as soon as it does.
   """
   @callback write(sink(), [DMEx.Storage.row()]) ::
               {:ok, sink(), map()} | {:error, term()}

@@ -58,7 +58,7 @@ defmodule DMEx.Log do
   It defaults to this module's own name, underscored and flattened — `MyApp.Log`
   becomes `my_app_log` — which needs no Mix at compile time, works inside
   umbrellas, and stays stable in a release. Pass `app: :orders` to choose your
-  own; it must match `~r/[a-z][a-z0-9_]*/` and fit in 58 bytes, Postgres's
+  own; it must match `~r/\A[a-z][a-z0-9_]*\z/` and fit in 58 bytes, Postgres's
   63-byte identifier limit less the `dmex_` prefix.
 
   Two applications sharing one database must not share one `dmex_messages`
@@ -130,7 +130,7 @@ defmodule DMEx.Log do
       def child_spec(opts), do: DMEx.Log.child_spec(__MODULE__, opts)
 
       @doc """
-      Starts this log's registry, notification listener, dispatcher and watcher.
+      Starts this log's supervision subtree.
 
       Usually called for you by putting `MyApp.Log` in a supervision tree.
       """

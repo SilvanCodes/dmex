@@ -64,7 +64,7 @@ defmodule DMEx.Test.Storage do
   @spec add_rows(DMEx.Storage.opts(), [DMEx.Storage.row()]) :: :ok
   def add_rows(opts, rows), do: update(opts, &%{&1 | rows: &1.rows ++ rows})
 
-  @doc "Every `{cursor, limit}` pair `read/3` has been called with, oldest first."
+  @doc "Every `{cursor, limit, types}` triple `read/5` was called with, oldest first."
   @spec reads(DMEx.Storage.opts()) :: [
           {non_neg_integer(), pos_integer(), :all | [String.t()]}
         ]
@@ -82,16 +82,16 @@ defmodule DMEx.Test.Storage do
   @spec dead_messages(DMEx.Storage.opts()) :: [map()]
   def dead_messages(opts), do: opts |> get() |> Map.fetch!(:dead) |> Enum.reverse()
 
-  @doc "Makes the next call to `fun` return `{:error, reason}`."
+  @doc "Makes the next `read/5` return `{:error, reason}`. Only `:read` is honoured."
   @spec fail(DMEx.Storage.opts(), atom(), term()) :: :ok
   def fail(opts, fun, reason \\ :boom), do: update(opts, &%{&1 | fail: {fun, reason}})
 
   @doc """
-  Makes every subsequent call to `fun` block its caller forever.
+  Makes every subsequent `read/5` block its caller forever. Only `:read` is
+  honoured.
 
   This is the failure no transport-level timeout can see: a query that never
-  comes back, or a pool checkout that never returns, wedges the send loop with a
-  perfectly healthy socket underneath it.
+  comes back wedges the send loop with a healthy socket underneath it.
   """
   @spec hang(DMEx.Storage.opts(), atom()) :: :ok
   def hang(opts, fun), do: update(opts, &%{&1 | hang: fun})
@@ -243,8 +243,7 @@ defmodule DMEx.Test.Storage do
     end)
   end
 
-  # An in-memory log has nothing to connect to and nothing to notify through —
-  # the same answers a SQLite adapter gives.
+  # An in-memory log has nothing to connect to and nothing to notify through.
   @impl DMEx.Storage
   def child_specs(_opts), do: []
 

@@ -146,11 +146,10 @@ place a connect attempt passes through before registering.
   "which connection goes", and the watcher can rank by deadline because it holds
   every one. Oldest-first and slowest-first are the other candidates.
 
-**What stays true regardless.** Dropping a connection is not a delivery event:
-the producer holds no consumer state, `last_seen` is durable on the consumer,
-and resumption is the same `id > last_seen` read a cold connect does. That makes
-shedding a capacity decision rather than a correctness one, and is why this can
-be added later without revisiting delivery semantics.
+**What stays true regardless.** Dropping a connection is not a delivery event
+(ARCHITECTURE invariant 7), which makes shedding a capacity decision rather than
+a correctness one — so this can be added later without revisiting delivery
+semantics.
 
 ### Open, if and when it lands
 
@@ -169,6 +168,9 @@ be added later without revisiting delivery semantics.
 - **How an operator sees the ceiling coming.** A budget only observable by being
   hit is a bad budget. `[:dmex, :stream, :connect]` plus a live registry count is
   most of a utilization signal already.
+- **What triggers building this at all** — a connection-count threshold, an
+  observed incident, or memory pressure the per-connection bounds demonstrably
+  failed to contain? Worth deciding the tripwire in advance.
 
 ## Compression
 

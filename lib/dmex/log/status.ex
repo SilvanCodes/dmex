@@ -17,26 +17,17 @@ defmodule DMEx.Log.Status do
   makes `flip/1` a test-and-set, so two dispatchers cannot both conclude they
   should send.
 
-  `DMEx.Log.Stream` clears its flag *before* issuing its read, never after. An
-  append landing between the clear and the read re-sets the flag and enqueues a
-  wakeup, so the loop runs again and performs a possibly-empty read — spurious
-  wakeups are harmless, missed ones would not be, and clearing afterwards would
-  open a window where an append is both invisible to the read and unable to set
-  the flag.
+  `DMEx.Log.Stream` clears its own flag before each read, never after — see
+  `clear/1`.
 
-  **The deadline** exists because a process blocked in `chunk/2` cannot time
-  itself out — nor can one blocked in a read against a database that stopped
-  answering. So the loop states its budget *before* entering each blocking step
-  (`arm/2`) and `DMEx.Log.Watcher` enforces it. A deadline in the past means the
-  loop did not get past a step it expected to clear, which is the whole of
-  "stuck". Deadlines are `System.monotonic_time(:millisecond)`, immune to
-  wall-clock adjustment and directly comparable between writer and reader.
+  **The deadline** is what `DMEx.Log.Watcher` enforces from outside: the loop
+  calls `arm/2` before each blocking step, and a deadline in the past means it
+  did not clear one. `System.monotonic_time(:millisecond)`, so it is immune to
+  wall-clock adjustment and comparable between the writer and the reader.
 
-  Both live in the connection's registry entry, created by
-  `DMEx.Log.Registry.register/3`, which does the cleanup for free: a connection
-  cannot outlive its own status. The two slots are written by different
-  processes — the dispatcher flips the flag, the stream arms its deadline — and
-  never contend, since `:atomics` operations are per element.
+  Both live in the connection's registry entry. The two slots are written by
+  different processes — the dispatcher flips the flag, the stream arms its
+  deadline — and never contend, since `:atomics` operations are per element.
   """
 
   @flag 1

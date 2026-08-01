@@ -3,16 +3,11 @@ defmodule DMEx.Handler.Supervisor do
   Owns one `DMEx.Handler.Stream` per live subscription.
 
   **Restart intensity is set never to trip, on purpose.** `on_failure: :crash`
-  is specified to crash-loop on a poison message forever, and a subscription can
-  crash-loop for reasons no failure mode covers — a repo that is down, a log
-  answering every connect with garbage. A `DynamicSupervisor`'s default budget
-  of three restarts in five seconds is blown by either in under a second, and
-  when it is, the *supervisor* dies and takes every other subscription in the
-  application with it.
-
-  So the rate limiting that matters lives inside `DMEx.Handler.Stream` instead,
-  as jittered reconnect backoff before each connect. A crash-looping
-  subscription slows itself down, and its siblings never notice.
+  is specified to crash-loop on a poison message forever, and a
+  `DynamicSupervisor`'s default three-in-five would blow in under a second —
+  killing this supervisor and every sibling subscription with it. The rate
+  limiting that matters is jittered reconnect backoff inside
+  `DMEx.Handler.Stream`.
   """
 
   use DynamicSupervisor

@@ -17,9 +17,7 @@ defmodule DMEx.Handler do
   The module is the complete declaration: `DMEx.Supervisor` binds `:orders` to a
   URL and starts it, and nothing at that call site repeats what is written here.
   Each entry in `logs:` is its own subscription — its own connection, cursor and
-  dead messages — all running the same clauses. Operator calls address one
-  cursor, so on a multi-log handler they take a `log:`.
-
+  dead messages — all running the same clauses. 
   ## The message types are read from the callback
 
   A subscription's message set is derived at compile time from the structs
@@ -32,7 +30,7 @@ defmodule DMEx.Handler do
 
     * **Inclusion is heuristic in one direction only.** No false negatives, so
       every type you match on is delivered. A false positive admits one extra
-      type, which arrives and is skipped exactly as an unknown type always was.
+      type, which arrives and is skipped like any unknown type.
     * **A filter matching none of the log's types is a `404`**, which the
       subscription retries rather than treating as fatal: a handler deployed
       ahead of the log that will emit its types is legitimately in that state.
@@ -143,9 +141,6 @@ defmodule DMEx.Handler do
     quote do
       @doc """
       This handler's resolved declaration.
-
-      Also what makes a module recognisable as a handler, so `subscribe/2` can
-      reject one that is not with a decent message.
       """
       @spec __dmex__() :: DMEx.Handler.declaration()
       def __dmex__, do: unquote(Macro.escape(declaration))

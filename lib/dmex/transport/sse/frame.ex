@@ -6,35 +6,12 @@ defmodule DMEx.Transport.SSE.Frame do
   mapping is direct and there is no envelope:
 
       id: 1041/1042
-      event: MyApp.Messages.OrderPlaced
-      data: {"data":{"order_id":7},"metadata":{"trace_id":"abc"},"inserted_at":"2026-07-27T10:31:04.221Z"}
+      event: MyApp.Messages.OrderShipped
+      data: {"data":{"order_id":7},"metadata":{"trace_id":"abc"},"inserted_at":"2026-07-27T10:31:04.884Z"}
 
-  | column | goes to | why there |
-  | --- | --- | --- |
-  | `id` | `id:`, as `previous/current` | it *is* the resume position, so a generic client's `Last-Event-ID` works with no DMEx knowledge — and the predecessor makes a *missing* frame detectable |
-  | `message_type` | `event:` | it *is* the event name, so `addEventListener("MyApp.Messages.OrderPlaced", …)` works in a browser |
-  | `data` | inside `data:` | the publisher's payload, verbatim |
-  | `metadata` | inside `data:` | the publisher's metadata, verbatim |
-  | `inserted_at` | inside `data:` | append time, which is what the consumer's lag signal is measured against |
-
-  There is no batch envelope and no frame-level `max_id`. Batching is real — the
-  producer writes a whole read's frames in one `chunk/2` — but it is a *write*
-  batch rather than a wire construct, so nothing on the consumer side has to
-  know it happened. That is what lets `id:` be the row's own id, and makes a
-  frame mean the same thing whether one row or five hundred went out together.
-
-  ## `id:` is a link, not a number
-
-  `id: 1041/1042` reads "the row before me was 1041, I am 1042", and that pair
-  is what makes a **missing** frame detectable: a consumer refuses a frame that
-  does not claim the row it last saw, so a lost row breaks the chain instead of
-  being silently stepped over by the next row's cursor advance. It has to be a
-  stated link rather than `id - 1`, because a selective stream's ids are
-  legitimately sparse and only the producer knows which gaps are deliberate.
-
-  **`Last-Event-ID` therefore carries the pair too.** A generic client echoes
-  back whatever was in `id:` verbatim, so a producer must accept `1041/1042` and
-  resume after `1042`. See `DMEx.Log.Params`.
+  The column-to-slot table is in ARCHITECTURE.md's wire contract, along with why
+  `id:` is a `previous/current` link rather than a number. `DMEx.Log.Params`
+  validates the `Last-Event-ID` a client echoes it back as.
 
   ## Encoding
 
@@ -71,9 +48,8 @@ defmodule DMEx.Transport.SSE.Frame do
   One parsed frame block.
 
   `:message` is the only kind that carries a row. `:retry` is the producer's
-  advertised interval, which an SSE parser applies the moment it reads the line.
-  `:ignore` is everything else: a heartbeat comment, a frame whose `data:`
-  buffer was empty, a field vocabulary this does not know.
+  advertised interval. `:ignore` is everything else: a heartbeat comment, a
+  block with an empty `data:` buffer, a field vocabulary this does not know.
   """
   @type parsed :: {:message, decoded_row()} | {:retry, pos_integer()} | :ignore
 
@@ -83,12 +59,9 @@ defmodule DMEx.Transport.SSE.Frame do
   Encodes one log row as one frame, as iodata.
 
   `:data` and `:metadata` are spliced verbatim and must therefore already be
-  JSON text. `:message_type` goes on the `event:` line unescaped, which the
-  log's CHECK constraint makes safe; `:inserted_at` runs through the JSON
-  encoder.
+  JSON text.
 
-  `id:` carries `previous_id/id`. A `nil` predecessor renders as `0`, the same
-  thing a read from the beginning of a log says.
+  `id:` carries `previous_id/id`; a `nil` predecessor renders as `0`.
   """
   @spec encode_row(row()) :: iodata()
   def encode_row(row) do
@@ -142,15 +115,8 @@ defmodule DMEx.Transport.SSE.Frame do
   per the SSE specification an event is dispatched only when the data buffer is
   non-empty, and a producer is free to send comments and bare fields.
 
-  That `:ignore` is precisely why the id chain exists: a block this drops is a
-  message the consumer never sees, indistinguishable without the chain from one
-  that was never sent.
-
   `id:` parses in both forms — `1041/1042` yields `"previous_id" => 1041`, a
   bare `1042` yields `nil`, which a consumer refuses to accept.
-
-  Decoding goes exactly one level; turning `data` into a struct happens later,
-  in the consumer's pipeline.
   """
   @spec parse(binary()) :: {:ok, parsed()} | {:error, error()}
   def parse(block) when is_binary(block) do
@@ -188,9 +154,6 @@ defmodule DMEx.Transport.SSE.Frame do
     end
   end
 
-  # SSE line terminators are CR, LF and CRLF, and only those. Notably U+2028 and
-  # U+2029 are not, despite being a perennial hazard in JavaScript contexts, so
-  # they need no special handling.
   defp split_lines(block), do: String.split(block, ["\r\n", "\n", "\r"])
 
   defp collect_field(line, acc) do
@@ -203,9 +166,7 @@ defmodule DMEx.Transport.SSE.Frame do
     end
   end
 
-  # A line beginning with a colon is a comment and is ignored. A line with no
-  # colon at all is a field with an empty value. Otherwise the value is
-  # everything after the colon, minus a single optional leading space.
+  # The value is everything after the colon, minus one optional leading space.
   defp parse_line(":" <> _comment), do: :comment
 
   defp parse_line(line) do
@@ -217,8 +178,6 @@ defmodule DMEx.Transport.SSE.Frame do
     end
   end
 
-  # `previous/current`, or a bare `current` from anything that does not chain.
-  # Anything else is not an id, and a block with no id is not a message.
   defp put_id(acc, value) do
     case String.split(value, "/", parts: 2) do
       [current] ->

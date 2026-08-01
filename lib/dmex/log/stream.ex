@@ -9,52 +9,31 @@ defmodule DMEx.Log.Stream do
   drains.
 
   A selective connection is not a distinct mode either: its read carries one
-  extra predicate, the type list `DMEx.Log.Plug` expanded from its filter at
-  connect. What it sees is a *sparse subset of the same id space*, never a space
-  of its own, so every consumer's cursor stays comparable with every other's.
+  extra predicate, the type list `DMEx.Log.Plug` expanded at connect.
 
-  ## What is done with the rows is the transport's
+  This module reads, paces, tracks the cursor and holds the deadlines; it never
+  frames anything and never touches a socket. `c:DMEx.Transport.write/2` takes a
+  whole read's rows and reports whether the sink is still there.
 
-  This module reads, paces, tracks the cursor and holds the deadlines. It never
-  frames anything and never touches a socket: `c:DMEx.Transport.write/2` takes a
-  whole read's rows and reports whether the sink is still there. Batching is
-  therefore a *write* batch, not a wire construct — nothing about it reaches the
-  reader, which sees a plain run of one-row frames and cannot tell how many
-  arrived together, so there is no reader-side configuration to keep in step.
-
-  ## Four properties, and they are the whole reason for this shape
-
-    * **Memory per connection is one batch**, in bytes and not only in rows.
-      There is no accumulator, and the read is bounded both ways inside the
-      query. See `c:DMEx.Storage.read/5`.
-    * **Reads are gated on sends completing**, so producer-side overload is
-      unrepresentable rather than detected and handled.
-    * **A stalled reader stalls its own loop and nothing else.** It reads no
-      more rows, allocates no more memory, and issues no more queries.
-    * **The cursor is the only source of truth.** A wakeup is a hint that work
-      may exist, never a carrier of work.
+  Memory per connection is one batch and reads are gated on sends completing, so
+  a stalled reader stalls its own loop and nothing else — ARCHITECTURE
+  invariants 2 and 3. The cursor is the only source of truth.
 
   ## Every blocking step is taken under a deadline
 
-  The loop cannot reclaim itself: a process blocked in a write is not running.
-  So before each step that can block — the read, either write, the idle wait,
-  the throttle — it arms a deadline in its `DMEx.Log.Status`, and
+  Before each step that can block — the read, either write, the idle wait, the
+  throttle — the loop arms a deadline in its `DMEx.Log.Status`, and
   `DMEx.Log.Watcher` kills it if the step does not clear. Each budget is
   `stall_timeout` plus however long that step is *expected* to take, so a wait
   doing its job is never mistaken for one that is stuck.
 
   ## Pacing
 
-  `max_batch_frequency` caps how often this loop goes back to the database;
-  `max_batch_size` and `max_batch_bytes` cap what one read brings back. The loop
-  is sequential, so together they cap this connection at `max_batch_size` rows
-  or `max_batch_bytes` of payload, `max_batch_frequency` times a second.
-
-  The first protects something the log shares: a hundred connections at the
-  default five reads per second is five hundred short range scans a second
-  against the pool, whatever the append rate does — which is why the ceiling is
-  a rate rather than a reaction to load. **All three are the log's, and only the
-  log's.** A reader asks for nothing and is told nothing.
+  `max_batch_frequency` caps how often this loop reads; `max_batch_size` and
+  `max_batch_bytes` cap what one read returns. The loop is sequential, so
+  together they cap the connection at `max_batch_size` rows or
+  `max_batch_bytes`, `max_batch_frequency` times a second. All three are log
+  configuration (ARCHITECTURE invariant 9).
   """
 
   alias DMEx.Log.Status
@@ -96,9 +75,7 @@ defmodule DMEx.Log.Stream do
 
     case read_and_send(conn, state) do
       {:sent, conn, state} ->
-        # Work in hand: keep draining at `max_batch_frequency` rather than
-        # waiting on a wakeup. This is what makes catch-up the ordinary loop
-        # running hot rather than a distinct mode.
+        # Work in hand: keep draining rather than waiting on a wakeup.
         throttle(state)
         loop(conn, state)
 
@@ -177,9 +154,6 @@ defmodule DMEx.Log.Stream do
   ## The loop's steps
 
   defp read_and_send(conn, state) do
-    # A read is a blocking step like any other: a pool checkout that never
-    # returns wedges this loop exactly as a stalled socket does — and unlike a
-    # stalled socket, no transport-level timeout can see it.
     arm(state)
 
     read =
@@ -208,11 +182,8 @@ defmodule DMEx.Log.Stream do
     end
   end
 
-  # A whole read's rows in one call: writing them individually would multiply
-  # the syscalls and the deadline arming by `max_batch_size` for rows going out
-  # together anyway. Nothing is trimmed here — the read came back already
-  # bounded in bytes as well as rows (see `c:DMEx.Storage.read/5`), and trimming
-  # here would mean the surplus had already been materialised.
+  # A whole read's rows in one call, so syscalls and deadline arming do not
+  # multiply by `max_batch_size`.
   defp send_rows(conn, state, rows) do
     last_id = rows |> List.last() |> Map.fetch!(:id)
 
@@ -250,20 +221,14 @@ defmodule DMEx.Log.Stream do
     end
   end
 
-  # Measured from the last frame *sent*, not from the top of the iteration. The
-  # interval is a floor on the gap between writes, and measuring it from the top
-  # would include time parked in `await_wakeup/1` — so a message on a quiet
-  # stream would wait out a whole interval *after* the wakeup announcing it,
-  # making end-to-end latency a full `1 / max_batch_frequency` rather than the
-  # half the design expects. On an idle stream this is a no-op.
+  # Measured from the last frame *sent*, so time parked in `await_wakeup/1` does
+  # not count against the interval. A no-op on an idle stream.
   defp throttle(%{last_sent_at: nil}), do: :ok
 
   defp throttle(state) do
     remaining = state.last_sent_at + state.batch_interval - System.monotonic_time(:millisecond)
 
     if remaining > 0 do
-      # Budgeted for the sleep it is about to take, so the watcher measures
-      # against what the throttle is *for*.
       arm(state, remaining)
 
       Process.sleep(remaining)
@@ -282,9 +247,7 @@ defmodule DMEx.Log.Stream do
 
   ## Deadlines
 
-  # Every write goes through here, so every write is under a deadline the
-  # watcher can see. This is the step the whole mechanism exists for: a reader
-  # that stops taking rows blocks this call with no way to time itself out.
+  # Every write goes through here, so every write is under a deadline.
   defp write(conn, state, rows) do
     arm(state)
 

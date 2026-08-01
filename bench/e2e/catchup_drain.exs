@@ -9,16 +9,12 @@
 #       plus the wire, with no consumer cost at all.
 #   (b) **end to end, no-op handler**: adds decode, cast, and the consumer's
 #       per-row transaction.
-#   (c) **end to end, every row skipped**: the consumer has no module for the
-#       type, so no handler runs — but the row still costs a lookup, a
-#       `last_seen` write and a commit.
+#   (c) **end to end, every row skipped**: `selective: false`, so rows arrive,
+#       no handler runs, and their advances coalesce into one cursor write per
+#       `checkpoint_interval`.
 #
-# **(c) versus (b) is the measurement behind an open question in
-# `ARCHITECTURE.md`**: on a stream where a consumer has modules for a small
-# fraction of the types, the drain is dominated by commits for rows nothing was
-# done with. If (c) is close to (b), skips are commit-bound, and coalescing
-# consecutive skips into one cursor advance is worth its complexity. If (c) is
-# far faster, it is not.
+# (c) should sit near (a): a skipped row costs a map lookup and a telemetry
+# event, no database work.
 
 alias DMEx.BenchHelper, as: Helper
 alias DMEx.Test.IntegrationLog, as: Log

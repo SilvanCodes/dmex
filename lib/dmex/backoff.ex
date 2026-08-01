@@ -17,7 +17,8 @@ defmodule DMEx.Backoff do
   @doc """
   The delay in ms before attempt `attempt`, counting from 1.
 
-  Doubles per attempt up to `max`, then draws uniformly from `[1, ceiling]`.
+  A uniform draw from `[1, ceiling]`, where `ceiling` is `base * 2^(attempt - 1)`
+  capped at `max`.
   """
   @spec delay(pos_integer(), pos_integer(), pos_integer()) :: non_neg_integer()
   def delay(attempt, base, max)

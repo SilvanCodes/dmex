@@ -1,20 +1,18 @@
 defmodule DMEx.Handler.Cursors do
   @moduledoc """
-  Reads and moves a subscription's read position, deliberately.
+  Reads and moves a subscription's read position.
 
   DMEx owns `last_seen` and application code never touches it in normal
   operation. These are the operator-facing exceptions: inspecting where a
   subscription has got to, replaying part of a log, and migrating a cursor when
   a subscription's declared identity changes.
 
-  ## Changing a declaration costs a migration; renaming a module does not
+  ## Changing a declaration costs a migration
 
-  `last_seen` is keyed by the identifier a handler declares —
-  `"orders/order_projection"` — not by the module's name, so a rename costs
-  nothing. What does reset a cursor is a different `id:` or a different key for
-  that log in `DMEx.Supervisor`'s `logs:`: a new identity with no cursor, which
-  then replays from the beginning. Do it in a migration, next to the code change
-  that causes it:
+  A different `id:`, or a different key for that log in `DMEx.Supervisor`'s
+  `logs:`, mints a new identity with no cursor, which then begins wherever its
+  `start:` says. (Renaming the module does not — see `DMEx.Handler`.) Migrate it
+  next to the code change that causes it:
 
       defmodule MyApp.Repo.Migrations.RenameOrderProjection do
         use Ecto.Migration
@@ -28,15 +26,10 @@ defmodule DMEx.Handler.Cursors do
         end
       end
 
-  `rename!/3` takes identifier **strings** while everything else here takes the
-  handler module, because the old identity is precisely the one no module
-  declares any longer.
-
   ## Options
 
-  All four take `repo:` (required), plus optional `storage:` and `prefix:`, the
-  same as `DMEx.Supervisor`. The three taking a handler module also take `log:`,
-  which a handler reading more than one log must give.
+  `repo:` (required), plus optional `storage:`, `prefix:` and — for a multi-log
+  handler — `log:`. See `DMEx.Supervisor.storage!/1`.
 
   ## These do not touch a running subscription
 
@@ -52,7 +45,7 @@ defmodule DMEx.Handler.Cursors do
 
   `nil` if it has never committed a position — the normal state for a
   subscription started with `start: :latest` on a quiet log, since nothing
-  writes a cursor until the first message is handled.
+  writes a cursor until it has consumed something.
   """
   @spec inspect(module(), keyword()) ::
           {:ok, %{last_seen: non_neg_integer(), updated_at: term()} | nil}
@@ -66,9 +59,9 @@ defmodule DMEx.Handler.Cursors do
   @doc """
   Moves `handler`'s cursor to `id`, so the next connect resumes after it.
 
-  `id: 0` replays the whole log — not the same as `reset!/2`, since a cursor at
-  0 still exists and `start:` stays ignored. It replays *everything* after that
-  id, so handlers must tolerate the redelivery.
+  `id: 0` replays the whole log — not the same as `reset!/2`, since a cursor at 0
+  still exists and `start:` stays ignored. Every message after that id which this
+  subscription selects is redelivered, so the handler must tolerate it.
 
   A cursor is nothing but a subscription and a position, so this runs from a
   migration or a console with no handler running.
@@ -137,8 +130,6 @@ defmodule DMEx.Handler.Cursors do
     :ok
   end
 
-  # A cursor belongs to one subscription, so a multi-log handler has to say
-  # which. `DMEx.Handler.log!/2` raises when it did not.
   defp subscription!(handler, opts) do
     Handler.subscription_id(handler, Handler.log!(handler, opts))
   end

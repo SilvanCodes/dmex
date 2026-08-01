@@ -55,7 +55,7 @@ end
  otp_app: :my_app,
  repo: MyApp.Repo,
  logs: [
-   catalogue: MyApp.Log,                        # owned: started and served here
+   catalogue: MyApp.Log,                        # owned: started here
    orders: "https://orders.internal/stream"     # someone else's: read
  ]}
 ```
@@ -85,8 +85,8 @@ has the value it does.
 
 ## Failure handling
 
-A handler that raises is retried in process a few times with jittered backoff.
-Once those are exhausted, `on_failure` decides:
+A handler that raises is retried in process up to `max_attempts` (3) with
+jittered backoff. Once those are exhausted, `on_failure` decides:
 
 - `:dead_message` (default) — record it, in the same transaction as the advance,
   and carry on.
@@ -95,39 +95,24 @@ Once those are exhausted, `on_failure` decides:
 - `:skip` — advance past it; the failure is logged and emitted as telemetry, and
   that is the only trace.
 
-`dmex_dead_messages` is **structurally a message log**: the same `id`,
-`message_type`, `data` and `metadata`, with the subscription id alongside. A
-dead row *is* a log row, so replay is handing it back rather than rebuilding a
-message from parts:
+`dmex_dead_messages` is **structurally a message log**, so replay hands a row
+back rather than rebuilding a message from parts:
 
     DMEx.Handler.DeadMessages.list(MyApp.OrderProjection, repo: MyApp.Repo)
     DMEx.Handler.DeadMessages.replay(MyApp.OrderProjection, repo: MyApp.Repo)
 
-Nothing about the failure is stored — no exception, no attempt count. A failure
-is an event, not a property of the message, so it lives in your logs and in
-`[:dmex, :handler, :failed]`. The one column differing from the log is
-`inserted_at`: here it is when the row landed, which is the axis anything
-pruning it has to work along.
-
 ## Backpressure
 
 **A consumer has no buffer at all**, and that is the whole mechanism. Rows run
-through the pipeline inline, on the socket path, as they are decoded — so while
-a handler is running the socket is not re-armed, the TCP receive window closes,
-and the producer's `chunk/2` blocks on it.
+through the pipeline inline on the socket path, so while a handler is running
+the socket is not re-armed, the TCP receive window closes, and the producer's
+`chunk/2` blocks on it. The producer's send loop is gated the same way: the
+next read cannot happen until the previous write returns.
 
-The producer's send loop is gated the same way: the next read cannot happen
-until the previous write returns, so a stalled consumer stalls its own
-connection and nothing else.
-
-There is nothing to configure on the consumer side, because there is nothing to
-size. How fast a stream is fed is `max_batch_frequency`, `max_batch_size` and
-`max_batch_bytes` on the **producer** — the party whose database, memory and
-request processes those protect. `max_batch_frequency` is a ceiling rather than
-a reaction to load, so a producer can multiply it by its connection count and
-know its own worst case in advance. The byte budget is the one worth setting
-deliberately: a row count is not a memory bound when payloads vary, and it is
-applied *in the read* rather than by trimming a batch already in memory.
+Nothing is configurable on the consumer side. Pacing is `max_batch_frequency`,
+`max_batch_size` and `max_batch_bytes` on the **producer** — the party whose
+database, memory and request processes they protect. See ARCHITECTURE.md
+invariants 3, 8 and 9.
 
 ## Operating it
 
@@ -148,18 +133,20 @@ mix test.integration  # integration suite (needs a real, non-sandboxed database)
 mix test.all          # everything
 ```
 
-Point `DMEX_POSTGRES_URL` elsewhere to use your own instance; the integration
-database is derived from it unless `DMEX_POSTGRES_INTEGRATION_URL` is set too.
+Point `DMEX_POSTGRES_URL` at your own instance. The integration database is
+derived from it by rewriting a trailing `/dmex_test`, so if yours is named
+anything else, set `DMEX_POSTGRES_INTEGRATION_URL` too — otherwise both suites
+resolve to the same database and the integration one is not sandboxed.
 
-The integration suite is separate because two things cannot be observed inside
-an Ecto sandbox transaction: `LISTEN`/`NOTIFY` only fires at COMMIT, and the
-append-ordering test needs genuinely concurrent transactions.
+The integration suite is separate because it cannot use the Ecto sandbox — see
+`config/test.exs`.
 
 ## Benchmarks
 
 ```sh
-mix bench.micro   # per-row costs on the hot paths
-mix bench.e2e     # throughput and latency against a real database and socket
+mix bench.micro        # per-row costs on the hot paths
+mix bench.e2e          # throughput and latency against a real database and socket
+mix bench.fingerprint  # the selection filter's error rate and size
 ```
 
 Decision tools, not regression tests, so they do not run in CI. Each file states

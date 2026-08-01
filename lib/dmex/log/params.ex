@@ -7,23 +7,14 @@ defmodule DMEx.Log.Params do
 
   | carried in | meaning | absent | invalid |
   | --- | --- | --- | --- |
-  | the path segment | which message types | the whole log | `400` |
+  | the path segment | which message types | the whole log | `400`, or `404` if reserved |
   | `last-event-id` | resume position, as `previous/current` or a bare id | from the beginning | `400` |
 
-  **There are no DMEx request headers.** Pacing is log configuration, so a
-  connect request carries nothing about it — which means DMEx's own consumer and
-  a browser's `EventSource` send byte-identical requests. See the wire contract
-  in `ARCHITECTURE.md` for why the selection goes in the path.
+  **DMEx defines no request headers.** See the wire contract in
+  `ARCHITECTURE.md`, which also covers why the selection goes in the path.
 
   This module takes a path and request headers rather than a `Plug.Conn`, which
   keeps it pure, free of any optional dependency, and testable without a socket.
-
-  ## The `/stream` namespace
-
-  Putting a blob in the path makes `/stream/...` a namespace, and a namespace
-  can collide. **Reserved names are matched first**, before any decode is
-  attempted, which makes the guarantee structural rather than probabilistic. The
-  reserved list is closed and lives in this module.
 
   ## The `Last-Event-ID` vocabulary
 
@@ -40,8 +31,7 @@ defmodule DMEx.Log.Params do
     * **absent** — from id 0, the whole log, which is what a fresh browser
       `EventSource` sends.
 
-  Validation is deliberately strict — `~r/\\A\\d+\\z/` per half rather than
-  `Integer.parse/1`, which would accept `"5abc"` and `"+5"`.
+  Validation is strict: `~r/\\A\\d+\\z/` per half, so `"5abc"` is a `400`.
   """
 
   alias DMEx.Fingerprint
@@ -105,10 +95,7 @@ defmodule DMEx.Log.Params do
   @doc """
   Builds the header saying how many of the log's types a filter admitted.
 
-  Sent only on a selective stream. The blob is opaque, so this is the one thing
-  making a subscription legible from outside: a count of `0` where ten types
-  were selected is an encoding mismatch, visible at connect rather than through
-  silence.
+  Sent only on a selective stream.
   """
   @spec matched_header(non_neg_integer()) :: [{String.t(), String.t()}]
   def matched_header(count) when is_integer(count) and count >= 0 do
@@ -158,9 +145,6 @@ defmodule DMEx.Log.Params do
     end
   end
 
-  # A frame's `id:` is `previous/current` and a client echoes it back whole. The
-  # predecessor is the consumer's own integrity check and carries nothing a log
-  # needs, so it is validated and discarded.
   defp resume_position(value) do
     case String.split(value, "/", parts: 2) do
       [current] ->
@@ -181,11 +165,8 @@ defmodule DMEx.Log.Params do
     end
   end
 
-  # A header sent twice is a client bug of the same kind as a malformed value:
-  # there is no sensible way to pick between two resume positions.
-  #
-  # HTTP header names are case-insensitive and Plug downcases them, so nothing
-  # here should ever compare them any other way.
+  # HTTP header names are case-insensitive and Plug downcases them. A header
+  # sent twice is a `400`: there is no sensible way to pick a resume position.
   defp fetch(req_headers, name) do
     case for {^name, value} <- req_headers, do: value do
       [] -> :error
