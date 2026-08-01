@@ -193,7 +193,11 @@ defmodule DMEx.MessageTest do
 
       assert Map.from_struct(marker) == %{}
       assert Marker.cast(%{"anything" => 1}) == marker
-      assert JSON.encode!(marker) == "{}"
+
+      # No JSON assertion: protocols are consolidated by the time a test defines
+      # a module, so the generated `@derive` cannot install an implementation
+      # here — Elixir says as much in a warning. The derivation is covered by
+      # the compiled message modules above.
     end
 
     test "rejects anything defstruct would not take" do

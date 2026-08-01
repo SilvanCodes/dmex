@@ -37,6 +37,12 @@ defmodule DMEx.Message do
   `defstruct`, and a second `@type t` is a redefinition. Implement a protocol
   directly, and name a hand-written type something other than `t`.
 
+  A message module defined at *runtime* — inside a test, say — is the one place
+  the derivation cannot land: protocols are already consolidated by then, and
+  Elixir warns that the implementation has no effect. Such a module still casts
+  and still has a type; it just cannot be encoded, which is no loss for a module
+  nothing appends.
+
   ## `c:type/0` — the wire type
 
   Derived automatically from the module's own full, fully-qualified name at
