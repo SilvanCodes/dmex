@@ -510,7 +510,7 @@ defmodule DMEx.Supervisor do
               "unknown subscription option(s) #{inspect(unknown)}. " <>
                 "Known options: #{inspect(Enum.sort(known))}. " <>
                 "Note there is no filter or selection option here: the logs, the id, the " <>
-                "message types and `selective:` all belong to the handler module."
+                "message types and `selective:` all belong to the handler module, not here."
     end
   end
 end
