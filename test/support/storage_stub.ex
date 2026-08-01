@@ -253,7 +253,11 @@ defmodule DMEx.Test.Storage do
 
   ## Internals
 
-  defp store(%{store: pid}), do: pid
+  # Read rather than matched on: every callback here is declared to take any
+  # `t:DMEx.Storage.opts/0`, and a head matching `%{store: pid}` would narrow
+  # this stub's functions to the opts *it* builds — which is exactly what
+  # dialyzer reports as a behaviour mismatch.
+  defp store(opts), do: Map.fetch!(opts, :store)
 
   defp get(opts), do: Agent.get(store(opts), & &1)
 

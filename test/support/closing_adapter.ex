@@ -17,7 +17,11 @@ defmodule DMEx.Test.ClosingAdapter do
   call `send_chunked/2` for real. Pass `state: :chunked` to hand the conn
   straight to code that expects an already-open stream.
   """
-  @spec conn(pid(), pos_integer(), keyword()) :: Plug.Conn.t()
+  # `%Plug.Conn{}` rather than `Plug.Conn.t()`: a conn built as a literal keeps
+  # Plug's own struct defaults in every field it does not set, and some of those
+  # defaults are outside the types `t/0` declares — so no hand-built conn is a
+  # `t/0`, and dialyzer rejects the tighter spec.
+  @spec conn(pid(), pos_integer(), keyword()) :: %Plug.Conn{}
   def conn(owner, chunks, opts \\ []) do
     %Plug.Conn{
       adapter: {__MODULE__, {owner, chunks, 0}},

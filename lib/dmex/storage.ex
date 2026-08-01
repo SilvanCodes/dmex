@@ -63,13 +63,19 @@ defmodule DMEx.Storage do
   `:repo` is the only universally-required key. `:lock` and `:channel` are
   log-side (they scope the append lock and the notification channel);
   `:prefix` is the optional schema both sides may live in.
+
+  The map is open, because these are the keys *DMEx* knows about and an adapter
+  is free to need others — an in-memory adapter addressing a process, say. An
+  adapter that does must still accept an `opts` without them, which is what
+  reading its own keys rather than matching on them buys.
   """
   @type opts :: %{
           required(:repo) => module(),
           optional(:log) => module(),
           optional(:lock) => {integer(), integer()},
           optional(:channel) => String.t(),
-          optional(:prefix) => String.t() | nil
+          optional(:prefix) => String.t() | nil,
+          optional(atom()) => term()
         }
 
   @typedoc """
