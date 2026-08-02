@@ -38,6 +38,10 @@ forward "/stream", to: DMEx.Log.Plug, init_opts: [log: MyApp.Log]
 
 MyApp.Log.append(%MyApp.Messages.OrderPlaced{order_id: 7})
 #=> {:ok, 1042}
+
+# a list is one transaction, one lock, one round trip
+MyApp.Log.append([%MyApp.Messages.OrderPlaced{order_id: 8}, %MyApp.Messages.OrderShipped{}])
+#=> {:ok, [1043, 1044]}
 ```
 
 ## Reading

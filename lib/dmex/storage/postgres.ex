@@ -29,9 +29,12 @@ defmodule DMEx.Storage.Postgres do
   @dead_messages "dmex_dead_messages"
 
   @impl DMEx.Storage
-  def append(opts, type, data, metadata)
-      when is_binary(type) and is_binary(data) and is_binary(metadata) do
+  def append(opts, entries) when is_list(entries) do
     repo = Map.fetch!(opts, :repo)
+
+    types = Enum.map(entries, fn {type, _data, _metadata} -> type end)
+    data = Enum.map(entries, fn {_type, data, _metadata} -> data end)
+    metadata = Enum.map(entries, fn {_type, _data, metadata} -> metadata end)
 
     result =
       repo.transaction(fn ->
@@ -39,18 +42,19 @@ defmodule DMEx.Storage.Postgres do
         # documentation for why anything shorter reintroduces silent id gaps.
         lock!(repo, opts)
 
-        id = insert!(repo, opts, type, data, metadata)
+        ids = insert!(repo, opts, types, data, metadata)
 
         # Postgres delivers notifications at COMMIT, so a row is never announced
         # before it is visible. The payload is the `message_type` and nothing
-        # else: a routing key, never a carrier of work.
-        notify!(repo, opts, type)
+        # else: a routing key, never a carrier of work — so a batch announces
+        # each type once however many rows carried it.
+        notify!(repo, opts, Enum.uniq(types))
 
-        id
+        ids
       end)
 
     case result do
-      {:ok, id} -> {:ok, id}
+      {:ok, ids} -> {:ok, ids}
       {:error, reason} -> {:error, reason}
     end
   end
@@ -351,26 +355,43 @@ defmodule DMEx.Storage.Postgres do
       ])
   end
 
-  defp insert!(repo, opts, type, data, metadata) do
+  # One statement whatever the batch size: three parallel `text[]` parameters
+  # unnested into rows. Arrays rather than a generated `VALUES` list so the
+  # statement text is the same for one message and a thousand, which keeps the
+  # plan cached and the parameter count off the 65535 wire limit.
+  #
+  # `WITH ORDINALITY` plus the ORDER BY pins insertion order to entry order, so
+  # the sequence allocates ascending ids down the batch and `RETURNING` hands
+  # them back positionally.
+  #
+  # The `::text[]` parameter cast is the same trap `read/5`'s columns describe:
+  # go through text and Postgres parses the JSON, name `jsonb` and Postgrex
+  # encodes the binary into a JSON *string*.
+  defp insert!(repo, opts, types, data, metadata) do
     sql = """
     INSERT INTO #{table(opts, @messages)} (message_type, data, metadata)
-         VALUES ($1, $2::text::jsonb, $3::text::jsonb)
+         SELECT entry.message_type, entry.data::jsonb, entry.metadata::jsonb
+           FROM unnest($1::text[], $2::text[], $3::text[])
+                  WITH ORDINALITY AS entry(message_type, data, metadata, position)
+          ORDER BY entry.position
       RETURNING id
     """
 
-    {:ok, %{rows: [[id]]}} = SQL.query(repo, sql, [type, data, metadata])
+    {:ok, %{rows: rows}} = SQL.query(repo, sql, [types, data, metadata])
 
-    id
+    Enum.map(rows, fn [id] -> id end)
   end
 
   # pg_notify/2 rather than `NOTIFY <channel>`, so neither a derived channel
   # name nor a message type needs identifier quoting or can be an injection
   # site. Postgres caps a notification payload at 8000 bytes, which a module
   # name cannot reach.
-  defp notify!(repo, opts, type) do
+  defp notify!(repo, opts, types) do
     channel = Map.fetch!(opts, :channel)
 
-    {:ok, _} = SQL.query(repo, "SELECT pg_notify($1, $2)", [channel, type])
+    sql = "SELECT pg_notify($1, entry.message_type) FROM unnest($2::text[]) AS entry(message_type)"
+
+    {:ok, _} = SQL.query(repo, sql, [channel, types])
   end
 
   ## Row shaping

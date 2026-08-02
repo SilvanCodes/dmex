@@ -14,7 +14,7 @@ defmodule DMEx.Storage.PostgresTest do
     %{opts: %{repo: Repo, lock: {1_701, 4_242}, channel: "dmex_storage_test", prefix: nil}}
   end
 
-  describe "append/4" do
+  describe "append/2" do
     test "returns the assigned id, increasing", %{opts: opts} do
       assert {:ok, first} = append(opts, "A", %{n: 1})
       assert {:ok, second} = append(opts, "A", %{n: 2})
@@ -34,6 +34,49 @@ defmodule DMEx.Storage.PostgresTest do
       {:ok, id} = append(opts, "A", %{n: 1})
 
       assert %{metadata: "{}"} = fetch!(opts, id)
+    end
+
+    test "writes a batch in entry order, with contiguous ascending ids", %{opts: opts} do
+      entries = for n <- 1..5, do: {"A", ~s({"n":#{n}}), "{}"}
+
+      assert {:ok, ids} = Postgres.append(opts, entries)
+
+      assert length(ids) == 5
+      assert ids == Enum.sort(ids)
+      assert ids == Enum.to_list(hd(ids)..List.last(ids))
+
+      {:ok, rows} = Postgres.read(opts, 0, 10, 1_048_576, :all)
+
+      assert Enum.map(rows, &JSON.decode!(&1.data)["n"]) == [1, 2, 3, 4, 5]
+    end
+
+    test "keeps each entry's own type and metadata", %{opts: opts} do
+      entries = [
+        {"A", ~s({"n":1}), ~s({"trace_id":"one"})},
+        {"B", ~s({"n":2}), ~s({"trace_id":"two"})}
+      ]
+
+      assert {:ok, [_, _]} = Postgres.append(opts, entries)
+
+      {:ok, rows} = Postgres.read(opts, 0, 10, 1_048_576, :all)
+
+      assert Enum.map(rows, &{&1.message_type, JSON.decode!(&1.metadata)["trace_id"]}) ==
+               [{"A", "one"}, {"B", "two"}]
+    end
+
+    test "stores a batch's payloads as JSON objects too", %{opts: opts} do
+      # The `text[]` parameter is the array-shaped version of the `$n::text::jsonb`
+      # trap the JSON fidelity block guards — same failure, same structural check.
+      {:ok, _} = Postgres.append(opts, [{"A", ~s({"n":1}), ~s({"t":"x"})}])
+
+      assert [["object", "object"]] =
+               raw(opts, "SELECT jsonb_typeof(data), jsonb_typeof(metadata) FROM dmex_messages")
+    end
+
+    test "an empty batch writes nothing", %{opts: opts} do
+      assert {:ok, []} = Postgres.append(opts, [])
+
+      assert {:ok, 0} = Postgres.max_id(opts)
     end
   end
 
@@ -281,7 +324,7 @@ defmodule DMEx.Storage.PostgresTest do
       # Written as raw text rather than through JSON.encode!/1, which cannot
       # produce a duplicate key. This is the documented cost of the jsonb
       # column: stored bytes are not the publisher's bytes.
-      {:ok, id} = Postgres.append(opts, "A", ~s({"a":1,"a":2}), "{}")
+      {:ok, [id]} = Postgres.append(opts, [{"A", ~s({"a":1,"a":2}), "{}"}])
 
       assert %{data: data} = fetch!(opts, id)
       assert JSON.decode!(data) == %{"a" => 2}
@@ -478,7 +521,9 @@ defmodule DMEx.Storage.PostgresTest do
   ## Helpers
 
   defp append(opts, type, data, metadata \\ %{}) do
-    Postgres.append(opts, type, JSON.encode!(data), JSON.encode!(metadata))
+    {:ok, [id]} = Postgres.append(opts, [{type, JSON.encode!(data), JSON.encode!(metadata)}])
+
+    {:ok, id}
   end
 
   defp fetch!(opts, id) do

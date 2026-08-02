@@ -18,7 +18,7 @@ defmodule DMEx.Storage do
 
   Each is easy to implement *almost* right, and each has a test pinning it.
 
-  **`c:append/4` must hold its lock until COMMIT.** Postgres allocates sequence
+  **`c:append/2` must hold its lock until COMMIT.** Postgres allocates sequence
   values at INSERT time but makes rows visible at COMMIT time, so if T1 takes
   `id=100` and T2 takes `id=101` but T2 commits first, a reader scanning
   `id > 99 ORDER BY id` sees 101, advances past it, and **permanently skips
@@ -79,7 +79,7 @@ defmodule DMEx.Storage do
         }
 
   @doc """
-  Appends one message and returns its assigned id.
+  Appends a batch of messages and returns their assigned ids, in entry order.
 
   Runs in a transaction that takes the per-app advisory lock *first* and holds
   it to COMMIT — see the module documentation for why that is load-bearing.
@@ -87,12 +87,27 @@ defmodule DMEx.Storage do
   `data` and `metadata` arrive as already-encoded JSON binaries, handed to the
   database without decoding, and nothing DMEx owns is merged into `metadata`.
 
+  Three things an adapter must get right:
+
+    * **The batch is one transaction.** Every entry lands or none does, and the
+      ids it returns are contiguous and ascending, because the lock makes the
+      batch the only writer while it runs.
+
+    * **Ids come back in entry order.** The caller pairs them positionally with
+      the messages it handed in.
+
+    * **Every distinct type is announced.** One notification per *distinct*
+      type in the batch, since the payload is a routing key and a subscriber
+      wakes on the type, not on the row.
+
   A caller already inside a transaction extends that lock for the enclosing
   transaction's lifetime, serializing every other append in the app for its
   duration. A documented consequence, not a bug.
   """
-  @callback append(opts(), type :: String.t(), data :: binary(), metadata :: binary()) ::
-              {:ok, pos_integer()} | {:error, term()}
+  @callback append(
+              opts(),
+              entries :: [{type :: String.t(), data :: binary(), metadata :: binary()}]
+            ) :: {:ok, [pos_integer()]} | {:error, term()}
 
   @doc """
   Reads rows with `id > cursor` in ascending id order, bounded by **both** a row

@@ -74,7 +74,7 @@ defmodule DMEx.Test.Storage do
   @spec read_bytes(DMEx.Storage.opts()) :: [pos_integer()]
   def read_bytes(opts), do: opts |> get() |> Map.fetch!(:read_bytes) |> Enum.reverse()
 
-  @doc "Every `{type, data, metadata}` triple `append/4` has been called with."
+  @doc "Every `{type, data, metadata}` triple `append/2` has been handed, oldest first."
   @spec appends(DMEx.Storage.opts()) :: [{String.t(), binary(), binary()}]
   def appends(opts), do: opts |> get() |> Map.fetch!(:appends) |> Enum.reverse()
 
@@ -99,13 +99,22 @@ defmodule DMEx.Test.Storage do
   ## DMEx.Storage
 
   @impl DMEx.Storage
-  def append(opts, type, data, metadata) do
+  def append(opts, entries) do
     Agent.get_and_update(store(opts), fn state ->
-      id = length(state.rows) + 1
-      row = row(id, message_type: type, data: data, metadata: metadata)
+      {rows, ids} =
+        entries
+        |> Enum.with_index(length(state.rows) + 1)
+        |> Enum.map(fn {{type, data, metadata}, id} ->
+          {row(id, message_type: type, data: data, metadata: metadata), id}
+        end)
+        |> Enum.unzip()
 
-      {{:ok, id},
-       %{state | rows: state.rows ++ [row], appends: [{type, data, metadata} | state.appends]}}
+      {{:ok, ids},
+       %{
+         state
+         | rows: state.rows ++ rows,
+           appends: Enum.reverse(entries) ++ state.appends
+       }}
     end)
   end
 

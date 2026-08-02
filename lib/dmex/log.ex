@@ -22,8 +22,16 @@ defmodule DMEx.Log do
       MyApp.Log.append(%MyApp.Messages.OrderPlaced{order_id: 7})
       #=> {:ok, 1042}
 
+      MyApp.Log.append([%OrderPlaced{order_id: 8}, %OrderShipped{order_id: 8}])
+      #=> {:ok, [1043, 1044]}
+
   Generic code holding a log module in a variable calls through the variable —
   `log.append(message)` — so there is no second form to keep in step.
+
+  **A list is one append.** One transaction, one lock, one round trip: the whole
+  batch lands or none of it does, and the ids come back in the order given. That
+  makes it the way to emit messages that only make sense together, and the way
+  to keep a bulk import from paying the lock once per row.
 
   **Appending is just writing a row.** No RPC, no broker call, no network hop:
   the insert plus the notification that wakes live streams is the entire story.
@@ -84,7 +92,7 @@ defmodule DMEx.Log do
   ## Telemetry
 
   `append/2` emits `[:dmex, :append, :start | :stop | :exception]` with
-  `%{log: module, message_type: String.t()}` metadata.
+  `%{log: module, message_types: [String.t()], count: pos_integer()}` metadata.
   """
 
   alias DMEx.Config
@@ -113,17 +121,27 @@ defmodule DMEx.Log do
       def __dmex__, do: @dmex
 
       @doc """
-      Appends `message` to this log and returns its assigned id.
+      Appends a message — or a list of them — to this log and returns the
+      assigned id(s).
+
+          MyApp.Log.append(%OrderPlaced{order_id: 7})          #=> {:ok, 1042}
+          MyApp.Log.append([%OrderPlaced{}, %OrderShipped{}])  #=> {:ok, [1043, 1044]}
+
+      A list is one transaction and one lock: every message lands or none does,
+      and the ids come back in the order the messages were given. An empty list
+      never reaches the database and returns `{:ok, []}`.
 
       ## Options
 
         * `:metadata` — a map stored alongside the message and delivered to the
-          consumer's handler verbatim. Defaults to `%{}`.
+          consumer's handler verbatim. Applies to every message of a list.
+          Defaults to `%{}`.
 
-      Raises `ArgumentError` if `message` is not a struct built with
+      Raises `ArgumentError` if a message is not a struct built with
       `use DMEx.Message`.
       """
-      @spec append(struct(), keyword()) :: {:ok, pos_integer()} | {:error, term()}
+      @spec append(struct() | [struct()], keyword()) ::
+              {:ok, pos_integer()} | {:ok, [pos_integer()]} | {:error, term()}
       def append(message, opts \\ []), do: DMEx.Log.__append__(__MODULE__, message, opts)
 
       @doc false
@@ -227,26 +245,45 @@ defmodule DMEx.Log do
 
   # The body of every `MyApp.Log.append/2`, kept here so `use DMEx.Log` injects
   # a one-line call and nothing else.
+  #
+  # One message is the one-element batch, unwrapped on the way out: the storage
+  # call, the lock and the span are the same either way, so there is one path to
+  # get right.
   @doc false
-  @spec __append__(module(), struct(), keyword()) :: {:ok, pos_integer()} | {:error, term()}
+  @spec __append__(module(), struct() | [struct()], keyword()) ::
+          {:ok, pos_integer()} | {:ok, [pos_integer()]} | {:error, term()}
   def __append__(log, message, opts) when is_atom(log) and is_struct(message) do
+    case __append__(log, [message], opts) do
+      {:ok, [id]} -> {:ok, id}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  def __append__(log, messages, opts) when is_atom(log) and is_list(messages) do
     validate_append_opts!(opts)
 
-    %{storage: storage, storage_opts: storage_opts} = log.__dmex__()
+    # Nothing to write, so nothing to lock, notify or time. An append loop that
+    # ran out of work is not an event.
+    if messages == [] do
+      {:ok, []}
+    else
+      %{storage: storage, storage_opts: storage_opts} = log.__dmex__()
 
-    type = message_type!(message)
-    data = JSON.encode!(message)
-    metadata = opts |> Keyword.get(:metadata, %{}) |> JSON.encode!()
+      metadata = opts |> Keyword.get(:metadata, %{}) |> JSON.encode!()
+      entries = Enum.map(messages, &{message_type!(&1), JSON.encode!(&1), metadata})
 
-    :telemetry.span(
-      [:dmex, :append],
-      %{log: log, message_type: type},
-      fn ->
-        result = storage.append(storage_opts, type, data, metadata)
+      # Distinct types, not one entry per row: a batch of a thousand orders is a
+      # one-element list here, which keeps span metadata bounded.
+      span_metadata = %{
+        log: log,
+        message_types: entries |> Enum.map(&elem(&1, 0)) |> Enum.uniq(),
+        count: length(entries)
+      }
 
-        {result, %{log: log, message_type: type}}
-      end
-    )
+      :telemetry.span([:dmex, :append], span_metadata, fn ->
+        {storage.append(storage_opts, entries), span_metadata}
+      end)
+    end
   end
 
   defp message_type!(%module{} = message) do
@@ -257,6 +294,11 @@ defmodule DMEx.Log do
             "#{inspect(module)} is not a DMEx message module, so #{inspect(message)} " <>
               "cannot be appended. Add `use DMEx.Message` to #{inspect(module)}."
     end
+  end
+
+  defp message_type!(other) do
+    raise ArgumentError,
+          "only DMEx message structs can be appended, got: #{inspect(other)}"
   end
 
   defp validate_append_opts!(opts) do
