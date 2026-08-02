@@ -77,6 +77,76 @@ defmodule DMEx.Log.AppendTest do
     end
   end
 
+  describe "append/2 with a list" do
+    test "returns one id per message, in the order given", %{opts: opts} do
+      assert {:ok, ids} =
+               Log.append([
+                 %OrderPlaced{order_id: 1},
+                 %OrderShipped{order_id: 1, carrier: "dhl"},
+                 %OrderPlaced{order_id: 2}
+               ])
+
+      assert length(ids) == 3
+      assert ids == Enum.sort(ids)
+
+      {:ok, rows} = Postgres.read(opts, 0, 10, 1_048_576, :all)
+
+      assert Enum.map(rows, & &1.id) == ids
+
+      assert Enum.map(rows, & &1.message_type) == [
+               "DMEx.Test.Messages.OrderPlaced",
+               "DMEx.Test.Messages.OrderShipped",
+               "DMEx.Test.Messages.OrderPlaced"
+             ]
+    end
+
+    test "the batch is contiguous, since it holds the lock for its whole run", %{opts: opts} do
+      {:ok, ids} = Log.append(for n <- 1..10, do: %OrderPlaced{order_id: n})
+
+      assert ids == Enum.to_list(hd(ids)..List.last(ids))
+
+      {:ok, rows} = Postgres.read(opts, 0, 20, 1_048_576, :all)
+      assert Enum.map(rows, &JSON.decode!(&1.data)["order_id"]) == Enum.to_list(1..10)
+    end
+
+    test "applies the same metadata to every message", %{opts: opts} do
+      {:ok, [first, second]} =
+        Log.append([%OrderPlaced{order_id: 1}, %OrderPlaced{order_id: 2}],
+          metadata: %{trace_id: "abc"}
+        )
+
+      for id <- [first, second] do
+        assert %{metadata: metadata} = fetch!(opts, id)
+        assert JSON.decode!(metadata) == %{"trace_id" => "abc"}
+      end
+    end
+
+    test "a single-message list still comes back as a list", %{opts: _opts} do
+      assert {:ok, [id]} = Log.append([%OrderPlaced{order_id: 7}])
+      assert is_integer(id)
+    end
+
+    test "an empty list writes nothing", %{opts: opts} do
+      assert {:ok, []} = Log.append([])
+
+      assert {:ok, 0} = Postgres.max_id(opts)
+    end
+
+    test "a non-message anywhere in the list rejects the whole batch", %{opts: opts} do
+      assert_raise ArgumentError, ~r/is not a DMEx message module/, fn ->
+        Log.append([%OrderPlaced{order_id: 1}, %URI{}])
+      end
+
+      assert_raise ArgumentError, ~r/only DMEx message structs can be appended/, fn ->
+        Log.append([%OrderPlaced{order_id: 1}, :not_a_struct])
+      end
+
+      # Encoding happens before the transaction opens, so a rejected batch
+      # cannot have written its earlier messages.
+      assert {:ok, 0} = Postgres.max_id(opts)
+    end
+  end
+
   describe "a log held in a variable" do
     test "writes the same row a literal call does", %{opts: opts} do
       log = Log
@@ -114,21 +184,53 @@ defmodule DMEx.Log.AppendTest do
   end
 
   describe "telemetry" do
-    test "spans the append with the log and message type" do
+    setup do
       ref =
         :telemetry_test.attach_event_handlers(self(), [
           [:dmex, :append, :start],
           [:dmex, :append, :stop]
         ])
 
+      %{ref: ref}
+    end
+
+    test "spans the append with the log and message type", %{ref: ref} do
       {:ok, _} = Log.append(%OrderPlaced{order_id: 7})
 
       assert_received {[:dmex, :append, :start], ^ref, _measurements, metadata}
       assert metadata.log == Log
-      assert metadata.message_type == "DMEx.Test.Messages.OrderPlaced"
+      assert metadata.message_types == ["DMEx.Test.Messages.OrderPlaced"]
+      assert metadata.count == 1
 
       assert_received {[:dmex, :append, :stop], ^ref, %{duration: duration}, _metadata}
       assert is_integer(duration)
+    end
+
+    test "a batch is one span, naming its distinct types", %{ref: ref} do
+      {:ok, _} =
+        Log.append([
+          %OrderPlaced{order_id: 1},
+          %OrderPlaced{order_id: 2},
+          %OrderShipped{order_id: 1, carrier: "dhl"}
+        ])
+
+      assert_received {[:dmex, :append, :start], ^ref, _measurements, metadata}
+
+      assert metadata.message_types == [
+               "DMEx.Test.Messages.OrderPlaced",
+               "DMEx.Test.Messages.OrderShipped"
+             ]
+
+      assert metadata.count == 3
+
+      assert_received {[:dmex, :append, :stop], ^ref, _measurements, _metadata}
+      refute_received {[:dmex, :append, :start], ^ref, _, _}
+    end
+
+    test "an empty batch is not an event", %{ref: ref} do
+      assert {:ok, []} = Log.append([])
+
+      refute_received {[:dmex, :append, :start], ^ref, _, _}
     end
   end
 

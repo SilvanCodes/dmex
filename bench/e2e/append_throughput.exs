@@ -38,6 +38,22 @@ unlocked = fn ->
   )
 end
 
+# The batching advice, measured. The lock is taken once per *call*, not once per
+# row, so both scenarios write 50 rows per iteration and differ only in how many
+# times they pay for the lock and the round trip.
+Helper.section("50 rows, one at a time vs. one batched append")
+Helper.reset_log!()
+
+batch = List.duplicate(message, 50)
+
+Benchee.run(
+  %{
+    "50 appends" => fn -> for _ <- 1..50, do: {:ok, _} = Log.append(message) end,
+    "one append of 50" => fn -> {:ok, _} = Log.append(batch) end
+  },
+  Helper.opts(memory_time: 0)
+)
+
 for concurrency <- [1, 2, 8, 32] do
   Helper.section("concurrency #{concurrency}")
   Helper.reset_log!()

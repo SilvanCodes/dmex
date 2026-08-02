@@ -236,7 +236,9 @@ would advance straight over the row that had not committed yet and lose it
 appends under a transaction-scoped advisory lock keyed on the app
 (`DMEx.Storage.Postgres`). The cost is append concurrency; the purchase is a
 reader model with no gap-detection logic in it. (SQLite is single-writer
-already.)
+already.) Appending a *list* of messages is one lock, one INSERT and one COMMIT,
+which is both how a producer emits messages that only make sense together and
+how it stops a bulk import from paying the lock once per row.
 
 **2. Producer memory per connection is one batch, bounded in rows *and*
 bytes.** The send loop in `DMEx.Log.Stream` holds at most the rows it is

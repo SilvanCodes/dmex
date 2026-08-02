@@ -10,7 +10,9 @@ defmodule DMEx.Telemetry do
 
   ### `[:dmex, :append, :start | :stop | :exception]`
 
-  A `:telemetry.span/3` around the append. Metadata: `:log`, `:message_type`.
+  A `:telemetry.span/3` around the append. Metadata: `:log`, `:message_types` —
+  the distinct types in the batch — and `:count`, how many messages it carried.
+  A single-message append is the batch of one, so there is one event shape.
 
   The one to alert on is `:exception` — an append that raises is a message the
   application believes it emitted and did not.

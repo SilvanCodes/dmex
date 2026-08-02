@@ -90,6 +90,16 @@ defmodule DMEx.Integration.VerticalSliceTest do
     assert received_order_ids(3) == [2, 3, 4]
   end
 
+  test "delivers a batch appended in one call, in order", _ctx do
+    subscribe(Handlers.Echo)
+
+    {:ok, ids} = Log.append(for n <- 1..5, do: %OrderPlaced{order_id: n})
+
+    assert received_order_ids(5) == [1, 2, 3, 4, 5]
+
+    eventually(fn -> Postgres.last_seen(consumer_opts(), "test/echo") == {:ok, List.last(ids)} end)
+  end
+
   test "preserves publisher metadata verbatim", _ctx do
     subscribe(Handlers.Echo)
 

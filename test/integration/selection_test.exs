@@ -166,6 +166,22 @@ defmodule DMEx.Integration.SelectionTest do
       eventually(fn -> cursor("test/echo_all") == {:ok, placed} end)
     end
 
+    test "a mixed-type batch reaches every selection that matches part of it", %{base: _base} do
+      # One append and one COMMIT, but a notification per *distinct* type in the
+      # batch — so a selection matching only the second message still wakes.
+      {:ok, _} = DMEx.Supervisor.subscribe(Handlers.Echo, supervisor: TestSupervisor)
+      {:ok, _} = DMEx.Supervisor.subscribe(Handlers.EchoAll, supervisor: TestSupervisor)
+
+      {:ok, [_shipped, placed]} =
+        Log.append([%OrderShipped{order_id: 1, carrier: "dhl"}, %OrderPlaced{order_id: 2}])
+
+      assert_receive {:handled, %OrderPlaced{order_id: 2}, _}, 5_000
+      assert_receive {:handled, %OrderShipped{order_id: 1}, _}, 5_000
+
+      eventually(fn -> cursor("test/echo") == {:ok, placed} end)
+      eventually(fn -> cursor("test/echo_all") == {:ok, placed} end)
+    end
+
     test "a 404 is retried rather than killing the subscription", %{base: _base} do
       # A consumer deployed ahead of the log that will emit its types is
       # legitimately in this state, so the repair is the log's deploy —
