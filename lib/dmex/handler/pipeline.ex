@@ -27,24 +27,20 @@ defmodule DMEx.Handler.Pipeline do
   they must, or a handler would wedge forever on the first row it does not want
   — and both emit `[:dmex, :handler, :skip]`.
 
-  The narrowed case is safe to treat as a skip because a clause head is selected
-  *before* its body runs: a `FunctionClauseError` raised by `handle_message/2`
-  itself is proof that nothing was done with the message. One raised by anything
-  the body called is a genuine failure and takes section 4's path.
-
-  The two cost differently. An undeclared type is turned away before a
-  transaction opens; a narrowed one is only discovered inside the transaction
-  the handler would have committed in, which then rolls back empty. Narrowing in
-  a clause head is therefore a filter, not a way to make a stream cheaper.
+  The second is answered by `__dmex_match__/2`, which `DMEx.Handler` compiles
+  from the same clause heads, and answered *before* the transaction opens — so a
+  message no clause wants costs a struct match, like an undeclared type costs a
+  map lookup. Nothing calls the handler and rescues a `FunctionClauseError` to
+  find this out, which leaves raising meaning only what section 4 says it means.
 
   ## 2a. A skip's advance is coalesced; a handled message's is not
 
-  A skip runs no handler body, so its advance is atomic with *nothing*, and on a
+  A skip runs no handler, so its advance is atomic with *nothing*, and on a
   mostly-skipped stream a transaction per row is the entire cost of consuming
   (measured — see ARCHITECTURE's *What has been measured*). So a skip advances
-  `:cursor`, sets `:pending`, and writes nothing; the run is persisted by
-  `flush/1` on a `checkpoint_interval` timer and before anything re-reads the
-  durable cursor.
+  `:cursor`, sets `:pending`, and returns without touching the database; the run
+  is persisted by `flush/1` on a `checkpoint_interval` timer and before anything
+  re-reads the durable cursor.
 
   **A handled message commits immediately and needs no flush.**
   `c:DMEx.Storage.advance/3` sets `last_seen` absolutely, so advancing to a
@@ -189,7 +185,11 @@ defmodule DMEx.Handler.Pipeline do
     message = module.cast(Map.fetch!(row, "data"))
     metadata = Map.get(row, "metadata") || %{}
 
-    attempt(row, id, message, metadata, state, 1)
+    if state.handler.__dmex_match__(message, metadata) do
+      attempt(row, id, message, metadata, state, 1)
+    else
+      skip(row, id, state)
+    end
   end
 
   defp attempt(row, id, message, metadata, state, attempt) do
@@ -203,10 +203,13 @@ defmodule DMEx.Handler.Pipeline do
     }
 
     :telemetry.span([:dmex, :handler, :message], telemetry, fn ->
-      case invoke(id, message, metadata, state) do
-        :ok -> {{:ok, %{state | cursor: id, pending: false}}, telemetry}
-        :unmatched -> {skip(row, id, state), Map.put(telemetry, :skipped, true)}
-      end
+      commit!(state, fn ->
+        _ = state.handler.handle_message(message, metadata)
+
+        advance!(state, id)
+      end)
+
+      {{:ok, %{state | cursor: id, pending: false}}, telemetry}
     end)
   rescue
     exception ->
@@ -224,38 +227,6 @@ defmodule DMEx.Handler.Pipeline do
       else
         resolve(state, row, id, exception, stacktrace, attempt)
       end
-  end
-
-  # `:unmatched` means the handler was never entered — see section 2 — so there
-  # is nothing to roll back and nothing to retry.
-  defp invoke(id, message, metadata, state) do
-    commit!(state, fn ->
-      _ = state.handler.handle_message(message, metadata)
-
-      advance!(state, id)
-    end)
-  rescue
-    exception in FunctionClauseError ->
-      stacktrace = __STACKTRACE__
-
-      if unmatched?(state.handler, message, metadata, exception, stacktrace) do
-        :unmatched
-      else
-        reraise(exception, stacktrace)
-      end
-  end
-
-  # Only clause selection on *this* call counts. A FunctionClauseError from
-  # something the body called names that function instead, and a handler
-  # recursing into `handle_message/2` with other arguments carries those.
-  defp unmatched?(handler, message, metadata, exception, stacktrace) do
-    case exception do
-      %FunctionClauseError{module: ^handler, function: :handle_message, arity: 2} ->
-        match?([{^handler, :handle_message, [^message, ^metadata], _} | _], stacktrace)
-
-      _other ->
-        false
-    end
   end
 
   ## Terminal actions — see section 6
@@ -317,8 +288,8 @@ defmodule DMEx.Handler.Pipeline do
     )
   end
 
-  # No write. The advance is deferred into `:pending` and settled by `flush/1`
-  # or by the next handled message — see section 2a.
+  # No transaction and no write. The advance is deferred into `:pending` and
+  # settled by `flush/1` or by the next handled message — see section 2a.
   defp skip(row, id, state) do
     :telemetry.execute(
       [:dmex, :handler, :skip],

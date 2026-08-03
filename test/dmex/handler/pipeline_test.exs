@@ -147,6 +147,32 @@ defmodule DMEx.Handler.PipelineTest do
       assert metadata.message_type == "order_placed"
     end
 
+    test "respects a guard as well as a pattern", ctx do
+      state = state(ctx, handler: Handlers.Guarded, cursor: 0)
+
+      assert {:ok, %{cursor: 2}} = run_all([total_row(1, 50), total_row(2, 500)], state)
+
+      assert_received {:handled, %OrderPlaced{order_id: 2, total: 500}, _}
+      refute_received {:handled, _, _}
+    end
+
+    # A skip decided before the transaction opens is a skip in every sense: no
+    # handler ran, so there is no attempt to span.
+    test "runs no message span at all", ctx do
+      ref =
+        :telemetry_test.attach_event_handlers(self(), [
+          [:dmex, :handler, :message, :start],
+          [:dmex, :handler, :message, :stop],
+          [:dmex, :handler, :message, :exception]
+        ])
+
+      state = state(ctx, handler: Handlers.Narrowed, cursor: 0)
+
+      Pipeline.run(narrowed_row(1, 9), state)
+
+      refute_receive {[:dmex, :handler, :message, _], ^ref, _, _}
+    end
+
     # The one thing this must not do: a clause head that did not match means
     # nothing ran, but a FunctionClauseError from *inside* a body is a handler
     # that failed halfway and has to be treated as one.
@@ -432,6 +458,10 @@ defmodule DMEx.Handler.PipelineTest do
 
   defp narrowed_row(id, customer_id) do
     %{row(id) | "data" => %{"order_id" => id, "customer_id" => customer_id}}
+  end
+
+  defp total_row(id, total) do
+    %{row(id) | "data" => %{"order_id" => id, "total" => total}}
   end
 
   defp unknown_row(id) do

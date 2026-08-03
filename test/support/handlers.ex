@@ -116,6 +116,21 @@ defmodule DMEx.Test.Handlers do
     end
   end
 
+  defmodule Guarded do
+    @moduledoc "Narrows with a guard rather than with a pattern."
+    use DMEx.Handler, logs: [:test], id: :guarded
+
+    alias DMEx.Test.Handlers
+    alias DMEx.Test.Messages.OrderPlaced
+
+    @impl true
+    def handle_message(%OrderPlaced{total: total} = message, metadata) when total > 100 do
+      send(Handlers.owner(), {:handled, message, metadata})
+
+      :ok
+    end
+  end
+
   defmodule RaisesFunctionClause do
     @moduledoc """
     Raises a `FunctionClauseError` from inside its body.

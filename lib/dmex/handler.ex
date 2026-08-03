@@ -39,7 +39,9 @@ defmodule DMEx.Handler do
   `%OrderPlaced{status: "paid"}` still declares `OrderPlaced`, so an unpaid one
   arrives — and is skipped like any other message no clause matches, advancing
   the cursor and emitting `[:dmex, :handler, :skip]`. Narrowing is a filter, not
-  an assertion.
+  an assertion. The heads, guards and all, are compiled into a `__dmex_match__/2`
+  the pipeline asks before it opens a transaction, so a message no clause wants
+  costs a struct match.
 
   Rejected at compile time: a clause whose first argument is not a struct
   pattern (a bare variable declares nothing, and cannot serve as a fallback
@@ -135,13 +137,27 @@ defmodule DMEx.Handler do
       # @before_compile, and hence carrying these across in an attribute.
       @dmex_declared DMEx.Handler.__declared__(__MODULE__, opts)
 
+      # The clause heads *as written*. `Module.get_definition/2` has them too,
+      # but expanded and normalized past the point of being reinjectable, and
+      # `__dmex_match__/2` is built by reinjecting them.
+      Module.register_attribute(__MODULE__, :dmex_heads, accumulate: true)
+      @on_definition DMEx.Handler
+
       @before_compile DMEx.Handler
     end
   end
 
   @doc false
+  def __on_definition__(env, :def, :handle_message, [message, metadata], guards, _body) do
+    Module.put_attribute(env.module, :dmex_heads, {message, metadata, guards})
+  end
+
+  def __on_definition__(_env, _kind, _name, _args, _guards, _body), do: :ok
+
+  @doc false
   defmacro __before_compile__(env) do
     declaration = __declaration__(env)
+    match = matcher(env)
 
     quote do
       @doc """
@@ -149,6 +165,8 @@ defmodule DMEx.Handler do
       """
       @spec __dmex__() :: DMEx.Handler.declaration()
       def __dmex__, do: unquote(Macro.escape(declaration))
+
+      unquote(match)
     end
   end
 
@@ -311,6 +329,63 @@ defmodule DMEx.Handler do
                 "bug rather than a mistake in this module — please report it with the " <>
                 "list: #{inspect(types)}."
     end
+  end
+
+  ## Asking whether a clause wants a message
+
+  # Selection is by type, so a clause narrowed below its type —
+  # `%OrderPlaced{status: "paid"}` — is sent messages no clause accepts, and the
+  # pipeline has to know which *before* it opens the transaction the handler
+  # would have run in. Calling and rescuing the `FunctionClauseError` answers a
+  # transaction too late; this answers from the same heads, on a function whose
+  # bodies are `true`.
+  defp matcher(env) do
+    heads = Enum.reverse(Module.get_attribute(env.module, :dmex_heads))
+    {:v1, :def, _meta, clauses} = Module.get_definition(env.module, {:handle_message, 2})
+
+    unless length(heads) == length(clauses), do: raise_unseen_clauses(env, heads, clauses)
+
+    accepts = Enum.map(heads, &matcher_clause/1)
+
+    quote do
+      @doc false
+      @spec __dmex_match__(struct(), map()) :: boolean()
+      unquote_splicing(accepts)
+      def __dmex_match__(_message, _metadata), do: false
+    end
+  end
+
+  defp matcher_clause({message, metadata, guards}) do
+    head = quote do: __dmex_match__(unquote(message), unquote(metadata))
+    head = if guards == [], do: head, else: {:when, [], [head, chain(guards)]}
+
+    quote do
+      def unquote(generated(head)), do: true
+    end
+  end
+
+  # `def f(x) when a when b` — alternative guard sequences, which the hook hands
+  # over flat and a clause head wants nested.
+  defp chain([guard]), do: guard
+  defp chain([guard | rest]), do: {:when, [], [guard, chain(rest)]}
+
+  # These are the user's own patterns moved to a function they did not write, so
+  # a binding this copy has no body to use is not their mistake to be warned
+  # about.
+  defp generated(ast) do
+    Macro.prewalk(ast, fn node -> Macro.update_meta(node, &mark/1) end)
+  end
+
+  defp mark(meta), do: Keyword.put(meta, :generated, true)
+
+  defp raise_unseen_clauses(env, heads, clauses) do
+    raise ArgumentError, """
+    #{inspect(env.module)} defines #{length(clauses)} handle_message/2 clause(s), but \
+    `use DMEx.Handler` saw #{length(heads)} of them.
+
+    It has to come first. The `use` is what installs the hook that reads the clause \
+    patterns, and a clause defined above it would be delivered nothing at all.
+    """
   end
 
   ## Deriving the message set

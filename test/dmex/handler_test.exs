@@ -250,6 +250,81 @@ defmodule DMEx.HandlerTest do
     end
   end
 
+  # Selection is by type and a clause may narrow below one, so the pipeline asks
+  # this before it opens a transaction — see `DMEx.Handler.Pipeline`, section 2.
+  describe "the generated match test" do
+    test "accepts what the clause matches and turns down the rest" do
+      module = compile_module(clause())
+
+      assert module.__dmex_match__(%OrderPlaced{order_id: 1}, %{})
+      refute module.__dmex_match__(%OrderShipped{order_id: 1}, %{})
+    end
+
+    test "carries a narrowed field" do
+      body = """
+      def handle_message(%DMEx.Test.Messages.OrderPlaced{customer_id: 7}, _md), do: :ok
+      """
+
+      module = compile_module(body)
+
+      assert module.__dmex_match__(%OrderPlaced{customer_id: 7}, %{})
+      refute module.__dmex_match__(%OrderPlaced{customer_id: 9}, %{})
+    end
+
+    # The binding this copy has no body to use, and the guard that does use one.
+    test "carries the clause's guards" do
+      body = """
+      def handle_message(%DMEx.Test.Messages.OrderPlaced{total: total} = message, _md)
+          when total > 100 do
+        message
+      end
+      """
+
+      module = compile_module(body)
+
+      assert module.__dmex_match__(%OrderPlaced{total: 500}, %{})
+      refute module.__dmex_match__(%OrderPlaced{total: 50}, %{})
+    end
+
+    test "matches on the metadata too" do
+      body = """
+      def handle_message(%DMEx.Test.Messages.OrderPlaced{}, %{"t" => "acme"}), do: :ok
+      """
+
+      module = compile_module(body)
+
+      assert module.__dmex_match__(%OrderPlaced{}, %{"t" => "acme"})
+      refute module.__dmex_match__(%OrderPlaced{}, %{"t" => "other"})
+    end
+
+    test "answers for every clause" do
+      body = """
+      def handle_message(%DMEx.Test.Messages.OrderPlaced{}, _metadata), do: :ok
+      def handle_message(%DMEx.Test.Messages.OrderShipped{}, _metadata), do: :ok
+      """
+
+      module = compile_module(body)
+
+      assert module.__dmex_match__(%OrderPlaced{}, %{})
+      assert module.__dmex_match__(%OrderShipped{}, %{})
+    end
+
+    # Otherwise the hook that reads the patterns is installed after them, the
+    # test answers false for everything, and the subscription silently skips its
+    # whole log.
+    test "rejects clauses defined above the `use`" do
+      assert_raise ArgumentError, ~r/saw 0 of them/, fn ->
+        Code.eval_string("""
+        defmodule DMEx.HandlerTest.Late#{System.unique_integer([:positive])} do
+          def handle_message(%DMEx.Test.Messages.OrderPlaced{}, _metadata), do: :ok
+
+          use DMEx.Handler, logs: [:orders], id: :some_id
+        end
+        """)
+      end
+    end
+  end
+
   describe "validating the options" do
     test "requires :logs" do
       assert_raise ArgumentError, ~r/requires :logs/, fn ->
@@ -323,11 +398,17 @@ defmodule DMEx.HandlerTest do
 
   defp compile(body), do: compile_raw("logs: [:orders], id: :some_id", body)
 
+  defp compile_module(body), do: compile_module_raw("logs: [:orders], id: :some_id", body)
+
   defp messages_of(body), do: body |> compile() |> Map.fetch!(:messages)
+
+  defp compile_raw(declaration, body) do
+    compile_module_raw(declaration, body).__dmex__()
+  end
 
   # Compiled into a uniquely-named module each time, so nothing here depends on
   # a module name — which is the point of the design under test.
-  defp compile_raw(declaration, body) do
+  defp compile_module_raw(declaration, body) do
     name = "DMEx.HandlerTest.Generated#{System.unique_integer([:positive])}"
 
     {{:module, module, _, _}, _} =
