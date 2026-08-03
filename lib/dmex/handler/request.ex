@@ -64,7 +64,7 @@ defmodule DMEx.Handler.Request do
   Builds the path to request: the log's stream URL, plus the selection segment.
 
   `fingerprint` is `nil` for a whole-log subscription, which requests the bare
-  `/stream`. Otherwise it is the handler's compile-time `DMEx.Fingerprint` blob,
+  `/stream`. Otherwise it is the handler's compile-time `DMEx.Handler.Fingerprint` blob,
   appended as a path segment rather than a query parameter — see the wire
   contract in `ARCHITECTURE.md` for why.
   """

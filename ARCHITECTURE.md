@@ -93,7 +93,7 @@ A 16-bit XOR filter encodes the same set at ~2.46 bytes per type, putting the
 ceiling near 2 400. The blob is built at compile time and is a pure function of
 the message set, so it is a constant on `__dmex__/0` and the same handler
 compiles to the same URL everywhere. `guides/fingerprint-spec.md` is the
-normative encoding; `DMEx.Fingerprint` implements it.
+normative encoding; `DMEx.Handler.Fingerprint` implements it.
 
 **Errors point one way, and that is the whole reason it works.** There are no
 false negatives, so every selected type is delivered. A false positive admits

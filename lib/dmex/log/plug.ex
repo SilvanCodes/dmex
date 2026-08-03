@@ -16,7 +16,7 @@ defmodule DMEx.Log.Plug do
     * **`GET /stream`** — the whole log, which is what a bare browser
       `EventSource` or `curl` asks for.
     * **`GET /stream/<blob>`** — the same log narrowed to the message types a
-      consumer's filter admits. See `DMEx.Fingerprint` for the blob and
+      consumer's filter admits. See `DMEx.Handler.Fingerprint` for the blob and
       `DMEx.Log.Messages` for what it is resolved against.
 
   There is no application segment and no query string: one mount serves exactly
@@ -77,7 +77,7 @@ defmodule DMEx.Log.Plug do
   """
 
   alias DMEx.Config
-  alias DMEx.Fingerprint
+  alias DMEx.Handler.Fingerprint
   alias DMEx.Log.Messages
   alias DMEx.Log.Params
   alias DMEx.Log.Status

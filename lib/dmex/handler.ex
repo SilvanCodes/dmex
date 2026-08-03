@@ -25,7 +25,7 @@ defmodule DMEx.Handler do
   could only *disagree* with the clauses, silently, in either direction.
 
   That set is also the **server-side selection**, encoded as a compile-time
-  `DMEx.Fingerprint` blob in the request path so the log reads only matching
+  `DMEx.Handler.Fingerprint` blob in the request path so the log reads only matching
   rows. Two consequences:
 
     * **Inclusion is heuristic in one direction only.** No false negatives, so
@@ -85,6 +85,7 @@ defmodule DMEx.Handler do
   """
 
   alias DMEx.Config
+  alias DMEx.Handler.Fingerprint
 
   @identifier ~r/\A[a-z][a-z0-9_]*\z/
   @handler_opts [:logs, :id, :selective]
@@ -190,7 +191,7 @@ defmodule DMEx.Handler do
   end
 
   @doc """
-  Lists every handler compiled into the applications `DMEx.Discovery` scans.
+  Lists every handler compiled into the applications `DMEx.discovery/1` scans.
 
   What `DMEx.Supervisor` starts, so adding a handler module is the whole of
   adding a subscription. Sorted, so boot order is reproducible.
@@ -198,7 +199,7 @@ defmodule DMEx.Handler do
   @spec discover(atom() | nil) :: [module()]
   def discover(otp_app \\ nil) do
     otp_app
-    |> DMEx.Discovery.modules()
+    |> DMEx.discovery()
     |> Enum.filter(&handler?/1)
     |> Enum.sort()
   end
@@ -297,9 +298,9 @@ defmodule DMEx.Handler do
   defp fingerprint!(env, messages) do
     types = Enum.map(messages, & &1.type())
 
-    case DMEx.Fingerprint.build(types) do
+    case Fingerprint.build(types) do
       {:ok, fingerprint} ->
-        DMEx.Fingerprint.encode(fingerprint)
+        Fingerprint.encode(fingerprint)
 
       {:error, reason} ->
         raise ArgumentError,

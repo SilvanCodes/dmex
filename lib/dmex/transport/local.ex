@@ -20,7 +20,7 @@ defmodule DMEx.Transport.Local do
   other stalled stream.
 
   **Selection is a list, not a filter.** A remote subscription encodes its
-  message types into a `DMEx.Fingerprint` blob because they cross a wire and are
+  message types into a `DMEx.Handler.Fingerprint` blob because they cross a wire and are
   expanded on the other side. Here both ends are the same node, so the declared
   modules go straight into the read as a type list.
   """

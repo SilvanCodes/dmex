@@ -55,7 +55,6 @@ defmodule DMEx.Handler.Stream do
 
   use GenServer
 
-  alias DMEx.Backoff
   alias DMEx.Handler.Pipeline
 
   require Logger
@@ -291,7 +290,7 @@ defmodule DMEx.Handler.Stream do
     attempt = state.attempt + 1
 
     delay =
-      Backoff.delay(attempt, state.config.reconnect_backoff, state.config.reconnect_backoff_max)
+      DMEx.backoff(attempt, state.config.reconnect_backoff, state.config.reconnect_backoff_max)
 
     Logger.debug(fn ->
       "DMEx #{state.subscription} (#{inspect(state.handler)}) reconnecting to " <>

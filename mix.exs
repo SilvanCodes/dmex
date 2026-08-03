@@ -24,7 +24,7 @@ defmodule DMEx.MixProject do
     ]
   end
 
-  # `:crypto` for `DMEx.Fingerprint`, which hashes message-type strings with
+  # `:crypto` for `DMEx.Handler.Fingerprint`, which hashes message-type strings with
   # SHA-256. Both are OTP applications, so neither is a dependency.
   def application do
     [extra_applications: [:logger, :crypto]]

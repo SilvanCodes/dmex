@@ -1,7 +1,7 @@
 defmodule DMEx.Log.ParamsTest do
   use DMEx.Case, async: true
 
-  alias DMEx.Fingerprint
+  alias DMEx.Handler.Fingerprint
   alias DMEx.Log.Params
 
   describe "Last-Event-ID" do

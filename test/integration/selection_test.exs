@@ -32,7 +32,7 @@ defmodule DMEx.Integration.SelectionTest do
 
   use DMEx.IntegrationCase
 
-  alias DMEx.Fingerprint
+  alias DMEx.Handler.Fingerprint
   alias DMEx.Log.Messages
   alias DMEx.Storage.Postgres
   alias DMEx.Test.Handlers

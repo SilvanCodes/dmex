@@ -21,7 +21,7 @@ defmodule DMEx.Log.Messages do
 
   The set only has to *contain* everything the log might append: an extra type
   matches no filter, a missing one is silent loss. Scanned applications are
-  `DMEx.Discovery`'s set, cached in `:persistent_term` because the set is
+  `DMEx.discovery/1`'s set, cached in `:persistent_term` because the set is
   immutable for the life of the node, so expansion is a lookup rather than a
   scan.
 
