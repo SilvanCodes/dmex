@@ -2,12 +2,16 @@ defmodule DMEx.Transport.SSE.Frame do
   @moduledoc """
   The SSE wire format: one frame per log row.
 
-  A `dmex_messages` row has five columns and an SSE frame has five slots, so the
-  mapping is direct and there is no envelope:
+  Three slots carry the row and there is no envelope:
 
       id: 1041/1042
       event: MyApp.Messages.OrderShipped
-      data: {"data":{"order_id":7},"metadata":{"trace_id":"abc"},"inserted_at":"2026-07-27T10:31:04.884Z"}
+      data: {"data":{"order_id":7},"metadata":{"trace_id":"abc"}}
+
+  Nothing DMEx owns rides at the top level of `data:`. A log wanting its own
+  columns on the wire lifts them into `metadata` with `metadata:` on
+  `use DMEx.Log`, which happens before a row reaches here — see
+  `DMEx.Log.Metadata`.
 
   The column-to-slot table is in ARCHITECTURE.md's wire contract, along with why
   `id:` is a `previous/current` link rather than a number. `DMEx.Log.Params`
@@ -76,14 +80,9 @@ defmodule DMEx.Transport.SSE.Frame do
       row.data,
       ",\"metadata\":",
       row.metadata,
-      ",\"inserted_at\":",
-      row.inserted_at |> to_iso8601() |> JSON.encode_to_iodata!(),
       "}\n\n"
     ]
   end
-
-  defp to_iso8601(%DateTime{} = at), do: DateTime.to_iso8601(at)
-  defp to_iso8601(%NaiveDateTime{} = at), do: NaiveDateTime.to_iso8601(at)
 
   @doc """
   Encodes a lone `retry:` frame, sent at stream open.

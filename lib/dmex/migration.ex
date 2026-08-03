@@ -122,9 +122,11 @@ defmodule DMEx.Migration do
       # dropped, so stored bytes are not what the publisher encoded.
       add(:data, :jsonb, null: false)
 
-      # Entirely publisher-owned, so there are no reserved key names to avoid.
-      # Defaulted rather than nullable so no read path has to distinguish "no
-      # metadata" from NULL.
+      # Publisher-owned as stored: nothing DMEx knows is ever written here. A log
+      # whose `metadata:` lifts columns merges them on the way out instead, so
+      # the reserved names that creates cost this column nothing. Defaulted
+      # rather than nullable so no read path has to distinguish "no metadata"
+      # from NULL.
       add(:metadata, :jsonb, null: false, default: fragment("'{}'::jsonb"))
 
       # timestamptz specifically, and for observability only — never ordering,

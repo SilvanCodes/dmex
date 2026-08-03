@@ -166,8 +166,6 @@ defmodule DMEx.Handler.Stream do
       {:rows, rows, source} ->
         state = touch(%{state | source: source})
 
-        report_lag(rows, state)
-
         drive(:continue, Enum.reduce(rows, state, &run/2))
 
       {:disconnect, reason, source} ->
@@ -183,8 +181,6 @@ defmodule DMEx.Handler.Stream do
   @impl GenServer
   def handle_call({:rows, rows}, _from, state) do
     state = touch(state)
-
-    report_lag(rows, state)
 
     {:reply, :ok, Enum.reduce(rows, state, &run/2)}
   end
@@ -256,35 +252,6 @@ defmodule DMEx.Handler.Stream do
 
   defp cursor_of(%{cursor: :none}), do: 0
   defp cursor_of(%{cursor: cursor}), do: cursor
-
-  # Once per batch rather than per row, so it samples at the rate rows arrive.
-  defp report_lag([], _state), do: :ok
-
-  defp report_lag(rows, state) do
-    case rows |> List.last() |> Map.get("inserted_at") |> as_datetime() do
-      nil ->
-        :ok
-
-      at ->
-        :telemetry.execute(
-          [:dmex, :handler, :lag],
-          %{lag: DateTime.diff(DateTime.utc_now(), at, :millisecond), rows: length(rows)},
-          %{subscription: state.subscription, handler: state.handler, origin: state.origin}
-        )
-    end
-  end
-
-  defp as_datetime(%DateTime{} = at), do: at
-  defp as_datetime(%NaiveDateTime{} = at), do: DateTime.from_naive!(at, "Etc/UTC")
-
-  defp as_datetime(value) when is_binary(value) do
-    case DateTime.from_iso8601(value) do
-      {:ok, at, _offset} -> at
-      {:error, _reason} -> nil
-    end
-  end
-
-  defp as_datetime(_other), do: nil
 
   ## Reconnecting
 

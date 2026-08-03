@@ -34,17 +34,28 @@ reencode = fn rows ->
         "id" => row.id,
         "message_type" => row.message_type,
         "data" => JSON.decode!(row.data),
-        "metadata" => JSON.decode!(row.metadata),
-        "inserted_at" => DateTime.to_iso8601(row.inserted_at)
+        "metadata" => JSON.decode!(row.metadata)
       }
     end)
 
   Enum.map(messages, &JSON.encode_to_iodata!/1)
 end
 
+# `metadata: [:id, :inserted_at]` is the same splice one level in: the lifted
+# pairs go on the front of the stored metadata text rather than being merged into
+# a decoded map. It flattens the result, because a row's fields are binaries — so
+# the gap against the plain splice above is the copy that option costs a
+# connection, and the gap against the control is what it still saves.
+lift = fn rows ->
+  rows
+  |> Enum.map(&DMEx.Log.Metadata.merge(&1, [:id, :inserted_at]))
+  |> Enum.map(&Frame.encode_row/1)
+end
+
 Benchee.run(
   %{
     "splice (what DMEx does)" => fn rows -> Enum.map(rows, &Frame.encode_row/1) end,
+    "splice + lift two columns" => fn rows -> lift.(rows) end,
     "decode + re-encode (the control)" => fn rows -> reencode.(rows) end
   },
   Helper.opts(inputs: inputs)

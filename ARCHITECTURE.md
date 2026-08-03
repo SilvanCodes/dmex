@@ -50,8 +50,10 @@ CREATE TABLE dmex_messages (
 - `message_type` is the string the appending module declared as its `type:`,
   independent of what that module is called, so a producer can reorganise its
   message modules without any of it reaching this column.
-- `metadata` is entirely publisher-owned; DMEx writes nothing into it, so there
-  are no reserved keys.
+- `metadata` is entirely publisher-owned as stored; DMEx writes nothing into this
+  column. A log may merge its own columns into the metadata it *delivers* with
+  `metadata: [:id, :inserted_at]`, which reserves those names on the way out and
+  nothing here.
 - `inserted_at` is observability only, never an ordering key.
 - `message_type` is constrained to `[A-Za-z0-9_.]+` because it goes on an SSE
   `event:` line, and SSE field lines have no escaping. Dots survive so a
@@ -175,13 +177,12 @@ makes a subscription legible from outside — a count of `0` where ten types wer
 selected is an encoding mismatch, visible at connect rather than through
 silence.
 
-**Frames.** One frame per log row. A row has five columns and an SSE frame has
-five slots, so the mapping is direct and there is no envelope:
+**Frames.** One frame per log row, in three slots, with no envelope:
 
 ```
 id: 1041/1042
 event: MyApp.Messages.OrderShipped
-data: {"data":{"order_id":7},"metadata":{"trace_id":"abc"},"inserted_at":"2026-07-27T10:31:04.884Z"}
+data: {"data":{"order_id":7},"metadata":{"trace_id":"abc"}}
 
 ```
 
@@ -190,8 +191,8 @@ data: {"data":{"order_id":7},"metadata":{"trace_id":"abc"},"inserted_at":"2026-0
 | `id` | `id:`, as `previous/current` | it *is* the resume position, so a generic client's `Last-Event-ID` works with no DMEx knowledge — and the predecessor makes a *missing* frame detectable |
 | `message_type` | `event:` | it *is* the event name, so `addEventListener("order_shipped", …)` works in a browser |
 | `data` | inside `data:` | the publisher's payload, verbatim |
-| `metadata` | inside `data:` | the publisher's metadata, verbatim |
-| `inserted_at` | inside `data:` | append time, which the consumer's lag signal is measured against |
+| `metadata` | inside `data:` | the publisher's metadata, verbatim, plus whichever columns this log's `metadata:` lifts |
+| `inserted_at` | nowhere, unless lifted | observability only, and a field on every frame for a signal most consumers never read |
 
 - **No batch envelope and no `max_id`.** Batching is a *write* batch, not a wire
   construct, so nothing on the consumer side has to know it happened. That lets
@@ -201,9 +202,12 @@ data: {"data":{"order_id":7},"metadata":{"trace_id":"abc"},"inserted_at":"2026-0
   hands to its parser. JSON's grammar forbids raw control characters inside
   strings, which is what makes it safe to splice stored `jsonb` text in with no
   escaping pass.
-- **How far behind is `now - inserted_at`**, in milliseconds: the wire carries no
-  tip to subtract from. It compares two machines'
-  clocks, so it is an NTP-accurate seconds-scale signal and not a finer one.
+- **Nothing DMEx owns rides at the top level of `data:`.** How far behind a
+  consumer is can only be `now - inserted_at`, since the wire carries no tip to
+  subtract from — so a subscription that wants it has the log lift the column
+  with `metadata: [:inserted_at]`, and no other stream pays for the field. It
+  compares two machines' clocks, so it is an NTP-accurate seconds-scale signal
+  and not a finer one.
 - **`id:` is a link, not a number.** `1041/1042` reads "the row before me was
   1041, I am 1042", and a consumer refuses a frame that does not claim the row
   it last saw. It cannot be inferred as `id - 1`, because a selective stream's
@@ -243,8 +247,9 @@ already.)
 bytes.** The send loop in `DMEx.Log.Stream` holds at most the rows it is
 writing; there is no accumulator. Two bounds because a row costs heap two ways:
 its payload, which `max_batch_bytes` counts, and a fixed ~1 KB for the map, the
-`%DateTime{}`, the frame's iodata cells and the timestamp binary — which no
-budget in database octets can see. At a 1 KB payload the byte bound binds; at a
+`%DateTime{}` and the frame's iodata cells — which no budget in database octets
+can see. A log lifting `:inserted_at` into its metadata adds a timestamp binary
+and a copy of the metadata field to that; one lifting nothing adds neither. At a 1 KB payload the byte bound binds; at a
 50-byte payload the same 1 MiB budget admits ~21 000 rows whose fixed cost alone
 is ~22 MB, and `max_batch_size` closes that end.
 
@@ -316,10 +321,11 @@ plain run of one-row frames and runs each through `DMEx.Handler.Pipeline`
 separately — its own transaction, handler call, cursor advance and failure
 handling. A mid-batch failure rolls back exactly one message.
 
-**11. The handler sees its message and the publisher's metadata, nothing else.**
-No id, no `message_type`, no frame. A handler is a plain function of its domain
-data plus whatever context the publisher attached, testable by constructing a
-struct and a map.
+**11. The handler sees its message and a metadata map, nothing else.** No frame,
+and no id or `message_type` unless the *log* chose to lift them into that map
+with `metadata:`. A handler stays a plain function of its domain data plus
+context, testable by constructing a struct and a map — the lift changes what is
+in the map, never the shape of the callback.
 
 **12. A gap in delivery is detected, never stepped over.** Every frame states
 its predecessor and `DMEx.Transport.SSE` refuses one that does not claim the row

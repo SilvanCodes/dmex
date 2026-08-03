@@ -62,27 +62,6 @@ defmodule DMEx.Integration.CatchupTest do
     assert Enum.max(write_sizes) <= DMEx.Config.log!([]).max_batch_size
   end
 
-  # How far behind is answered from `inserted_at`, which every row carries
-  # anyway — no `max_id` on the wire, no HEAD preflight, and no separate backlog
-  # endpoint. A consumer draining a backlog is handling rows appended a while
-  # ago, and that is exactly what this measures.
-  test "the rows a catching-up consumer handles are visibly stale", _ctx do
-    ref = :telemetry_test.attach_event_handlers(self(), [[:dmex, :handler, :lag]])
-
-    seeded_at = System.monotonic_time(:millisecond)
-
-    {:ok, _} = DMEx.Supervisor.subscribe(Handlers.Echo, supervisor: TestSupervisor)
-
-    assert_receive {[:dmex, :handler, :lag], ^ref, %{lag: lag, rows: rows}, metadata}, 30_000
-
-    # The backlog was seeded before the subscription started, so every row in it
-    # is older than the subscription is.
-    assert lag > 0
-    assert lag < System.monotonic_time(:millisecond) - seeded_at + 60_000
-    assert rows > 0
-    assert metadata.subscription == "test/echo"
-  end
-
   # The log's memory bound, over a real socket. `max_batch_size` alone is
   # not one: 500 rows is half a megabyte at 1 KB each and half a gigabyte at
   # 1 MB each, and the difference is entirely the payloads a publisher happens

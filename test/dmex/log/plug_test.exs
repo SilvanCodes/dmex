@@ -148,6 +148,22 @@ defmodule DMEx.Log.PlugTest do
       assert write =~ "id: 1/2\nevent: order_placed\n"
     end
 
+    # The whole producer side of `metadata:`, over a real conn: the loop merges,
+    # the frame splices, and what reaches the socket is one metadata object.
+    test "carries the columns the log lifts inside metadata", %{opts: opts, plug: plug} do
+      Stub.put_rows(opts, [Stub.row(1, metadata: ~s({"trace_id":"abc"}))])
+
+      stream(opts, plug, [], config: [metadata: [:id, :inserted_at]])
+
+      assert_received {:chunk, "retry: " <> _}
+      assert_received {:chunk, write}
+
+      assert write =~
+               ~s(data: {"data":{"order_id":1},) <>
+                 ~s("metadata":{"id":1,"inserted_at":"2026-07-27T10:31:04.221Z",) <>
+                 ~s("trace_id":"abc"}}\n\n)
+    end
+
     test "registers the request process for wakeups", %{opts: opts, plug: plug} do
       Stub.put_rows(opts, 1)
 

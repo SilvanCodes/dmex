@@ -286,8 +286,7 @@ defmodule DMEx.Handler.PipelineFailureTest do
       "id" => id,
       "message_type" => "order_placed",
       "data" => %{"order_id" => id},
-      "metadata" => Keyword.get(opts, :metadata, %{}),
-      "inserted_at" => "2026-07-27T10:31:04.221Z"
+      "metadata" => Keyword.get(opts, :metadata, %{})
     }
   end
 

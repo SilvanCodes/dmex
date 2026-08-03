@@ -24,13 +24,22 @@ defmodule DMEx.Transport.SSE.FrameTest do
       assert encode(row(1042)) ==
                "id: 1041/1042\n" <>
                  "event: MyApp.Messages.OrderPlaced\n" <>
-                 ~s(data: {"data":{"order_id":7},"metadata":{},) <>
-                 ~s("inserted_at":"2026-07-27T10:31:04.221Z"}\n\n)
+                 ~s(data: {"data":{"order_id":7},"metadata":{}}\n\n)
     end
 
-    # The five columns land in five slots, and two of them are SSE's own — which
-    # is what makes a generic client's `Last-Event-ID` and `addEventListener`
-    # work with no DMEx knowledge at all.
+    # Nothing DMEx owns rides at the top level of `data:` — a log wanting its own
+    # columns there lifts them into `metadata` first, which happens before a row
+    # reaches the frame.
+    test "carries the payload and the metadata, and nothing else" do
+      assert {:message, message} = reparse(encode(row(1042)))
+
+      assert Map.keys(message) |> Enum.sort() ==
+               ~w(data id message_type metadata previous_id)
+    end
+
+    # Three slots carry the row and two of them are SSE's own — which is what
+    # makes a generic client's `Last-Event-ID` and `addEventListener` work with no
+    # DMEx knowledge at all.
     test "the id is the row's own id, and the event is its message type" do
       assert {:message, message} = reparse(encode(row(1042)))
 
@@ -63,7 +72,7 @@ defmodule DMEx.Transport.SSE.FrameTest do
 
     test "splices row metadata verbatim" do
       assert encode(row(1, metadata: ~s({"trace_id":"abc"}))) =~
-               ~s("metadata":{"trace_id":"abc"},)
+               ~s("metadata":{"trace_id":"abc"}})
     end
 
     test "emits exactly one data: line" do
@@ -89,11 +98,6 @@ defmodule DMEx.Transport.SSE.FrameTest do
       assert body |> String.split("\n") |> length() == 5
 
       assert {:message, %{"data" => %{"note" => "line one\nline two\r\ttabbed"}}} = reparse(body)
-    end
-
-    test "accepts a NaiveDateTime as well as a DateTime" do
-      assert encode(row(1, inserted_at: ~N[2026-07-27 10:31:04])) =~
-               ~s("inserted_at":"2026-07-27T10:31:04")
     end
 
     test "returns iodata, not a flattened binary" do
@@ -123,7 +127,6 @@ defmodule DMEx.Transport.SSE.FrameTest do
       assert message["message_type"] == "MyApp.Messages.OrderPlaced"
       assert message["data"] == %{"order_id" => 7}
       assert message["metadata"] == %{}
-      assert message["inserted_at"] == "2026-07-27T10:31:04.221Z"
     end
 
     test "tolerates CRLF and CR line terminators" do

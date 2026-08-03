@@ -61,6 +61,31 @@ defmodule DMEx.Log.StreamTest do
                hd(rows)
     end
 
+    # The one edit the loop makes to a row, and the reason it is here rather than
+    # in a transport: both transports get it from one place.
+    test "merges the columns the log lifts into each row's metadata", %{opts: opts} do
+      Stub.put_rows(opts, [Stub.row(1, metadata: ~s({"trace_id":"abc"}))])
+
+      run_with(opts, chunks: 1, lift: [:id, :inserted_at])
+
+      assert_received {:wrote, [row]}
+
+      assert JSON.decode!(row.metadata) == %{
+               "trace_id" => "abc",
+               "id" => 1,
+               "inserted_at" => "2026-07-27T10:31:04.221Z"
+             }
+    end
+
+    test "leaves metadata exactly as read when the log lifts nothing", %{opts: opts} do
+      Stub.put_rows(opts, [Stub.row(1, metadata: ~s({"trace_id":"abc"}))])
+
+      run_with(opts, chunks: 1)
+
+      assert_received {:wrote, [row]}
+      assert row.metadata == ~s({"trace_id":"abc"})
+    end
+
     test "reports the transport's own measurements alongside the row count", %{opts: opts} do
       ref = :telemetry_test.attach_event_handlers(self(), [[:dmex, :stream, :write]])
 
@@ -544,7 +569,8 @@ defmodule DMEx.Log.StreamTest do
       stall_timeout: Keyword.get(test_opts, :stall_timeout, 30_000),
       last_sent_at: nil,
       status: Keyword.get(test_opts, :status) || Status.new(30_000),
-      types: Keyword.get(test_opts, :types, :all)
+      types: Keyword.get(test_opts, :types, :all),
+      lift: Keyword.get(test_opts, :lift, [])
     }
   end
 end

@@ -54,8 +54,7 @@ defmodule DMEx.Transport.Local do
       "id" => row.id,
       "message_type" => row.message_type,
       "data" => JSON.decode!(row.data),
-      "metadata" => JSON.decode!(row.metadata),
-      "inserted_at" => row.inserted_at
+      "metadata" => JSON.decode!(row.metadata)
     }
   end
 

@@ -192,8 +192,7 @@ defmodule DMEx.Handler.PipelineTest do
         "id" => 1,
         "message_type" => "order_placed",
         "data" => %{"order_id" => 7, "total" => 1999},
-        "metadata" => %{"trace_id" => "abc"},
-        "inserted_at" => "2026-07-27T10:31:04.221Z"
+        "metadata" => %{"trace_id" => "abc"}
       }
 
       Pipeline.run(row, state)
@@ -362,8 +361,7 @@ defmodule DMEx.Handler.PipelineTest do
       "id" => id,
       "message_type" => "order_placed",
       "data" => %{"order_id" => id},
-      "metadata" => %{},
-      "inserted_at" => "2026-07-27T10:31:04.221Z"
+      "metadata" => %{}
     }
   end
 
@@ -372,8 +370,7 @@ defmodule DMEx.Handler.PipelineTest do
       "id" => id,
       "message_type" => "order_shipped",
       "data" => %{"order_id" => id, "carrier" => "dhl"},
-      "metadata" => %{},
-      "inserted_at" => "2026-07-27T10:31:04.221Z"
+      "metadata" => %{}
     }
   end
 

@@ -12,7 +12,8 @@ defmodule DMEx.ConfigTest do
                poll_interval: 1_000,
                max_batch_bytes: 1_048_576,
                stall_timeout: 30_000,
-               stall_check_interval: 1_000
+               stall_check_interval: 1_000,
+               metadata: []
              } = Config.log!([])
     end
 
@@ -46,6 +47,23 @@ defmodule DMEx.ConfigTest do
 
       assert_raise ArgumentError, ~r/:stall_check_interval must be a positive integer/, fn ->
         Config.log!(stall_check_interval: 0)
+      end
+    end
+
+    # Columns, not free-form keys: the point is to surface what the log already
+    # stores, so a name it does not store is a mistake worth refusing.
+    test "takes only liftable columns for :metadata" do
+      assert Config.log!(metadata: [:id, :inserted_at]).metadata == [:id, :inserted_at]
+      assert Config.log!(metadata: [:message_type]).metadata == [:message_type]
+
+      for value <- [[:data], [:metadata], [:previous_id], [:id, :oops]] do
+        assert_raise ArgumentError, ~r/:metadata may only lift/, fn ->
+          Config.log!(metadata: value)
+        end
+      end
+
+      assert_raise ArgumentError, ~r/:metadata must be a list of columns/, fn ->
+        Config.log!(metadata: :id)
       end
     end
 

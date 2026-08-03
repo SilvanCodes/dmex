@@ -95,18 +95,13 @@ defmodule DMEx.Telemetry do
   the default the subscription keeps running, so this event and a growing
   `dmex_dead_messages` are the only signs something is being given up on.
 
-  ### `[:dmex, :handler, :lag]`
-
-  Once per read that carried rows, not once per row. Measurements: `:lag`,
-  milliseconds between the last row's `inserted_at` and now, and `:rows`.
-
-  The "am I falling behind" signal, in **milliseconds rather than ids** because
-  the wire carries no `max_id` to subtract from. It compares two machines'
-  clocks, so it is only as good as their NTP agreement.
-
-  Reported, never acted on. There is deliberately **no socket-gating event**:
-  backpressure is not a decision this side makes, it is what happens when the
-  process is busy in a handler and therefore not re-arming the socket.
+  There is deliberately **no socket-gating event and no lag event**. Backpressure
+  is not a decision this side makes, it is what happens when the process is busy
+  in a handler and therefore not re-arming the socket. And "how far behind am I"
+  is not a question the wire can answer — it carries no `max_id` to subtract
+  from — so a subscription that wants it lifts the log's append time into its
+  metadata with `metadata: [:inserted_at]` and measures against its own clock.
+  See `DMEx.Log.Metadata`.
 
   ### `[:dmex, :handler, :reconnect]`
 
