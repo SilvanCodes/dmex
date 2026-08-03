@@ -41,6 +41,26 @@ defmodule DMEx.Handler.DeadMessagesTest do
     end
   end
 
+  defmodule Narrowed do
+    @moduledoc """
+    `Handlers.FailTimes`' identity with a clause narrowed past those rows.
+
+    Decoding them works; no clause wants the result. A stream skips such a
+    message, so replay has to answer for it too.
+    """
+    use DMEx.Handler, logs: [:test], id: :fail_times
+
+    alias DMEx.Test.Handlers
+    alias DMEx.Test.Messages.OrderPlaced
+
+    @impl true
+    def handle_message(%OrderPlaced{customer_id: 7} = message, _metadata) do
+      send(Handlers.owner(), {:attempted, message})
+
+      :ok
+    end
+  end
+
   setup do
     Handlers.report_to(self())
 

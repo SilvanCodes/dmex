@@ -424,6 +424,6 @@ defmodule DMEx.HandlerTest do
         file: __ENV__.file
       )
 
-    module.__dmex__()
+    module
   end
 end

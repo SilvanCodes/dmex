@@ -111,14 +111,26 @@ defmodule DMEx.Handler.DeadMessages do
     message = module.cast(JSON.decode!(row.data))
     metadata = JSON.decode!(row.metadata)
 
-    {:ok, _} =
-      storage.transaction(storage_opts, fn ->
-        _ = declaration.handler.handle_message(message, metadata)
+    # The same test the pipeline asks before delivering: a clause narrowed to a
+    # value can turn this message down, and calling the handler to find that out
+    # would report a raise where a stream would have skipped.
+    if declaration.handler.__dmex_match__(message, metadata) do
+      {:ok, _} =
+        storage.transaction(storage_opts, fn ->
+          _ = declaration.handler.handle_message(message, metadata)
 
-        :ok = storage.delete_dead_message(storage_opts, subscription, row.id)
-      end)
+          :ok = storage.delete_dead_message(storage_opts, subscription, row.id)
+        end)
 
-    :ok
+      :ok
+    else
+      Logger.warning(
+        "DMEx cannot replay dead message #{row.id}: no #{inspect(declaration.handler)} clause " <>
+          "matches it. Widen one and replay again, or discard/3 it."
+      )
+
+      :error
+    end
   rescue
     exception ->
       Logger.warning(
