@@ -103,6 +103,62 @@ defmodule DMEx.Handler.PipelineTest do
     end
   end
 
+  describe "a clause narrower than its message type" do
+    # Selection is by type, so a clause matching a field's value gets sent
+    # everything of that type. The ones it turns down are the same non-fault an
+    # undeclared type is: the handler was never entered.
+    test "invokes nothing but still advances the cursor", ctx do
+      state = state(ctx, handler: Handlers.Narrowed, cursor: 0)
+      row = narrowed_row(1, 9)
+
+      assert {:ok, %{cursor: 1, pending: true} = state} = Pipeline.run(row, state)
+
+      refute_received {:handled, _, _}
+      assert {:ok, nil} = Postgres.last_seen(ctx.storage_opts, "test/narrowed")
+
+      assert {:ok, %{pending: false}} = Pipeline.flush(state)
+      assert {:ok, 1} = Postgres.last_seen(ctx.storage_opts, "test/narrowed")
+    end
+
+    test "still runs the messages it does match", ctx do
+      state = state(ctx, handler: Handlers.Narrowed, cursor: 0)
+
+      rows = [narrowed_row(1, 9), narrowed_row(2, 7), narrowed_row(3, 9)]
+
+      assert {:ok, %{cursor: 3}} = run_all(rows, state)
+
+      assert_received {:handled, %OrderPlaced{order_id: 2, customer_id: 7}, _}
+      refute_received {:handled, _, _}
+
+      # Row 2 committed an advance to 2, subsuming the skip at 1; row 3 is still
+      # pending — exactly the unknown-type shape.
+      assert {:ok, 2} = Postgres.last_seen(ctx.storage_opts, "test/narrowed")
+    end
+
+    test "emits a skip event naming the type", ctx do
+      ref = :telemetry_test.attach_event_handlers(self(), [[:dmex, :handler, :skip]])
+      state = state(ctx, handler: Handlers.Narrowed, cursor: 0)
+
+      Pipeline.run(narrowed_row(1, 9), state)
+
+      assert_receive {[:dmex, :handler, :skip], ^ref, %{id: 1}, metadata}
+
+      assert metadata.handler == Handlers.Narrowed
+      assert metadata.message_type == "order_placed"
+    end
+
+    # The one thing this must not do: a clause head that did not match means
+    # nothing ran, but a FunctionClauseError from *inside* a body is a handler
+    # that failed halfway and has to be treated as one.
+    test "does not swallow a FunctionClauseError raised by the handler's body", ctx do
+      state = state(ctx, handler: Handlers.RaisesFunctionClause, cursor: 0)
+
+      assert_raise FunctionClauseError, fn -> Pipeline.run(row(1), state) end
+
+      assert {:ok, nil} = Postgres.last_seen(ctx.storage_opts, "test/raises_function_clause")
+    end
+  end
+
   describe "coalescing skipped rows" do
     # The measured motivation: a mostly-skipped stream was spending everything
     # it had on commits for rows nothing was done with.
@@ -372,6 +428,10 @@ defmodule DMEx.Handler.PipelineTest do
       "data" => %{"order_id" => id, "carrier" => "dhl"},
       "metadata" => %{}
     }
+  end
+
+  defp narrowed_row(id, customer_id) do
+    %{row(id) | "data" => %{"order_id" => id, "customer_id" => customer_id}}
   end
 
   defp unknown_row(id) do

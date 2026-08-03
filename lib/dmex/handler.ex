@@ -37,7 +37,9 @@ defmodule DMEx.Handler do
 
   Derivation covers **types, not values**: a clause narrowed to
   `%OrderPlaced{status: "paid"}` still declares `OrderPlaced`, so an unpaid one
-  arrives and raises. Match the struct and branch inside the body.
+  arrives — and is skipped like any other message no clause matches, advancing
+  the cursor and emitting `[:dmex, :handler, :skip]`. Narrowing is a filter, not
+  an assertion.
 
   Rejected at compile time: a clause whose first argument is not a struct
   pattern (a bare variable declares nothing, and cannot serve as a fallback
@@ -389,9 +391,9 @@ defmodule DMEx.Handler do
 
         def handle_message(%MyApp.Messages.OrderPlaced{} = message, _metadata), do: :ok
 
-    A catch-all clause cannot serve as a fallback here — the pipeline only ever
-    delivers the types these clauses declare, so nothing would reach it. Match
-    the struct and branch inside the body instead.
+    A catch-all clause cannot serve as a fallback here — it declares no type,
+    and the pipeline only ever delivers declared ones. A message a narrower
+    clause does not match is skipped, so there is nothing for it to catch.
     """
   end
 

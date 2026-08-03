@@ -61,7 +61,8 @@ defmodule DMEx.Telemetry do
 
   A `:telemetry.span/3` around **one attempt** at one message: the handler call
   and the cursor advance, in their transaction. Extra metadata:
-  `:message_type`, `:id`, `:attempt`.
+  `:message_type`, `:id`, `:attempt`. A `:stop` also carries `skipped: true`
+  when no clause matched the message and the attempt handled nothing.
 
   One span per attempt, so an `:exception` at `attempt: 1` followed by a `:stop`
   at `attempt: 2` is a transient failure recovering. Per attempt rather than per
@@ -70,8 +71,9 @@ defmodule DMEx.Telemetry do
 
   ### `[:dmex, :handler, :skip]`
 
-  A row whose `message_type` matched no declared module. Measurements: `:id`.
-  Extra metadata: `:message_type`.
+  A row no clause matched: either its `message_type` names no declared module,
+  or the type is declared but a clause narrowed to a field's value turned it
+  down. Measurements: `:id`. Extra metadata: `:message_type`.
 
   **Worth a dashboard even though it is not a fault**: a consumer silently
   discarding most of a stream and one silently discarding the single type it
