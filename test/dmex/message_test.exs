@@ -7,21 +7,68 @@ defmodule DMEx.MessageTest do
   alias DMEx.Test.Messages.WithCustomCast
 
   describe "type/0" do
-    test "derives the full, fully-qualified module name" do
-      assert OrderPlaced.type() == "DMEx.Test.Messages.OrderPlaced"
-      assert OrderShipped.type() == "DMEx.Test.Messages.OrderShipped"
+    test "returns the declared type" do
+      assert OrderPlaced.type() == "order_placed"
+      assert OrderShipped.type() == "order_shipped"
     end
 
-    test "is a compile-time constant, not an inspect/1 call per invocation" do
+    test "is a compile-time constant, not a call per invocation" do
       # A literal-returning function compiles to a single `return` of a constant;
-      # if `type/0` still called inspect/1 it would allocate a new binary each
-      # time and the two results would not be the same term.
+      # if `type/0` computed the string it would allocate a new binary each time
+      # and the two results would not be the same term.
       assert :erts_debug.same(OrderPlaced.type(), OrderPlaced.type())
     end
 
-    test "distinguishes same-named modules in different namespaces" do
-      refute OrderPlaced.type() == "OrderPlaced"
-      assert String.contains?(OrderPlaced.type(), "DMEx.Test.Messages.")
+    test "is independent of the module name" do
+      # The whole point: these fixtures declare types that share nothing with
+      # what they are called, so a regression that derived the type from the
+      # module — the old behaviour — fails here rather than passing quietly.
+      refute OrderPlaced.type() == inspect(OrderPlaced)
+      refute String.contains?(OrderPlaced.type(), "DMEx")
+    end
+
+    test "renders an atom and a string identically" do
+      # Otherwise a style change at the declaration site mints a second wire
+      # type and orphans everything already appended under the first.
+      assert compile_type(~s|type: :order_placed|) == compile_type(~s|type: "order_placed"|)
+    end
+
+    test "accepts dots, for namespacing" do
+      assert compile_type(~s|type: "acme.orders.placed.v1"|) == "acme.orders.placed.v1"
+    end
+  end
+
+  describe "use DMEx.Message type" do
+    test "requires :type" do
+      assert_raise ArgumentError, ~r/requires :type/, fn ->
+        compile_message("fields: [:order_id]")
+      end
+    end
+
+    test "rejects a type outside the SSE-safe charset" do
+      for bad <- [~s|"order-placed"|, ~s|"acme/orders:placed"|, ~s|"order placed"|, ~s|""|] do
+        assert_raise ArgumentError, ~r/must be an atom or a string matching/, fn ->
+          compile_message("type: #{bad}")
+        end
+      end
+    end
+
+    test "rejects a type that is neither an atom nor a string" do
+      assert_raise ArgumentError, ~r/must be an atom or a string matching/, fn ->
+        compile_message("type: 7")
+      end
+    end
+
+    test "rejects unknown options" do
+      assert_raise ArgumentError, ~r/unknown option \[:selective\]/, fn ->
+        compile_message(~s|type: "ok", selective: true|)
+      end
+    end
+
+    test "rejects a non-keyword argument" do
+      assert_raise ArgumentError, ~r/takes a keyword list/, fn ->
+        compile_message("[:order_id]")
+      end
     end
   end
 
@@ -96,7 +143,7 @@ defmodule DMEx.MessageTest do
 
     test "the override still satisfies the behaviour" do
       assert function_exported?(WithCustomCast, :cast, 1)
-      assert WithCustomCast.type() == "DMEx.Test.Messages.WithCustomCast"
+      assert WithCustomCast.type() == "with_custom_cast"
     end
   end
 
@@ -115,8 +162,8 @@ defmodule DMEx.MessageTest do
   describe "registry/1" do
     test "maps each module's type to the module" do
       assert DMEx.Message.registry(MapSet.new([OrderPlaced, OrderShipped])) == %{
-               "DMEx.Test.Messages.OrderPlaced" => OrderPlaced,
-               "DMEx.Test.Messages.OrderShipped" => OrderShipped
+               "order_placed" => OrderPlaced,
+               "order_shipped" => OrderShipped
              }
     end
 
@@ -129,31 +176,36 @@ defmodule DMEx.MessageTest do
       # than tolerated by the reduce, which is why the collision check below can
       # be unconditional.
       assert DMEx.Message.registry(Handlers.EchoAll.__dmex__().messages) == %{
-               "DMEx.Test.Messages.OrderPlaced" => OrderPlaced,
-               "DMEx.Test.Messages.OrderShipped" => OrderShipped
+               "order_placed" => OrderPlaced,
+               "order_shipped" => OrderShipped
              }
     end
 
-    test "raises when two modules claim the same type" do
-      # `use DMEx.Message` cannot produce this collision — `type/0` is derived
-      # from the module name and is deliberately not overridable. It takes a
-      # module implementing the behaviour by hand, which is exactly the case the
-      # check exists to catch.
-      defmodule Impostor do
-        @moduledoc false
-        @behaviour DMEx.Message
+    test "raises when two modules declare the same type" do
+      # Reachable through two ordinary declarations now that the type is
+      # declared rather than derived, which is what makes the check load-bearing.
+      twin = compile_message(~s|type: "order_placed"|)
 
-        defstruct []
-
-        @impl true
-        def type, do: "DMEx.Test.Messages.OrderPlaced"
-
-        @impl true
-        def cast(data), do: DMEx.Message.cast_default(__MODULE__, data)
+      assert_raise ArgumentError, ~r/declared by both.*give one of them a different/s, fn ->
+        DMEx.Message.registry(MapSet.new([OrderPlaced, twin]))
       end
+    end
+  end
 
-      assert_raise ArgumentError, ~r/claimed by both/, fn ->
-        DMEx.Message.registry(MapSet.new([OrderPlaced, Impostor]))
+  describe "types!/1" do
+    test "returns the declared types" do
+      assert DMEx.Message.types!([OrderPlaced, OrderShipped]) ==
+               MapSet.new(["order_placed", "order_shipped"])
+    end
+
+    test "raises on a collision rather than collapsing it into the set" do
+      # The failure this exists to prevent: a MapSet of types alone would return
+      # a set of size one here, leaving the losing module permanently
+      # unreachable and every row of its type silently skipped.
+      twin = compile_message(~s|type: "order_placed"|)
+
+      assert_raise ArgumentError, ~r/declared by both/, fn ->
+        DMEx.Message.types!([OrderPlaced, twin])
       end
     end
   end
@@ -181,18 +233,15 @@ defmodule DMEx.MessageTest do
       assert spec =~ "carrier: term()"
     end
 
-    test "no fields yields a struct with no fields" do
-      defmodule Marker do
-        @moduledoc false
-        use DMEx.Message
-      end
+    test "omitting fields: yields a struct with no fields" do
+      marker = compile_message(~s|type: "marker"|)
 
-      # `struct/1` rather than `%Marker{}`: the module is defined in this very
-      # compilation context, so the literal cannot be expanded here.
-      marker = struct(Marker)
+      # `struct/1` rather than `%Marker{}`: the module is defined at runtime, so
+      # the literal cannot be expanded here.
+      empty = struct(marker)
 
-      assert Map.from_struct(marker) == %{}
-      assert Marker.cast(%{"anything" => 1}) == marker
+      assert Map.from_struct(empty) == %{}
+      assert marker.cast(%{"anything" => 1}) == empty
 
       # No JSON assertion: protocols are consolidated by the time a test defines
       # a module, so the generated `@derive` cannot install an implementation
@@ -202,19 +251,34 @@ defmodule DMEx.MessageTest do
 
     test "rejects anything defstruct would not take" do
       assert_raise ArgumentError, ~r/in the shape defstruct takes them/, fn ->
-        defmodule BadFields do
-          @moduledoc false
-          use DMEx.Message, "order_id"
-        end
+        compile_message(~s|type: "bad", fields: "order_id"|)
       end
 
       assert_raise ArgumentError, ~r/in the shape defstruct takes them/, fn ->
-        defmodule BadField do
-          @moduledoc false
-          use DMEx.Message, [:order_id, "carrier"]
-        end
+        compile_message(~s|type: "bad", fields: [:order_id, "carrier"]|)
       end
     end
+  end
+
+  defp compile_type(declaration), do: declaration |> compile_message() |> then(& &1.type())
+
+  # Compiled into a uniquely-named module each time, so nothing here depends on
+  # a module name — which is the point of the design under test.
+  defp compile_message(declaration) do
+    name = "DMEx.MessageTest.Generated#{System.unique_integer([:positive])}"
+
+    {{:module, module, _, _}, _} =
+      Code.eval_string(
+        """
+        defmodule #{name} do
+          use DMEx.Message, #{declaration}
+        end
+        """,
+        [],
+        file: __ENV__.file
+      )
+
+    module
   end
 
   defp type_spec(module) do

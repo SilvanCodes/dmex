@@ -49,7 +49,7 @@ defmodule DMEx.Test.Storage do
       # `read/5` overwrites this with the real predecessor in the delivered
       # sequence; a row built directly is assumed to follow the one before it.
       previous_id: Keyword.get(opts, :previous_id, id - 1),
-      message_type: Keyword.get(opts, :message_type, "DMEx.Test.Messages.OrderPlaced"),
+      message_type: Keyword.get(opts, :message_type, "order_placed"),
       data: Keyword.get(opts, :data, ~s({"order_id":#{id}})),
       metadata: Keyword.get(opts, :metadata, "{}"),
       inserted_at: Keyword.get(opts, :inserted_at, ~U[2026-07-27 10:31:04.221Z])

@@ -24,6 +24,10 @@ defmodule DMEx.Log.Messages do
   `DMEx.Discovery`'s set, cached in `:persistent_term` because the set is
   immutable for the life of the node, so expansion is a lookup rather than a
   scan.
+
+  Built through `DMEx.Message.types!/1` rather than a bare `MapSet.new/2`, so two
+  modules declaring one `type:` raise here instead of collapsing into a set that
+  is quietly one short.
   """
 
   @doc """
@@ -72,8 +76,7 @@ defmodule DMEx.Log.Messages do
 
   defp scan(otp_app) do
     otp_app
-    |> DMEx.Discovery.modules()
-    |> Enum.filter(&DMEx.Message.message?/1)
-    |> MapSet.new(& &1.type())
+    |> DMEx.Message.discover()
+    |> DMEx.Message.types!()
   end
 end

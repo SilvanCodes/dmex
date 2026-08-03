@@ -8,9 +8,9 @@ defmodule DMEx.Fingerprint do
   `guides/fingerprint-spec.md` is the normative encoding, which a non-Elixir
   consumer has to reproduce exactly.
 
-  **A filter rather than the names**, because `message_type`s are
-  fully-qualified module names at 25–40 bytes each and sixty of them already
-  overrun a conservative request line. An
+  **A filter rather than the types themselves**, because a namespaced
+  `message_type` runs to 25–40 bytes and sixty of them already overrun a
+  conservative request line. An
   [XOR filter](https://arxiv.org/abs/1912.08258) (Graf & Lemire) encodes the same
   set at ~2.46 bytes per type, which is what makes the URL — and therefore a bare
   browser `EventSource` with real server-side selection — viable at all. XOR

@@ -33,7 +33,7 @@ for size <- [3, 10, 30] do
 
   Code.eval_string("""
   defmodule Bench.Struct#{size} do
-    use DMEx.Message, #{inspect(fields)}
+    use DMEx.Message, type: "bench.struct#{size}", fields: #{inspect(fields)}
   end
   """)
 end

@@ -168,7 +168,7 @@ defmodule DMEx.Handler.PipelineFailureTest do
       # The log's own id, not a surrogate — so duplicate suppression
       # still means what it always meant.
       assert id == 1
-      assert type == "DMEx.Test.Messages.OrderPlaced"
+      assert type == "order_placed"
       assert JSON.decode!(data) == %{"order_id" => 1}
       assert JSON.decode!(metadata) == %{"trace_id" => "abc"}
 
@@ -284,7 +284,7 @@ defmodule DMEx.Handler.PipelineFailureTest do
   defp row(id, opts \\ []) do
     %{
       "id" => id,
-      "message_type" => "DMEx.Test.Messages.OrderPlaced",
+      "message_type" => "order_placed",
       "data" => %{"order_id" => id},
       "metadata" => Keyword.get(opts, :metadata, %{}),
       "inserted_at" => "2026-07-27T10:31:04.221Z"

@@ -144,8 +144,8 @@ defmodule DMEx.Log.PlugTest do
 
       assert_received {:chunk, "retry: " <> _}
       assert_received {:chunk, write}
-      assert write =~ "id: 0/1\nevent: DMEx.Test.Messages.OrderPlaced\n"
-      assert write =~ "id: 1/2\nevent: DMEx.Test.Messages.OrderPlaced\n"
+      assert write =~ "id: 0/1\nevent: order_placed\n"
+      assert write =~ "id: 1/2\nevent: order_placed\n"
     end
 
     test "registers the request process for wakeups", %{opts: opts, plug: plug} do

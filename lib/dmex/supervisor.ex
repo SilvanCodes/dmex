@@ -102,6 +102,10 @@ defmodule DMEx.Supervisor do
     # :temporary`, so a raise there would kill the Task silently.
     handlers = __startable__!(Handler.discover(otp_app), logs)
 
+    # Here rather than only in `DMEx.Log.Messages`, so an application that owns
+    # no log — a pure consumer — still has its message types checked.
+    _ = otp_app |> DMEx.Message.discover() |> DMEx.Message.types!()
+
     children =
       owned_logs(logs, otp_app) ++
         [

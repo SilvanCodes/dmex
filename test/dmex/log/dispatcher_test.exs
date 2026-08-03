@@ -203,8 +203,8 @@ defmodule DMEx.Log.DispatcherTest do
     test "an append wakes only the connections that selected its type" do
       start_dispatcher()
 
-      wanted = spawn_stream(MapSet.new(["DMEx.Test.Messages.OrderPlaced"]))
-      unwanted = spawn_stream(MapSet.new(["DMEx.Test.Messages.OrderShipped"]))
+      wanted = spawn_stream(MapSet.new(["order_placed"]))
+      unwanted = spawn_stream(MapSet.new(["order_shipped"]))
 
       {:ok, _} = FastLog.append(%OrderPlaced{order_id: 1})
 

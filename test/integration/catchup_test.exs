@@ -127,7 +127,7 @@ defmodule DMEx.Integration.CatchupTest do
       SELECT $1, json_build_object('order_id', n, 'note', $3::text)::text::jsonb, '{}'::jsonb
         FROM generate_series(1, $2) AS n
       """,
-      ["DMEx.Test.Messages.OrderPlaced", count, note]
+      ["order_placed", count, note]
     )
   end
 
@@ -141,7 +141,7 @@ defmodule DMEx.Integration.CatchupTest do
       SELECT $1, json_build_object('order_id', n)::text::jsonb, '{}'::jsonb
         FROM generate_series(1, $2) AS n
       """,
-      ["DMEx.Test.Messages.OrderPlaced", count]
+      ["order_placed", count]
     )
   end
 

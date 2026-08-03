@@ -83,7 +83,7 @@ defmodule DMEx.Transport.LocalTest do
       subscribe(Handlers.Echo)
 
       eventually(fn ->
-        selections() == [MapSet.new(["DMEx.Test.Messages.OrderPlaced"])]
+        selections() == [MapSet.new(["order_placed"])]
       end)
     end
 

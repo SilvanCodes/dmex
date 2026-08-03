@@ -52,7 +52,7 @@ defmodule DMEx.Integration.SequenceGapTest do
 
     defp frame(previous, id) do
       "id: #{previous}/#{id}\n" <>
-        "event: DMEx.Test.Messages.OrderPlaced\n" <>
+        "event: order_placed\n" <>
         ~s(data: {"data":{"order_id":#{id}},"metadata":{},) <>
         ~s("inserted_at":"2026-07-27T10:31:04.221Z"}\n\n)
     end

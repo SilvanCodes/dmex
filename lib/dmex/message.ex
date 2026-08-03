@@ -6,14 +6,16 @@ defmodule DMEx.Message do
   message type, owned by the appending application:
 
       defmodule MyApp.Messages.OrderPlaced do
-        use DMEx.Message, [:order_id, :customer_id, :total]
+        use DMEx.Message,
+          type: "order_placed",
+          fields: [:order_id, :customer_id, :total]
       end
 
-  `use DMEx.Message` takes the fields in exactly the shape `defstruct/1` takes
+  `use DMEx.Message` takes `fields:` in exactly the shape `defstruct/1` takes
   them and generates the `defstruct`, the `@derive JSON.Encoder`, `c:type/0`,
   `c:cast/1`, and a `t/0` type whose fields are all `term()` — a field list says
   what the fields are and never what they hold.
-  Omit them entirely for a message carrying no data.
+  Omit `fields:` entirely for a message carrying no data.
 
   Because `@derive` and `t/0` are generated with the struct, a message module
   must define neither itself: `@derive` only takes effect before `defstruct`,
@@ -23,14 +25,27 @@ defmodule DMEx.Message do
 
   ## `c:type/0` — the wire type
 
-  Derived at compile time from the module's own fully-qualified name, so it
-  cannot drift from what the module is called:
+  Declared, not derived. The string is the `message_type` column, the SSE
+  `event:` name, and the key a consumer resolves a row back to a module with:
 
       MyApp.Messages.OrderPlaced.type()
-      #=> "MyApp.Messages.OrderPlaced"
+      #=> "order_placed"
 
-  The *full* name guarantees uniqueness across every producer in a network, and
-  is why nothing records which producer appended a message.
+  It is deliberately independent of the module name, so a message module can be
+  renamed, moved between namespaces or reorganised without any of that reaching
+  the wire or the database — and so a producer and a consumer can be refactored
+  on their own schedules.
+
+  **This is the one line in a message module that must not be edited casually.**
+  Changing it orphans every row already appended under the old type: a consumer's
+  registry stops resolving them and skips them silently, exactly the way renaming
+  the module used to. There is no rename tooling.
+
+  Restricted to `[A-Za-z0-9_.]+`, because the type goes onto an SSE `event:` line
+  and SSE field lines have no escaping. Dots are available for namespacing —
+  `"acme.orders.placed"` — which is worth using: two producers declaring a bare
+  `"order_placed"` collide on a consumer that reads both, and nothing outside a
+  single node can detect that.
 
   ## `c:cast/1` — the read-side inverse
 
@@ -43,7 +58,7 @@ defmodule DMEx.Message do
   round-trips as a string or a plain map and needs its own `cast/1`:
 
       defmodule MyApp.Messages.OrderPlaced do
-        use DMEx.Message, [:order_id, :placed_at]
+        use DMEx.Message, type: "order_placed", fields: [:order_id, :placed_at]
 
         @impl true
         def cast(%{"placed_at" => placed_at} = data) do
@@ -65,8 +80,11 @@ defmodule DMEx.Message do
   clause needed.
   """
 
+  @message_opts [:type, :fields]
+  @type_format ~r/\A[A-Za-z0-9_.]+\z/
+
   @doc """
-  The message's wire type — its own fully-qualified module name.
+  The message's wire type — the string it declared.
 
   Generated at compile time by `use DMEx.Message`.
   """
@@ -79,23 +97,26 @@ defmodule DMEx.Message do
   """
   @callback cast(data :: map()) :: struct()
 
-  defmacro __using__(fields) do
-    fields = validate_fields!(fields)
+  defmacro __using__(opts) do
+    module = __CALLER__.module
+
+    validate_keys!(module, opts)
+
+    type = fetch_type!(module, opts)
+    fields = opts |> Keyword.get(:fields, []) |> validate_fields!()
     struct_type = struct_type(fields)
 
     quote do
       @behaviour DMEx.Message
 
-      # At compile time, so `type/0` is a constant rather than an `inspect/1`
-      # call on every append.
-      @dmex_message_type inspect(__MODULE__)
+      @dmex_message_type unquote(type)
 
       # Every appended message has to be JSON-encodable, and the derive has to
       # precede the `defstruct`.
       @derive JSON.Encoder
       defstruct unquote(fields)
 
-      @typedoc "The #{@dmex_message_type} message."
+      @typedoc "The #{inspect(__MODULE__)} message."
       @type t :: unquote(struct_type)
 
       @impl true
@@ -121,6 +142,64 @@ defmodule DMEx.Message do
     end
   end
 
+  defp validate_keys!(module, opts) do
+    unless Keyword.keyword?(opts) do
+      raise ArgumentError,
+            "`use DMEx.Message` takes a keyword list in #{inspect(module)}, " <>
+              "got: #{Macro.to_string(opts)}"
+    end
+
+    case Enum.reject(Keyword.keys(opts), &(&1 in @message_opts)) do
+      [] ->
+        :ok
+
+      unknown ->
+        raise ArgumentError,
+              "unknown option#{if length(unknown) > 1, do: "s"} " <>
+                "#{inspect(unknown)} passed to `use DMEx.Message` in " <>
+                "#{inspect(module)}. Known options: #{inspect(@message_opts)}"
+    end
+  end
+
+  # Atoms and binaries must render identically — otherwise a style change at the
+  # declaration site would silently mint a second wire type, orphaning every row
+  # already appended under the first.
+  defp fetch_type!(module, opts) do
+    case Keyword.fetch(opts, :type) do
+      {:ok, value} -> type!(module, value)
+      :error -> raise_missing_type(module)
+    end
+  end
+
+  defp type!(module, value) do
+    value =
+      case value do
+        value when is_atom(value) and not is_nil(value) -> Atom.to_string(value)
+        value when is_binary(value) -> value
+        other -> raise_type(module, other)
+      end
+
+    unless Regex.match?(@type_format, value), do: raise_type(module, value)
+
+    value
+  end
+
+  defp raise_missing_type(module) do
+    raise ArgumentError,
+          "`use DMEx.Message` requires :type in #{inspect(module)}, e.g. " <>
+            "`use DMEx.Message, type: \"order_placed\", fields: [:order_id]`. The type is " <>
+            "the message's durable identity — the module name is deliberately not it, so " <>
+            "that renaming or moving this module never reaches the wire."
+  end
+
+  defp raise_type(module, value) do
+    raise ArgumentError,
+          ":type in #{inspect(module)} must be an atom or a string matching " <>
+            "#{inspect(@type_format)}, got: #{inspect(value)}. It goes onto an SSE `event:` " <>
+            "line, which has no escaping — which rules out dashes, slashes and colons. " <>
+            "Dots are available for namespacing: \"acme.orders.placed\"."
+  end
+
   # The fields reach `defstruct` verbatim, so this only turns an error inside
   # the generated code into one that names `use DMEx.Message`. Anything beyond
   # the shape — duplicate keys, say — is left to `defstruct`.
@@ -137,8 +216,8 @@ defmodule DMEx.Message do
   defp validate_fields!(other), do: raise(ArgumentError, bad_fields_message(other))
 
   defp bad_fields_message(got) do
-    "use DMEx.Message takes the message's fields, in the shape defstruct takes them — " <>
-      "a list of atoms, a keyword list of defaults, or a mix of the two. Got: " <>
+    "`fields:` in `use DMEx.Message` takes the message's fields, in the shape defstruct " <>
+      "takes them — a list of atoms, a keyword list of defaults, or a mix of the two. Got: " <>
       Macro.to_string(got)
   end
 
@@ -194,23 +273,58 @@ defmodule DMEx.Message do
   string the producer sent.
 
   Takes the `MapSet` a handler's `:messages` already is, so the only collision
-  left to report is the real one: two *different* modules claiming one type,
-  which can only happen if `c:type/0` was overridden.
+  left to report is the real one: two *different* modules declaring one `type:`.
   """
   @spec registry(MapSet.t(module())) :: %{String.t() => module()}
-  def registry(modules) when is_struct(modules, MapSet) do
+  def registry(modules) when is_struct(modules, MapSet), do: index!(modules)
+
+  @doc """
+  Lists every message module compiled into the applications `DMEx.Discovery` scans.
+
+  The mirror of `DMEx.Handler.discover/1`. Sorted, so a collision is reported
+  against the same pair of modules on every node.
+  """
+  @spec discover(atom() | nil) :: [module()]
+  def discover(otp_app \\ nil) do
+    otp_app
+    |> DMEx.Discovery.modules()
+    |> Enum.filter(&message?/1)
+    |> Enum.sort()
+  end
+
+  @doc """
+  The set of types `modules` declare, raising if two of them declare one type.
+
+  A `MapSet` of the types alone would collapse a duplicate without a word, and a
+  swallowed collision is silent message loss: whichever module lost the race is
+  unreachable, and every row of that type is skipped by every consumer.
+
+  Checked once at boot rather than at compile time — a collision is a property of
+  the module *set*, which no single module's compilation can see.
+  """
+  @spec types!([module()]) :: MapSet.t(String.t())
+  def types!(modules) when is_list(modules) do
+    modules |> index!() |> Map.keys() |> MapSet.new()
+  end
+
+  defp index!(modules) do
     Enum.reduce(modules, %{}, fn module, acc ->
       type = module.type()
 
       case acc do
-        %{^type => already} ->
-          raise ArgumentError,
-                "message type #{inspect(type)} is claimed by both " <>
-                  "#{inspect(already)} and #{inspect(module)}"
-
-        _ ->
-          Map.put(acc, type, module)
+        %{^type => already} -> raise_collision(type, already, module)
+        _ -> Map.put(acc, type, module)
       end
     end)
+  end
+
+  # Names both modules: "duplicate message type" on its own is a riddle in an
+  # application with thirty of them.
+  defp raise_collision(type, already, module) do
+    raise ArgumentError,
+          "message type #{inspect(type)} is declared by both #{inspect(already)} and " <>
+            "#{inspect(module)}. A type is how a consumer resolves a row back to a module, " <>
+            "so two modules sharing one leaves the rows of whichever lost ambiguous — " <>
+            "give one of them a different `type:`."
   end
 end

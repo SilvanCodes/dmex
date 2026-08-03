@@ -38,10 +38,11 @@ defmodule DMEx.Migration do
 
   ## The one CHECK constraint
 
-  `message_type` is restricted to `[A-Za-z0-9_.]+`, exactly an Elixir module
-  name's charset, because it goes on the wire as an SSE `event:` line and SSE
-  field lines have no escaping. Everything else on the wire is spliced JSON,
-  whose grammar already forbids raw control characters inside strings.
+  `message_type` is restricted to `[A-Za-z0-9_.]+` because it goes on the wire as
+  an SSE `event:` line and SSE field lines have no escaping. Everything else on
+  the wire is spliced JSON, whose grammar already forbids raw control characters
+  inside strings. `use DMEx.Message` enforces the same charset on a declared
+  `type:` at compile time; this is the same rule for every other writer.
 
   A database constraint rather than a check in the append path, because it has
   to hold for every writer of the table, including a backfill or a psql session.

@@ -47,14 +47,15 @@ CREATE TABLE dmex_messages (
 
 - `id` is the offset and the only ordering and resumption mechanism. `bigint`
   because a log nothing deletes from outgrows 2³¹.
-- `message_type` is the appending module's fully-qualified name, which is why
-  nothing records *who* appended a row.
+- `message_type` is the string the appending module declared as its `type:`,
+  independent of what that module is called, so a producer can reorganise its
+  message modules without any of it reaching this column.
 - `metadata` is entirely publisher-owned; DMEx writes nothing into it, so there
   are no reserved keys.
 - `inserted_at` is observability only, never an ordering key.
-- `message_type` is constrained to `[A-Za-z0-9_.]+` — an Elixir module name's
-  charset — because it goes on an SSE `event:` line, and SSE field lines have no
-  escaping.
+- `message_type` is constrained to `[A-Za-z0-9_.]+` because it goes on an SSE
+  `event:` line, and SSE field lines have no escaping. Dots survive so a
+  declared type can namespace itself.
 
 **Two indexes, one per read shape.** The primary key serves a whole-log
 `id > cursor` range scan; `(message_type, id)` serves a selective one, and the
@@ -187,7 +188,7 @@ data: {"data":{"order_id":7},"metadata":{"trace_id":"abc"},"inserted_at":"2026-0
 | column | goes to | why there |
 | --- | --- | --- |
 | `id` | `id:`, as `previous/current` | it *is* the resume position, so a generic client's `Last-Event-ID` works with no DMEx knowledge — and the predecessor makes a *missing* frame detectable |
-| `message_type` | `event:` | it *is* the event name, so `addEventListener("MyApp.Messages.OrderShipped", …)` works in a browser |
+| `message_type` | `event:` | it *is* the event name, so `addEventListener("order_shipped", …)` works in a browser |
 | `data` | inside `data:` | the publisher's payload, verbatim |
 | `metadata` | inside `data:` | the publisher's metadata, verbatim |
 | `inserted_at` | inside `data:` | append time, which the consumer's lag signal is measured against |
@@ -333,10 +334,12 @@ A break drops the connection and re-reads from the durable cursor: transport
 damage repairs itself, and a producer that really does skip rows becomes a
 visible reconnect loop making no progress.
 
-**13. A subscription's identity is its declaration, not its module name.** The
-`"log/id"` pair in `use DMEx.Handler` keys the cursor, so renaming a module is
-free and only changing the declaration costs a migration
-(`DMEx.Handler.Cursors`). The message set is deliberately *not* part of it:
+**13. An identity is its declaration, not its module name.** The `"log/id"` pair
+in `use DMEx.Handler` keys the cursor and the `type:` in `use DMEx.Message` keys
+the row, so renaming either module is free and only changing the declaration
+costs anything — a migration for a cursor (`DMEx.Handler.Cursors`), and for a
+message type, rows nothing can resolve any more. The message set is deliberately
+*not* part of a subscription's identity:
 adding a clause for a new type handles it from the tip onward rather than
 silently replaying the entire log.
 
@@ -486,9 +489,11 @@ of scope.
   endpoint, a loose map-plus-type-string decode, an external registry — are not
   mutually exclusive, and [`GET /stream/stats`](ROADMAP.md#stream-stats-get-streamstats)
   is the small first step of the second. One constraint: dropping `origin` rests
-  on `message_type` being app-prefixed, so any option leading to shared,
-  non-app-prefixed module names reopens how a consumer knows which application a
-  message came from.
+  on `message_type` being unique across producers, which a declared `type:` makes
+  a producer's own choice rather than a property of the module name. Nothing
+  outside a single node can detect two producers declaring one type, so any
+  option here has to say how a consumer knows which application a message came
+  from.
 - **Cross-node clustering** — if a producer runs as a multi-node OTP cluster, how
   are the log's single-writer property and the `LISTEN`/`NOTIFY` dispatcher kept
   consistent across nodes? A rolling multi-node deploy belongs here too:

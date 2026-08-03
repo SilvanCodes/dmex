@@ -30,7 +30,7 @@ defmodule MyApp.Log do
 end
 
 defmodule MyApp.Messages.OrderPlaced do
-  use DMEx.Message, [:order_id, :customer_id, :total]
+  use DMEx.Message, type: "order_placed", fields: [:order_id, :customer_id, :total]
 end
 
 # in a Phoenix router, a Plug.Router, or a bare Bandit/Cowboy pipeline
@@ -77,8 +77,10 @@ on and nothing else is read, framed or sent. Nothing is declared to make that
 happen. See [guides/fingerprint-spec.md](guides/fingerprint-spec.md) for the
 wire encoding, which a non-Elixir consumer can implement against.
 
-A subscription's durable identity is the declared `"orders/order_projection"`
-pair rather than the module name, so renaming the module is free.
+Identities are declared, never derived from a module name, so renaming or moving
+a module is free: a subscription's is the `"orders/order_projection"` pair, and a
+message's is its `type:` — which is what lets a producer and its consumers
+reorganise their message modules on their own schedules.
 
 Start with the `DMEx` moduledoc, then `DMEx.Config` for every default and why it
 has the value it does.

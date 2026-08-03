@@ -29,8 +29,8 @@ stated otherwise. `>>` is a logical shift right. `^` is XOR.
 
 ## 1. Key hashing
 
-The key is the `message_type` string — a producer's fully-qualified message
-module name — encoded as **UTF-8**, with no normalization, case folding or
+The key is the `message_type` string — the `type:` a producer's message module
+declares — encoded as **UTF-8**, with no normalization, case folding or
 trimming.
 
 ```

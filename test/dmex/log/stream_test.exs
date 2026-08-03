@@ -166,7 +166,7 @@ defmodule DMEx.Log.StreamTest do
       run(opts, chunks: 1)
 
       assert_received {:chunk, write}
-      assert write =~ "event: DMEx.Test.Messages.OrderPlaced\n"
+      assert write =~ "event: order_placed\n"
     end
 
     test "never reads more than max_batch_size", %{opts: opts} do

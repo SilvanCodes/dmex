@@ -190,7 +190,7 @@ defmodule DMEx.Handler.PipelineTest do
 
       row = %{
         "id" => 1,
-        "message_type" => "DMEx.Test.Messages.OrderPlaced",
+        "message_type" => "order_placed",
         "data" => %{"order_id" => 7, "total" => 1999},
         "metadata" => %{"trace_id" => "abc"},
         "inserted_at" => "2026-07-27T10:31:04.221Z"
@@ -280,8 +280,8 @@ defmodule DMEx.Handler.PipelineTest do
       state = state(ctx, handler: Handlers.EchoAll)
 
       assert state.modules == %{
-               "DMEx.Test.Messages.OrderPlaced" => OrderPlaced,
-               "DMEx.Test.Messages.OrderShipped" => OrderShipped
+               "order_placed" => OrderPlaced,
+               "order_shipped" => OrderShipped
              }
     end
 
@@ -310,7 +310,7 @@ defmodule DMEx.Handler.PipelineTest do
       assert_receive {[:dmex, :handler, :message, :start], ^ref, _,
                       %{handler: Handlers.Echo, id: 1} = metadata}
 
-      assert metadata.message_type == "DMEx.Test.Messages.OrderPlaced"
+      assert metadata.message_type == "order_placed"
 
       assert_receive {[:dmex, :handler, :message, :stop], ^ref, %{duration: _},
                       %{handler: Handlers.Echo}}
@@ -360,7 +360,7 @@ defmodule DMEx.Handler.PipelineTest do
   defp row(id) do
     %{
       "id" => id,
-      "message_type" => "DMEx.Test.Messages.OrderPlaced",
+      "message_type" => "order_placed",
       "data" => %{"order_id" => id},
       "metadata" => %{},
       "inserted_at" => "2026-07-27T10:31:04.221Z"
@@ -370,7 +370,7 @@ defmodule DMEx.Handler.PipelineTest do
   defp shipped_row(id) do
     %{
       "id" => id,
-      "message_type" => "DMEx.Test.Messages.OrderShipped",
+      "message_type" => "order_shipped",
       "data" => %{"order_id" => id, "carrier" => "dhl"},
       "metadata" => %{},
       "inserted_at" => "2026-07-27T10:31:04.221Z"

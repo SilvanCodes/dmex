@@ -97,7 +97,7 @@ defmodule DMEx.Integration.UnknownTypeTest do
     # The undecodable row crossed the wire, invoked nothing, and did not wedge
     # the stream behind it.
     assert_receive {[:dmex, :handler, :skip], ^ref, _measurements, metadata}, 5_000
-    assert metadata.message_type == "DMEx.Test.Messages.OrderShipped"
+    assert metadata.message_type == "order_shipped"
     assert metadata.handler == Handlers.EchoWholeLog
 
     assert_receive {:handled, %OrderPlaced{order_id: 2}, _}, 5_000

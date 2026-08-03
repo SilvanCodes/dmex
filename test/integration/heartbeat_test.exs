@@ -117,7 +117,7 @@ defmodule DMEx.Integration.HeartbeatTest do
       body = collect(ctx, 300)
 
       # The frame's own bytes are the liveness signal.
-      assert body =~ "event: DMEx.Test.Messages.OrderPlaced"
+      assert body =~ "event: order_placed"
     end
   end
 

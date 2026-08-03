@@ -8,7 +8,7 @@ defmodule DMEx.Integration.SelectionTest.NotYetPublished do
   # consumer's handler to match on. Elixir warns that the generated
   # `@derive JSON.Encoder` has no effect, protocols being consolidated long
   # before a test file defines a module; nothing here encodes it.
-  use DMEx.Message, [:order_id]
+  use DMEx.Message, type: "not_yet_published", fields: [:order_id]
 end
 
 defmodule DMEx.Integration.SelectionTest.AheadOfLog do
@@ -143,8 +143,8 @@ defmodule DMEx.Integration.SelectionTest do
 
       assert {:ok, body} = read_frames(base <> "/stream/" <> fingerprint)
 
-      assert body =~ "OrderPlaced"
-      refute body =~ "OrderShipped"
+      assert body =~ "order_placed"
+      refute body =~ "order_shipped"
     end
 
     test "two subscriptions with different selections read the same id space", %{base: _base} do

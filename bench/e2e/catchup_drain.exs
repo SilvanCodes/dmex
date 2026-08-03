@@ -141,14 +141,22 @@ report.("(b) end to end, no-op handler", backlog, System.monotonic_time(:microse
 
 defmodule Bench.UnusedMessage do
   @moduledoc false
-  use DMEx.Message, [:id]
+  use DMEx.Message, type: "bench.unused_message", fields: [:id]
 end
 
 defmodule Bench.SkippingHandler do
   @moduledoc false
   # Matches a type the log does not contain, so every row is a skip: a lookup,
   # a cursor write and a commit, with no handler.
-  use DMEx.Handler, logs: [:bench], id: :skipping
+  #
+  # `selective: false` is load-bearing twice over. It is what makes "every row
+  # skipped" true at all — a selective stream would carry none of these rows, so
+  # there would be nothing to skip. And a selective fingerprint here could not
+  # match anything: `Bench.UnusedMessage` is defined at runtime in this script,
+  # while the producer expands filters over *compiled* application modules
+  # (`DMEx.Log.Messages`), so the filter would match zero types, the connect
+  # would 404, and this stage would retry forever.
+  use DMEx.Handler, logs: [:bench], id: :skipping, selective: false
 
   @impl true
   def handle_message(%Bench.UnusedMessage{}, _metadata), do: :ok
