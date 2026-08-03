@@ -21,11 +21,27 @@ defmodule DMEx.Log.ParamsTest do
       end
     end
 
-    test "`latest` starts from the tip" do
-      assert {:ok, %Params{cursor: :latest}} = parse("last-event-id", "latest")
+    test "an instant is tagged for the log to resolve" do
+      # Tagged, because the log has to reach storage for it where every other
+      # form is already a cursor.
+      assert {:ok, %Params{cursor: {:at, ~U[2026-08-03 10:00:00Z]}}} =
+               parse("last-event-id", "2026-08-03T10:00:00Z")
     end
 
-    # A vocabulary of two forms plus absent is small enough to validate exactly,
+    test "an instant with a non-zero offset is normalised to UTC" do
+      assert {:ok, %Params{cursor: {:at, at}}} =
+               parse("last-event-id", "2026-08-03T12:00:00+02:00")
+
+      assert at == ~U[2026-08-03 10:00:00Z]
+    end
+
+    # There is deliberately no tip token: a consumer wanting the tip sends the
+    # current instant, which resolves to it because every row is before it.
+    test "`latest` is no longer vocabulary" do
+      assert {:error, {:invalid, "last-event-id", "latest"}} = parse("last-event-id", "latest")
+    end
+
+    # A vocabulary of three forms plus absent is small enough to validate exactly,
     # and a client sending something outside it has a bug worth hearing about
     # rather than being handed an arbitrary slice of the log.
     test "anything else is rejected" do
@@ -42,7 +58,11 @@ defmodule DMEx.Log.ParamsTest do
         "abc",
         "42abc",
         "0x2a",
-        "١٢٣"
+        "١٢٣",
+        # A naive timestamp is ambiguous, and a bare date is not an instant.
+        "2026-08-03T10:00:00",
+        "2026-08-03",
+        "2026-08-03T25:00:00Z"
       ]
 
       for value <- rejected do

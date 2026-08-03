@@ -54,9 +54,9 @@ whole log, and one endpoint answers all of them:
   another language has to know the fully-qualified module-name strings to build
   a filter at all. Stats is the smallest thing that makes a producer
   self-describing, and stops well short of a schema endpoint.
-- **Whether `start: :latest` is about to skip something.** How much history
-  exists per type, before choosing between `:beginning`, `:latest`, and an
-  explicit id.
+- **Whether `stream_from: :current` is about to skip something.** How much
+  history exists per type, before choosing between `1`, `:current`, an explicit
+  id, and an instant.
 
 **What it is not.** Three limits, and the first is load-bearing:
 

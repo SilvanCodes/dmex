@@ -109,10 +109,49 @@ defmodule DMEx.Integration.LocalSliceTest do
     end)
   end
 
+  # Resolved once in `init/1`, not once per connect. Otherwise a subscription
+  # that has not yet handled anything skips whatever arrived while it was
+  # disconnected — `stream_from` applies until the first commit, and on a quiet
+  # log that window is days.
+  #
+  # Here rather than in the sandboxed unit suite because it needs a real
+  # reconnect: a reader dying mid-query takes the sandbox's shared ownership with
+  # it, after which no reconnect can ever succeed. Nothing to do with DMEx, and
+  # not a thing to write a flaky test around.
+  test "stream_from: :current is frozen across reconnects" do
+    # A whole second of backoff so the append below lands squarely inside the
+    # disconnected window rather than racing the reconnect.
+    {:ok, [pid]} =
+      DMEx.Supervisor.subscribe(Handlers.Echo,
+        supervisor: TestSupervisor,
+        stream_from: :current,
+        reconnect_backoff: 1_000
+      )
+
+    frozen = :sys.get_state(pid).config.stream_from
+    assert %DateTime{} = frozen
+
+    reader = eventually(fn -> :sys.get_state(pid).source[:reader] end)
+    Process.exit(reader, :kill)
+
+    # Appended while there is no connection, and before the handler has ever
+    # committed — so `stream_from` still applies on the way back up. A stream
+    # that re-read the clock on reconnect would resolve past this row and skip
+    # it forever, silently. This assertion *is* the reason the instant is frozen.
+    {:ok, _} = Log.append(%OrderPlaced{order_id: 42})
+
+    assert_receive {:handled, %OrderPlaced{order_id: 42}, _}, 15_000
+
+    assert :sys.get_state(pid).config.stream_from == frozen
+  end
+
   ## Helpers
 
-  defp subscribe(handler) do
-    {:ok, _pids} = DMEx.Supervisor.subscribe(handler, supervisor: TestSupervisor)
+  # `stream_from: 1` throughout: these tests append first and subscribe after,
+  # which is the backlog they are about. The default `:current` would correctly
+  # skip all of it.
+  defp subscribe(handler, opts \\ [stream_from: 1]) do
+    {:ok, _pids} = DMEx.Supervisor.subscribe(handler, [supervisor: TestSupervisor] ++ opts)
 
     :ok
   end

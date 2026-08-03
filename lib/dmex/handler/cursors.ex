@@ -11,7 +11,7 @@ defmodule DMEx.Handler.Cursors do
 
   A different `id:`, or a different key for that log in `DMEx.Supervisor`'s
   `logs:`, mints a new identity with no cursor, which then begins wherever its
-  `start:` says. (Renaming the module does not — see `DMEx.Handler`.) Migrate it
+  `stream_from:` says. (Renaming the module does not — see `DMEx.Handler`.) Migrate it
   next to the code change that causes it:
 
       defmodule MyApp.Repo.Migrations.RenameOrderProjection do
@@ -44,8 +44,8 @@ defmodule DMEx.Handler.Cursors do
   Returns where `handler`'s subscription has got to, and when it last moved.
 
   `nil` if it has never committed a position — the normal state for a
-  subscription started with `start: :latest` on a quiet log, since nothing
-  writes a cursor until it has consumed something.
+  subscription started with `stream_from: :current` on a quiet log, since
+  nothing writes a cursor until it has consumed something.
   """
   @spec inspect(module(), keyword()) ::
           {:ok, %{last_seen: non_neg_integer(), updated_at: term()} | nil}
@@ -59,8 +59,13 @@ defmodule DMEx.Handler.Cursors do
   @doc """
   Moves `handler`'s cursor to `id`, so the next connect resumes after it.
 
+  `id` is a cursor and therefore **exclusive**, where `stream_from:` is a
+  starting position and therefore inclusive: `move!(h, 41)` and
+  `stream_from: 42` name the same place. Deliberately different domains — a
+  cursor records what has been dealt with, an option says where to begin.
+
   `id: 0` replays the whole log — not the same as `reset!/2`, since a cursor at 0
-  still exists and `start:` stays ignored. Every message after that id which this
+  still exists and `stream_from:` stays ignored. Every message after that id which this
   subscription selects is redelivered, so the handler must tolerate it.
 
   A cursor is nothing but a subscription and a position, so this runs from a
@@ -83,8 +88,8 @@ defmodule DMEx.Handler.Cursors do
   @doc """
   Removes `handler`'s cursor entirely.
 
-  Distinct from moving it to 0: with no row at all, the subscription's `start:`
-  option applies again on its next start. That is the difference between "replay
+  Distinct from moving it to 0: with no row at all, the subscription's
+  `stream_from:` option applies again on its next start. That is the difference between "replay
   everything" and "begin however this subscription was configured to begin".
   """
   @spec reset!(module(), keyword()) :: :ok

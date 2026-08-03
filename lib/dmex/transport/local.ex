@@ -28,6 +28,7 @@ defmodule DMEx.Transport.Local do
   @behaviour DMEx.Transport
 
   alias DMEx.Handler
+  alias DMEx.Handler.Request
   alias DMEx.Log.Stream, as: SendLoop
 
   ## Send side — the loop process writes into its owner
@@ -67,8 +68,13 @@ defmodule DMEx.Transport.Local do
     config = log.__dmex__().config
     selection = selection(opts)
 
-    cursor = resolve_cursor(log, Keyword.fetch!(opts, :cursor), Keyword.fetch!(opts, :config))
+    with {:ok, cursor} <-
+           resolve_cursor(log, Keyword.fetch!(opts, :cursor), Keyword.fetch!(opts, :config)) do
+      {:ok, open(log, owner, config, selection, cursor)}
+    end
+  end
 
+  defp open(log, owner, config, selection, cursor) do
     reader =
       spawn_link(fn ->
         # Registered by the reader itself, so the entry dies with it — the same
@@ -92,7 +98,7 @@ defmodule DMEx.Transport.Local do
         )
       end)
 
-    {:ok, %{log: log, reader: reader}}
+    %{log: log, reader: reader}
   end
 
   # The reader is linked, so its death arrives as an exit the owner traps.
@@ -118,20 +124,30 @@ defmodule DMEx.Transport.Local do
 
   ## Resolution
 
-  # The same three answers `DMEx.Handler.Request` puts in a `last-event-id`
-  # header and `DMEx.Log.Plug` resolves back out, without the round trip.
-  defp resolve_cursor(log, :none, %{start: :latest}) do
-    %{storage: storage, storage_opts: storage_opts} = log.__dmex__()
+  # The same two answers `DMEx.Handler.Request` puts in a `last-event-id` header
+  # and `DMEx.Log.Plug` resolves back out, without the round trip — and from the
+  # same function, so the id form's `- 1` lives in exactly one place.
+  #
+  # `stream_from: :current` costs an index descent here that a direct `max(id)`
+  # would not, since it arrives already resolved to an instant. Worth it to keep
+  # one resolution path across both transports: the alternative is the atom
+  # surviving into the transport layer, and with it a `:current` that re-reads
+  # the clock on every reconnect for local subscriptions only.
+  #
+  # An error ends the connect rather than falling back to 0, which would turn a
+  # momentary pool exhaustion into a whole-log replay. The subscription retries
+  # on its own jittered schedule; the log's plug answers the same case with 503.
+  defp resolve_cursor(log, cursor, config) do
+    case Request.position(cursor, config) do
+      %DateTime{} = at ->
+        %{storage: storage, storage_opts: storage_opts} = log.__dmex__()
 
-    case storage.max_id(storage_opts) do
-      {:ok, max_id} -> max_id
-      {:error, _reason} -> 0
+        storage.cursor_at(storage_opts, at)
+
+      cursor ->
+        {:ok, cursor}
     end
   end
-
-  defp resolve_cursor(_log, :none, %{start: start}) when is_integer(start), do: start
-  defp resolve_cursor(_log, :none, _config), do: 0
-  defp resolve_cursor(_log, cursor, _config) when is_integer(cursor), do: cursor
 
   defp selection(opts) do
     declaration = opts |> Keyword.fetch!(:handler) |> Handler.declaration!()

@@ -85,7 +85,7 @@ defmodule DMEx.Handler.CursorsTest do
 
     test "moving to 0 replays the whole log but keeps the row", ctx do
       # Which is the difference from reset!/2: a cursor at 0 still exists, so
-      # `start:` stays ignored.
+      # `stream_from:` stays ignored.
       :ok = Postgres.advance(ctx.storage_opts, @old, 100)
 
       assert :ok = Cursors.move!(Old, 0, ctx.opts)
@@ -95,12 +95,12 @@ defmodule DMEx.Handler.CursorsTest do
   end
 
   describe "reset!/2" do
-    test "removes the row entirely, so start: applies again", ctx do
+    test "removes the row entirely, so stream_from: applies again", ctx do
       :ok = Postgres.advance(ctx.storage_opts, @old, 100)
 
       assert :ok = Cursors.reset!(Old, ctx.opts)
 
-      # nil, not 0 — the distinction that makes `start: :latest` meaningful.
+      # nil, not 0 — the distinction that makes `stream_from:` apply exactly once.
       assert {:ok, nil} = Postgres.last_seen(ctx.storage_opts, @old)
     end
 

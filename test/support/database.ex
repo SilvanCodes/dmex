@@ -72,6 +72,13 @@ defmodule DMEx.Test.Database do
   @spec migrate!() :: :ok
   def migrate! do
     Enum.each(@repos, fn repo ->
+      # Down first, so an edit to `DMEx.Migration` takes effect on the next run.
+      # Its DDL is deliberately re-runnable — `create_if_not_exists` throughout —
+      # which means a *changed* column default or a new index would otherwise be
+      # skipped against a database from before the edit, and the suite would test
+      # yesterday's schema. Greenfield: the tables are cheap and hold nothing
+      # worth keeping between runs.
+      Ecto.Migrator.down(repo, 1, DMEx.Test.Migrations.Install, log: false)
       Ecto.Migrator.up(repo, 1, DMEx.Test.Migrations.Install, log: false)
     end)
   end

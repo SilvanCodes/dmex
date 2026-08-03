@@ -7,9 +7,19 @@ defmodule DMEx.Handler.Request do
   `DMEx.Transport.SSE`.
 
   The only header DMEx contributes is `last-event-id`, alongside the `accept`
-  every SSE client sends. `start: :beginning` sends no `last-event-id` at all
-  rather than `0` — what a fresh `EventSource` does, and what the log reads as
-  the whole log.
+  every SSE client sends.
+
+  `stream_from:` reaches here already resolved by `DMEx.Handler.Stream.init/1`,
+  so it is a positive id or a `DateTime` and never `:current`. The two are the
+  same request in different units, and only one of them needs arithmetic:
+
+    * an **id names a message**, so `stream_from: 42` must deliver 42 — the
+      exclusive cursor `41`. This is the only place in DMEx that conversion
+      happens, and it needs no clamp because `DMEx.Config` has already rejected
+      anything below 1.
+    * an **instant names the gap between two messages**, which is what an
+      exclusive cursor already is, so it goes on the wire as-is and the log
+      resolves it against its own rows.
   """
 
   alias DMEx.Config
@@ -24,23 +34,31 @@ defmodule DMEx.Handler.Request do
   end
 
   @doc """
-  Builds the `last-event-id` header for a cursor, or `[]` for none.
+  Builds the `last-event-id` header for a cursor.
 
-  Exposed separately because the vocabulary — an integer, the literal `latest`,
-  or absent — is worth reading in one place.
+  Exposed separately because the vocabulary — an integer or an instant — is
+  worth reading in one place.
   """
   @spec last_event_id(cursor(), Config.handler()) :: [{String.t(), String.t()}]
-  def last_event_id(:none, %{start: start}) do
-    case start do
-      :beginning -> []
-      :latest -> [{"last-event-id", "latest"}]
-      id when is_integer(id) -> [{"last-event-id", Integer.to_string(id)}]
-    end
+  def last_event_id(cursor, config) do
+    [{"last-event-id", encode(position(cursor, config))}]
   end
 
-  def last_event_id(cursor, _config) when is_integer(cursor) do
-    [{"last-event-id", Integer.to_string(cursor)}]
-  end
+  @doc """
+  Where this subscription is asking to start, as the wire will express it.
+
+  A durable cursor wins over `stream_from:` whenever there is one — that is the
+  whole of resumption. `DMEx.Transport.SSE` needs the same answer for its
+  predecessor check as the header carries, so both derive from here rather than
+  each recomputing the `- 1`.
+  """
+  @spec position(cursor(), Config.handler()) :: non_neg_integer() | DateTime.t()
+  def position(:none, %{stream_from: %DateTime{} = at}), do: at
+  def position(:none, %{stream_from: id}) when is_integer(id), do: id - 1
+  def position(cursor, _config) when is_integer(cursor), do: cursor
+
+  defp encode(%DateTime{} = at), do: DateTime.to_iso8601(at)
+  defp encode(cursor) when is_integer(cursor), do: Integer.to_string(cursor)
 
   @doc """
   Builds the path to request: the log's stream URL, plus the selection segment.

@@ -25,7 +25,7 @@ defmodule DMEx.Migration do
     * `:tables` — `[:log, :subscriptions]` (default both)
     * `:prefix` — a Postgres schema to create the tables in, created if absent.
 
-  ## The two indexes
+  ## The three indexes
 
   **The primary key on `id`** serves every whole-log read directly: those are
   `id > cursor` range scans and nothing else. **`(message_type, id)`** serves a
@@ -35,6 +35,12 @@ defmodule DMEx.Migration do
   genuinely cheaper there. It costs one index entry per append, paid whether or
   not anyone selects against it, because the alternative is that server-side
   selection saves bandwidth and no database work at all.
+
+  **`(inserted_at, id)`** serves `c:DMEx.Storage.cursor_at/2`, which resolves a
+  `stream_from:` instant to a cursor once per connect. Also one entry per append,
+  and this one is paid by every log whether or not anyone ever connects with a
+  timestamp — but `stream_from: :current` is the default, so in practice every
+  subscription reads it exactly once at startup.
 
   ## The one CHECK constraint
 
@@ -129,19 +135,37 @@ defmodule DMEx.Migration do
       # from NULL.
       add(:metadata, :jsonb, null: false, default: fragment("'{}'::jsonb"))
 
-      # timestamptz specifically, and for observability only — never ordering,
-      # which is what `id` is for. Postgrex returns %DateTime{} for this type,
+      # timestamptz specifically. Postgrex returns %DateTime{} for this type,
       # which is what renders the trailing Z on the wire; a plain `timestamp`
       # comes back as %NaiveDateTime{} and silently drops it.
-      add(:inserted_at, :timestamptz, null: false, default: fragment("now()"))
+      #
+      # `clock_timestamp()`, not `now()`: `now()` is the *transaction's* start
+      # time, frozen before `pg_advisory_xact_lock` was ever acquired — and
+      # arbitrarily long before, when a caller wraps `append/2` in a transaction
+      # of its own. `clock_timestamp()` is evaluated during the INSERT, inside
+      # the lock's serialised region, by the same statement that draws `nextval`.
+      # That is what makes this column ascend with `id`, which
+      # `c:DMEx.Storage.cursor_at/2` requires: it reads the *last row before* an
+      # instant, and across an inversion that lands past a lower id belonging
+      # after the cut — a silently skipped message.
+      #
+      # Still not an ordering key. `id` is. This column locates a *starting*
+      # id once, at connect, and a backwards NTP step (rather than the slew
+      # chrony does by default) can still invert a pair.
+      add(:inserted_at, :timestamptz, null: false, default: fragment("clock_timestamp()"))
     end
 
-    # The one secondary index, for exactly one query shape — see the moduledoc
-    # for when the planner takes it. It is also the reason a whole-log read is a
-    # *separate statement* (see `DMEx.Storage.Postgres.read/5`): folding both
-    # into one query with a nullable predicate would defeat this index and the
-    # primary key at once.
+    # For exactly one query shape — see the moduledoc for when the planner takes
+    # it. It is also the reason a whole-log read is a *separate statement* (see
+    # `DMEx.Storage.Postgres.read/5`): folding both into one query with a
+    # nullable predicate would defeat this index and the primary key at once.
     create_if_not_exists(index(:dmex_messages, [:message_type, :id], prefix: prefix))
+
+    # For `c:DMEx.Storage.cursor_at/2`, and nothing else. Both columns, so its
+    # `ORDER BY inserted_at DESC, id DESC LIMIT 1` is a backward scan of this
+    # index alone — one descent rather than an aggregate over everything before
+    # the instant. Read once per connect, never per row.
+    create_if_not_exists(index(:dmex_messages, [:inserted_at, :id], prefix: prefix))
 
     # Written out rather than through `constraint/3`, because Ecto has no
     # `create_if_not_exists` for constraints and Postgres has no

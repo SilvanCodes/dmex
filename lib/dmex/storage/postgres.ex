@@ -146,6 +146,32 @@ defmodule DMEx.Storage.Postgres do
   end
 
   @impl DMEx.Storage
+  def cursor_at(opts, %DateTime{} = at) do
+    repo = Map.fetch!(opts, :repo)
+
+    # An ordered LIMIT 1, not `max(id)`: the planner cannot know `inserted_at`
+    # ascends with `id`, so the aggregate visits every row before the instant
+    # where this is a backward scan of `(inserted_at, id)` — one descent. The
+    # two agree only because `clock_timestamp()` makes the columns monotonic
+    # together; see `c:DMEx.Storage.cursor_at/2`.
+    #
+    # The coalesce is the whole of the empty case: no row before the instant
+    # means cursor 0, which is the whole log.
+    sql = """
+    SELECT coalesce((SELECT id
+                       FROM #{table(opts, @messages)}
+                      WHERE inserted_at < $1
+                      ORDER BY inserted_at DESC, id DESC
+                      LIMIT 1), 0)
+    """
+
+    case SQL.query(repo, sql, [at]) do
+      {:ok, %{rows: [[cursor]]}} -> {:ok, cursor}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @impl DMEx.Storage
   def appended_since(opts, cursor) when is_integer(cursor) and cursor >= 0 do
     repo = Map.fetch!(opts, :repo)
 

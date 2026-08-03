@@ -112,19 +112,29 @@ defmodule DMEx.Integration.WireContractTest do
       assert order_ids == [1, 2, 3, 4, 5]
     end
 
-    test "`latest` skips history entirely", ctx do
-      {200, _, body} = request(ctx, [{"last-event-id", "latest"}])
+    test "an instant now skips history entirely", ctx do
+      {200, _, body} =
+        request(ctx, [{"last-event-id", DateTime.to_iso8601(DateTime.utc_now())}])
 
       # A consumer that only cares about what happens from now on, with no
-      # preflight request and no second parameter.
+      # preflight request and no second parameter — and no tip token either,
+      # because every row is before "now".
       refute body =~ "event: "
       assert body =~ "retry: "
+    end
+
+    test "an instant before the log is the whole log", ctx do
+      {200, _, body} = request(ctx, [{"last-event-id", "2000-01-01T00:00:00Z"}])
+
+      assert body =~ "event: "
     end
   end
 
   describe "a malformed request is a 400" do
     test "a Last-Event-ID outside the vocabulary", ctx do
-      for value <- ["-1", "1.0", "abc", "LATEST", "", "42abc"] do
+      # `latest` among them: with a consumer sending its own instant there is
+      # nothing left for a tip token to express.
+      for value <- ["-1", "1.0", "abc", "LATEST", "latest", "", "42abc", "2026-08-03"] do
         assert {400, _headers, body} = request(ctx, [{"last-event-id", value}]),
                "expected #{inspect(value)} to be rejected"
 

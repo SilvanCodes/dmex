@@ -202,12 +202,17 @@ defmodule DMEx.Transport.SSE do
 
   ## The id chain
 
-  # `start: :latest` resolves to the tip on the *log*, and that number never
-  # comes back over the wire, so the first frame's claim has nothing to be
-  # checked against. Every other resume position is one this end chose.
-  defp expected_previous(%{start: :latest}, :none), do: :unknown
-  defp expected_previous(_config, :none), do: 0
-  defp expected_previous(_config, cursor), do: cursor
+  # An instant is resolved to a cursor on the *log*, and that number never comes
+  # back over the wire, so the first frame's claim has nothing to be checked
+  # against. Every other resume position is one this end chose, and comes from
+  # the same function that built the header — recomputing the `- 1` here is
+  # exactly the drift worth designing out.
+  defp expected_previous(config, cursor) do
+    case Request.position(cursor, config) do
+      %DateTime{} -> :unknown
+      cursor -> cursor
+    end
+  end
 
   defp verify_chain(rows, source) do
     Enum.reduce_while(rows, {:ok, source}, fn row, {:ok, source} ->

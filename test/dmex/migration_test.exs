@@ -52,7 +52,7 @@ defmodule DMEx.MigrationTest do
                column("dmex_messages", "inserted_at")
     end
 
-    test "two indexes, one per read shape" do
+    test "three indexes, one per read shape" do
       # The primary key serves a whole-log read — a bare `id > cursor` range
       # scan — directly.
       #
@@ -65,12 +65,26 @@ defmodule DMEx.MigrationTest do
       # It is not free: appends are serialized per app, so this index's
       # maintenance sits on the one write path that cannot be parallelized away,
       # and every log pays it whether or not anyone selects against it.
+      #
+      # `(inserted_at, id)` serves `cursor_at/2`, which resolves a `stream_from:`
+      # instant once per connect. Both columns, so the backward `ORDER BY … DESC
+      # LIMIT 1` is satisfied by the index alone.
       assert indexes("dmex_messages") == [
+               "dmex_messages_inserted_at_id_index",
                "dmex_messages_message_type_id_index",
                "dmex_messages_pkey"
              ]
 
       assert index_columns("dmex_messages_message_type_id_index") == ["message_type", "id"]
+      assert index_columns("dmex_messages_inserted_at_id_index") == ["inserted_at", "id"]
+    end
+
+    # The contract `c:DMEx.Storage.cursor_at/2` rests on: stamped by the same
+    # INSERT that draws the id, inside the advisory lock's region, so the column
+    # ascends with `id`. `now()` is the transaction's start time and says nothing
+    # about the order ids were assigned in.
+    test "inserted_at defaults to clock_timestamp(), not now()" do
+      assert %{"column_default" => "clock_timestamp()"} = column("dmex_messages", "inserted_at")
     end
 
     # `message_type` goes on the wire as an SSE `event:` line, unescaped, because

@@ -14,7 +14,7 @@ defmodule DMEx.Storage do
   log and every subscription in an application without any of them sharing
   anything.
 
-  ## Three contracts that are correctness, not style
+  ## Four contracts that are correctness, not style
 
   Each is easy to implement *almost* right, and each has a test pinning it.
 
@@ -26,6 +26,15 @@ defmodule DMEx.Storage do
   must be `pg_advisory_xact_lock`, never `pg_advisory_lock`, and never released
   explicitly.
 
+  **`inserted_at` must be stamped inside that lock's region.** By the same
+  INSERT that draws the id, so the column ascends with `id`. A transaction-start
+  clock (Postgres's `now()`) is read before the lock is acquired — and long
+  before it, when a caller wraps the append in a transaction of its own — so it
+  says nothing about the order ids were assigned in. `c:cursor_at/2` reads the
+  last row *before* an instant, and across such an inversion that lands past a
+  lower id belonging after the cut: the same silent skip, arrived at from the
+  other direction.
+
   **`c:read/5` must return `data` and `metadata` as JSON *text*.**
   `DMEx.Transport.SSE.Frame.encode_row/1` splices those columns into the wire
   frame byte-for-byte, so the cast belongs in the query (`data::text`), not in
@@ -36,7 +45,7 @@ defmodule DMEx.Storage do
 
   **`c:last_seen/2` must distinguish "no cursor" from "cursor at 0".** It
   returns `nil`, not `0`, when a subscription has never committed anything,
-  which is what makes `start: :latest` meaningful exactly once.
+  which is what makes `stream_from:` apply exactly once.
   """
 
   @typedoc """
@@ -149,9 +158,42 @@ defmodule DMEx.Storage do
   @doc """
   The log's current highest id, or `0` when the log is empty.
 
-  Used for resolving a `Last-Event-ID: latest` connect against the tip.
+  For `DMEx.Log.Dispatcher`, which seeds its poll from the tip so a stream that
+  connects to a busy log is not woken for everything already behind it.
   """
   @callback max_id(opts()) :: {:ok, non_neg_integer()} | {:error, term()}
+
+  @doc """
+  The **exclusive cursor** that starts delivery at `at`: the last row appended
+  before that instant, or `0` when there is none.
+
+  A cursor, not an id, and that is the whole point. An id names a message, so
+  positioning by one needs a `- 1` somewhere; an instant names the *gap between*
+  two messages, which is already what an exclusive cursor is. So every case
+  falls out of one expression, with no arithmetic and no branch:
+
+  | `at` | cursor | effect |
+  | --- | --- | --- |
+  | after the tip | the tip | deliver nothing yet — this is `stream_from: :current` |
+  | between rows N and N+1 | N | deliver N+1 onward |
+  | exactly row N's `inserted_at` | N-1 | deliver N onward, so the instant is *included* |
+  | before the first row, or an empty log | 0 | the whole log |
+
+  **This requires `inserted_at` to ascend with `id`**, which is why
+  `DMEx.Migration` defaults it to `clock_timestamp()` rather than `now()` — see
+  the fourth contract in the module documentation. Across an inversion, "the
+  last row before `at`" can land past a lower id that belongs *after* the cut,
+  and a cursor set too high skips it permanently. The interleaving-proof
+  alternative is the forward `min(id) WHERE inserted_at >= $1` minus one, which
+  scans the whole matching tail on the connect path and puts the `- 1` back.
+
+  An adapter should express it as an ordered `LIMIT 1`, not `max(id)`: the
+  planner has no way to know the two columns ascend together, so the aggregate
+  visits every row before the instant where the ordered form is one index
+  descent.
+  """
+  @callback cursor_at(opts(), at :: DateTime.t()) ::
+              {:ok, non_neg_integer()} | {:error, term()}
 
   @doc """
   Returns the new highest id since `cursor` and the distinct types among those
@@ -244,7 +286,7 @@ defmodule DMEx.Storage do
   Removes a subscription's cursor entirely.
 
   Distinct from advancing it to 0: with no row at all the subscription's
-  `start:` option applies again on its next start.
+  `stream_from:` option applies again on its next start.
   """
   @callback delete_cursor(opts(), subscription :: String.t()) :: :ok | {:error, term()}
 

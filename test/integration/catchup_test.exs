@@ -43,7 +43,8 @@ defmodule DMEx.Integration.CatchupTest do
   test "drains a large backlog in order, in writes no larger than requested", _ctx do
     ref = :telemetry_test.attach_event_handlers(self(), [[:dmex, :stream, :write]])
 
-    {:ok, _} = DMEx.Supervisor.subscribe(Handlers.Echo, supervisor: TestSupervisor)
+    {:ok, _} =
+      DMEx.Supervisor.subscribe(Handlers.Echo, supervisor: TestSupervisor, stream_from: 1)
 
     ids =
       for _ <- 1..@backlog do
@@ -73,7 +74,8 @@ defmodule DMEx.Integration.CatchupTest do
     # 1 MiB byte budget is what has to bind instead.
     seed_large(200, 8_192)
 
-    {:ok, _} = DMEx.Supervisor.subscribe(Handlers.Echo, supervisor: TestSupervisor)
+    {:ok, _} =
+      DMEx.Supervisor.subscribe(Handlers.Echo, supervisor: TestSupervisor, stream_from: 1)
 
     # Drain the small backlog and then the large rows behind it.
     for _ <- 1..(@backlog + 200), do: assert_receive({:handled, %OrderPlaced{}, _}, 30_000)

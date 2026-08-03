@@ -8,7 +8,7 @@ defmodule DMEx.Log.Params do
   | carried in | meaning | absent | invalid |
   | --- | --- | --- | --- |
   | the path segment | which message types | the whole log | `400`, or `404` if reserved |
-  | `last-event-id` | resume position, as `previous/current` or a bare id | from the beginning | `400` |
+  | `last-event-id` | resume position, as `previous/current`, a bare id, or an instant | from the beginning | `400` |
 
   **DMEx defines no request headers.** See the wire contract in
   `ARCHITECTURE.md`, which also covers why the selection goes in the path.
@@ -26,12 +26,20 @@ defmodule DMEx.Log.Params do
       `current` is used; the predecessor is a consumer-side integrity check (see
       `DMEx.Transport.SSE.Frame`) and means nothing to a log.
     * **an integer id** — resume after it.
-    * **`latest`** — start from the tip, resolved against the log's `max(id)`.
-      How a consumer skips history with no preflight request.
+    * **an ISO-8601 instant** — resume after the last row appended before it,
+      resolved against the log's own clock by `c:DMEx.Storage.cursor_at/2`. How
+      a consumer positions itself in time with no preflight request, and — since
+      a consumer sends its own `utc_now()` — how it skips history entirely.
     * **absent** — from id 0, the whole log, which is what a fresh browser
       `EventSource` sends.
 
-  Validation is strict: `~r/\\A\\d+\\z/` per half, so `"5abc"` is a `400`.
+  There is deliberately **no tip token**. A consumer wanting the tip sends the
+  current instant, which resolves to the tip because every row is before it; a
+  `latest` would be a second spelling of a position the vocabulary already has.
+
+  Validation is strict: `~r/\\A\\d+\\z/` per half, so `"5abc"` is a `400`, and an
+  instant must carry an explicit offset. The two forms cannot collide — ISO-8601
+  contains no `/`.
   """
 
   alias DMEx.Fingerprint
@@ -45,7 +53,7 @@ defmodule DMEx.Log.Params do
   the path segment.
   """
   @type t :: %__MODULE__{
-          cursor: non_neg_integer() | :latest,
+          cursor: non_neg_integer() | {:at, DateTime.t()},
           selection: :all | Fingerprint.t()
         }
 
@@ -139,21 +147,35 @@ defmodule DMEx.Log.Params do
   defp cursor(req_headers) do
     case fetch(req_headers, @last_event_id) do
       :error -> {:ok, 0}
-      {:ok, "latest"} -> {:ok, :latest}
       {:ok, value} -> resume_position(value)
       {:error, value} -> {:error, {:invalid, @last_event_id, value}}
     end
   end
 
+  # Digits first, since the id forms are the common case and an instant cannot
+  # begin with a bare run of digits followed by nothing else.
   defp resume_position(value) do
     case String.split(value, "/", parts: 2) do
       [current] ->
-        integer(current, @last_event_id)
+        if Regex.match?(@digits, current) do
+          integer(current, @last_event_id)
+        else
+          instant(current)
+        end
 
       [previous, current] ->
         with {:ok, _previous} <- integer(previous, @last_event_id) do
           integer(current, @last_event_id)
         end
+    end
+  end
+
+  # Tagged rather than bare, so a caller cannot confuse a position it must
+  # resolve against storage with one already in the cursor's own domain.
+  defp instant(value) do
+    case DateTime.from_iso8601(value) do
+      {:ok, at, _offset} -> {:ok, {:at, at}}
+      {:error, _reason} -> {:error, {:invalid, @last_event_id, value}}
     end
   end
 

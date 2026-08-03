@@ -84,6 +84,8 @@ defmodule DMEx.Log.Plug do
   alias DMEx.Log.Stream, as: SendLoop
   alias DMEx.Transport.SSE.Frame
 
+  require Logger
+
   @behaviour Plug
 
   @impl Plug
@@ -159,10 +161,15 @@ defmodule DMEx.Log.Plug do
     {:ok, status} =
       DMEx.Log.Registry.register(log, config.stall_timeout, selection)
 
-    cursor = resolve_cursor(log, params.cursor)
+    case resolve_cursor(log, params.cursor) do
+      {:ok, cursor} -> open(conn, log, config, selection, status, cursor)
+      {:error, reason} -> unavailable(conn, reason)
+    end
+  end
 
-    # Re-armed because `resolve_cursor/2` above can query — `cursor=latest`
-    # costs a `max_id`, which takes a pool checkout like any other read. The
+  defp open(conn, log, config, selection, status, cursor) do
+    # Re-armed because `resolve_cursor/2` above can query — an instant costs a
+    # `cursor_at`, which takes a pool checkout like any other read. The
     # registration's arm covers that query; this one gives the header write
     # that follows its own full budget rather than what the query left of it.
     Status.arm(status, config.stall_timeout)
@@ -196,17 +203,19 @@ defmodule DMEx.Log.Plug do
   end
 
   # The only cursor needing a query on the connect path, and what lets a
-  # consumer skip history without a preflight request.
-  defp resolve_cursor(log, :latest) do
+  # consumer position itself in time without a preflight request.
+  #
+  # An error is fatal to the connect rather than a fallback to 0. Falling back
+  # would turn a pool timeout into a whole-log replay — and since every
+  # `stream_from: :current` subscription arrives here, that is the default path,
+  # not an exotic one. A 503 costs the consumer one jittered reconnect.
+  defp resolve_cursor(log, {:at, at}) do
     %{storage: storage, storage_opts: opts} = log.__dmex__()
 
-    case storage.max_id(opts) do
-      {:ok, max_id} -> max_id
-      {:error, _reason} -> 0
-    end
+    storage.cursor_at(opts, at)
   end
 
-  defp resolve_cursor(_log, cursor) when is_integer(cursor), do: cursor
+  defp resolve_cursor(_log, cursor) when is_integer(cursor), do: {:ok, cursor}
 
   # A frame of its own at stream open, which dispatches nothing: an SSE parser
   # applies `retry:` the moment it parses the line, while an event is dispatched
@@ -252,6 +261,14 @@ defmodule DMEx.Log.Plug do
 
   defp not_found(conn, body) do
     respond(conn, 404, body)
+  end
+
+  # 503, not 500: the request was well-formed and the log's storage is momentarily
+  # unable to answer it, which is exactly the case a consumer should retry.
+  defp unavailable(conn, reason) do
+    Logger.error("[dmex] could not resolve a connect cursor: #{inspect(reason)}")
+
+    respond(conn, 503, "could not resolve the requested position; retry")
   end
 
   defp respond(conn, status, body) do

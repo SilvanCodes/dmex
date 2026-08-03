@@ -48,31 +48,43 @@ defmodule DMEx.Handler.RequestTest do
       assert Request.last_event_id(0, config()) == [{"last-event-id", "0"}]
     end
 
-    test "the durable cursor wins over start:, whatever start: says" do
-      for start <- [:beginning, :latest, 99] do
-        assert Request.last_event_id(7, config(start: start)) == [{"last-event-id", "7"}]
+    test "the durable cursor wins over stream_from:, whatever it says" do
+      for stream_from <- [1, 99, ~U[2026-08-03 10:00:00Z]] do
+        assert Request.last_event_id(7, config(stream_from: stream_from)) ==
+                 [{"last-event-id", "7"}]
       end
     end
 
-    # No header at all rather than `0` — which is also what a fresh browser
-    # EventSource sends, so the log needs only one code path.
-    test "start: :beginning with no cursor sends no header" do
-      assert Request.last_event_id(:none, config(start: :beginning)) == []
+    # An id names a message and `stream_from` is inclusive, so the cursor is one
+    # below it. The only such conversion in DMEx.
+    test "stream_from: an id with no cursor sends the id below it" do
+      assert Request.last_event_id(:none, config(stream_from: 500)) == [{"last-event-id", "499"}]
     end
 
-    test "start: :latest with no cursor sends the literal" do
-      assert Request.last_event_id(:none, config(start: :latest)) == [{"last-event-id", "latest"}]
+    # The boundary the conversion would need a clamp for, if 0 were a legal
+    # `stream_from` — DMEx.Config rejects it, so this is as low as it goes.
+    test "stream_from: 1 sends cursor 0, the whole log" do
+      assert Request.last_event_id(:none, config(stream_from: 1)) == [{"last-event-id", "0"}]
     end
 
-    test "start: an id with no cursor sends that id" do
-      assert Request.last_event_id(:none, config(start: 500)) == [{"last-event-id", "500"}]
+    # An instant names the gap between two messages, which is what an exclusive
+    # cursor already is — so it goes over as-is, for the log to resolve.
+    test "stream_from: an instant with no cursor sends it as ISO-8601" do
+      assert Request.last_event_id(:none, config(stream_from: ~U[2026-08-03 10:00:00Z])) ==
+               [{"last-event-id", "2026-08-03T10:00:00Z"}]
+    end
+
+    # `:current` is resolved to an instant in DMEx.Handler.Stream.init/1 and
+    # never reaches this module.
+    test "the atom never gets here" do
+      assert_raise FunctionClauseError, fn ->
+        Request.last_event_id(:none, config(stream_from: :current))
+      end
     end
 
     test "headers/2 carries it through" do
-      assert :none |> Request.headers(config(start: :latest)) |> header("last-event-id") ==
-               "latest"
-
-      refute :none |> Request.headers(config(start: :beginning)) |> header("last-event-id")
+      assert :none |> Request.headers(config(stream_from: 500)) |> header("last-event-id") ==
+               "499"
     end
   end
 
@@ -101,16 +113,22 @@ defmodule DMEx.Handler.RequestTest do
       assert params.selection == :all
     end
 
-    test "start: :beginning round-trips as the whole log" do
-      headers = Request.headers(:none, config(start: :beginning))
+    test "stream_from: 1 round-trips as the whole log" do
+      headers = Request.headers(:none, config(stream_from: 1))
 
       assert {:ok, %{cursor: 0}} = Params.parse([], headers)
     end
 
-    test "start: :latest round-trips as the tip" do
-      headers = Request.headers(:none, config(start: :latest))
+    test "stream_from: an id round-trips as the cursor below it" do
+      headers = Request.headers(:none, config(stream_from: 42))
 
-      assert {:ok, %{cursor: :latest}} = Params.parse([], headers)
+      assert {:ok, %{cursor: 41}} = Params.parse([], headers)
+    end
+
+    test "stream_from: an instant round-trips as something for the log to resolve" do
+      headers = Request.headers(:none, config(stream_from: ~U[2026-08-03 10:00:00Z]))
+
+      assert {:ok, %{cursor: {:at, ~U[2026-08-03 10:00:00Z]}}} = Params.parse([], headers)
     end
   end
 end

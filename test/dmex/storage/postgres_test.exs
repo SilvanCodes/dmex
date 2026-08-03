@@ -307,10 +307,65 @@ defmodule DMEx.Storage.PostgresTest do
     end
   end
 
+  # An instant names the *gap between* two messages, which is already what an
+  # exclusive cursor is — so every case here comes out of one expression, with
+  # no arithmetic and no branch.
+  describe "cursor_at/2" do
+    test "is 0 on an empty log", %{opts: opts} do
+      assert {:ok, 0} = Postgres.cursor_at(opts, ~U[2026-08-03 10:00:00Z])
+    end
+
+    test "is 0 before the first row", %{opts: opts} do
+      {:ok, _} = append(opts, "A", %{n: 1})
+
+      assert {:ok, 0} = Postgres.cursor_at(opts, ~U[2000-01-01 00:00:00Z])
+    end
+
+    # What `stream_from: :current` resolves to, and why the vocabulary needs no
+    # tip token: every row is before "now".
+    test "after the tip is the tip", %{opts: opts} do
+      {:ok, _} = append(opts, "A", %{n: 1})
+      {:ok, last} = append(opts, "A", %{n: 2})
+
+      assert {:ok, ^last} = Postgres.cursor_at(opts, DateTime.utc_now())
+    end
+
+    test "between two rows is the earlier one", %{opts: opts} do
+      {:ok, first} = append(opts, "A", %{n: 1})
+      between = DateTime.utc_now()
+      {:ok, _second} = append(opts, "A", %{n: 2})
+
+      assert {:ok, ^first} = Postgres.cursor_at(opts, between)
+    end
+
+    # The cursor is exclusive, so landing exactly on a row's `inserted_at` puts
+    # the cursor *below* it and that row is still delivered. This is what makes
+    # `stream_from:` inclusive of the instant it names.
+    test "exactly on a row's inserted_at still delivers that row", %{opts: opts} do
+      {:ok, first} = append(opts, "A", %{n: 1})
+      {:ok, second} = append(opts, "A", %{n: 2})
+
+      # The cursor lands on `first`, so a read of `id > first` returns `second`.
+      assert {:ok, ^first} = Postgres.cursor_at(opts, inserted_at(opts, second))
+    end
+
+    # `clock_timestamp()` is microsecond-resolution and appends are serialised,
+    # so a tie needs writing by hand. The `id DESC` tie-break is what decides it.
+    test "ties are broken by the higher id", %{opts: opts} do
+      {:ok, _} = append(opts, "A", %{n: 1})
+      {:ok, second} = append(opts, "A", %{n: 2})
+
+      at = ~U[2026-08-03 10:00:00Z]
+      execute(opts, "UPDATE dmex_messages SET inserted_at = $1", [at])
+
+      assert {:ok, ^second} = Postgres.cursor_at(opts, DateTime.add(at, 1, :second))
+    end
+  end
+
   describe "last_seen/2 and advance/4" do
-    # nil, not 0. That distinction is what makes `start: :latest` meaningful
-    # exactly once: a subscription with no cursor resolves against the tip, and
-    # one with a cursor — even at 0 — ignores :start entirely.
+    # nil, not 0. That distinction is what makes `stream_from:` apply exactly
+    # once: a subscription with no cursor resolves it, and one with a cursor —
+    # even at 0 — ignores it entirely.
     test "is nil before anything has committed", %{opts: opts} do
       assert {:ok, nil} = Postgres.last_seen(opts, @some)
     end
@@ -487,6 +542,10 @@ defmodule DMEx.Storage.PostgresTest do
   end
 
   defp raw(%{repo: repo}, sql), do: SQL.query!(repo, sql, []).rows
+
+  defp execute(%{repo: repo}, sql, params), do: SQL.query!(repo, sql, params)
+
+  defp inserted_at(opts, id), do: opts |> fetch!(id) |> Map.fetch!(:inserted_at)
 
   # Every row claims the one before it, and the first claims `from`.
   defp chained?(rows, from) do

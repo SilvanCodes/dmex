@@ -70,6 +70,43 @@ defmodule DMEx.Integration.AppendOrderingTest do
     end
   end
 
+  # `c:DMEx.Storage.cursor_at/2` reads the last row *before* an instant, so it
+  # needs `inserted_at` to ascend with `id`. Across an inversion it would land
+  # past a lower id belonging after the cut — the same silent skip as above,
+  # arrived at from the other direction.
+  describe "inserted_at ascends with id" do
+    test "even when the transactions begin in the opposite order" do
+      parent = self()
+
+      # Begins first, appends last: its transaction timestamp predates
+      # everything while its id comes after. `now()` records the BEGIN and would
+      # invert the pair; `clock_timestamp()` is stamped by the INSERT, inside
+      # the advisory lock's region, by the statement that draws the id.
+      late =
+        Task.async(fn ->
+          Repo.transaction(fn ->
+            # Forces the transaction to actually begin, fixing its `now()`.
+            SQL.query!(Repo, "SELECT 1", [])
+            send(parent, :begun)
+
+            assert_receive :go, 5_000
+
+            {:ok, id} = Log.append(%OrderPlaced{order_id: 2})
+            id
+          end)
+        end)
+
+      assert_receive :begun, 5_000
+
+      {:ok, first} = Log.append(%OrderPlaced{order_id: 1})
+      send(late.pid, :go)
+      {:ok, second} = Task.await(late, 10_000)
+
+      assert second > first
+      assert DateTime.compare(inserted_at(second), inserted_at(first)) == :gt
+    end
+  end
+
   describe "concurrent appends" do
     @tag timeout: 120_000
     test "a cursor-following reader never skips a row" do
@@ -110,6 +147,12 @@ defmodule DMEx.Integration.AppendOrderingTest do
   # Reads exactly as the log's send loop does — `id > cursor ORDER BY id
   # LIMIT n`, advancing the cursor to the last id seen and never looking back.
   # That is what makes a skipped row unrecoverable, and what this observes.
+  defp inserted_at(id) do
+    {:ok, [row]} = Postgres.read(storage_opts(), id - 1, 1, 1_048_576, :all)
+
+    row.inserted_at
+  end
+
   defp follow(parent, cursor, acc) do
     {:ok, rows} = Postgres.read(storage_opts(), cursor, 100, 1_048_576, :all)
     ids = Enum.map(rows, & &1.id)

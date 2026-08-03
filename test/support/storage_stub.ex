@@ -20,6 +20,7 @@ defmodule DMEx.Test.Storage do
             cursors: %{},
             dead: [],
             fail: nil,
+            fail_cursor_at: nil,
             hang: nil
 
   @doc """
@@ -85,6 +86,16 @@ defmodule DMEx.Test.Storage do
   """
   @spec hang(DMEx.Storage.opts()) :: :ok
   def hang(opts), do: update(opts, &%{&1 | hang: true})
+
+  @doc """
+  Makes `cursor_at/2` return `{:error, reason}`, for as long as it is set.
+
+  Its own switch rather than a callback argument to `fail/2`: this one is about
+  the *connect* path, where the question is whether a failure to resolve a
+  position is fatal or silently becomes "from the beginning".
+  """
+  @spec fail_cursor_at(DMEx.Storage.opts(), term()) :: :ok
+  def fail_cursor_at(opts, reason \\ :boom), do: update(opts, &%{&1 | fail_cursor_at: reason})
 
   ## DMEx.Storage
 
@@ -166,6 +177,34 @@ defmodule DMEx.Test.Storage do
   @impl DMEx.Storage
   def max_id(opts) do
     Agent.get(store(opts), fn state -> {:ok, max_id_of(state.rows)} end)
+  end
+
+  # The adapter's ordered `LIMIT 1` over `inserted_at < $1`, spelled as a fold:
+  # the last row before the instant wins, ties broken by the higher id, and no
+  # match at all is cursor 0. Sorting rather than trusting id order, because the
+  # rows a test hands `new/1` need not be monotonic — which is the whole thing
+  # this callback's contract is about.
+  @impl DMEx.Storage
+  def cursor_at(opts, %DateTime{} = at) do
+    Agent.get(store(opts), fn
+      %{fail_cursor_at: reason} when reason != nil ->
+        {:error, reason}
+
+      state ->
+        {:ok, last_before(state.rows, at)}
+    end)
+  end
+
+  defp last_before(rows, at) do
+    case Enum.filter(rows, &(DateTime.compare(&1.inserted_at, at) == :lt)) do
+      [] ->
+        0
+
+      before ->
+        before
+        |> Enum.max_by(&{DateTime.to_unix(&1.inserted_at, :microsecond), &1.id})
+        |> Map.fetch!(:id)
+    end
   end
 
   @impl DMEx.Storage

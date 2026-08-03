@@ -41,7 +41,7 @@ CREATE TABLE dmex_messages (
   message_type  text        NOT NULL CHECK (message_type ~ '^[A-Za-z0-9_.]+$'),
   data          jsonb       NOT NULL,
   metadata      jsonb       NOT NULL DEFAULT '{}',
-  inserted_at   timestamptz NOT NULL DEFAULT now()
+  inserted_at   timestamptz NOT NULL DEFAULT clock_timestamp()
 );
 ```
 
@@ -54,7 +54,15 @@ CREATE TABLE dmex_messages (
   column. A log may merge its own columns into the metadata it *delivers* with
   `metadata: [:id, :inserted_at]`, which reserves those names on the way out and
   nothing here.
-- `inserted_at` is observability only, never an ordering key.
+- `inserted_at` is never an ordering key — `id` is. It does locate a *starting*
+  id, once, at connect: `stream_from:` accepts an instant, and the log resolves
+  it to the last row appended before that moment. Nothing reads it per row.
+  `clock_timestamp()` rather than `now()` because that resolution requires the
+  column to ascend with `id`: `now()` is the transaction's start time, taken
+  before the advisory lock was acquired, so it says nothing about the order ids
+  were assigned in. `clock_timestamp()` is evaluated by the same INSERT that
+  draws `nextval`, inside the lock's region. A backwards NTP step can still
+  invert a pair, as can a row inserted outside `append/2`.
 - `message_type` is constrained to `[A-Za-z0-9_.]+` because it goes on an SSE
   `event:` line, and SSE field lines have no escaping. Dots survive so a
   declared type can namespace itself.
@@ -147,7 +155,7 @@ with an `Allow: GET` header.
 
 | header | meaning |
 | --- | --- |
-| `Last-Event-ID` | resume position: `previous/current` as echoed from a frame's `id:`, a bare integer id, the literal `latest` (start from the tip), or absent (the whole log). Anything else is a `400`. Only `current` is used — the predecessor is a consumer-side check. |
+| `Last-Event-ID` | resume position: `previous/current` as echoed from a frame's `id:`, a bare integer id, an ISO-8601 instant with an explicit offset (resume after the last row appended before it), or absent (the whole log). Anything else is a `400`. Only `current` is used — the predecessor is a consumer-side check. There is no tip token: a consumer wanting the tip sends the current instant, which resolves to it because every row is before it. |
 
 **That is the whole list. DMEx defines no request headers of its own.** Pacing
 is producer configuration, so there is nothing for a consumer to ask for, clamp,
@@ -208,6 +216,13 @@ data: {"data":{"order_id":7},"metadata":{"trace_id":"abc"}}
   with `metadata: [:inserted_at]`, and no other stream pays for the field. It
   compares two machines' clocks, so it is an NTP-accurate seconds-scale signal
   and not a finer one.
+
+  The same two clocks meet in `Last-Event-ID` when a consumer sends an instant,
+  including the `utc_now()` that `stream_from: :current` resolves to. Skew there
+  only errs in the safe direction: a consumer running fast sends a timestamp in
+  the producer's future, every row is before it, and the cursor is the tip; a
+  consumer running slow re-delivers a few seconds of history. Duplicates, never
+  gaps — which is what the id-based suppression in the pipeline already absorbs.
 - **`id:` is a link, not a number.** `1041/1042` reads "the row before me was
   1041, I am 1042", and a consumer refuses a frame that does not claim the row
   it last saw. It cannot be inferred as `id - 1`, because a selective stream's

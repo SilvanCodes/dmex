@@ -75,6 +75,58 @@ defmodule DMEx.Transport.LocalTest do
     end
   end
 
+  describe "stream_from" do
+    # No socket, no header: the same answers the wire carries, resolved directly
+    # against the log's storage through the same `Request.position/2`.
+    test "an instant before the log delivers everything after it" do
+      {:ok, _} = Log.append(%OrderPlaced{order_id: 1})
+
+      subscribe(Handlers.Echo, stream_from: ~U[2000-01-01 00:00:00Z])
+
+      assert_receive {:handled, %OrderPlaced{order_id: 1}, _}, 2_000
+    end
+
+    test "an instant after the log skips the backlog and takes what follows" do
+      {:ok, _} = Log.append(%OrderPlaced{order_id: 1})
+
+      subscribe(Handlers.Echo, stream_from: DateTime.utc_now())
+
+      {:ok, _} = Log.append(%OrderPlaced{order_id: 2})
+
+      assert_receive {:handled, %OrderPlaced{order_id: 2}, _}, 2_000
+      refute_received {:handled, %OrderPlaced{order_id: 1}, _}
+    end
+
+    # The default, and the reason it needs no tip token: every row is before
+    # `utc_now()`, so the cursor is the tip.
+    test ":current skips the backlog" do
+      {:ok, _} = Log.append(%OrderPlaced{order_id: 1})
+
+      subscribe(Handlers.Echo, stream_from: :current)
+
+      {:ok, _} = Log.append(%OrderPlaced{order_id: 2})
+
+      assert_receive {:handled, %OrderPlaced{order_id: 2}, _}, 2_000
+      refute_received {:handled, %OrderPlaced{order_id: 1}, _}
+    end
+
+    # Resolved once in `init/1`, not once per connect. Otherwise a subscription
+    # that has not yet handled anything silently skips whatever arrived while it
+    # was disconnected — `stream_from` applies until the first commit, and on a
+    # quiet log that window is days.
+    # That it survives a *reconnect* is the point of freezing it, and that half
+    # lives in `DMEx.Integration.ResumptionTest`: asserting it here would mean
+    # killing a reader and waiting for a new one, and a client dying mid-query
+    # takes the sandbox's shared ownership down with it — after which nothing in
+    # this process tree can reach the database and the reconnect spins forever.
+    # A harness limit, not a DMEx one, and not one worth a flaky test.
+    test ":current is resolved to an instant in init/1" do
+      [pid] = subscribe(Handlers.Echo, stream_from: :current)
+
+      assert %DateTime{} = stream_from(pid)
+    end
+  end
+
   describe "the reader" do
     # The same entry an HTTP request process makes, carrying the same selection —
     # which is what gets a local reader wakeup routing and watcher reclaim
@@ -124,13 +176,18 @@ defmodule DMEx.Transport.LocalTest do
     )
   end
 
-  defp subscribe(handler) do
-    {:ok, pids} = DMEx.Supervisor.subscribe(handler, supervisor: TestSupervisor)
+  # `stream_from: 1` throughout: every test here appends first and subscribes
+  # after, which is the backlog these assertions are about. The default
+  # `:current` would correctly skip all of it.
+  defp subscribe(handler, opts \\ [stream_from: 1]) do
+    {:ok, pids} = DMEx.Supervisor.subscribe(handler, [supervisor: TestSupervisor] ++ opts)
 
     pids
   end
 
   defp reader(pid), do: :sys.get_state(pid).source[:reader]
+
+  defp stream_from(pid), do: :sys.get_state(pid).config.stream_from
 
   # `each/2` runs in the calling process, so this collects without a holder.
   defp selections do

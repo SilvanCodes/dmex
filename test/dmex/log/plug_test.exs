@@ -213,30 +213,58 @@ defmodule DMEx.Log.PlugTest do
 
     # This is how a consumer that only cares about what happens from now on
     # skips history, with no preflight request and no second parameter.
-    test "`latest` resolves against the tip and streams nothing yet", %{opts: opts, plug: plug} do
+    test "an instant after the tip streams nothing yet", %{opts: opts, plug: plug} do
+      # Every stub row is stamped 2026-07-27 10:31:04.221Z, so this is "now" as
+      # far as the log is concerned — which is what `stream_from: :current` sends
+      # and why it needs no tip token of its own.
       Stub.put_rows(opts, 10)
 
-      pid = start_stream(opts, plug, [{"last-event-id", "latest"}], chunks: 5)
+      pid = start_stream(opts, plug, [{"last-event-id", "2026-07-27T11:00:00Z"}], chunks: 5)
 
       assert_receive {:chunk, "retry: " <> _}
       eventually(fn -> Stub.reads(opts) != [] end)
 
-      # It starts at the tip, so the first read finds nothing and no data frame
-      # is ever sent for the ten rows of history.
+      # Every row is before the instant, so the cursor is the tip: the first read
+      # finds nothing and no data frame is ever sent for the ten rows of history.
       assert [{10, _, :all} | _] = Stub.reads(opts)
       refute_receive {:chunk, "id: " <> _}, 50
 
       Process.exit(pid, :kill)
     end
 
-    test "`latest` on an empty log is the same as from the beginning", %{opts: opts, plug: plug} do
-      pid = start_stream(opts, plug, [{"last-event-id", "latest"}], chunks: 5)
+    test "an instant before the first row is the whole log", %{opts: opts, plug: plug} do
+      Stub.put_rows(opts, 10)
+
+      pid = start_stream(opts, plug, [{"last-event-id", "2026-07-27T10:00:00Z"}], chunks: 5)
 
       eventually(fn -> Stub.reads(opts) != [] end)
 
       assert [{0, _, :all} | _] = Stub.reads(opts)
 
       Process.exit(pid, :kill)
+    end
+
+    test "an instant on an empty log is the same as from the beginning",
+         %{opts: opts, plug: plug} do
+      pid = start_stream(opts, plug, [{"last-event-id", "2026-07-27T11:00:00Z"}], chunks: 5)
+
+      eventually(fn -> Stub.reads(opts) != [] end)
+
+      assert [{0, _, :all} | _] = Stub.reads(opts)
+
+      Process.exit(pid, :kill)
+    end
+
+    # Rather than falling back to 0, which would turn a momentary pool
+    # exhaustion into a whole-log replay — and every `stream_from: :current`
+    # subscription arrives on this path, so it is the default, not an exotic case.
+    test "a storage failure is a 503, not a silent replay", %{opts: opts, plug: plug} do
+      Stub.fail_cursor_at(opts, :pool_timeout)
+
+      conn = call(opts, plug, [{"last-event-id", "2026-07-27T11:00:00Z"}])
+
+      assert conn.status == 503
+      assert Stub.reads(opts) == []
     end
   end
 
