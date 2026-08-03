@@ -1,0 +1,148 @@
+defmodule DMEx.Storage.SQLiteMigrationTest do
+  # The tables come from test_helper.exs, which migrates this repo through
+  # `DMEx.Storage.Migration` — the same path a host application takes, and the
+  # thing under test here.
+  use DMEx.Case, async: false, database: true, repo: DMEx.Test.SQLiteRepo
+
+  alias DMEx.Storage.SQLite.Migration
+  alias Ecto.Adapters.SQL
+
+  describe "dmex_messages" do
+    test "ids are AUTOINCREMENT, so a deleted tail cannot be reissued" do
+      {:ok, _} = insert("A", ~s({"n":1}))
+      [[id]] = query("SELECT max(id) FROM dmex_messages")
+
+      # SQLite tracks a high-water mark here only for a table declared
+      # AUTOINCREMENT — the observable proof, rather than a match on DDL text.
+      assert [["dmex_messages"]] =
+               query("SELECT name FROM sqlite_sequence WHERE name = 'dmex_messages'")
+
+      {:ok, _} = SQL.query(Repo, "DELETE FROM dmex_messages WHERE id = ?1", [id])
+      {:ok, _} = insert("A", ~s({"n":2}))
+
+      assert [[next]] = query("SELECT max(id) FROM dmex_messages")
+      assert next > id
+    end
+
+    test "columns are the types the read path expects" do
+      columns = table_info("dmex_messages")
+
+      assert columns["data"].type == "TEXT"
+      assert columns["metadata"].type == "TEXT"
+      assert columns["inserted_at"].type == "TEXT"
+      assert columns["message_type"].notnull == 1
+      assert columns["metadata"].dflt_value == "'{}'"
+      assert columns["inserted_at"].dflt_value =~ "strftime"
+    end
+
+    test "inserted_at is stamped fixed-width, to the millisecond" do
+      {:ok, _} = insert("A", ~s({"n":1}))
+
+      assert [[at]] = query("SELECT inserted_at FROM dmex_messages ORDER BY id DESC LIMIT 1")
+
+      # 24 bytes exactly. Fixed width is what makes byte comparison equal
+      # chronological comparison — see `DMEx.Storage.SQLite.Migration`.
+      assert byte_size(at) == 24
+      assert {:ok, _datetime, 0} = DateTime.from_iso8601(at)
+    end
+
+    test "carries both indexes, on the columns the two queries need" do
+      indexes = index_columns("dmex_messages")
+
+      assert indexes["dmex_messages_message_type_id_index"] == ["message_type", "id"]
+      assert indexes["dmex_messages_inserted_at_id_index"] == ["inserted_at", "id"]
+    end
+  end
+
+  describe "the message_type CHECK" do
+    # It goes on the wire as an unescaped SSE `event:` line, and the comma case
+    # is load-bearing a second time: `appended_since/2` splits `group_concat` on
+    # one, which is only lossless because no type can contain one.
+    test "rejects anything outside [A-Za-z0-9_.]" do
+      for type <- ["has space", "has,comma", "has\nnewline", "has-dash", ""] do
+        assert {:error, _} = insert(type, ~s({"n":1})), "#{inspect(type)} was accepted"
+      end
+    end
+
+    test "accepts a fully qualified module name" do
+      assert {:ok, _} = insert("MyApp.Messages.OrderPlaced", ~s({"n":1}))
+    end
+  end
+
+  describe "the json_valid CHECKs" do
+    # What `jsonb` gave for free on Postgres, and for the same reason: it has to
+    # hold for every writer of the table, including a sqlite3 shell.
+    test "reject a payload that is not JSON" do
+      assert {:error, _} = insert("A", "not json")
+      assert {:error, _} = SQL.query(Repo, insert_sql(), ["A", ~s({"n":1}), "nope"])
+    end
+  end
+
+  describe "dmex_cursors and dmex_dead_messages" do
+    test "the declared subscription identifier is the primary key" do
+      assert %{notnull: 1, pk: 1} = table_info("dmex_cursors")["subscription"]
+    end
+
+    test "a dead message is keyed by subscription and the log's own id" do
+      columns = table_info("dmex_dead_messages")
+
+      assert columns["subscription"].pk == 1
+      assert columns["id"].pk == 2
+
+      # From `id` down this is dmex_messages, so replay needs no reshaping.
+      assert columns["data"].type == "TEXT"
+      assert columns["metadata"].dflt_value == "'{}'"
+    end
+  end
+
+  describe ":prefix" do
+    test "is refused rather than ignored" do
+      # SQLite has no schemas. Silently dropping it would put the tables
+      # somewhere other than where the operator wrote them.
+      assert_raise ArgumentError, ~r/SQLite has no schemas/, fn ->
+        Migration.up([:log], "reporting")
+      end
+
+      assert_raise ArgumentError, ~r/SQLite has no schemas/, fn ->
+        Migration.down([:log], "reporting")
+      end
+    end
+  end
+
+  ## Helpers
+
+  defp insert(type, data) do
+    SQL.query(Repo, insert_sql(), [type, data, "{}"])
+  end
+
+  defp insert_sql do
+    "INSERT INTO dmex_messages (message_type, data, metadata) VALUES (?1, ?2, ?3)"
+  end
+
+  defp query(sql, params \\ []) do
+    {:ok, %{rows: rows}} = SQL.query(Repo, sql, params)
+
+    rows
+  end
+
+  defp table_info(table) do
+    "SELECT name, type, `notnull`, dflt_value, pk FROM pragma_table_info(?1)"
+    |> query([table])
+    |> Map.new(fn [name, type, notnull, default, pk] ->
+      {name, %{type: type, notnull: notnull, dflt_value: default, pk: pk}}
+    end)
+  end
+
+  defp index_columns(table) do
+    "SELECT name FROM pragma_index_list(?1) WHERE origin = 'c'"
+    |> query([table])
+    |> Map.new(fn [index] ->
+      columns =
+        "SELECT name FROM pragma_index_info(?1) ORDER BY seqno"
+        |> query([index])
+        |> Enum.map(&hd/1)
+
+      {index, columns}
+    end)
+  end
+end

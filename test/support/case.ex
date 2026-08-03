@@ -5,6 +5,11 @@ defmodule DMEx.Case do
   Pass `async: true` for pure tests. Pass `database: true` to check out a
   sandboxed connection; such tests are tagged `:database` and are skipped
   automatically when no Postgres is reachable.
+
+  Pass `repo: DMEx.Test.SQLiteRepo` alongside it to run against SQLite instead.
+  Those tests are tagged `:sqlite` rather than `:database` — SQLite needs no
+  server, so they run wherever the driver compiled — and they cannot be `async:
+  true`, which ecto_sqlite3's sandbox does not support.
   """
 
   use ExUnit.CaseTemplate
@@ -17,12 +22,18 @@ defmodule DMEx.Case do
   # the test module.
   using opts do
     if opts[:database] do
+      repo = opts[:repo] || DMEx.Test.Repo
+      tag = if repo == DMEx.Test.SQLiteRepo, do: :sqlite, else: :database
+
       quote do
         import DMEx.Case
 
-        @moduletag :database
+        @moduletag unquote(tag)
 
-        alias DMEx.Test.Repo
+        # `setup/1` is handed tags and nothing else, so the repo travels as one.
+        @moduletag repo: unquote(repo)
+
+        alias unquote(repo), as: Repo
       end
     else
       quote do
@@ -32,8 +43,8 @@ defmodule DMEx.Case do
   end
 
   setup tags do
-    if tags[:database] do
-      pid = Sandbox.start_owner!(DMEx.Test.Repo, shared: not tags[:async])
+    if repo = tags[:repo] do
+      pid = Sandbox.start_owner!(repo, shared: not tags[:async])
       on_exit(fn -> Sandbox.stop_owner(pid) end)
     end
 

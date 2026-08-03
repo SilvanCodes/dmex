@@ -2,15 +2,15 @@ defmodule DMEx.Log.Dispatcher do
   @moduledoc """
   Tells a log's live streams that something was appended.
 
-  One per log, started by that log's supervisor. It subscribes to the adapter's
-  notification connection and runs a poll timer; on either signal it broadcasts
-  a bare `:wakeup` across `DMEx.Log.Registry`.
+  One per log, started by that log's supervisor. It subscribes to the log's
+  `DMEx.Notifier` and runs a poll timer; on either signal it broadcasts a bare
+  `:wakeup` across `DMEx.Log.Registry`.
 
-  **Belt and suspenders.** `NOTIFY` gives low latency; the poll makes dispatch
-  *robust*. A missed or coalesced notification costs up to one poll interval of
-  latency and never a stuck consumer — the same arrangement Oban's stager uses,
-  and why a storage engine with no notification support needs no separate code
-  path: it runs the poll alone.
+  **Belt and suspenders.** The notifier gives low latency; the poll makes
+  dispatch *robust*. A missed or coalesced notification costs up to one poll
+  interval of latency and never a stuck consumer — the same arrangement Oban's
+  stager uses, and why a notifier that is down, or `:unsupported`, needs no
+  separate code path here: the poll runs alone.
 
   **It never reads rows or fans out data.** Each stream reads for itself,
   bounded by its own `max_batch_size`, so this shared per-app process holds no
@@ -59,13 +59,21 @@ defmodule DMEx.Log.Dispatcher do
 
   @impl GenServer
   def init(log) do
-    %{storage: storage, storage_opts: storage_opts, config: config} = log.__dmex__()
+    %{
+      storage: storage,
+      storage_opts: storage_opts,
+      notifier: notifier,
+      notifier_opts: notifier_opts,
+      config: config
+    } = log.__dmex__()
 
     state = %{
       log: log,
       storage: storage,
       storage_opts: storage_opts,
-      channel: storage_opts.channel,
+      notifier: notifier,
+      notifier_opts: notifier_opts,
+      channel: notifier_opts.channel,
       poll_interval: config.poll_interval,
       last_announced: 0,
       notifier_ref: nil,
@@ -134,7 +142,7 @@ defmodule DMEx.Log.Dispatcher do
   defp ensure_listening(%{notifier_ref: ref} = state) when is_reference(ref), do: state
 
   defp ensure_listening(state) do
-    case state.storage.listen(state.storage_opts) do
+    case state.notifier.listen(state.notifier_opts) do
       {:ok, pid} ->
         %{state | notifier_ref: Process.monitor(pid), warned?: false}
 

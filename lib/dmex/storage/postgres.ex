@@ -39,14 +39,7 @@ defmodule DMEx.Storage.Postgres do
         # documentation for why anything shorter reintroduces silent id gaps.
         lock!(repo, opts)
 
-        id = insert!(repo, opts, type, data, metadata)
-
-        # Postgres delivers notifications at COMMIT, so a row is never announced
-        # before it is visible. The payload is the `message_type` and nothing
-        # else: a routing key, never a carrier of work.
-        notify!(repo, opts, type)
-
-        id
+        insert!(repo, opts, type, data, metadata)
       end)
 
     case result do
@@ -316,54 +309,8 @@ defmodule DMEx.Storage.Postgres do
     end
   end
 
-  ## Notifications
-
   @impl DMEx.Storage
-  def child_specs(opts) do
-    name = notifier(opts)
-    repo = Map.fetch!(opts, :repo)
-
-    conn_opts =
-      repo.config()
-      |> Keyword.take([
-        :hostname,
-        :port,
-        :username,
-        :password,
-        :database,
-        :socket,
-        :socket_dir,
-        :ssl,
-        :ssl_opts,
-        :parameters,
-        :connect_timeout
-      ])
-      |> Keyword.merge(name: name, auto_reconnect: true)
-
-    [Supervisor.child_spec({Postgrex.Notifications, conn_opts}, id: name)]
-  end
-
-  @impl DMEx.Storage
-  def listen(opts) do
-    with pid when is_pid(pid) <- Process.whereis(notifier(opts)),
-         {:ok, _ref} <- safe_listen(pid, Map.fetch!(opts, :channel)) do
-      {:ok, pid}
-    else
-      nil -> {:error, :not_running}
-      other -> other
-    end
-  end
-
-  # Postgrex.Notifications.listen/2 is a gen_statem call, so it *exits* when the
-  # notifier is not running rather than returning an error tuple — and the
-  # behaviour promises this is best-effort.
-  defp safe_listen(pid, channel) do
-    Postgrex.Notifications.listen(pid, channel)
-  catch
-    :exit, reason -> {:error, reason}
-  end
-
-  defp notifier(opts), do: opts |> Map.fetch!(:log) |> Module.concat("Notifications")
+  def default_notifier, do: DMEx.Notifier.Postgres
 
   ## Append steps
 
@@ -387,16 +334,6 @@ defmodule DMEx.Storage.Postgres do
     {:ok, %{rows: [[id]]}} = SQL.query(repo, sql, [type, data, metadata])
 
     id
-  end
-
-  # pg_notify/2 rather than `NOTIFY <channel>`, so neither a derived channel
-  # name nor a message type needs identifier quoting or can be an injection
-  # site. Postgres caps a notification payload at 8000 bytes, which a module
-  # name cannot reach.
-  defp notify!(repo, opts, type) do
-    channel = Map.fetch!(opts, :channel)
-
-    {:ok, _} = SQL.query(repo, "SELECT pg_notify($1, $2)", [channel, type])
   end
 
   ## Row shaping

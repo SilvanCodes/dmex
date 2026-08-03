@@ -9,26 +9,43 @@ defmodule DMEx.LogTest do
                log: Log,
                repo: DMEx.Test.Repo,
                storage: DMEx.Storage.Postgres,
+               notifier: DMEx.Notifier.Postgres,
                app_key: "dm_ex_test_log",
                channel: "dmex_dm_ex_test_log",
                lock: {classid, objid},
                prefix: nil,
                config: %{max_batch_frequency: 100},
-               storage_opts: storage_opts
+               storage_opts: storage_opts,
+               notifier_opts: notifier_opts
              } = Log.__dmex__()
 
       assert is_integer(classid)
       assert is_integer(objid)
 
-      # The adapter is handed exactly this map and nothing else, so the two
-      # cannot drift.
+      # Each is handed exactly its map and nothing else, so neither can drift —
+      # and storage carries nothing about notification.
       assert storage_opts == %{
                repo: DMEx.Test.Repo,
                log: Log,
                lock: {classid, objid},
-               channel: "dmex_dm_ex_test_log",
                prefix: nil
              }
+
+      assert notifier_opts == %{
+               repo: DMEx.Test.Repo,
+               log: Log,
+               channel: "dmex_dm_ex_test_log"
+             }
+    end
+
+    test "the storage adapter chooses the notifier, and a log may override it" do
+      assert define!("NotifierDefault", "repo: DMEx.Test.Repo").notifier ==
+               DMEx.Notifier.Postgres
+
+      assert define!(
+               "NotifierExplicit",
+               "repo: DMEx.Test.Repo, notifier: DMEx.Notifier.Beam"
+             ).notifier == DMEx.Notifier.Beam
     end
 
     test "is a compile-time constant rather than rebuilt per call" do

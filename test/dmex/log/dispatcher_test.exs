@@ -22,6 +22,18 @@ defmodule DMEx.Log.DispatcherTest do
     use DMEx.Log, repo: DMEx.Test.Repo, poll_interval: 50
   end
 
+  defmodule BeamLog do
+    @moduledoc false
+    # Postgres storage, in-BEAM notification. Storage and notifier are separate
+    # axes, and this is the only pairing whose *notification* half a sandboxed
+    # test can observe at all: `:pg` delivers on send, not on COMMIT. The poll is
+    # effectively off, so a wakeup here can only have come from the notifier.
+    use DMEx.Log,
+      repo: DMEx.Test.Repo,
+      notifier: DMEx.Notifier.Beam,
+      poll_interval: 60_000
+  end
+
   setup do
     start_supervised!(LogRegistry.child_spec(FastLog))
 
@@ -110,6 +122,27 @@ defmodule DMEx.Log.DispatcherTest do
       {:ok, _} = FastLog.append(%OrderPlaced{order_id: 1})
 
       for pid <- pids, do: assert_receive({:woke, ^pid}, 1_000)
+    end
+  end
+
+  describe "notifications" do
+    test "wake a stream without waiting for the poll" do
+      %{notifier: notifier, notifier_opts: notifier_opts} = BeamLog.__dmex__()
+
+      start_supervised!(LogRegistry.child_spec(BeamLog))
+      for spec <- notifier.child_specs(notifier_opts), do: start_supervised!(spec)
+
+      pid = start_supervised!({Dispatcher, log: BeamLog})
+
+      # The subscription happens in `handle_continue/2`, so sync on it before
+      # appending — otherwise this races the very thing it is testing.
+      :sys.get_state(pid)
+
+      {:ok, _status} = LogRegistry.register(BeamLog, 5_000)
+
+      {:ok, _} = BeamLog.append(%OrderPlaced{order_id: 1})
+
+      assert_receive :wakeup, 1_000
     end
   end
 

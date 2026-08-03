@@ -54,9 +54,11 @@ defmodule DMEx.MixProject do
       {:telemetry, "~> 1.2"},
 
       # Everything else is optional. A read-only application has no reason
-      # to carry Postgrex, and an append-only one has no reason to carry Mint.
+      # to carry Postgrex, an append-only one has no reason to carry Mint, and
+      # neither has a reason to carry exqlite's NIF.
       {:ecto_sql, "~> 3.12", optional: true},
       {:postgrex, "~> 0.19", optional: true},
+      {:ecto_sqlite3, "~> 0.24", optional: true},
       {:plug, "~> 1.16", optional: true},
       {:mint, "~> 1.6", optional: true},
 

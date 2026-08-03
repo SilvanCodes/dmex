@@ -39,7 +39,9 @@ defmodule DMEx.Supervisor do
       is scanned regardless. `otp_app: nil` scans nothing beyond those.
     * `:repo` — the Ecto repo holding `dmex_cursors`.
     * `:storage` — the `DMEx.Storage` adapter; defaults to `DMEx.Storage.Postgres`.
-    * `:prefix` — Postgres schema for the DMEx tables.
+      `DMEx.Storage.SQLite` is the other shipped one.
+    * `:prefix` — Postgres schema for the DMEx tables. SQLite has none and
+      raises on it.
     * `:name` — names this supervisor, so an application can run more than one.
 
   A URL is not verifiable against reality: pointing an entry at the wrong host
@@ -262,7 +264,12 @@ defmodule DMEx.Supervisor do
       {_storage, %{repo: nil}} ->
         raise ArgumentError, "a `repo:` is required, e.g. `repo: MyApp.Repo`"
 
-      resolved ->
+      {storage, storage_opts} = resolved ->
+        # The consumer half's one call site, matching `DMEx.Log.start_link/2` on
+        # the log half — an option an adapter cannot honour fails here rather
+        # than at whichever query first ignores it.
+        :ok = DMEx.Log.validate_storage!(storage, storage_opts)
+
         resolved
     end
   end

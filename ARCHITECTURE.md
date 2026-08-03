@@ -255,8 +255,10 @@ would advance straight over the row that had not committed yet and lose it
 **permanently and silently**. Every read path is such a cursor, so `DMEx.Log`
 appends under a transaction-scoped advisory lock keyed on the app
 (`DMEx.Storage.Postgres`). The cost is append concurrency; the purchase is a
-reader model with no gap-detection logic in it. (SQLite is single-writer
-already.)
+reader model with no gap-detection logic in it. The requirement is *assignment
+order equals commit order*, and the lock is only Postgres's way of getting
+there: SQLite has one writer database-wide, so a second writer cannot draw a
+rowid until the first commits, and `DMEx.Storage.SQLite` takes no lock at all.
 
 **2. Producer memory per connection is one batch, bounded in rows *and*
 bytes.** The send loop in `DMEx.Log.Stream` holds at most the rows it is
@@ -376,8 +378,8 @@ each log supervises.
 | module | role |
 | --- | --- |
 | `DMEx.Log.Registry` | one entry per open stream, holding that connection's `DMEx.Log.Status` (wakeup flag and deadline) and its selection. The entry dies with the request process. |
-| `DMEx.Storage` children | whatever the adapter needs; Postgres puts its `LISTEN` connection here. |
-| `DMEx.Log.Dispatcher` | subscribes to the adapter's notification connection, runs the poll timer, broadcasts wakeups. |
+| `DMEx.Notifier` children | whatever the notifier needs; `DMEx.Notifier.Postgres` puts its `LISTEN` connection here, `DMEx.Notifier.Beam` a `:pg` scope. |
+| `DMEx.Log.Dispatcher` | subscribes to the notifier, runs the poll timer, broadcasts wakeups. |
 | `DMEx.Log.Watcher` | sweeps deadlines and reclaims connections that stopped making progress. |
 
 None ever holds message data on a connection's behalf. The connections
@@ -397,8 +399,19 @@ jittered backoff, and its siblings never notice.
 
 **Storage.** One `DMEx.Storage` behaviour covers both halves — the producer's
 log and the consumer's `dmex_cursors` and `dmex_dead_messages` — rather than
-inventing a second abstraction for bookkeeping. `DMEx.Storage.Postgres` is the
-shipped adapter; SQLite would be a new adapter rather than a new seam.
+inventing a second abstraction for bookkeeping. `DMEx.Storage.Postgres` and
+`DMEx.Storage.SQLite` are the shipped adapters, and one conformance suite pins
+the behaviour's contracts against both.
+
+**Notification is a separate axis.** `DMEx.Notifier` answers "how does a live
+stream learn about an append", which is not the same question as "where do rows
+live": Postgres has `LISTEN`/`NOTIFY`, SQLite has nothing, and a Postgres
+deployment behind a transaction-pooling PgBouncer has Postgres and still cannot
+use it. So a log names a storage adapter and a notifier independently, the
+adapter merely defaults the notifier. `DMEx.Notifier.Beam` carries wakeups as
+BEAM messages over `:pg`, which reaches this node always and the cluster when
+there is one; what it does not reach — another OS process writing the same SQLite
+file — the poll does.
 
 ## Delivery semantics
 
@@ -451,7 +464,6 @@ of scope.
   [Global Resource Limits](ROADMAP.md#global-resource-limits).
 - **No compression** — designed, not built. See
   [Compression](ROADMAP.md#compression).
-- **No SQLite adapter** — the behaviour is complete; the adapter is not written.
 
 ## What has been measured
 

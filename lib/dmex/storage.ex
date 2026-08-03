@@ -18,15 +18,17 @@ defmodule DMEx.Storage do
 
   Each is easy to implement *almost* right, and each has a test pinning it.
 
-  **`c:append/4` must hold its lock until COMMIT.** Postgres allocates sequence
-  values at INSERT time but makes rows visible at COMMIT time, so if T1 takes
+  **`c:append/4` must make id assignment order equal commit order.** If T1 takes
   `id=100` and T2 takes `id=101` but T2 commits first, a reader scanning
   `id > 99 ORDER BY id` sees 101, advances past it, and **permanently skips
-  message 100** — silently, because `last_seen` advanced over the gap. So it
-  must be `pg_advisory_xact_lock`, never `pg_advisory_lock`, and never released
-  explicitly.
+  message 100** — silently, because `last_seen` advanced over the gap. Postgres
+  separates the two moments, so `DMEx.Storage.Postgres` has to serialize appends
+  itself: `pg_advisory_xact_lock`, never `pg_advisory_lock`, and never released
+  explicitly. An engine where the separation cannot arise satisfies this without
+  a lock — SQLite has one writer database-wide, so the second cannot draw a
+  rowid until the first has committed.
 
-  **`inserted_at` must be stamped inside that lock's region.** By the same
+  **`inserted_at` must be stamped in that same serialized region.** By the same
   INSERT that draws the id, so the column ascends with `id`. A transaction-start
   clock (Postgres's `now()`) is read before the lock is acquired — and long
   before it, when a caller wraps the append in a transaction of its own — so it
@@ -35,11 +37,16 @@ defmodule DMEx.Storage do
   lower id belonging after the cut: the same silent skip, arrived at from the
   other direction.
 
+  Resolution is the engine's, not DMEx's: Postgres stamps microseconds and
+  SQLite milliseconds, so two appends may tie. A tie must put the cursor *below*
+  both — erring low re-delivers a message, erring high skips one.
+
   **`c:read/5` must return `data` and `metadata` as JSON *text*.**
   `DMEx.Transport.SSE.Frame.encode_row/1` splices those columns into the wire
-  frame byte-for-byte, so the cast belongs in the query (`data::text`), not in
-  post-processing. An adapter that lets its driver decode `jsonb` into a map
-  hands `Frame` a map where it expects text. This is what makes per-row work a
+  frame byte-for-byte, so any cast belongs in the query (`data::text`), not in
+  post-processing — and an engine storing them as text pays nothing at all. An
+  adapter that lets its driver decode a JSON column into a map hands `Frame` a
+  map where it expects text. This is what makes per-row work a
   memcpy rather than a decode plus an encode — paid once per connection for the
   same rows, since every connection issues its own read.
 
@@ -52,8 +59,9 @@ defmodule DMEx.Storage do
   Everything an adapter needs, built once by the log module or the subscription
   and passed to every call.
 
-  `:repo` is the only universally-required key. `:lock` and `:channel` are
-  log-side; `:prefix` is the optional schema both sides may live in.
+  `:repo` is the only universally-required key. `:lock` is log-side; `:prefix`
+  is the optional schema both sides may live in. Nothing about notification is
+  here — that is `t:DMEx.Notifier.opts/0`.
 
   The map is open, because these are the keys *DMEx* knows about and an adapter
   is free to need others. One that does must still accept an `opts` without
@@ -63,7 +71,6 @@ defmodule DMEx.Storage do
           required(:repo) => module(),
           optional(:log) => module(),
           optional(:lock) => {integer(), integer()},
-          optional(:channel) => String.t(),
           optional(:prefix) => String.t() | nil,
           optional(atom()) => term()
         }
@@ -291,29 +298,29 @@ defmodule DMEx.Storage do
   @callback delete_cursor(opts(), subscription :: String.t()) :: :ok | {:error, term()}
 
   @doc """
-  Returns the processes this adapter needs running alongside a log.
+  The `DMEx.Notifier` to use when a log names none.
 
-  Started by the log's supervisor, before `DMEx.Log.Dispatcher`. Postgres puts a
-  `Postgrex.Notifications` connection here, since a `LISTEN` connection must
-  stay checked out for its whole life and cannot be pooled; an engine with no
-  notification mechanism returns `[]`.
+  Notification is a separate axis — see `DMEx.Notifier` — but which mechanism
+  *fits* is an engine's own business, so the engine names it rather than a
+  `case` somewhere central that a third-party adapter could never appear in.
 
-  This exists so **nothing outside an adapter knows how that adapter is wired**,
-  which is what makes a second engine a new adapter rather than an edit here.
+  Optional. An adapter that does not implement it forces every log to pass
+  `notifier:` explicitly.
   """
-  @callback child_specs(opts()) :: [Supervisor.child_spec() | {module(), term()} | module()]
+  @callback default_notifier() :: module()
 
   @doc """
-  Subscribes the calling process to this log's append notifications.
+  Refuses options this adapter cannot honour, before anything runs.
 
-  Returns the pid to monitor, so `DMEx.Log.Dispatcher` can re-establish the
-  subscription if it dies. `:unsupported` is the honest answer for an engine
-  with no notification mechanism at all — the dispatcher then runs polling-only
-  without warning.
+  Called once per log when its supervision tree starts, and once per
+  subscription — at boot rather than at the first query, so an option that will
+  never be honoured fails where it was written rather than somewhere downstream.
+  `DMEx.Storage.SQLite` refuses a `:prefix` here, since SQLite has no schemas.
 
-  Best-effort by contract: an adapter must not raise or exit here. Polling is
-  what makes dispatch robust, so a failed subscription costs latency and never
-  correctness.
+  Optional. An adapter that implements it may read `repo.config()`; the repo is
+  started by then.
   """
-  @callback listen(opts()) :: {:ok, pid()} | :unsupported | {:error, term()}
+  @callback validate!(opts()) :: :ok
+
+  @optional_callbacks default_notifier: 0, validate!: 1
 end

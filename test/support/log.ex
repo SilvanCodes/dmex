@@ -22,3 +22,18 @@ defmodule DMEx.Test.IntegrationLog do
     repo: DMEx.Test.IntegrationRepo,
     app: :dmex_integration
 end
+
+defmodule DMEx.Test.SQLiteLog do
+  @moduledoc """
+  Log for the SQLite integration suite.
+
+  Its own database file, so the unsandboxed writes here cannot reach the unit
+  suite's. The notifier is whatever `DMEx.Storage.SQLite` names — stated nowhere,
+  which is the point.
+  """
+
+  use DMEx.Log,
+    repo: DMEx.Test.SQLiteIntegrationRepo,
+    storage: DMEx.Storage.SQLite,
+    app: :dmex_sqlite
+end

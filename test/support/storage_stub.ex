@@ -33,7 +33,7 @@ defmodule DMEx.Test.Storage do
   def new(rows \\ []) do
     {:ok, pid} = Agent.start_link(fn -> %__MODULE__{rows: rows(rows)} end)
 
-    %{repo: __MODULE__, store: pid, lock: {0, 0}, channel: "dmex_stub", prefix: nil}
+    %{repo: __MODULE__, store: pid, lock: {0, 0}, prefix: nil}
   end
 
   @doc "Builds `count` rows, ids 1..count, with predictable payloads."
@@ -284,12 +284,11 @@ defmodule DMEx.Test.Storage do
     end)
   end
 
-  # An in-memory log has nothing to connect to and nothing to notify through.
+  # An in-memory log has no database to notify through, so it takes the one that
+  # needs none. Nothing starts it in these tests, which makes `notify/2` a no-op
+  # and the dispatcher polling-only — exactly what a stub wants.
   @impl DMEx.Storage
-  def child_specs(_opts), do: []
-
-  @impl DMEx.Storage
-  def listen(_opts), do: :unsupported
+  def default_notifier, do: DMEx.Notifier.Beam
 
   ## Internals
 

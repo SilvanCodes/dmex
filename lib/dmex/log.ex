@@ -42,9 +42,12 @@ defmodule DMEx.Log do
     * `:repo` — required; the Ecto repo owning `dmex_messages`.
     * `:storage` — the `DMEx.Storage` adapter. Defaults to
       `DMEx.Storage.Postgres`.
+    * `:notifier` — the `DMEx.Notifier`. Defaults to whatever the storage
+      adapter names, which is `DMEx.Notifier.Postgres` for the Postgres one.
     * `:app` — the app key (see below). Defaults to a name derived from this
       module.
     * `:prefix` — a Postgres schema the DMEx tables live in.
+      `DMEx.Storage.SQLite` raises on it, since SQLite has no schemas.
     * any `DMEx.Config` log setting, including `metadata: [:id, :inserted_at]` —
       which of this log's own columns are merged into the metadata a consumer's
       handler receives. Empty by default; see below.
@@ -122,7 +125,7 @@ defmodule DMEx.Log do
   alias DMEx.Config
   alias DMEx.Log.Messages
 
-  @log_opts [:repo, :storage, :app, :prefix]
+  @log_opts [:repo, :storage, :notifier, :app, :prefix]
   @app_key_format ~r/\A[a-z][a-z0-9_]*\z/
   @app_key_max_bytes 58
 
@@ -176,12 +179,14 @@ defmodule DMEx.Log do
           log: module(),
           repo: module(),
           storage: module(),
+          notifier: module(),
           app_key: String.t(),
           channel: String.t(),
           lock: {integer(), integer()},
           prefix: String.t() | nil,
           config: Config.log(),
-          storage_opts: DMEx.Storage.opts()
+          storage_opts: DMEx.Storage.opts(),
+          notifier_opts: DMEx.Notifier.opts()
         }
 
   @doc false
@@ -192,6 +197,7 @@ defmodule DMEx.Log do
     repo = fetch_repo!(module, opts)
     app_key = app_key!(module, opts)
     prefix = Keyword.get(opts, :prefix)
+    storage = Keyword.get(opts, :storage, DMEx.Storage.Postgres)
 
     channel = "dmex_" <> app_key
     lock = {@classid, :erlang.phash2(app_key, 2_147_483_648)}
@@ -199,7 +205,8 @@ defmodule DMEx.Log do
     %{
       log: module,
       repo: repo,
-      storage: Keyword.get(opts, :storage, DMEx.Storage.Postgres),
+      storage: storage,
+      notifier: notifier!(module, storage, opts),
       app_key: app_key,
       channel: channel,
       lock: lock,
@@ -209,8 +216,12 @@ defmodule DMEx.Log do
         repo: repo,
         log: module,
         lock: lock,
-        channel: channel,
         prefix: prefix
+      },
+      notifier_opts: %{
+        repo: repo,
+        log: module,
+        channel: channel
       }
     }
   end
@@ -228,18 +239,28 @@ defmodule DMEx.Log do
   @doc false
   @spec start_link(module(), keyword()) :: Supervisor.on_start()
   def start_link(log, opts \\ []) do
-    %{storage: storage, storage_opts: storage_opts, config: config} = log.__dmex__()
+    %{
+      storage: storage,
+      storage_opts: storage_opts,
+      notifier: notifier,
+      notifier_opts: notifier_opts,
+      config: config
+    } = log.__dmex__()
+
+    # Here rather than at compile time, because an adapter may need to read the
+    # repo's configuration — and the repo is started by now.
+    validate_storage!(storage, storage_opts)
 
     # Before any connection can ask for it. Writing a `:persistent_term` forces
     # a global GC scan, so it happens once here rather than per connect.
     Messages.refresh(log, Keyword.get(opts, :otp_app))
 
-    # Whatever the adapter needs sits between the registry and the dispatcher,
+    # Whatever the notifier needs sits between the registry and the dispatcher,
     # and this module has no idea what it is. Postgres puts a LISTEN connection
-    # here; an engine without notifications puts nothing.
+    # here; `DMEx.Notifier.Beam` puts a `:pg` scope.
     children =
       [DMEx.Log.Registry.child_spec(log)] ++
-        storage.child_specs(storage_opts) ++
+        notifier.child_specs(notifier_opts) ++
         [{DMEx.Log.Dispatcher, log: log}] ++
         watcher_children(log, config)
 
@@ -264,7 +285,7 @@ defmodule DMEx.Log do
   def __append__(log, message, opts) when is_atom(log) and is_struct(message) do
     validate_append_opts!(opts)
 
-    %{storage: storage, storage_opts: storage_opts} = log.__dmex__()
+    %{storage: storage, storage_opts: storage_opts} = config = log.__dmex__()
 
     type = message_type!(message)
     data = JSON.encode!(message)
@@ -275,6 +296,15 @@ defmodule DMEx.Log do
       %{log: log, message_type: type},
       fn ->
         result = storage.append(storage_opts, type, data, metadata)
+
+        # Here rather than inside the adapter's transaction, because which
+        # mechanism announces an append is not the storage engine's business —
+        # see `DMEx.Notifier`. The cost is that a caller appending inside its own
+        # transaction announces a row that is not committed yet; the stream then
+        # reads nothing and the dispatcher's poll picks it up.
+        with {:ok, _id} <- result do
+          config.notifier.notify(config.notifier_opts, type)
+        end
 
         {result, %{log: log, message_type: type}}
       end
@@ -324,6 +354,36 @@ defmodule DMEx.Log do
         raise ArgumentError,
               "`use DMEx.Log` requires a `:repo`, e.g. " <>
                 "`use DMEx.Log, repo: MyApp.Repo` in #{inspect(module)}"
+    end
+  end
+
+  @doc false
+  @spec validate_storage!(module(), DMEx.Storage.opts()) :: :ok
+  def validate_storage!(storage, storage_opts) do
+    if function_exported?(storage, :validate!, 1) do
+      storage.validate!(storage_opts)
+    end
+
+    :ok
+  end
+
+  # An adapter names the mechanism that fits it (`c:DMEx.Storage.default_notifier/0`),
+  # and a log overrides that when its deployment says otherwise — a Postgres one
+  # behind a transaction-pooling pooler cannot LISTEN. An adapter that declines to
+  # choose forces the log to.
+  defp notifier!(module, storage, opts) do
+    with nil <- Keyword.get(opts, :notifier) do
+      # `ensure_compiled/1` rather than `ensure_loaded?/1`: this runs while the
+      # host's log module is compiling, and the adapter may be in the same
+      # compilation — only this form waits for it.
+      if match?({:module, _}, Code.ensure_compiled(storage)) and
+           function_exported?(storage, :default_notifier, 0) do
+        storage.default_notifier()
+      else
+        raise ArgumentError,
+              "#{inspect(storage)} names no default notifier, so #{inspect(module)} must " <>
+                "pass one, e.g. `use DMEx.Log, notifier: DMEx.Notifier.Beam`"
+      end
     end
   end
 

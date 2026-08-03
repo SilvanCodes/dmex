@@ -1,4 +1,5 @@
 database_available? = DMEx.Test.Database.available?()
+sqlite_available? = DMEx.Test.Database.sqlite_available?()
 
 if database_available? do
   DMEx.Test.Database.setup!()
@@ -22,4 +23,19 @@ else
   """)
 end
 
-ExUnit.start(exclude: if(database_available?, do: [], else: [:database]))
+if sqlite_available? do
+  DMEx.Test.Database.setup_sqlite!()
+
+  {:ok, _} = DMEx.Test.SQLiteRepo.start_link()
+  {:ok, _} = DMEx.Test.SQLiteIntegrationRepo.start_link()
+
+  DMEx.Test.Database.migrate_sqlite!()
+
+  Ecto.Adapters.SQL.Sandbox.mode(DMEx.Test.SQLiteRepo, :manual)
+end
+
+exclude =
+  if(database_available?, do: [], else: [:database]) ++
+    if(sqlite_available?, do: [], else: [:sqlite])
+
+ExUnit.start(exclude: exclude)

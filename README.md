@@ -135,6 +135,9 @@ mix test.integration  # integration suite (needs a real, non-sandboxed database)
 mix test.all          # everything
 ```
 
+The SQLite half of the storage suite needs no server — `mix test --only sqlite`
+runs it, and it is one of the two adapters the conformance suite covers.
+
 Point `DMEX_POSTGRES_URL` at your own instance. The integration database is
 derived from it by rewriting a trailing `/dmex_test`, so if yours is named
 anything else, set `DMEX_POSTGRES_INTEGRATION_URL` too — otherwise both suites

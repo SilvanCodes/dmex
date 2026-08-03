@@ -47,4 +47,34 @@ config :dmex, DMEx.Test.IntegrationRepo,
   pool_size: 10,
   log: false
 
+# SQLite needs no server, so this half of the storage suite runs anywhere. The
+# two non-default settings are the ones `DMEx.Storage.SQLite` requires of any
+# repo it is given, and it says so at boot:
+#
+#   * `:immediate` — `BEGIN DEFERRED` starts a read transaction, and promoting it
+#     to a write returns SQLITE_BUSY_SNAPSHOT, which no busy handler can resolve.
+#   * `:wal` — already the ecto_sqlite3 default, stated because it is load-bearing:
+#     in rollback-journal mode a writer blocks readers, and DMEx's read path is one
+#     continuous reader per open connection.
+config :dmex, DMEx.Test.SQLiteRepo,
+  database: Path.expand("../tmp/dmex_test.db", __DIR__),
+  pool: Ecto.Adapters.SQL.Sandbox,
+  pool_size: 5,
+  journal_mode: :wal,
+  default_transaction_mode: :immediate,
+  busy_timeout: 5_000,
+  log: false
+
+config :dmex, DMEx.Test.SQLiteIntegrationRepo,
+  database: Path.expand("../tmp/dmex_integration_test.db", __DIR__),
+  pool_size: 5,
+  journal_mode: :wal,
+  default_transaction_mode: :immediate,
+  busy_timeout: 5_000,
+  log: false
+
+# Deliberately left at the ecto_sqlite3 default, for the test that
+# `DMEx.Storage.SQLite` refuses it.
+config :dmex, DMEx.Test.DeferredRepo, database: Path.expand("../tmp/dmex_deferred.db", __DIR__)
+
 config :logger, level: :warning

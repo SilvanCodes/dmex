@@ -3,12 +3,16 @@ defmodule DMEx.Test.Database do
   Database availability probing and setup for the test suites.
 
   Tests needing Postgres are tagged `:database` and excluded when none is
-  reachable, so the pure units still run without one.
+  reachable, so the pure units still run without one. SQLite tests are tagged
+  `:sqlite` and need no server at all, which is what lets the storage layer be
+  exercised on a machine with nothing running.
   """
 
   alias Ecto.Adapters.Postgres
+  alias Ecto.Adapters.SQLite3
 
   @repos [DMEx.Test.Repo, DMEx.Test.IntegrationRepo]
+  @sqlite_repos [DMEx.Test.SQLiteRepo, DMEx.Test.SQLiteIntegrationRepo]
 
   @doc """
   Whether the configured Postgres is accepting connections.
@@ -79,6 +83,46 @@ defmodule DMEx.Test.Database do
       # yesterday's schema. Greenfield: the tables are cheap and hold nothing
       # worth keeping between runs.
       Ecto.Migrator.down(repo, 1, DMEx.Test.Migrations.Install, log: false)
+      Ecto.Migrator.up(repo, 1, DMEx.Test.Migrations.Install, log: false)
+    end)
+  end
+
+  @doc """
+  Whether the SQLite adapter is available.
+
+  Which is whether its optional dependency compiled — there is no server to
+  reach, so `:sqlite` tests are excluded only in a build that left the driver
+  out entirely.
+  """
+  @spec sqlite_available?() :: boolean()
+  def sqlite_available?, do: Code.ensure_loaded?(SQLite3)
+
+  @doc """
+  Creates the SQLite test database, discarding whatever was there.
+
+  Deleting the file is how a changed DDL takes effect: the migration is
+  deliberately re-runnable, so an added index or a changed default would
+  otherwise be skipped against a database from before the edit — the same reason
+  `migrate!/0` runs `down` first on Postgres. The `-wal` and `-shm` siblings go
+  too, or SQLite reopens the old database through them.
+  """
+  @spec setup_sqlite!() :: :ok
+  def setup_sqlite! do
+    Enum.each(@sqlite_repos, fn repo ->
+      path = repo.config() |> Keyword.fetch!(:database)
+
+      File.mkdir_p!(Path.dirname(path))
+
+      for suffix <- ["", "-wal", "-shm"], do: File.rm_rf!(path <> suffix)
+
+      :ok = SQLite3.storage_up(repo.config())
+    end)
+  end
+
+  @doc "Runs the DMEx migration against the SQLite test repo."
+  @spec migrate_sqlite!() :: :ok
+  def migrate_sqlite! do
+    Enum.each(@sqlite_repos, fn repo ->
       Ecto.Migrator.up(repo, 1, DMEx.Test.Migrations.Install, log: false)
     end)
   end
