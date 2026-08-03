@@ -2,6 +2,7 @@ defmodule DMEx.HandlerTest do
   use DMEx.Case, async: true
 
   alias DMEx.Handler
+  alias DMEx.Handler.Fingerprint
   alias DMEx.Test.Handlers
   alias DMEx.Test.Messages.OrderPlaced
   alias DMEx.Test.Messages.OrderShipped
@@ -46,12 +47,12 @@ defmodule DMEx.HandlerTest do
       %{fingerprint: fingerprint, messages: messages} = Handlers.EchoAll.__dmex__()
 
       assert is_binary(fingerprint)
-      assert {:ok, decoded} = DMEx.Handler.Fingerprint.decode(fingerprint)
+      assert {:ok, decoded} = Fingerprint.decode(fingerprint)
 
       # No false negatives is the whole guarantee, so it is worth asserting on
       # the real handler rather than only in the property test.
       for message <- messages do
-        assert DMEx.Handler.Fingerprint.member?(decoded, message.type())
+        assert Fingerprint.member?(decoded, message.type())
       end
     end
 
