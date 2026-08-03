@@ -95,7 +95,8 @@ defmodule DMEx do
       no filter option.** The selection is derived from the `handle_message/2`
       clauses and resolved by the log against its own message modules.
       Inclusion is heuristic in one direction only: never a false negative, and
-      an occasional extra type arrives and is skipped. See `DMEx.Fingerprint`.
+      an occasional extra type arrives and is skipped. See
+      `DMEx.Handler.Fingerprint`.
 
     * **Delivery is at-least-once.** The handler call and the cursor advance
       share one transaction, so side effects through the reader's own repo are
@@ -109,4 +110,73 @@ defmodule DMEx do
 
   `DMEx.Telemetry` documents every event DMEx emits.
   """
+
+  @doc """
+  Every module of every application that could hold a DMEx declaration.
+
+  That is every loaded application declaring a dependency on `:dmex`, plus
+  `otp_app` when given. A module cannot `use DMEx.Message` or `use DMEx.Handler`
+  unless its application depends on `:dmex`, so the condition is exact rather
+  than a heuristic — and it keeps the scan off the thousands of OTP and Elixir
+  modules that could never qualify. It also makes a **shared package** work: a
+  library of message modules lists `:dmex` and is scanned like any other.
+
+  `otp_app` covers the case the rule misses — an application that does not
+  itself depend on `:dmex`, such as an umbrella parent or DMEx's own test suite.
+  """
+  @spec discovery(atom() | nil) :: [module()]
+  def discovery(otp_app \\ nil) do
+    otp_app
+    |> applications()
+    |> Enum.flat_map(&app_modules/1)
+  end
+
+  defp applications(otp_app) do
+    dependents =
+      for {app, _description, _vsn} <- Application.loaded_applications(),
+          depends_on_dmex?(app),
+          do: app
+
+    Enum.uniq(List.wrap(otp_app) ++ dependents)
+  end
+
+  defp depends_on_dmex?(app) do
+    case :application.get_key(app, :applications) do
+      {:ok, applications} -> :dmex in applications
+      _other -> false
+    end
+  end
+
+  defp app_modules(app) do
+    case :application.get_key(app, :modules) do
+      {:ok, modules} -> modules
+      _other -> []
+    end
+  end
+
+  @doc """
+  The jittered exponential backoff delay in ms before attempt `attempt`,
+  counting from 1. Shared by reconnects and local retries.
+
+  A uniform draw from `[1, ceiling]`, where `ceiling` is `base * 2^(attempt - 1)`
+  capped at `max`.
+
+  **Jitter is the point, not a refinement.** An event that fails many consumers
+  at once — a producer restart, a network blip, a deploy — would otherwise bring
+  them all back simultaneously, and DMEx has no admission control to absorb
+  that. Full jitter (a uniform draw from `[1, capped]` rather than a band around
+  the ceiling) decorrelates hardest. The draw starts at 1 so a delay is always a
+  delay.
+
+  The same argument applies to a producer's advertised `retry:` value, which is
+  why DMEx's own client keeps its own schedule rather than reconnecting at
+  exactly the advertised interval.
+  """
+  @spec backoff(pos_integer(), pos_integer(), pos_integer()) :: non_neg_integer()
+  def backoff(attempt, base, max)
+      when is_integer(attempt) and attempt >= 1 and is_integer(base) and is_integer(max) do
+    ceiling = min(max, base * Integer.pow(2, attempt - 1))
+
+    :rand.uniform(ceiling)
+  end
 end

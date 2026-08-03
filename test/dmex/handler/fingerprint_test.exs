@@ -1,4 +1,4 @@
-defmodule DMEx.FingerprintTest do
+defmodule DMEx.Handler.FingerprintTest do
   @moduledoc """
   The one invariant that matters here is **no false negatives**.
 
@@ -17,7 +17,7 @@ defmodule DMEx.FingerprintTest do
   use DMEx.Case, async: true
   use ExUnitProperties
 
-  alias DMEx.Fingerprint
+  alias DMEx.Handler.Fingerprint
 
   # Shaped like the real thing — fully-qualified module names — since that is
   # what the size claims are quoted against.

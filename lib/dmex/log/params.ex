@@ -42,7 +42,7 @@ defmodule DMEx.Log.Params do
   contains no `/`.
   """
 
-  alias DMEx.Fingerprint
+  alias DMEx.Handler.Fingerprint
 
   defstruct [:cursor, selection: :all]
 

@@ -86,7 +86,6 @@ defmodule DMEx.Handler.Pipeline do
   `[:dmex, :handler, :failed]` are the only trace.
   """
 
-  alias DMEx.Backoff
   alias DMEx.Handler
 
   require Logger
@@ -206,7 +205,7 @@ defmodule DMEx.Handler.Pipeline do
         # message at a time, so there is nothing else it could usefully do, and
         # pausing it applies backpressure to the log while a handler struggles.
         attempt
-        |> Backoff.delay(state.config.retry_backoff, state.config.retry_backoff_max)
+        |> DMEx.backoff(state.config.retry_backoff, state.config.retry_backoff_max)
         |> Process.sleep()
 
         attempt(row, id, message, metadata, state, attempt + 1)

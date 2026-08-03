@@ -279,7 +279,7 @@ defmodule DMEx.Message do
   def registry(modules) when is_struct(modules, MapSet), do: index!(modules)
 
   @doc """
-  Lists every message module compiled into the applications `DMEx.Discovery` scans.
+  Lists every message module compiled into the applications `DMEx.discovery/1` scans.
 
   The mirror of `DMEx.Handler.discover/1`. Sorted, so a collision is reported
   against the same pair of modules on every node.
@@ -287,7 +287,7 @@ defmodule DMEx.Message do
   @spec discover(atom() | nil) :: [module()]
   def discover(otp_app \\ nil) do
     otp_app
-    |> DMEx.Discovery.modules()
+    |> DMEx.discovery()
     |> Enum.filter(&message?/1)
     |> Enum.sort()
   end

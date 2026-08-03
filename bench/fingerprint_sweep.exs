@@ -1,4 +1,4 @@
-# A one-off sweep over `DMEx.Fingerprint`, measuring what the selection design
+# A one-off sweep over `DMEx.Handler.Fingerprint`, measuring what the selection design
 # asserts rather than what it costs:
 #
 #     MIX_ENV=test mix bench.fingerprint
@@ -18,7 +18,7 @@
 # Not a benchee benchmark: there is nothing here to time. It is an analysis, and
 # it prints a CSV plus a summary.
 
-alias DMEx.Fingerprint
+alias DMEx.Handler.Fingerprint
 
 # Two separate things, and conflating them is what makes the number useless.
 #
@@ -55,7 +55,7 @@ stranger_hashes = for i <- 1..max_strangers, do: Fingerprint.key_hash(stranger.(
 member_hashes = for i <- 1..Enum.max(counts), do: Fingerprint.key_hash(member.(i))
 
 IO.puts("""
-DMEx.Fingerprint sweep — xor16
+DMEx.Handler.Fingerprint sweep — xor16
   set sizes:  #{length(counts)} points over 1..#{Enum.max(counts)}
   universe:   N selected + #{universe_multiple}N unselected (the ratio column)
   rate:       #{rate_probes} non-members per point, pooled (the rate estimate)

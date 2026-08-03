@@ -1,4 +1,4 @@
-defmodule DMEx.Fingerprint do
+defmodule DMEx.Handler.Fingerprint do
   @moduledoc """
   A consumer's message set, encoded as an XOR filter for the request path.
 
