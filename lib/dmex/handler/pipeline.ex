@@ -70,7 +70,7 @@ defmodule DMEx.Handler.Pipeline do
   skipped. The default because it is the only mode refusing both bad outcomes:
   one message a handler cannot process is not a reason for every *later* message
   to stop arriving, nor a reason to lose the failing one. What is stored is the
-  message and only the message — see `DMEx.Migration`.
+  message and only the message — see `DMEx.Storage.Migration`.
 
   **`:crash`** re-raises with the original stacktrace and without advancing, so a
   pending run of skips is re-skipped after the restart. The supervisor restarts

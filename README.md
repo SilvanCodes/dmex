@@ -23,7 +23,7 @@ infrastructure between applications.
 
 ```elixir
 # migration
-def up, do: DMEx.Migration.up()
+def up, do: DMEx.Storage.Migration.up()
 
 defmodule MyApp.Log do
   use DMEx.Log, repo: MyApp.Repo

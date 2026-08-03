@@ -11,7 +11,7 @@ defmodule DMEx.Transport.SSE.Frame do
   Nothing DMEx owns rides at the top level of `data:`. A log wanting its own
   columns on the wire lifts them into `metadata` with `metadata:` on
   `use DMEx.Log`, which happens before a row reaches here — see
-  `DMEx.Log.Metadata`.
+  `DMEx.Log.merge_metadata/2`.
 
   The column-to-slot table is in ARCHITECTURE.md's wire contract, along with why
   `id:` is a `previous/current` link rather than a number. `DMEx.Log.Params`
@@ -34,7 +34,7 @@ defmodule DMEx.Transport.SSE.Frame do
   `message_type` is the constrained-charset case: it goes straight onto the
   `event:` line, and SSE field lines have no escaping. `dmex_messages` carries a
   CHECK restricting it to `[A-Za-z0-9_.]`, so a type that cannot be written on an
-  `event:` line cannot be appended. See `DMEx.Migration`.
+  `event:` line cannot be appended. See `DMEx.Storage.Migration`.
   """
 
   @typedoc "A log row on the log's side, as `c:DMEx.Storage.read/5` returns it."

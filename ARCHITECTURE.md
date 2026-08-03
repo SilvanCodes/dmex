@@ -33,7 +33,7 @@ type over an append-only Postgres log.
 ## The log
 
 One append-only log per application: a totally-ordered stream of every message
-it appended, in one table. `DMEx.Migration` ships the DDL.
+it appended, in one table. `DMEx.Storage.Migration` ships the DDL.
 
 ```sql
 CREATE TABLE dmex_messages (

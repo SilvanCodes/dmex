@@ -1,9 +1,9 @@
-defmodule DMEx.MigrationTest do
+defmodule DMEx.Storage.MigrationTest do
   use DMEx.Case, async: true, database: true
 
   alias Ecto.Adapters.SQL
 
-  alias DMEx.Migration
+  alias DMEx.Storage.Migration
 
   describe "option validation" do
     test "rejects an unknown table" do
@@ -25,7 +25,7 @@ defmodule DMEx.MigrationTest do
     end
   end
 
-  # The suite's own repos are migrated through DMEx.Migration in test_helper.exs,
+  # The suite's own repos are migrated through DMEx.Storage.Migration in test_helper.exs,
   # so introspecting them tests the real DDL rather than a restatement of it.
   describe "dmex_messages" do
     test "id is a bigint from a sequence" do

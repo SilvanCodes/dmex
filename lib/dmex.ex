@@ -10,13 +10,13 @@ defmodule DMEx do
 
   DMEx's tables live in your database, so they are yours to migrate. Pass
   `tables: [:log]` or `tables: [:subscriptions]` if the application only plays
-  one of the two roles; see `DMEx.Migration`.
+  one of the two roles; see `DMEx.Storage.Migration`.
 
       defmodule MyApp.Repo.Migrations.AddDMEx do
         use Ecto.Migration
 
-        def up, do: DMEx.Migration.up()
-        def down, do: DMEx.Migration.down()
+        def up, do: DMEx.Storage.Migration.up()
+        def down, do: DMEx.Storage.Migration.down()
       end
 
   ## Appending

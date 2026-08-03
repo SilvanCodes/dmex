@@ -9,7 +9,7 @@ defmodule DMEx.Handler.DeadMessages do
       DMEx.Handler.DeadMessages.replay(MyApp.OrderProjection, repo: MyApp.Repo)
 
   The stored columns are `dmex_messages`' columns, so a dead row *is* a log row
-  and replay hands it straight back with no reshaping — see `DMEx.Migration`
+  and replay hands it straight back with no reshaping — see `DMEx.Storage.Migration`
   for the shape and for what is deliberately not stored.
 
   ## Replay does not touch the cursor

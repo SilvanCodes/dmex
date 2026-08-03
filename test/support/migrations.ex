@@ -6,6 +6,6 @@ defmodule DMEx.Test.Migrations.Install do
 
   use Ecto.Migration
 
-  def up, do: DMEx.Migration.up()
-  def down, do: DMEx.Migration.down()
+  def up, do: DMEx.Storage.Migration.up()
+  def down, do: DMEx.Storage.Migration.down()
 end

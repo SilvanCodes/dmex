@@ -23,7 +23,7 @@ defmodule DMEx.Config do
   | `poll_interval` | `1_000` | ms; Oban stager parity. The worst-case wakeup latency when a `NOTIFY` is lost, costing one `max(id)` index descent per app per second. |
   | `stall_timeout` | `30_000` | ms; the budget for any one blocking step of the send loop. Generous on purpose: killing a healthy slow handler costs a reconnect and a fresh catch-up read, where a wedged connection lingering 30 s costs one request process. At the 1 MiB write cap it tolerates a handler draining a full write at ~280 kbit/s. `:infinity` runs no watcher at all. |
   | `stall_check_interval` | `1_000` | ms; how often `DMEx.Log.Watcher` sweeps, so a stall is reclaimed within `stall_timeout + stall_check_interval`. A sweep is one atomics read per connection and no query. |
-  | `metadata` | `[]` | which of the log's own columns are merged into the metadata a handler sees — `:id`, `:message_type`, `:inserted_at`, in any order. Empty by default, so a frame carries exactly what the publisher wrote and nothing else. See `DMEx.Log.Metadata`. |
+  | `metadata` | `[]` | which of the log's own columns are merged into the metadata a handler sees — `:id`, `:message_type`, `:inserted_at`, in any order. Empty by default, so a frame carries exactly what the publisher wrote and nothing else. See `DMEx.Log.merge_metadata/2`. |
 
   `max_batch_size` and `max_batch_bytes` are not two spellings of one limit: a
   row costs heap both as payload, which the byte bound counts, and as a fixed
@@ -108,7 +108,7 @@ defmodule DMEx.Config do
           max_batch_bytes: pos_integer(),
           stall_timeout: pos_integer() | :infinity,
           stall_check_interval: pos_integer(),
-          metadata: [DMEx.Log.Metadata.field()]
+          metadata: [DMEx.Log.metadata_field()]
         }
 
   @typedoc "A subscription's resolved configuration."
@@ -261,15 +261,15 @@ defmodule DMEx.Config do
   end
 
   # Named columns rather than free-form keys, because the point is to surface
-  # what the log already stores — see `DMEx.Log.Metadata`.
+  # what the log already stores — see `DMEx.Log.metadata_fields/0`.
   defp validate_metadata!(fields) when is_list(fields) do
-    case Enum.reject(fields, &(&1 in DMEx.Log.Metadata.fields())) do
+    case Enum.reject(fields, &(&1 in DMEx.Log.metadata_fields())) do
       [] ->
         :ok
 
       unknown ->
         raise ArgumentError,
-              ":metadata may only lift #{inspect(DMEx.Log.Metadata.fields())}, " <>
+              ":metadata may only lift #{inspect(DMEx.Log.metadata_fields())}, " <>
                 "got: #{inspect(unknown)}"
     end
   end

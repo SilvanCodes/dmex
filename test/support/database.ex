@@ -65,14 +65,14 @@ defmodule DMEx.Test.Database do
   @doc """
   Runs the DMEx migration against both test repos.
 
-  Uses `Ecto.Migrator` rather than calling `DMEx.Migration.up/1` directly, so
+  Uses `Ecto.Migrator` rather than calling `DMEx.Storage.Migration.up/1` directly, so
   the suite exercises the same path a host application takes and re-runs are
   recorded in `schema_migrations` instead of repeated.
   """
   @spec migrate!() :: :ok
   def migrate! do
     Enum.each(@repos, fn repo ->
-      # Down first, so an edit to `DMEx.Migration` takes effect on the next run.
+      # Down first, so an edit to `DMEx.Storage.Migration` takes effect on the next run.
       # Its DDL is deliberately re-runnable — `create_if_not_exists` throughout —
       # which means a *changed* column default or a new index would otherwise be
       # skipped against a database from before the edit, and the suite would test

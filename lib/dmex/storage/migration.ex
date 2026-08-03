@@ -1,4 +1,4 @@
-defmodule DMEx.Migration do
+defmodule DMEx.Storage.Migration do
   @moduledoc """
   Creates the tables DMEx needs, from a migration in the host application.
 
@@ -9,16 +9,16 @@ defmodule DMEx.Migration do
       defmodule MyApp.Repo.Migrations.AddDMEx do
         use Ecto.Migration
 
-        def up, do: DMEx.Migration.up()
-        def down, do: DMEx.Migration.down()
+        def up, do: DMEx.Storage.Migration.up()
+        def down, do: DMEx.Storage.Migration.down()
       end
 
   An application usually appends, subscribes, or both, and only needs the tables
   for the roles it plays:
 
-      DMEx.Migration.up(tables: [:log])            # dmex_messages
-      DMEx.Migration.up(tables: [:subscriptions])  # dmex_cursors, dmex_dead_messages
-      DMEx.Migration.up()                          # both, the default
+      DMEx.Storage.Migration.up(tables: [:log])            # dmex_messages
+      DMEx.Storage.Migration.up(tables: [:subscriptions])  # dmex_cursors, dmex_dead_messages
+      DMEx.Storage.Migration.up()                          # both, the default
 
   ## Options
 

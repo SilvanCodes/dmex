@@ -98,7 +98,7 @@ defmodule DMEx.Storage do
 
   `data` and `metadata` arrive as already-encoded JSON binaries, handed to the
   database without decoding, and nothing DMEx owns is merged into `metadata` —
-  what `DMEx.Log.Metadata` lifts happens on the way out, never on the way in.
+  what `DMEx.Log.merge_metadata/2` lifts happens on the way out, never on the way in.
 
   A caller already inside a transaction extends that lock for the enclosing
   transaction's lifetime, serializing every other append in the app for its
@@ -140,7 +140,7 @@ defmodule DMEx.Storage do
 
   Nothing about the log's tip comes back: the wire carries no `max_id`. A
   consumer that needs to know how far behind it is has the log lift
-  `inserted_at` into its metadata — see `DMEx.Log.Metadata`.
+  `inserted_at` into its metadata — see `DMEx.Log.merge_metadata/2`.
 
   For another adapter: `octet_length/1` is Postgres's spelling, SQLite's is
   `length(CAST(x AS BLOB))`. Both have window functions, so the running-sum
@@ -180,7 +180,7 @@ defmodule DMEx.Storage do
   | before the first row, or an empty log | 0 | the whole log |
 
   **This requires `inserted_at` to ascend with `id`**, which is why
-  `DMEx.Migration` defaults it to `clock_timestamp()` rather than `now()` — see
+  `DMEx.Storage.Migration` defaults it to `clock_timestamp()` rather than `now()` — see
   the fourth contract in the module documentation. Across an inversion, "the
   last row before `at`" can land past a lower id that belongs *after* the cut,
   and a cursor set too high skips it permanently. The interleaving-proof

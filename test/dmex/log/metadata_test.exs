@@ -1,7 +1,7 @@
 defmodule DMEx.Log.MetadataTest do
   use DMEx.Case, async: true
 
-  alias DMEx.Log.Metadata
+  alias DMEx.Log
 
   @at ~U[2026-07-27 10:31:04.221Z]
 
@@ -17,16 +17,16 @@ defmodule DMEx.Log.MetadataTest do
   end
 
   defp merged(fields, opts \\ []) do
-    opts |> row() |> Metadata.merge(fields) |> Map.fetch!(:metadata)
+    opts |> row() |> Log.merge_metadata(fields) |> Map.fetch!(:metadata)
   end
 
   defp decoded(fields, opts \\ []) do
     fields |> merged(opts) |> JSON.decode!()
   end
 
-  describe "merge/2" do
+  describe "merge_metadata/2" do
     test "lifting nothing returns the row untouched" do
-      assert Metadata.merge(row(metadata: ~s({"a":1})), []) == row(metadata: ~s({"a":1}))
+      assert Log.merge_metadata(row(metadata: ~s({"a":1})), []) == row(metadata: ~s({"a":1}))
     end
 
     test "renders each column as its own key" do
@@ -72,9 +72,9 @@ defmodule DMEx.Log.MetadataTest do
     end
   end
 
-  describe "fields/0" do
+  describe "metadata_fields/0" do
     test "is the message columns less the payload and metadata itself" do
-      assert Metadata.fields() == [:id, :message_type, :inserted_at]
+      assert Log.metadata_fields() == [:id, :message_type, :inserted_at]
     end
   end
 end

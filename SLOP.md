@@ -162,7 +162,7 @@ that `Fanned` commits a cursor per subscription.
   It now reads `DMEx.Config.defaults().handler[:max_frame_bytes]`. Note it is a
   *handler* default, not a log one. Removing the default outright was rejected:
   ~15 test and benchmark call sites use `Decoder.new()`.
-- **`DMEx.Migration.down/1` never drops a `:prefix` schema** — confirmed
+- **`DMEx.Storage.Migration.down/1` never drops a `:prefix` schema** — confirmed
   intentional. `up/1` creates it with `IF NOT EXISTS`, so it may have existed
   first and may hold tables that are not DMEx's. The reason is now in the doc.
 - **`bench_helper.exs`'s `reset_log!/0` did not truncate `dmex_dead_messages`** —

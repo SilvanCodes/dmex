@@ -18,7 +18,7 @@ defmodule DMEx.Log.Stream do
   The one thing it does to a row is merge in whichever columns the log's
   `metadata:` names — a change to the row, not to any wire format, and here
   rather than in a transport so both transports get it from one place. See
-  `DMEx.Log.Metadata`.
+  `DMEx.Log.merge_metadata/2`.
 
   Memory per connection is one batch and reads are gated on sends completing, so
   a stalled reader stalls its own loop and nothing else — ARCHITECTURE
@@ -41,7 +41,7 @@ defmodule DMEx.Log.Stream do
   configuration (ARCHITECTURE invariant 9).
   """
 
-  alias DMEx.Log.Metadata
+  alias DMEx.Log
   alias DMEx.Log.Status
 
   require Logger
@@ -61,7 +61,7 @@ defmodule DMEx.Log.Stream do
           required(:last_sent_at) => integer() | nil,
           required(:status) => Status.t() | nil,
           required(:types) => :all | [String.t()],
-          required(:lift) => [Metadata.field()]
+          required(:lift) => [Log.metadata_field()]
         }
 
   @doc """
@@ -178,7 +178,7 @@ defmodule DMEx.Log.Stream do
         {:empty, conn, state}
 
       {:ok, rows} ->
-        send_rows(conn, state, Enum.map(rows, &Metadata.merge(&1, state.lift)))
+        send_rows(conn, state, Enum.map(rows, &Log.merge_metadata(&1, state.lift)))
 
       {:error, reason} ->
         # If the log cannot be read there is nothing to send and nothing to say
