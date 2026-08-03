@@ -65,11 +65,16 @@ defmodule DMEx.BenchHelper do
     "http://127.0.0.1:#{port}"
   end
 
-  @doc "Truncates `dmex_messages` and `dmex_cursors`, so a run does not measure the previous one's rows."
+  @doc """
+  Empties every DMEx table, so a run does not measure the previous one's rows.
+
+  `dmex_dead_messages` included: a run whose handler gave up leaves rows there
+  that the next run would otherwise inherit.
+  """
   def reset_log! do
     Ecto.Adapters.SQL.query!(
       DMEx.Test.IntegrationRepo,
-      "TRUNCATE dmex_messages, dmex_cursors RESTART IDENTITY CASCADE",
+      "TRUNCATE dmex_messages, dmex_cursors, dmex_dead_messages RESTART IDENTITY CASCADE",
       []
     )
   end

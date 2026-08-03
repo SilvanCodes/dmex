@@ -1,9 +1,11 @@
 import Config
 
+unit_url =
+  System.get_env("DMEX_POSTGRES_URL") ||
+    "postgres://postgres:postgres@postgres:5432/dmex_test"
+
 config :dmex, DMEx.Test.Repo,
-  url:
-    System.get_env("DMEX_POSTGRES_URL") ||
-      "postgres://postgres:postgres@postgres:5432/dmex_test",
+  url: unit_url,
   pool: Ecto.Adapters.SQL.Sandbox,
   pool_size: 10,
   log: false
@@ -18,17 +20,27 @@ config :dmex, DMEx.Test.Repo,
 # Derived from DMEX_POSTGRES_URL when no dedicated variable is set, so a CI job
 # that sets only the first does not reach the unit database for both suites.
 #
-# The derivation rewrites a trailing `/dmex_test` and nothing else: point
-# DMEX_POSTGRES_URL at a differently-named database and both repos resolve to
-# it. Set DMEX_POSTGRES_INTEGRATION_URL explicitly in that case — the
-# integration repo is not sandboxed, so it would otherwise run against the unit
-# database directly.
+# The derivation replaces the whole database segment rather than rewriting a
+# trailing `/dmex_test`, so it holds for any database name: host, port and
+# credentials are kept, the name is always `dmex_integration_test`. Rewriting
+# one literal meant a differently-named DMEX_POSTGRES_URL silently resolved
+# both repos to the same database — and the integration repo is not sandboxed,
+# so it truncates and writes directly.
 integration_url =
   System.get_env("DMEX_POSTGRES_INTEGRATION_URL") ||
-    case System.get_env("DMEX_POSTGRES_URL") do
-      nil -> "postgres://postgres:postgres@postgres:5432/dmex_integration_test"
-      url -> String.replace_trailing(url, "/dmex_test", "/dmex_integration_test")
-    end
+    unit_url |> URI.parse() |> Map.put(:path, "/dmex_integration_test") |> URI.to_string()
+
+# The derivation cannot collide, but an explicit DMEX_POSTGRES_INTEGRATION_URL
+# can. Refusing to boot beats discovering it from a truncated unit database.
+if integration_url == unit_url do
+  raise """
+  DMEX_POSTGRES_INTEGRATION_URL and DMEX_POSTGRES_URL both point at #{unit_url}.
+
+  The integration repo is deliberately un-sandboxed and truncates the tables it
+  uses, so the two suites must not share a database. Point them at different
+  ones, or unset DMEX_POSTGRES_INTEGRATION_URL to have it derived.
+  """
+end
 
 config :dmex, DMEx.Test.IntegrationRepo,
   url: integration_url,

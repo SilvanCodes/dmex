@@ -179,11 +179,14 @@ interval per *app*. The binding constraint in practice is **pool contention**,
 not raw query load.
 
 - **Size the pool for streams as well as requests.** 200 streams at the default
-  5 reads/s is about 1 000 reads/s, each a short primary-key range scan, on top
-  of whatever else the application does. If that is more than your pool wants,
-  lower `max_batch_frequency` — the cost is latency, which rises to about
-  `1 / (2 x max_batch_frequency)` on average. Consumers do not ask for pacing and
-  cannot override it.
+  100 reads/s is a worst case of 20 000 reads/s, each a short primary-key range
+  scan, on top of whatever else the application does. **This is the setting most
+  likely to need lowering**: measured on a 10-connection pool, checkout queueing
+  appears somewhere between 50 and 200 busy streams at the default, and at 200
+  it dominates — see ARCHITECTURE's *What has been measured*. The cost of
+  lowering it is latency, which rises to about `1 / (2 x max_batch_frequency)`
+  on average — 5 ms at the default, 100 ms at 5. Consumers do not ask for pacing
+  and cannot override it.
 - **The producer needs one extra connection beyond the pool.** `LISTEN` cannot
   share a pooled connection, since it must stay checked out for its whole life,
   so `DMEx.Storage.Postgres` opens a dedicated `Postgrex.Notifications`

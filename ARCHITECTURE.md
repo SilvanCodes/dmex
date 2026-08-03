@@ -304,9 +304,11 @@ in a subscription's options. There is no "requested" value to drift from an
 "effective" one, no clamping, no echo to interpret, no mid-subscription
 renegotiation. `max_batch_frequency` is **how hard one connection may hammer the
 database**, and it is a ceiling rather than a reaction to load: a hundred
-connections at the default five reads per second is five hundred short range
+connections at the default hundred reads per second is ten thousand short range
 scans a second, whatever the append rate does. The producer is the party whose
-database, memory and request processes all three protect.
+database, memory and request processes all three protect — and at that default
+the pool, not the query load, is what gives first, so an application expecting
+many concurrent streams should lower it.
 
 **10. Batching is a write batch, never a processing unit.** The producer encodes
 a read's rows as one frame each and writes them together; the consumer sees a
@@ -435,24 +437,44 @@ of scope.
 `bench/` answers design claims rather than catching regressions.
 
 - **The append lock is nearly free uncontended and expensive under contention** —
-  ~1.13× at concurrency 1–2, ~4.8× at 8, ~5.8× at 32, with locked throughput
-  *falling* as concurrency rises. Append concurrency buys an application
-  nothing; batch work into fewer, larger messages instead.
-- **Per-connection pacing holds exactly as designed** — 5.2 writes/s against a
-  200 ms window regardless of append rate, and an idle log costs one query per
-  poll interval per *app* (1/s flat at both 10 and 200 connections).
-- **No pool queueing at 200 concurrent streams** on a developer machine, so the
-  read-amplification ceiling is somewhere above that.
+  ~1.1× at concurrency 1–2, ~4.6× at 8, ~5.8× at 32, with locked throughput
+  *falling* as concurrency rises (252 → 134 → 32 → 8 appends/s). Append
+  concurrency buys an application nothing; batch work into fewer, larger
+  messages instead.
+- **Per-connection pacing holds, and an idle log is flat in C.** Each connection
+  writes well under its log's `max_batch_frequency` however fast the log is
+  appended to — 53–66 writes/s against the 100/s default at C=10 and C=50. An
+  idle log costs one query per poll interval per *app*, not per connection: 1/s
+  flat at 10, 50 and 200 connections.
+- **Pool checkout queueing is where fanout binds, and it binds before 200
+  connections.** At C=200 with a 100/s append rate, ~50 000 of ~61 000 queries
+  waited over 5 ms for a checkout and per-connection writes fell to ~40–48/s:
+  the frequency cap stops being the limit and the pool starts being it. At C=50
+  the same load queued only ~120 of ~30 000, and at C=10 none. That is the
+  argument for partitioning the pool so stream reads cannot starve append
+  writes, and the reason `max_batch_frequency` is the first setting to lower
+  when many streams share one pool.
+
+  Three runs, developer machine, 10-connection pool — so read the shape rather
+  than the constants: queueing appears somewhere between 50 and 200 connections
+  here, and scales with pool size rather than with anything DMEx chooses.
 - **The consumer is commit-bound on the rows it *handles*, not on the rows it
-  skips.** A client that reads and discards sustains ~2 500 rows/s; a real
-  consumer with a no-op handler manages ~265 rows/s, and that is the transaction
-  it shares with the handler — the guarantee, not overhead. A fully-skipping consumer sustains
-  ~2 515 rows/s, because coalescing turns 20 000 skipped rows into 7 cursor
-  writes.
+  skips.** A client that reads and discards sustains ~36 000 rows/s, a
+  fully-skipping consumer ~39 000 rows/s, and a real consumer with a no-op
+  handler ~265 rows/s. The two-orders-of-magnitude gap is the per-row commit,
+  and that transaction is the handler/cursor guarantee rather than overhead.
+
+  Coalescing is what buys the skip path that speed, and it is counted rather
+  than assumed: **200 000 skipped rows cost 5 cursor writes** — one per
+  `checkpoint_interval` across a 5.15 s drain, or 40 000 rows per write.
 
   At ~265 rows/s a million-row log of entirely handled messages takes roughly an
   hour to replay, and that is the figure "arbitrarily replayable" should be
   quoted with. A mostly-skipped log replays at wire speed.
+
+  The first and third figures are paced by the log's `max_batch_frequency`
+  (100/s by default, so `max_batch_size` × 100 is the ceiling), not by a limit
+  the design imposes; only the ~265 is a property of the consumer.
 - **The selection filter behaves as the design assumes.** `mix bench.fingerprint`
   sweeps 86 set sizes over 1–2000: **zero false negatives** across 45 660
   membership tests, a false-positive rate of **14.65 ± 1.85 per million** against

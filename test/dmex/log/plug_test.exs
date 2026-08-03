@@ -134,7 +134,7 @@ defmodule DMEx.Log.PlugTest do
       # heartbeat_ms + one batch interval, because the loop's throttle runs after the
       # heartbeat branch — the sum is the real upper bound on silence. Both are
       # log configuration, so every connection is told the same number.
-      assert_received {:chunk, "retry: 15200\n\n"}
+      assert_received {:chunk, "retry: 15010\n\n"}
     end
 
     test "then sends the log as one frame per row", %{opts: opts, plug: plug} do

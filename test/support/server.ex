@@ -59,9 +59,15 @@ defmodule DMEx.Test.Server do
   end
 
   @doc """
-  Binds `:test` to `url` for `DMEx.Supervisor`. Not a literal anywhere, since
-  the port is 0 until the server is running.
+  Binds `:test` and `:other` to `url` for `DMEx.Supervisor`. Not a literal
+  anywhere, since the port is 0 until the server is running.
+
+  `:other` is bound because `DMEx.Test.Handlers.Fanned` names it, and a
+  discovered handler naming an unbound log stops the boot. Binding it here is
+  what lets an integration test turn discovery on at all; both names point at
+  the same log, since what `Fanned` demonstrates is two subscriptions with
+  their own cursors and connections, not two logs.
   """
   @spec logs(String.t()) :: keyword(String.t())
-  def logs(url), do: [test: url]
+  def logs(url), do: [test: url, other: url]
 end

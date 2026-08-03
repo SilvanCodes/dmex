@@ -16,7 +16,7 @@ defmodule DMEx.Config do
 
   | setting | default | why |
   | --- | --- | --- |
-  | `max_batch_frequency` | `5` | reads per second — **how hard one connection may hammer the database**. Five is sub-perceptible added latency (`1 / 2f`, 100 ms here) while capping a connection's query rate at something a pool absorbs hundreds of times over. Any positive number: `0.2` is one read every five seconds. |
+  | `max_batch_frequency` | `100` | reads per second — **how hard one connection may hammer the database**. A hundred puts added latency (`1 / 2f`) at 5 ms, low enough to be invisible next to the network hop. The cost is at the pool, not the connection: worst-case reads per second is `open streams x this`, so it is the first setting to lower when many streams share one pool. Measured, a 10-connection pool starts queueing checkouts somewhere between 50 and 200 busy streams at this rate — see ARCHITECTURE's *What has been measured* and `guides/deployment.md`. Any positive number: `0.2` is one read every five seconds. |
   | `max_batch_size` | `500` | rows per read. Bounds the **per-row** heap cost — about a kilobyte each once decoded and framed, which no byte budget can see — and bounds the running sum enforcing `max_batch_bytes`. Also subject to the sizing rule in `guides/deployment.md`: one write must drain in well under `stall_timeout` at the slowest handler's rate. |
   | `max_batch_bytes` | `1_048_576` | **payload** bytes per read, enforced inside the query (see `c:DMEx.Storage.read/5`). Bounds the half of the heap cost that scales with message size: 500 rows is half a megabyte at 1 KB each and half a gigabyte at 1 MB each. One row larger than this is still delivered on its own, since refusing it would wedge the stream permanently. |
   | `heartbeat_ms` | `15_000` | ms; half the most common 30 s proxy idle timeout, so two heartbeats fit inside every window. |
@@ -52,7 +52,7 @@ defmodule DMEx.Config do
   """
 
   @log_defaults [
-    max_batch_frequency: 5,
+    max_batch_frequency: 100,
     max_batch_size: 500,
     heartbeat_ms: 15_000,
     poll_interval: 1_000,

@@ -161,6 +161,10 @@ defmodule DMEx.Log.Plug do
 
     cursor = resolve_cursor(log, params.cursor)
 
+    # Re-armed because `resolve_cursor/2` above can query — `cursor=latest`
+    # costs a `max_id`, which takes a pool checkout like any other read. The
+    # registration's arm covers that query; this one gives the header write
+    # that follows its own full budget rather than what the query left of it.
     Status.arm(status, config.stall_timeout)
 
     conn =

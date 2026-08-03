@@ -104,7 +104,6 @@ defmodule DMEx.Handler.Stream do
           last_activity: nil,
           liveness_timer: nil,
           cursor: nil,
-          checkpoint_timer: nil,
           attempt: 0
         }
 
@@ -332,10 +331,14 @@ defmodule DMEx.Handler.Stream do
     %{state | pipeline: pipeline}
   end
 
+  # No reference kept, unlike `:liveness_timer`: this timer is never cancelled
+  # or rearmed early, and `handle_info(:checkpoint, ...)` is correct whenever it
+  # lands — including after a reconnect, since a pending run of skips outlives
+  # one.
   defp schedule_checkpoint(state) do
-    timer = Process.send_after(self(), :checkpoint, state.config.checkpoint_interval)
+    Process.send_after(self(), :checkpoint, state.config.checkpoint_interval)
 
-    %{state | checkpoint_timer: timer}
+    state
   end
 
   ## Liveness

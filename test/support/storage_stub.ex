@@ -17,7 +17,6 @@ defmodule DMEx.Test.Storage do
   defstruct rows: [],
             reads: [],
             read_bytes: [],
-            appends: [],
             cursors: %{},
             dead: [],
             fail: nil,
@@ -60,10 +59,6 @@ defmodule DMEx.Test.Storage do
   @spec put_rows(DMEx.Storage.opts(), [DMEx.Storage.row()] | non_neg_integer()) :: :ok
   def put_rows(opts, rows), do: update(opts, &%{&1 | rows: rows(rows)})
 
-  @doc "Appends rows to the stub, as an append would."
-  @spec add_rows(DMEx.Storage.opts(), [DMEx.Storage.row()]) :: :ok
-  def add_rows(opts, rows), do: update(opts, &%{&1 | rows: &1.rows ++ rows})
-
   @doc "Every `{cursor, limit, types}` triple `read/5` was called with, oldest first."
   @spec reads(DMEx.Storage.opts()) :: [
           {non_neg_integer(), pos_integer(), :all | [String.t()]}
@@ -74,27 +69,22 @@ defmodule DMEx.Test.Storage do
   @spec read_bytes(DMEx.Storage.opts()) :: [pos_integer()]
   def read_bytes(opts), do: opts |> get() |> Map.fetch!(:read_bytes) |> Enum.reverse()
 
-  @doc "Every `{type, data, metadata}` triple `append/4` has been called with."
-  @spec appends(DMEx.Storage.opts()) :: [{String.t(), binary(), binary()}]
-  def appends(opts), do: opts |> get() |> Map.fetch!(:appends) |> Enum.reverse()
-
-  @doc "Every row written by `dead_message/2`."
-  @spec dead_messages(DMEx.Storage.opts()) :: [map()]
-  def dead_messages(opts), do: opts |> get() |> Map.fetch!(:dead) |> Enum.reverse()
-
-  @doc "Makes the next `read/5` return `{:error, reason}`. Only `:read` is honoured."
-  @spec fail(DMEx.Storage.opts(), atom(), term()) :: :ok
-  def fail(opts, fun, reason \\ :boom), do: update(opts, &%{&1 | fail: {fun, reason}})
+  @doc "Makes the next `read/5` return `{:error, reason}`."
+  @spec fail(DMEx.Storage.opts(), term()) :: :ok
+  def fail(opts, reason \\ :boom), do: update(opts, &%{&1 | fail: reason})
 
   @doc """
-  Makes every subsequent `read/5` block its caller forever. Only `:read` is
-  honoured.
+  Makes every subsequent `read/5` block its caller forever.
 
   This is the failure no transport-level timeout can see: a query that never
   comes back wedges the send loop with a healthy socket underneath it.
+
+  Both this and `fail/2` are scoped to `read/5` and take no callback name:
+  reads are the only call these tests inject faults into, and an argument
+  naming a callback that is never consulted is a silent no-op.
   """
-  @spec hang(DMEx.Storage.opts(), atom()) :: :ok
-  def hang(opts, fun), do: update(opts, &%{&1 | hang: fun})
+  @spec hang(DMEx.Storage.opts()) :: :ok
+  def hang(opts), do: update(opts, &%{&1 | hang: true})
 
   ## DMEx.Storage
 
@@ -104,15 +94,14 @@ defmodule DMEx.Test.Storage do
       id = length(state.rows) + 1
       row = row(id, message_type: type, data: data, metadata: metadata)
 
-      {{:ok, id},
-       %{state | rows: state.rows ++ [row], appends: [{type, data, metadata} | state.appends]}}
+      {{:ok, id}, %{state | rows: state.rows ++ [row]}}
     end)
   end
 
   @impl DMEx.Storage
   def read(opts, cursor, limit, max_bytes, types) do
     # Before the agent call, so the caller wedges rather than the stub.
-    maybe_hang(opts, :read)
+    maybe_hang(opts)
 
     Agent.get_and_update(store(opts), fn state ->
       state = %{
@@ -125,7 +114,7 @@ defmodule DMEx.Test.Storage do
     end)
   end
 
-  defp do_read(%{fail: {:read, reason}} = state, _cursor, _limit, _max_bytes, _types) do
+  defp do_read(%{fail: reason} = state, _cursor, _limit, _max_bytes, _types) when reason != nil do
     {{:error, reason}, %{state | fail: nil}}
   end
 
@@ -217,8 +206,14 @@ defmodule DMEx.Test.Storage do
     update(opts, &%{&1 | cursors: Map.put(&1.cursors, subscription, id)})
   end
 
+  # `:inserted_at` records when the row landed here, so it is the adapter's to
+  # stamp — the caller never sends one.
   @impl DMEx.Storage
-  def dead_message(opts, attrs), do: update(opts, &%{&1 | dead: [attrs | &1.dead]})
+  def dead_message(opts, attrs) do
+    attrs = Map.put(attrs, :inserted_at, DateTime.utc_now())
+
+    update(opts, &%{&1 | dead: [attrs | &1.dead]})
+  end
 
   @impl DMEx.Storage
   def dead_messages(opts, subscription) when is_binary(subscription) do
@@ -227,7 +222,14 @@ defmodule DMEx.Test.Storage do
         state.dead
         |> Enum.reverse()
         |> Enum.filter(&(&1.subscription == subscription))
-        |> Enum.map(&Map.take(&1, [:id, :message_type, :data, :metadata, :inserted_at]))
+        |> Enum.map(fn attrs ->
+          attrs
+          |> Map.take([:id, :message_type, :data, :metadata, :inserted_at])
+          # A dead row has no delivered sequence to chain over, exactly as in
+          # the real adapter, so its predecessor is nil rather than missing:
+          # `t:DMEx.Storage.row/0` requires the key either way.
+          |> Map.put(:previous_id, nil)
+        end)
 
       {:ok, rows}
     end)
@@ -260,8 +262,8 @@ defmodule DMEx.Test.Storage do
 
   defp get(opts), do: Agent.get(store(opts), & &1)
 
-  defp maybe_hang(opts, fun) do
-    if get(opts).hang == fun, do: Process.sleep(:infinity)
+  defp maybe_hang(opts) do
+    if get(opts).hang, do: Process.sleep(:infinity)
 
     :ok
   end

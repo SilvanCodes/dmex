@@ -6,7 +6,7 @@ defmodule DMEx.ConfigTest do
   describe "log!/1" do
     test "returns the documented defaults when given nothing" do
       assert %{
-               max_batch_frequency: 5,
+               max_batch_frequency: 100,
                max_batch_size: 500,
                heartbeat_ms: 15_000,
                poll_interval: 1_000,

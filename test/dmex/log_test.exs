@@ -13,7 +13,7 @@ defmodule DMEx.LogTest do
                channel: "dmex_dm_ex_test_log",
                lock: {classid, objid},
                prefix: nil,
-               config: %{max_batch_frequency: 5},
+               config: %{max_batch_frequency: 100},
                storage_opts: storage_opts
              } = Log.__dmex__()
 

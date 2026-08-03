@@ -26,12 +26,19 @@ defmodule DMEx.Transport.SSE.Decoder do
 
   alias DMEx.Transport.SSE.Frame
 
-  # CR, LF and CRLF are the SSE line terminators. These three cover every blank
-  # line a real producer emits, including DMEx's own "\n\n".
-  @delimiters ["\r\n\r\n", "\n\n", "\r\r"]
+  # CR, LF and CRLF are the SSE line terminators, so a blank line is any two of
+  # them back to back — every combination, not just the matching pairs, since a
+  # producer may mix terminators. The one exception is CR+LF, which the grammar
+  # reads as a single CRLF rather than two terminators. DMEx's own producer is
+  # the "\n\n" case.
+  #
+  # `:binary.match/2` takes the leftmost match and the longest of those, which
+  # is what these need: "\r\n\r\n" wins over the "\r\n\r" starting at the same
+  # byte, and "\r\n\n" wins over the "\n\n" one byte later.
+  @delimiters ["\r\n\r\n", "\r\r\n", "\n\r\n", "\r\n\r", "\r\n\n", "\r\r", "\n\r", "\n\n"]
   @terminators ["\r", "\n"]
 
-  defstruct buffer: [], size: 0, max_bytes: 4_194_304, retry: nil
+  defstruct buffer: [], size: 0, max_bytes: nil, retry: nil
 
   @type t :: %__MODULE__{
           buffer: iodata(),
@@ -42,9 +49,16 @@ defmodule DMEx.Transport.SSE.Decoder do
 
   @type error :: :frame_too_large | {:invalid_json, term()} | {:invalid_data_shape, term()}
 
-  @doc "Builds a decoder buffering at most `max_bytes` of an unterminated frame."
+  @doc """
+  Builds a decoder buffering at most `max_bytes` of an unterminated frame.
+
+  The default is read from `DMEx.Config`, not restated here, so the number has
+  one home. The one caller in `lib` passes `config.max_frame_bytes` outright;
+  the default is for tests and benchmarks that have no config to hand.
+  """
   @spec new(pos_integer()) :: t()
-  def new(max_bytes \\ 4_194_304) when is_integer(max_bytes) and max_bytes > 0 do
+  def new(max_bytes \\ DMEx.Config.defaults().handler[:max_frame_bytes])
+      when is_integer(max_bytes) and max_bytes > 0 do
     %__MODULE__{max_bytes: max_bytes}
   end
 

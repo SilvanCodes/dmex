@@ -31,25 +31,43 @@ port = Helper.start_server!() |> URI.parse() |> Map.fetch!(:port)
 
 # Counted from the log's own telemetry rather than inferred, so this is
 # what the loop really did.
-counter = :counters.new(2, [:write_concurrency])
+#
+#   1 writes    2 queries    3 rows    4 slow pool checkouts
+counter = :counters.new(4, [:write_concurrency])
 
+# One write carries a whole read's rows, so writes are what `max_batch_frequency`
+# caps and rows are what the log actually moved. Counting both keeps the two
+# from being confused for each other.
 :telemetry.attach(
-  "bench-frames",
-  [:dmex, :stream, :frame],
-  fn _event, _measure, _meta, _config -> :counters.add(counter, 1, 1) end,
+  "bench-writes",
+  [:dmex, :stream, :write],
+  fn _event, measurements, _meta, _config ->
+    :counters.add(counter, 1, 1)
+    :counters.add(counter, 3, Map.get(measurements, :rows, 0))
+  end,
   nil
 )
+
+# 5 ms in native units, which is what Ecto reports `queue_time` in.
+slow_checkout = System.convert_time_unit(5, :millisecond, :native)
 
 :telemetry.attach(
   "bench-queries",
   [:dm_ex, :test, :integration_repo, :query],
   fn _event, measurements, _meta, _config ->
     :counters.add(counter, 2, 1)
-    # Checkout queue time is the pool-contention signal.
-    if Map.get(measurements, :queue_time, 0) > 5_000_000, do: :counters.add(counter, 2, 0)
+    # Checkout queue time is the pool-contention signal, and it needs a slot of
+    # its own — folding it into the query counter would just inflate that.
+    if Map.get(measurements, :queue_time, 0) > slow_checkout do
+      :counters.add(counter, 4, 1)
+    end
   end,
   nil
 )
+
+# Read from the log rather than restated, so the line cannot drift from the
+# configuration it is describing.
+cap = Log.__dmex__().config.max_batch_frequency
 
 # A deliberately dumb SSE client: it reads and discards. The point is to hold a
 # connection open and let the log do its per-connection work.
@@ -79,8 +97,7 @@ for connections <- [10, 50, 200], append_rate <- [0, 100] do
   # Let every connection finish its catch-up read and settle at the tip.
   Process.sleep(2_000)
 
-  :counters.put(counter, 1, 0)
-  :counters.put(counter, 2, 0)
+  for slot <- 1..4, do: :counters.put(counter, slot, 0)
 
   appender =
     if append_rate > 0 do
@@ -97,15 +114,19 @@ for connections <- [10, 50, 200], append_rate <- [0, 100] do
 
   Process.sleep(5_000)
 
-  frames = :counters.get(counter, 1)
+  writes = :counters.get(counter, 1)
   queries = :counters.get(counter, 2)
+  rows = :counters.get(counter, 3)
+  slow = :counters.get(counter, 4)
 
-  IO.puts("  frames sent:      #{frames} (#{div(frames, 5)}/s)")
-  IO.puts("  log queries: #{queries} (#{div(queries, 5)}/s)")
+  IO.puts("  writes sent:      #{writes} (#{div(writes, 5)}/s)")
+  IO.puts("  rows in them:     #{rows} (#{div(rows, 5)}/s)")
+  IO.puts("  log queries:      #{queries} (#{div(queries, 5)}/s)")
+  IO.puts("  slow checkouts:   #{slow} (queue_time over 5 ms)")
 
   IO.puts(
-    "  per connection:   #{Float.round(frames / connections / 5, 2)} frames/s " <>
-      "(max_batch_frequency caps this at 5.0/s)"
+    "  per connection:   #{Float.round(writes / connections / 5, 2)} writes/s " <>
+      "(max_batch_frequency caps this at #{Float.round(cap / 1, 2)}/s)"
   )
 
   if appender, do: Process.exit(appender, :kill)
@@ -113,5 +134,5 @@ for connections <- [10, 50, 200], append_rate <- [0, 100] do
   Process.sleep(500)
 end
 
-:telemetry.detach("bench-frames")
+:telemetry.detach("bench-writes")
 :telemetry.detach("bench-queries")

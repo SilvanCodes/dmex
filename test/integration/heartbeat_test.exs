@@ -102,7 +102,7 @@ defmodule DMEx.Integration.HeartbeatTest do
       # heartbeat branch — that sum is the real upper bound on silence, and a
       # consumer measuring against heartbeat_ms alone would disconnect a healthy
       # log.
-      assert body =~ "retry: #{@heartbeat + 200}"
+      assert body =~ "retry: #{effective_heartbeat()}"
     end
 
     test "beats repeatedly, not once", ctx do
@@ -168,7 +168,7 @@ defmodule DMEx.Integration.HeartbeatTest do
 
       # Read off the wire rather than assumed: the log's own heartbeat plus
       # its own batch interval, neither of which this consumer had any say in.
-      assert retry(pid) == @heartbeat + 200
+      assert retry(pid) == effective_heartbeat()
     end
   end
 
@@ -231,6 +231,14 @@ defmodule DMEx.Integration.HeartbeatTest do
   end
 
   ## Helpers
+
+  # `heartbeat_ms` plus one batch interval. Derived rather than written out,
+  # because the batch interval follows `max_batch_frequency`'s default: a
+  # literal here states the right thing only until that default moves, and then
+  # states the wrong one loudly.
+  defp effective_heartbeat do
+    @heartbeat + DMEx.Config.batch_interval(Log.__dmex__().config)
+  end
 
   # The advertised interval lives in the transport's decoder now — the
   # subscription itself only asks it how long silence may last.

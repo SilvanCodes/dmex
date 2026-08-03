@@ -68,6 +68,10 @@ defmodule DMEx.Migration do
   @doc """
   Drops the DMEx tables. A `:prefix` schema itself is left in place.
 
+  Deliberately: `up/1` creates it with `IF NOT EXISTS`, so it may have existed
+  first and may hold tables that are not DMEx's. Dropping a schema DMEx does not
+  own is not something an undo of `up/1` gets to do.
+
   Note what this destroys: `dmex_messages` is an append-only log nothing else
   keeps a copy of, and dropping it is not recoverable from any consumer.
   """

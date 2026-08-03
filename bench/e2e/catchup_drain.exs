@@ -17,7 +17,6 @@
 # event, no database work.
 
 alias DMEx.BenchHelper, as: Helper
-alias DMEx.Test.IntegrationLog, as: Log
 alias DMEx.Test.Messages.OrderPlaced
 alias Ecto.Adapters.SQL
 
@@ -27,6 +26,14 @@ Helper.section("catchup_drain — replay rate, and which stage is the bottleneck
 # still shows the shape; raise it when the question is "how long would replaying
 # our actual log take".
 backlog = 20_000
+
+# Stage (c) gets its own, larger backlog, because the two stages want opposite
+# things. (b) is commit-bound at a few hundred rows/s, so 20 000 already costs
+# well over a minute. (c) runs at wire speed and would drain 20 000 in half a
+# second — *inside* one `checkpoint_interval`, so no cursor write would fall due
+# and the coalescing ratio the stage exists to measure would come out as zero.
+# This is sized to span several checkpoints instead.
+skip_backlog = 200_000
 
 defmodule Bench.CountingHandler do
   @moduledoc false
@@ -47,17 +54,21 @@ Helper.start_log!()
 
 # Seeded in one statement: appends are deliberately serialized, and this
 # benchmark is about the read path.
-IO.puts("seeding #{backlog} rows...")
+seed = fn count ->
+  IO.puts("seeding #{count} rows...")
 
-SQL.query!(
-  DMEx.Test.IntegrationRepo,
-  """
-  INSERT INTO dmex_messages (message_type, data, metadata)
-  SELECT $1, json_build_object('order_id', n, 'note', repeat('x', 200))::text::jsonb, '{}'::jsonb
-    FROM generate_series(1, $2) AS n
-  """,
-  [OrderPlaced.type(), backlog]
-)
+  SQL.query!(
+    DMEx.Test.IntegrationRepo,
+    """
+    INSERT INTO dmex_messages (message_type, data, metadata)
+    SELECT $1, json_build_object('order_id', n, 'note', repeat('x', 200))::text::jsonb, '{}'::jsonb
+      FROM generate_series(1, $2) AS n
+    """,
+    [OrderPlaced.type(), count]
+  )
+end
+
+seed.(backlog)
 
 base = Helper.start_server!()
 port = base |> URI.parse() |> Map.fetch!(:port)
@@ -72,13 +83,67 @@ report = fn label, rows, micros ->
   )
 end
 
+# Bounded, and it returns what it actually saw rather than asserting it got
+# there. An unbounded wait turns a miscount, a subscription that never connects
+# or a `404` into a hang with no output — which is exactly how stage (a)'s
+# broken row counter and stage (c)'s selective fingerprint stayed hidden. A
+# short run that says "reached N of M" is a bug report; a run that never returns
+# is not.
+await_timeout = 300_000
+
+await = fn counter, target, label ->
+  deadline = System.monotonic_time(:millisecond) + await_timeout
+
+  wait = fn wait ->
+    seen = :counters.get(counter, 1)
+
+    cond do
+      seen >= target ->
+        seen
+
+      System.monotonic_time(:millisecond) >= deadline ->
+        IO.puts(
+          "  !! #{label} reached only #{seen} of #{target} in #{div(await_timeout, 1_000)}s"
+        )
+
+        seen
+
+      true ->
+        Process.sleep(50)
+        wait.(wait)
+    end
+  end
+
+  wait.(wait)
+end
+
 ## (a) Log side only: read, encode, wire.
 
 started = System.monotonic_time(:microsecond)
 {:ok, conn} = Mint.HTTP.connect(:http, "127.0.0.1", port, mode: :active)
 {:ok, conn, ref} = Mint.HTTP.request(conn, "GET", "/stream", [], nil)
 
-discard = fn discard, conn, seen ->
+# One per row frame, and nothing else on the wire carries it: a heartbeat is a
+# comment and the `retry:` frame has no `data:` line. The row's id travels in
+# the SSE `id:` field as `previous/current`, *not* as a JSON key — counting
+# `"id":` finds only whatever the payload happens to contain, which for this
+# benchmark's `order_id` rows is nothing at all.
+marker = ~s(data: {"data":)
+
+# A chunk boundary can fall inside the marker, so the tail of each chunk is
+# carried into the next. Without this the count silently runs low.
+carry = byte_size(marker) - 1
+
+count = fn chunk, held ->
+  scanned = held <> chunk
+
+  {
+    scanned |> :binary.matches(marker) |> length(),
+    binary_part(scanned, max(byte_size(scanned) - carry, 0), min(carry, byte_size(scanned)))
+  }
+end
+
+discard = fn discard, conn, seen, held ->
   if seen >= backlog do
     seen
   else
@@ -86,32 +151,37 @@ discard = fn discard, conn, seen ->
       message ->
         case Mint.HTTP.stream(conn, message) do
           {:ok, conn, responses} ->
-            seen =
-              Enum.reduce(responses, seen, fn
-                {:data, ^ref, chunk}, acc ->
-                  acc + (chunk |> :binary.matches(~s("id":)) |> length())
+            {seen, held} =
+              Enum.reduce(responses, {seen, held}, fn
+                {:data, ^ref, chunk}, {acc, held} ->
+                  {found, held} = count.(chunk, held)
+                  {acc + found, held}
 
                 _other, acc ->
                   acc
               end)
 
-            discard.(discard, conn, seen)
+            discard.(discard, conn, seen, held)
 
           # A message this connection did not own — keep waiting rather than
           # treating it as end of stream.
           :unknown ->
-            discard.(discard, conn, seen)
+            discard.(discard, conn, seen, held)
 
           {:error, _conn, _reason, _responses} ->
             seen
         end
     after
-      30_000 -> seen
+      # Shorter than `heartbeat_ms`, so a stream that has gone quiet ends this
+      # stage. A timeout longer than the heartbeat interval never fires: the
+      # heartbeats themselves keep resetting it, and a miscount would hang here
+      # forever rather than reporting.
+      10_000 -> seen
     end
   end
 end
 
-seen = discard.(discard, conn, 0)
+seen = discard.(discard, conn, 0, "")
 report.("(a) log -> discard", seen, System.monotonic_time(:microsecond) - started)
 
 ## (b) End to end with a no-op handler.
@@ -125,19 +195,15 @@ started = System.monotonic_time(:microsecond)
 
 {:ok, _} = DMEx.Supervisor.subscribe(Bench.CountingHandler, supervisor: Bench.Supervisor)
 
-await = fn await, target ->
-  if :counters.get(counter, 1) >= target do
-    :ok
-  else
-    Process.sleep(50)
-    await.(await, target)
-  end
-end
-
-await.(await, backlog)
-report.("(b) end to end, no-op handler", backlog, System.monotonic_time(:microsecond) - started)
+drained = await.(counter, backlog, "(b)")
+report.("(b) end to end, no-op handler", drained, System.monotonic_time(:microsecond) - started)
 
 ## (c) End to end where every row is skipped.
+
+# Topped up to `skip_backlog` so this stage spans several `checkpoint_interval`s
+# and the coalescing ratio below is a measurement rather than a zero. Stage (c)
+# starts from the beginning of the log, so it drains the whole thing.
+seed.(skip_backlog - backlog)
 
 defmodule Bench.UnusedMessage do
   @moduledoc false
@@ -185,29 +251,31 @@ started = System.monotonic_time(:microsecond)
 
 {:ok, _} = DMEx.Supervisor.subscribe(Bench.SkippingHandler, supervisor: Bench.Supervisor)
 
-await_skips = fn await_skips, target ->
-  if :counters.get(skips, 1) >= target do
-    :ok
-  else
-    Process.sleep(50)
-    await_skips.(await_skips, target)
-  end
-end
-
-await_skips.(await_skips, backlog)
+skipped = await.(skips, skip_backlog, "(c)")
 
 report.(
   "(c) end to end, every row skipped",
-  backlog,
+  skipped,
   System.monotonic_time(:microsecond) - started
 )
 
 written = :counters.get(checkpoints, 1)
 
-IO.puts(
-  "  #{String.pad_trailing("    cursor writes for those skips", 34)} " <>
-    "#{written}  (#{Float.round(backlog / max(written, 1), 1)} rows per write)"
-)
+# `max(written, 1)` would print a ratio for a run where nothing was written,
+# which reads as the best possible coalescing when in fact the stage drained
+# before the first checkpoint fell due. `skip_backlog` is sized so this is the
+# measured branch; the other one says why it is not rather than inventing it.
+detail =
+  if written > 0 do
+    # `Float.round/2` renders 40000.0 as "4.0e4", which is not a number anyone
+    # reads off a benchmark.
+    "#{written}  (#{:erlang.float_to_binary(skipped / written, decimals: 1)} rows per write)"
+  else
+    "0  (drained inside one checkpoint_interval, so none fell due; " <>
+      "raise `skip_backlog` to measure the ratio)"
+  end
+
+IO.puts("  #{String.pad_trailing("    cursor writes for those skips", 34)} #{detail}")
 
 :telemetry.detach("bench-skips")
 :telemetry.detach("bench-checkpoints")

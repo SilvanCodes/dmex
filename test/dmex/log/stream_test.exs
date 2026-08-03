@@ -339,7 +339,7 @@ defmodule DMEx.Log.StreamTest do
 
     test "stops without sending when the read fails", %{opts: opts} do
       Stub.put_rows(opts, 5)
-      Stub.fail(opts, :read, :connection_lost)
+      Stub.fail(opts, :connection_lost)
 
       assert %Plug.Conn{} = run(opts, chunks: 5)
 
@@ -422,7 +422,7 @@ defmodule DMEx.Log.StreamTest do
 
     test "a read is under one too, which is the case no socket timeout can see", %{opts: opts} do
       status = Status.new(60_000)
-      Stub.hang(opts, :read)
+      Stub.hang(opts)
 
       start_loop(opts, status: status, stall_timeout: 20, heartbeat_ms: 60_000)
 

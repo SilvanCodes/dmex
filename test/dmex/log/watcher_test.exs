@@ -80,7 +80,7 @@ defmodule DMEx.Log.WatcherTest do
     # returns. `send_timeout` would never fire here.
     test "a loop wedged in a read is reclaimed" do
       opts = Stub.new()
-      Stub.hang(opts, :read)
+      Stub.hang(opts)
 
       parent = self()
 
