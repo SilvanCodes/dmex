@@ -33,7 +33,6 @@ defmodule DMEx.Integration.SelectionTest do
   use DMEx.IntegrationCase
 
   alias DMEx.Handler.Fingerprint
-  alias DMEx.Log.Messages
   alias DMEx.Storage.Postgres
   alias DMEx.Test.Handlers
   alias DMEx.Test.IntegrationLog, as: Log
@@ -84,7 +83,7 @@ defmodule DMEx.Integration.SelectionTest do
     end
 
     test "a fingerprint over every type the log knows matches all of them", %{base: base} do
-      types = Log |> Messages.types() |> MapSet.to_list()
+      types = Log |> DMEx.message_types() |> MapSet.to_list()
       {:ok, fingerprint} = Fingerprint.build(types)
 
       assert {:ok, 200, headers, _ref} =

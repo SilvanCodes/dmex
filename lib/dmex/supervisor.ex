@@ -104,12 +104,13 @@ defmodule DMEx.Supervisor do
     # :temporary`, so a raise there would kill the Task silently.
     handlers = __startable__!(Handler.discover(otp_app), logs)
 
-    # Here rather than only in `DMEx.Log.Messages`, so an application that owns
-    # no log — a pure consumer — still has its message types checked.
-    _ = otp_app |> DMEx.Message.discover() |> DMEx.Message.types!()
+    # Both the collision check and the cache seed, and the only scan on the boot
+    # path: an application owning no log — a pure consumer — is checked too, and
+    # no connection pays for the scan later. See `DMEx.message_types/1`.
+    _ = DMEx.refresh_message_types(otp_app)
 
     children =
-      owned_logs(logs, otp_app) ++
+      owned_logs(logs) ++
         [
           # The default storage and the log bindings ride along as registry
           # metadata, seeded at start, which is why a bare subscribe/2 can find
@@ -136,8 +137,8 @@ defmodule DMEx.Supervisor do
 
   # `Enum.uniq` because two names may legitimately point at one owned log, and
   # a supervisor cannot hold the same child twice.
-  defp owned_logs(logs, otp_app) do
-    for {_name, target} <- logs, is_atom(target), uniq: true, do: {target, otp_app: otp_app}
+  defp owned_logs(logs) do
+    for {_name, target} <- logs, is_atom(target), uniq: true, do: target
   end
 
   # Every application depending on `:dmex` is scanned anyway, so this only adds

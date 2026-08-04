@@ -155,6 +155,83 @@ defmodule DMEx do
   end
 
   @doc """
+  Every message type visible to the application owning `module`, cached.
+
+  What a consumer's filter is resolved against: `DMEx.Log.Plug` tests every type
+  here for membership once at connect, and the types that pass become the
+  connection's `message_type = ANY($1)` predicate and its wakeup routing set.
+
+  ## Why the *modules*, and not a log's contents
+
+  Expanding over the types a log has actually seen — `SELECT DISTINCT
+  message_type` — goes stale silently: a log's code can know a type it has not
+  yet emitted, and first emission involves no restart and no reconnect, so an
+  open connection would keep an expansion missing a type its consumer genuinely
+  selected. That is a false negative, which is silent message loss.
+
+  Compiled modules have no such gap: that set changes only on deploy, and a
+  deploy takes every SSE connection with it, so every affected consumer
+  reconnects and re-expands.
+
+  ## `module` names the *application*, not the subject
+
+  `discovery/1` scans applications, so this is never per log: two logs owned by
+  one application resolve against one set, which is sound because the set only
+  has to *contain* everything a log might append — an extra type matches no
+  filter, a missing one is silent loss.
+
+  The argument is how the owning application is found, via
+  `:application.get_application/1`, so a caller holding a log module needs to
+  know nothing else — no `otp_app:`, and no reference to whichever
+  `DMEx.Supervisor` started it. That is also the cache key, so two supervisors
+  running different `otp_app:` values in one node hold separate entries instead
+  of overwriting each other's.
+
+  A module belonging to no application — one defined at runtime — resolves to
+  `nil`, which scans the dependent applications alone. So does a bare
+  `refresh_message_types/1`.
+
+  The lazy branch keeps every caller free of start order: a node whose
+  `DMEx.Supervisor` has not run `refresh_message_types/1` — or that runs no
+  supervisor at all — still answers correctly, just more slowly the first time.
+  """
+  @spec message_types(module()) :: MapSet.t(String.t())
+  def message_types(module) when is_atom(module) do
+    otp_app = owning_app(module)
+
+    case :persistent_term.get(message_types_key(otp_app), nil) do
+      nil -> refresh_message_types(otp_app)
+      types -> types
+    end
+  end
+
+  @doc """
+  Rescans and caches an application's message types, raising if two modules
+  declare one type.
+
+  Called once from `DMEx.Supervisor.init/1` with its `otp_app:`, which is both
+  the boot-time collision check and the cache seed — so an application owning no
+  log gets the check too.
+  """
+  @spec refresh_message_types(atom() | nil) :: MapSet.t(String.t())
+  def refresh_message_types(otp_app \\ nil) do
+    types = otp_app |> DMEx.Message.discover() |> DMEx.Message.types!()
+
+    :persistent_term.put(message_types_key(otp_app), types)
+
+    types
+  end
+
+  defp message_types_key(otp_app), do: {__MODULE__, :message_types, otp_app}
+
+  defp owning_app(module) do
+    case :application.get_application(module) do
+      {:ok, app} -> app
+      :undefined -> nil
+    end
+  end
+
+  @doc """
   The jittered exponential backoff delay in ms before attempt `attempt`,
   counting from 1. Shared by reconnects and local retries.
 

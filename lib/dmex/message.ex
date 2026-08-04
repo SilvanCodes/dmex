@@ -109,6 +109,10 @@ defmodule DMEx.Message do
     quote do
       @behaviour DMEx.Message
 
+      # Persisted, so `DMEx.Message.message?/1` can recognise a message module by
+      # a mark only this macro writes rather than by the shape of its exports.
+      Module.register_attribute(__MODULE__, :dmex_message, persist: true)
+
       @dmex_message_type unquote(type)
 
       # Every appended message has to be JSON-encodable, and the derive has to
@@ -255,14 +259,25 @@ defmodule DMEx.Message do
   is not a message should be rejected by name rather than blow up as an
   `UndefinedFunctionError` on `type/0`.
 
+  Tested by the `@dmex_message` attribute `use DMEx.Message` persists into the
+  BEAM, not by the presence of `type/0` and `cast/1`. Those two are a shape a
+  module can have by coincidence, and every module of every application
+  depending on `:dmex` is offered to this predicate — a stranger admitted here
+  has its `type/0` called and the result folded into the node's type set, where
+  at worst it collides with a real message and fails the boot in
+  `types!/1` naming a module that has nothing to do with DMEx.
+
+  `module_info/1` rather than `__info__/1`, since the scan reaches Erlang
+  modules too.
+
   `Code.ensure_loaded?/1`, so this never blocks. `DMEx.Handler` calls it at
   compile time and does its own `Code.ensure_compiled!/1` first, since the
   parallel compiler resolves a struct pattern without loading the module.
   """
   @spec message?(module()) :: boolean()
   def message?(module) when is_atom(module) do
-    Code.ensure_loaded?(module) and function_exported?(module, :type, 0) and
-      function_exported?(module, :cast, 1)
+    Code.ensure_loaded?(module) and
+      Keyword.has_key?(module.module_info(:attributes), :dmex_message)
   end
 
   @doc """

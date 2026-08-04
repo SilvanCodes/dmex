@@ -55,7 +55,7 @@ defmodule DMEx.Log do
   An unrecognised option raises at compile time rather than being ignored.
 
   Which application's modules are scanned for the message types this log can
-  append is `otp_app:` on `DMEx.Supervisor` — see `DMEx.Log.Messages`.
+  append is `otp_app:` on `DMEx.Supervisor` — see `DMEx.message_types/1`.
 
   ## Metadata
 
@@ -123,7 +123,6 @@ defmodule DMEx.Log do
   """
 
   alias DMEx.Config
-  alias DMEx.Log.Messages
 
   @log_opts [:repo, :storage, :notifier, :app, :prefix]
   @app_key_format ~r/\A[a-z][a-z0-9_]*\z/
@@ -250,10 +249,6 @@ defmodule DMEx.Log do
     # Here rather than at compile time, because an adapter may need to read the
     # repo's configuration — and the repo is started by now.
     validate_storage!(storage, storage_opts)
-
-    # Before any connection can ask for it. Writing a `:persistent_term` forces
-    # a global GC scan, so it happens once here rather than per connect.
-    Messages.refresh(log, Keyword.get(opts, :otp_app))
 
     # Whatever the notifier needs sits between the registry and the dispatcher,
     # and this module has no idea what it is. Postgres puts a LISTEN connection

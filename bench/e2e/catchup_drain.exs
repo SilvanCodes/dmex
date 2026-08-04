@@ -220,7 +220,7 @@ defmodule Bench.SkippingHandler do
   # there would be nothing to skip. And a selective fingerprint here could not
   # match anything: `Bench.UnusedMessage` is defined at runtime in this script,
   # while the producer expands filters over *compiled* application modules
-  # (`DMEx.Log.Messages`), so the filter would match zero types, the connect
+  # (`DMEx.message_types/1`), so the filter would match zero types, the connect
   # would 404, and this stage would retry forever.
   use DMEx.Handler, logs: [:bench], id: :skipping, selective: false
 

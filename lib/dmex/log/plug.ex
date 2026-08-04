@@ -17,7 +17,7 @@ defmodule DMEx.Log.Plug do
       `EventSource` or `curl` asks for.
     * **`GET /stream/<blob>`** — the same log narrowed to the message types a
       consumer's filter admits. See `DMEx.Handler.Fingerprint` for the blob and
-      `DMEx.Log.Messages` for what it is resolved against.
+      `DMEx.message_types/1` for what it is resolved against.
 
   There is no application segment and no query string: one mount serves exactly
   one log.
@@ -70,7 +70,8 @@ defmodule DMEx.Log.Plug do
 
   A `400` for a malformed `Last-Event-ID` or a path segment that is neither a
   reserved name nor a decodable filter. A `404` for a reserved sub-resource that
-  is not implemented, or a filter matching none of this log's message types. A
+  is not implemented, or a filter matching none of the application's message
+  types. A
   `405` with `allow: GET` for any other method.
 
   There is no `503`/`Retry-After` admission control — see `ROADMAP.md`.
@@ -78,7 +79,6 @@ defmodule DMEx.Log.Plug do
 
   alias DMEx.Config
   alias DMEx.Handler.Fingerprint
-  alias DMEx.Log.Messages
   alias DMEx.Log.Params
   alias DMEx.Log.Status
   alias DMEx.Log.Stream, as: SendLoop
@@ -123,9 +123,10 @@ defmodule DMEx.Log.Plug do
 
   ## Selection
 
-  # Expanded once against the log's compiled message modules rather than against
-  # what its log happens to contain — see `DMEx.Log.Messages` for why those are
-  # not interchangeable.
+  # Expanded once against the compiled message modules of the application owning
+  # the log, rather than against what the log happens to contain — see
+  # `DMEx.message_types/1` for why those are not interchangeable, and why the
+  # set is not per log.
   defp select(conn, log, %{selection: :all} = params, config) do
     stream(conn, log, params, config, :all)
   end
@@ -133,14 +134,14 @@ defmodule DMEx.Log.Plug do
   defp select(conn, log, params, config) do
     selection =
       log
-      |> Messages.types()
+      |> DMEx.message_types()
       |> Enum.filter(&Fingerprint.member?(params.selection, &1))
       |> MapSet.new()
 
     if MapSet.size(selection) == 0 do
       not_found(
         conn,
-        "this filter matched none of the message types #{inspect(log)} knows about"
+        "this filter matched none of the message types this application knows about"
       )
     else
       stream(conn, log, params, config, selection)

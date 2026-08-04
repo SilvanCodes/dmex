@@ -104,7 +104,7 @@ is a defence rather than dead code.
 its log contains. `SELECT DISTINCT message_type` goes stale silently: a producer
 can know a type it has not yet emitted, and first emission involves no restart
 and no reconnect — while the module set changes only on deploy, and a deploy
-takes every SSE connection with it. `DMEx.Log.Messages` scans the producer's OTP
+takes every SSE connection with it. `DMEx.message_types/1` scans the producer's OTP
 application and every loaded application depending on `:dmex`, which is exactly
 the set whose modules could contain a `use DMEx.Message`. The result only has to
 be a *superset* of what the producer appends: an extra type never matches, a

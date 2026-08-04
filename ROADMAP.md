@@ -63,7 +63,7 @@ whole log, and one endpoint answers all of them:
 - **Not a source for filter expansion.** Stats reports what the *log contains*;
   expansion must resolve against what the producer's *code knows*, and the two
   differ exactly when a deployed type has not been appended yet. Using stats as
-  the expansion source reintroduces the staleness failure `DMEx.Log.Messages`
+  the expansion source reintroduces the staleness failure `DMEx.message_types/1`
   exists to avoid. The endpoint is for humans and consumer-side tooling, never
   for the producer's own read path.
 - **Not a schema.** No field shapes, no versioning of payloads. Those belong to

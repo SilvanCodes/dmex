@@ -44,7 +44,7 @@ instead of "no pool queueing at 200 concurrent streams".
 ### 1c. `catchup_drain` stage (c) hung — fixed
 
 Confirmed exactly as reported: the runtime-defined `Bench.UnusedMessage` cannot
-appear in `DMEx.Log.Messages`'s scan of *compiled* application modules, so a
+appear in `DMEx.message_types/1`'s scan of *compiled* application modules, so a
 selective fingerprint matched zero types → `404` → retry forever. Now
 `selective: false`, which the file's own header already documented as stage (c)'s
 design.
