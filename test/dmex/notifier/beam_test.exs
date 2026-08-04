@@ -5,18 +5,18 @@ defmodule DMEx.Notifier.BeamTest do
 
   setup context do
     # A scope per test, since `:pg.start_link/1` registers the scope name and
-    # these run concurrently. The log module is what names it, so a unique one
-    # is the whole isolation mechanism.
-    log = Module.concat(__MODULE__, context.test |> to_string() |> String.replace(" ", ""))
+    # these run concurrently. `:name` is what the log derives from its own
+    # module, so a unique one is the whole isolation mechanism.
+    name = Module.concat(__MODULE__, context.test |> to_string() |> String.replace(" ", ""))
 
-    %{opts: %{log: log, channel: "dmex_beam_test"}}
+    %{opts: %{name: name, channel: "dmex_beam_test"}}
   end
 
   describe "child_specs/1" do
-    test "supplies a :pg scope named after the log", %{opts: opts} do
+    test "supplies a :pg scope under the name the log derived", %{opts: opts} do
       assert [%{id: id, start: {:pg, :start_link, [scope]}}] = Beam.child_specs(opts)
 
-      assert id == Module.concat(opts.log, "Notifications")
+      assert id == opts.name
       assert scope == id
     end
   end

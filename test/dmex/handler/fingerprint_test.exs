@@ -84,13 +84,29 @@ defmodule DMEx.Handler.FingerprintTest do
   end
 
   describe "the encoding is pinned" do
+    # Every vector in `guides/fingerprint-spec.md` §9, which is the normative
+    # encoding a non-Elixir consumer reproduces — including the degenerate
+    # single-type set, where the +32 slack rather than the space constant
+    # governs the geometry.
+    #
     # If this test fails, the wire format changed. That is a breaking change to
     # every non-Elixir consumer, and it must never happen by accident.
-    test "a known type list encodes to exactly this blob" do
-      {:ok, filter} = Fingerprint.build(["A.B", "C.D", "E.F"])
+    test "the guide's test vectors encode to exactly these blobs" do
+      vectors = [
+        {["A.B"],
+         "S4Ydi7So_GAAAAAAAAD8kAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"},
+        {["A.B", "C.D", "E.F"],
+         "m2c9OqXXKs0AAAAAAAAAAAAAAAB7wNzAAAAAAAAAtPQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"},
+        {["MyApp.Messages.OrderPlaced", "MyApp.Messages.OrderShipped"],
+         "TovNTxhpzKQAAAAAAAAAAJJHAAAAAAAAAAAAAP2XAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}
+      ]
 
-      assert Fingerprint.encode(filter) ==
-               "m2c9OqXXKs0AAAAAAAAAAAAAAAB7wNzAAAAAAAAAtPQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+      for {types, blob} <- vectors do
+        {:ok, filter} = Fingerprint.build(types)
+
+        assert Fingerprint.encode(filter) == blob, "vector #{inspect(types)} no longer matches"
+        assert Fingerprint.slots(filter) == 36
+      end
     end
 
     test "the blob is a pure function of the set, not of the order it was written in" do

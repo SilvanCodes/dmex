@@ -105,16 +105,17 @@ defmodule DMEx.Transport.SSE do
     source.config.missed_heartbeats * interval
   end
 
-  # Nothing parked is `:unknown`, which is what `c:DMEx.Transport.handle_message/2`
+  # Nothing parked is `:unknown`, which is what `c:DMEx.Transport.drain/1`
   # specifies and what `DMEx.Transport.Local` answers — otherwise the stream
   # re-arms its liveness timer once per batch for nothing.
   @impl DMEx.Transport
-  def handle_message(:continue, %{pending: []}), do: :unknown
+  def drain(%{pending: []}), do: :unknown
 
-  def handle_message(:continue, source) do
+  def drain(source) do
     responses(source.pending, %{source | pending: []}, [])
   end
 
+  @impl DMEx.Transport
   def handle_message(message, source) do
     case Mint.HTTP.stream(source.conn, message) do
       :unknown ->

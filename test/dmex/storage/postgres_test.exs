@@ -79,6 +79,41 @@ defmodule DMEx.Storage.PostgresTest do
     end
   end
 
+  # At boot rather than at the first query, so an option that will never be
+  # honoured fails where it was written — `c:DMEx.Storage.validate!/1`. Both of
+  # these used to surface downstream: a missing `:lock` as a `KeyError` from
+  # inside the first append's transaction, and a `:prefix` as whatever it
+  # happened to render to once spliced into a quoted identifier.
+  describe "validate!/1" do
+    test "accepts a log's options and a subscription's", %{opts: opts} do
+      assert :ok = Postgres.validate!(Map.put(opts, :log, MyApp.Log))
+
+      # A subscription's half carries no `:lock` at all, and that is not a fault.
+      assert :ok = Postgres.validate!(%{repo: Repo, prefix: nil})
+      assert :ok = Postgres.validate!(%{repo: Repo, prefix: "reporting"})
+    end
+
+    test "refuses a log without a usable advisory lock", %{opts: opts} do
+      for lock <- [nil, {1, 2, 3}, "1701", {1_701, "4242"}] do
+        assert_raise ArgumentError, ~r/lock: \{classid, objid\}/, fn ->
+          Postgres.validate!(%{opts | lock: lock} |> Map.put(:log, MyApp.Log))
+        end
+      end
+    end
+
+    test "refuses a prefix it cannot splice into a quoted identifier", %{opts: opts} do
+      for prefix <- [~s(rep"orting), "reporting; DROP TABLE dmex_messages", "has space", "9lives"] do
+        assert_raise ArgumentError, ~r/not a usable Postgres schema name/, fn ->
+          Postgres.validate!(%{opts | prefix: prefix})
+        end
+      end
+
+      assert_raise ArgumentError, ~r/must be a schema name as a string or nil/, fn ->
+        Postgres.validate!(%{opts | prefix: :reporting})
+      end
+    end
+  end
+
   ## Helpers
 
   defp append(opts, type, data, metadata \\ %{}) do

@@ -11,6 +11,14 @@ defmodule DMEx.Notifier.Beam do
   configuring: `:pg` works on a single node, and reaches every connected node
   when the BEAM is clustered.
 
+  **Reaching other nodes is the whole of what `:pg` buys here.** The only member
+  of a scope's group is the log's own `DMEx.Log.Dispatcher`, a process registered
+  under a name a plain `send/2` would reach — so on a single node this is an ETS
+  lookup and a local send where a direct send would do, and anyone weighing `:pg`
+  for a one-node deployment should read that as costing a little and buying
+  nothing. It is here for the clustered case, where the group is the only thing
+  that knows which nodes have a dispatcher.
+
   **What it does not reach** is a writer outside this cluster — another OS
   process, or a second BEAM opening the same SQLite file. Those appends surface
   through `DMEx.Log.Dispatcher`'s poll, at up to one poll interval of latency
@@ -46,6 +54,12 @@ defmodule DMEx.Notifier.Beam do
     scope = scope(opts)
     channel = Map.fetch!(opts, :channel)
 
+    # Three of the five elements exist only because `c:DMEx.Notifier.listen/1`
+    # fixes the delivered shape to the one Postgrex sends directly — see there
+    # for why it is not normalised. The dispatcher reads none of them; the ref is
+    # minted rather than faked with some other term because the contract types it
+    # as a `reference()`, and one allocation per notify is cheaper than a
+    # contract with an exception in it.
     ref = make_ref()
 
     # Cluster-wide: `get_members/2` returns remote members too, and a send to
@@ -67,5 +81,6 @@ defmodule DMEx.Notifier.Beam do
     :exit, reason -> {:error, reason}
   end
 
-  defp scope(opts), do: opts |> Map.fetch!(:log) |> Module.concat("Notifications")
+  # Derived by the log, not here — see `t:DMEx.Notifier.opts/0`.
+  defp scope(opts), do: Map.fetch!(opts, :name)
 end

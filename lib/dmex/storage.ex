@@ -40,6 +40,16 @@ defmodule DMEx.Storage do
   **`c:last_seen/2` must distinguish "no cursor" from "cursor at 0".** It
   returns `nil`, not `0`, when a subscription has never committed anything,
   which is what makes the `last_seen:` option apply exactly once.
+
+  ## The contract is executable
+
+  `test/dmex/storage/conformance_test.exs` runs one suite against every shipped
+  adapter and asserts nothing about how an engine keeps its promises. It is the
+  single statement of everything above: an adapter is finished when that file
+  passes, and a change to this behaviour is one edit there rather than one per
+  engine. Engine-specific behaviour — query plans, driver error shapes, the two
+  places the storage formats genuinely differ — lives in `postgres_test.exs` and
+  `sqlite_test.exs` beside it.
   """
 
   @typedoc """
@@ -70,13 +80,19 @@ defmodule DMEx.Storage do
   them to a pipeline passes them straight to `JSON.decode!/1`. Iodata belongs to
   the frame, which is bytes on their way out; a row's fields are stored values, so
   they are one type and it is this one.
+
+  `:inserted_at` is a `DateTime.t()` and never a `NaiveDateTime.t()`: a naive
+  timestamp renders without the trailing `Z`, which would silently change every
+  frame on the wire. `DMEx.Storage.Postgres.Migration` uses `timestamptz` for
+  exactly this reason, `DMEx.Storage.SQLite` parses its text column back into a
+  `DateTime`, and `conformance_test.exs` asserts the struct for every adapter.
   """
   @type row :: %{
           required(:id) => pos_integer(),
           required(:message_type) => String.t(),
           required(:data) => binary(),
           required(:metadata) => binary(),
-          required(:inserted_at) => DateTime.t() | NaiveDateTime.t()
+          required(:inserted_at) => DateTime.t()
         }
 
   @doc """
@@ -181,9 +197,27 @@ defmodule DMEx.Storage do
   @doc """
   Moves a subscription's cursor to `id`.
 
-  Always called inside `c:transaction/2`. It does not refuse to move backwards:
-  duplicate suppression happens in the pipeline, which is the authority, and an
-  operator resetting a cursor deliberately needs this to go both ways.
+  It does not refuse to move backwards: duplicate suppression happens in the
+  pipeline, which is the authority, and an operator resetting a cursor
+  deliberately needs this to go both ways.
+
+  **`:ok` and nothing else**, where `c:dead_message/2`,
+  `c:delete_dead_message/3` and `c:delete_cursor/2` also admit
+  `{:error, term()}`. Deliberate, and the asymmetry is worth stating rather than
+  smoothing over. Both shipped adapters implement this as a hard match on the
+  driver's reply, so a failure raises — and on the path that matters this call
+  is inside `c:transaction/2` beside a handler's side effects, where a raise is
+  the only outcome that rolls both back together. An error tuple there would be
+  one a caller has no useful way to act on: returning it leaves the transaction
+  open and committing.
+
+  The siblings' wider return type is not a caller-facing difference either.
+  Every DMEx call site binds `:ok = ` on them, so the tuple becomes a raise one
+  frame later; it survives because those three are also called outside a
+  transaction, from `DMEx.Handler.Cursors` and `DMEx.Handler.DeadMessages`.
+  A `c:transaction/2` that fails as *infrastructure* is neither — that is
+  `DMEx.StorageError`, raised by `DMEx.Handler.Pipeline`, and nothing here
+  reports it.
   """
   @callback advance(opts(), subscription :: String.t(), id :: non_neg_integer()) :: :ok
 
@@ -268,4 +302,39 @@ defmodule DMEx.Storage do
   @callback validate!(opts()) :: :ok
 
   @optional_callbacks default_notifier: 0, validate!: 1
+
+  @doc """
+  Runs `adapter`'s `c:validate!/1` if it has one, and returns `:ok`.
+
+  Here rather than on either caller because `c:validate!/1` is optional, so
+  every call site would otherwise carry the same `function_exported?/3` — and
+  both halves of DMEx have one: a log when its tree starts, a subscription when
+  its storage is resolved. Neither of them is a log's business, which is why
+  this is not on `DMEx.Log`.
+  """
+  @spec validate!(module(), opts()) :: :ok
+  def validate!(adapter, opts) do
+    if function_exported?(adapter, :validate!, 1) do
+      adapter.validate!(opts)
+    end
+
+    :ok
+  end
+
+  ## Table names
+
+  # The three table names, stated once. Both adapters' SQL and both migrations'
+  # DDL render these rather than repeating the literals — the same move as
+  # `DMEx.Storage.Postgres.__table__/2`, which is already the one renderer for a
+  # prefix-qualified name so that DDL and queries cannot disagree about it.
+  # Here rather than on an adapter because the names are the *behaviour's*: an
+  # engine implements these tables, it does not get to pick what they are called.
+  #
+  # Atoms, because `Ecto.Migration.table/2` wants one and every other site
+  # interpolates, where an atom renders as its own name.
+  @doc false
+  @spec __table__(:messages | :cursors | :dead_messages) :: atom()
+  def __table__(:messages), do: :dmex_messages
+  def __table__(:cursors), do: :dmex_cursors
+  def __table__(:dead_messages), do: :dmex_dead_messages
 end

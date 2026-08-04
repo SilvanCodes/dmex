@@ -4,19 +4,25 @@ defmodule DMEx.Notifier.PostgresTest do
   alias DMEx.Notifier.Postgres
 
   setup do
-    %{opts: %{repo: Repo, log: DMEx.Test.Log, channel: "dmex_notifier_test"}}
+    %{
+      opts: %{
+        repo: Repo,
+        name: DMEx.Test.Log.Notifications,
+        channel: "dmex_notifier_test"
+      }
+    }
   end
 
   # These are why nothing outside this module knows how Postgres delivers a
   # wakeup. Before them, DMEx.Log compared the storage module against this one
   # by name and carried a list of Postgrex connection options.
   describe "child_specs/1" do
-    test "supplies a notification connection named after the log", %{opts: opts} do
+    test "supplies a notification connection under the name the log derived", %{opts: opts} do
       assert [%{id: id, start: {Postgrex.Notifications, :start_link, [conn_opts]}}] =
                Postgres.child_specs(opts)
 
-      assert id == DMEx.Test.Log.Notifications
-      assert conn_opts[:name] == DMEx.Test.Log.Notifications
+      assert id == opts.name
+      assert conn_opts[:name] == opts.name
       assert conn_opts[:auto_reconnect] == true
       # From the repo's own config, not a literal: the suite's database name is
       # overridable via DMEX_POSTGRES_URL so concurrent runs can isolate.

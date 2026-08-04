@@ -152,30 +152,31 @@ defmodule DMEx.Handler.Stream do
   @impl GenServer
   def handle_info(_message, state), do: {:noreply, state}
 
-  # One process message can carry more than one thing to act on — a batch of
-  # rows and then the connection ending. `:continue` asks the transport for
-  # whatever is left once the rows are run, so a terminal event never discards
-  # the rows that preceded it.
   defp drive(message, state) do
-    case state.transport.handle_message(message, state.source) do
-      :unknown ->
-        {:noreply, state}
-
-      {:noreply, source} ->
-        {:noreply, touch(%{state | source: source})}
-
-      {:rows, rows, source} ->
-        state = touch(%{state | source: source})
-
-        drive(:continue, Enum.reduce(rows, state, &run/2))
-
-      {:disconnect, reason, source} ->
-        {:noreply, reconnect(%{state | source: source}, reason)}
-
-      {:stop, reason} ->
-        {:stop, reason, state}
-    end
+    act(state.transport.handle_message(message, state.source), state)
   end
+
+  # One process message can carry more than one thing to act on — a batch of
+  # rows and then the connection ending. `c:DMEx.Transport.drain/1` asks the
+  # transport for whatever is left once the rows are run, so a terminal event
+  # never discards the rows that preceded it.
+  defp drain(state), do: act(state.transport.drain(state.source), state)
+
+  defp act(:unknown, state), do: {:noreply, state}
+
+  defp act({:noreply, source}, state), do: {:noreply, touch(%{state | source: source})}
+
+  defp act({:rows, rows, source}, state) do
+    state = touch(%{state | source: source})
+
+    drain(Enum.reduce(rows, state, &run/2))
+  end
+
+  defp act({:disconnect, reason, source}, state) do
+    {:noreply, reconnect(%{state | source: source}, reason)}
+  end
+
+  defp act({:stop, reason}, state), do: {:stop, reason, state}
 
   # The local transport's handoff: running the batch inside the call is what
   # makes the reader block until it is done.

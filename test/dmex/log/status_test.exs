@@ -158,7 +158,7 @@ defmodule DMEx.Log.StatusTest do
     test "registration hands back the connection's own status, armed" do
       now = System.monotonic_time(:millisecond)
 
-      assert {:ok, ref} = DMEx.Log.Registry.register(FakeLog, 5_000)
+      assert {:ok, ref} = DMEx.Log.Registry.register(FakeLog, 5_000, :all)
 
       refute Status.pending?(ref)
       assert Status.flip(ref)
@@ -166,7 +166,7 @@ defmodule DMEx.Log.StatusTest do
     end
 
     test "the dispatcher reaches it through the entry" do
-      {:ok, mine} = DMEx.Log.Registry.register(FakeLog, 5_000)
+      {:ok, mine} = DMEx.Log.Registry.register(FakeLog, 5_000, :all)
 
       DMEx.Log.Registry.each(FakeLog, fn _pid, status, _selection ->
         Status.flip(status)
@@ -184,7 +184,7 @@ defmodule DMEx.Log.StatusTest do
 
       pid =
         spawn(fn ->
-          {:ok, _ref} = DMEx.Log.Registry.register(FakeLog, 5_000)
+          {:ok, _ref} = DMEx.Log.Registry.register(FakeLog, 5_000, :all)
           send(parent, :registered)
           Process.sleep(:infinity)
         end)

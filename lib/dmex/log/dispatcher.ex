@@ -22,24 +22,29 @@ defmodule DMEx.Log.Dispatcher do
   **The poll must not wake connections for nothing.** Unconditional broadcast
   re-creates a thundering herd: a thousand connections at a one-second interval
   is a thousand reads per second on a completely idle log. So the poll asks what
-  has been appended since the highest id already announced and broadcasts only
-  if that moved — one cheap query per interval per *app*, zero wakeups when
+  has been appended past `polled_through`, its own cursor, and broadcasts only
+  if anything was — one cheap query per interval per *app*, zero wakeups when
   nothing was appended.
 
   **Both signals route.** A wakeup goes only to connections whose selection
   contains the appended type; a whole-log subscription matches everything. That
-  is why the poll asks for distinct types and not just `max(id)`: the
-  notification path cannot advance `last_announced`, since it is handed no id,
-  so on a log appending more than once per interval the poll independently sees
-  movement and broadcasts too. Duplicate wakeups are fine: a spurious one costs
-  a read that finds nothing.
+  is why the poll asks for distinct types and not just `max(id)`. Only the poll
+  writes `polled_through` — a notification carries no id to advance it with — so
+  on a log appending more than once per interval the poll sees that movement
+  again and broadcasts too. Duplicate wakeups are fine: a spurious one costs a
+  read that finds nothing.
   """
 
   use GenServer
 
+  alias DMEx.Log.Selection
   alias DMEx.Log.Status
 
   require Logger
+
+  # Indices into the one `:counters` array a broadcast pass tallies into.
+  @streams 1
+  @woken 2
 
   @doc """
   Starts a dispatcher for `log:`.
@@ -75,15 +80,16 @@ defmodule DMEx.Log.Dispatcher do
       notifier_opts: notifier_opts,
       channel: notifier_opts.channel,
       poll_interval: config.poll_interval,
-      last_announced: 0,
+      polled_through: 0,
       notifier_ref: nil,
-      warned?: false
+      warned_listen?: false,
+      warned_unexpected?: false
     }
 
     # Seeded from the current tip, so a dispatcher starting against a log with
     # history does not announce it. In `init/1` so no append can land before the
     # baseline is taken; costs one index descent on a blocking start.
-    {:ok, %{state | last_announced: current_max_id(state)}, {:continue, :listen}}
+    {:ok, %{state | polled_through: current_max_id(state)}, {:continue, :listen}}
   end
 
   @impl GenServer
@@ -111,15 +117,12 @@ defmodule DMEx.Log.Dispatcher do
     # a notifier that starts late or restarts is picked up within one interval.
     state = ensure_listening(state)
 
+    # `c:DMEx.Storage.appended_since/2` answers strictly past the cursor it is
+    # handed, and that cursor is `polled_through`, so there is no third case: a
+    # non-nil `max_id` has moved by construction.
     case appended_since(state) do
-      {nil, _types} ->
-        {:noreply, state}
-
-      {max_id, types} when max_id > state.last_announced ->
-        {:noreply, broadcast(%{state | last_announced: max_id}, types)}
-
-      _ ->
-        {:noreply, state}
+      {nil, _types} -> {:noreply, state}
+      {max_id, types} -> {:noreply, broadcast(%{state | polled_through: max_id}, types)}
     end
   end
 
@@ -131,7 +134,7 @@ defmodule DMEx.Log.Dispatcher do
   end
 
   @impl GenServer
-  def handle_info(_message, state), do: {:noreply, state}
+  def handle_info(message, state), do: {:noreply, warn_unexpected(state, message)}
 
   ## Internals
 
@@ -144,7 +147,7 @@ defmodule DMEx.Log.Dispatcher do
   defp ensure_listening(state) do
     case state.notifier.listen(state.notifier_opts) do
       {:ok, pid} ->
-        %{state | notifier_ref: Process.monitor(pid), warned?: false}
+        %{state | notifier_ref: Process.monitor(pid), warned_listen?: false}
 
       # No notification mechanism at all, so polling-only is the design rather
       # than a degradation. Nothing to warn about.
@@ -152,20 +155,38 @@ defmodule DMEx.Log.Dispatcher do
         state
 
       {:error, _reason} ->
-        warn_once(state)
+        warn_listen(state)
     end
   end
 
-  defp warn_once(%{warned?: true} = state), do: state
+  defp warn_listen(%{warned_listen?: true} = state), do: state
 
-  defp warn_once(state) do
+  defp warn_listen(state) do
     Logger.warning(
       "DMEx could not LISTEN on #{state.channel} for #{inspect(state.log)}. " <>
         "Falling back to polling every #{state.poll_interval}ms, which costs latency " <>
         "but never correctness."
     )
 
-    %{state | warned?: true}
+    %{state | warned_listen?: true}
+  end
+
+  # The other way to end up polling-only: a notifier whose message is not
+  # `DMEx.Notifier`'s `{:notification, pid, ref, channel, type}` tuple. Its
+  # `listen/1` succeeded, so nothing above notices, and silence would leave the
+  # latency half of the design off with no way to tell. Once, because a
+  # misbehaving notifier sends one of these per append.
+  defp warn_unexpected(%{warned_unexpected?: true} = state, _message), do: state
+
+  defp warn_unexpected(state, message) do
+    Logger.warning(
+      "DMEx dispatcher for #{inspect(state.log)} ignored an unexpected message: " <>
+        "#{inspect(message)}. A notifier must send DMEx.Notifier's " <>
+        "{:notification, pid, ref, channel, type} tuple. Polling continues regardless, " <>
+        "so this costs latency but never correctness."
+    )
+
+    %{state | warned_unexpected?: true}
   end
 
   defp drain_notifications(types) do
@@ -177,25 +198,30 @@ defmodule DMEx.Log.Dispatcher do
   end
 
   defp broadcast(state, types) do
-    woken = :counters.new(1, [])
+    # Both telemetry measurements come out of the one walk. `streams` used to be
+    # a second pass over the same entries, and `DMEx.Log.Registry.count/1` was
+    # the expensive spelling of it.
+    tally = :counters.new(2, [])
 
-    # Two gates, and they answer different questions. `concerns?/2` asks whether
-    # this append is any of this connection's business at all; `Status.flip/1`
-    # asks whether it already has a wakeup queued. The second is what bounds a
-    # stalled connection's mailbox at one wakeup rather than at the append rate
-    # times the stall duration, however long it stalls.
+    # Two gates, and they answer different questions. `Selection.concerns?/2`
+    # asks whether this append is any of this connection's business at all;
+    # `Status.flip/1` asks whether it already has a wakeup queued. The second is
+    # what bounds a stalled connection's mailbox at one wakeup rather than at the
+    # append rate times the stall duration, however long it stalls.
     DMEx.Log.Registry.each(state.log, fn pid, status, selection ->
-      if concerns?(selection, types) and Status.flip(status) do
+      :counters.add(tally, @streams, 1)
+
+      if Selection.concerns?(selection, types) and Status.flip(status) do
         send(pid, :wakeup)
-        :counters.add(woken, 1, 1)
+        :counters.add(tally, @woken, 1)
       end
     end)
 
     :telemetry.execute(
       [:dmex, :dispatcher, :broadcast],
       %{
-        streams: DMEx.Log.Registry.count(state.log),
-        woken: :counters.get(woken, 1),
+        streams: :counters.get(tally, @streams),
+        woken: :counters.get(tally, @woken),
         types: length(types)
       },
       %{log: state.log}
@@ -204,21 +230,17 @@ defmodule DMEx.Log.Dispatcher do
     state
   end
 
-  # A whole-log subscription is concerned with every append.
-  defp concerns?(:all, _types), do: true
-  defp concerns?(selection, types), do: Enum.any?(types, &MapSet.member?(selection, &1))
-
   # `{nil, []}` on an empty window and on an error alike: an engine that cannot
-  # answer must not take the dispatcher down, and leaving `last_announced`
+  # answer must not take the dispatcher down, and leaving `polled_through`
   # untouched means the next poll asks the same question over the same window.
-  defp appended_since(%{storage: storage, storage_opts: opts, last_announced: last}) do
+  defp appended_since(%{storage: storage, storage_opts: opts, polled_through: last}) do
     case storage.appended_since(opts, last) do
       {:ok, {max_id, types}} -> {max_id, types}
       {:error, _reason} -> {nil, []}
     end
   end
 
-  defp current_max_id(%{storage: storage, storage_opts: opts, last_announced: last}) do
+  defp current_max_id(%{storage: storage, storage_opts: opts, polled_through: last}) do
     case storage.max_id(opts) do
       {:ok, max_id} -> max_id
       {:error, _reason} -> last

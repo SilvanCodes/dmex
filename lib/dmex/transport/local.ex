@@ -34,6 +34,7 @@ defmodule DMEx.Transport.Local do
   alias DMEx.Handler
   alias DMEx.Handler.Request
   alias DMEx.Log.Registry, as: LogRegistry
+  alias DMEx.Log.Selection
   alias DMEx.Log.Stream, as: SendLoop
 
   ## Send side — the loop process writes into its owner
@@ -86,15 +87,11 @@ defmodule DMEx.Transport.Local do
         # reason the SSE side registers the request process.
         {:ok, status} = LogRegistry.register(log, config.stall_timeout, selection)
 
-        :telemetry.execute(
-          [:dmex, :stream, :connect],
-          %{cursor: cursor, matched: LogRegistry.matched(selection)},
-          %{log: log, selective: selection != :all}
-        )
-
+        # Announces the connect and builds the loop's state — the same call
+        # `DMEx.Log.Plug` makes, so the two cannot report a connect differently.
         SendLoop.loop(
           %{owner: owner},
-          SendLoop.initial_state(log,
+          SendLoop.connect(log,
             transport: __MODULE__,
             cursor: cursor,
             status: status,
@@ -113,6 +110,11 @@ defmodule DMEx.Transport.Local do
   end
 
   def handle_message(_message, _source), do: :unknown
+
+  # Nothing is ever parked: rows arrive one batch per `write/2` call and carry
+  # no terminal alongside them.
+  @impl DMEx.Transport
+  def drain(_source), do: :unknown
 
   @impl DMEx.Transport
   def close(%{reader: reader}) do
@@ -148,15 +150,14 @@ defmodule DMEx.Transport.Local do
     end
   end
 
+  ## Selection
+
+  # The declared modules rather than an expanded fingerprint — the exact set,
+  # where the wire's is a superset. `DMEx.Log.Selection` owns both and says why,
+  # including why the fingerprint is still what says whether to select at all.
   defp selection(opts) do
     declaration = opts |> Keyword.fetch!(:handler) |> Handler.declaration!()
 
-    if Keyword.get(opts, :fingerprint) do
-      MapSet.new(declaration.messages, & &1.type())
-    else
-      # A `nil` fingerprint is what `selective: false` compiles to, and it means
-      # the same thing here as it does on the wire: the whole log.
-      :all
-    end
+    Selection.declared(declaration.messages, Keyword.get(opts, :fingerprint))
   end
 end

@@ -48,6 +48,13 @@ defmodule DMEx.Config do
   | `max_frame_bytes` | `4_194_304` | bytes; the largest unterminated frame the decoder buffers. A frame is **one row**, so this has to exceed the largest single message any log sends, not its whole batch. Exceeding it drops the connection, which costs only a re-read. |
   | `missed_heartbeats` | `3` | silences of the log's advertised interval before giving up — long enough that one GC pause on the log is not a disconnect. |
 
+  `retry_backoff`/`retry_backoff_max` and
+  `reconnect_backoff`/`reconnect_backoff_max` are validated independently and
+  deliberately not against each other: `DMEx.backoff/3` takes
+  `min(max, base * 2 ^ (attempt - 1))`, so the pair is unordered and the cap
+  always wins. A `max` below its `base` is not an error — it is a constant delay
+  of `max`, with the base ignored.
+
   ### `last_seen`
 
   A **cursor**, in the same units and the same domain as the durable

@@ -21,22 +21,37 @@ defmodule DMEx.Transport.SSE.Decoder do
   buffer every chunk — quadratic, and real TCP reads are small, so a large run
   of frames arriving in 1 KB pieces would copy far more than it received.
   Instead chunks are consed onto a list and flattened only when one contains a
-  line terminator.
+  line terminator. The flatten and the delimiter scan are both over the whole
+  accumulated buffer, so that is linear only while terminators are *rare* inside
+  a frame: DMEx puts the whole payload on one `data:` line, so every interior
+  chunk of a large frame skips both. A producer splitting `data:` over many
+  lines — which `Frame.parse/1` accepts — makes it quadratic in pushes again.
   """
 
   alias DMEx.Transport.SSE.Frame
 
-  # CR, LF and CRLF are the SSE line terminators, so a blank line is any two of
-  # them back to back — every combination, not just the matching pairs, since a
-  # producer may mix terminators. The one exception is CR+LF, which the grammar
-  # reads as a single CRLF rather than two terminators. DMEx's own producer is
-  # the "\n\n" case.
+  # A blank line is any two line terminators back to back — every combination,
+  # not just the matching pairs, since a producer may mix them. The exception is
+  # a pair that is *itself* a terminator: CR followed by LF, which the grammar
+  # reads as one CRLF rather than two line endings. DMEx's own producer is the
+  # "\n\n" case.
+  #
+  # Derived from `Frame.line_terminators/0` rather than restated, so the
+  # vocabulary has one home: these eight are that set crossed with itself, minus
+  # the pairs the set already contains.
   #
   # `:binary.match/2` takes the leftmost match and the longest of those, which
   # is what these need: "\r\n\r\n" wins over the "\r\n\r" starting at the same
-  # byte, and "\r\n\n" wins over the "\n\n" one byte later.
-  @delimiters ["\r\n\r\n", "\r\r\n", "\n\r\n", "\r\n\r", "\r\n\n", "\r\r", "\n\r", "\n\n"]
-  @terminators ["\r", "\n"]
+  # byte, and "\r\n\n" wins over the "\n\n" one byte later — and it is why the
+  # generated order does not matter.
+  @delimiters for first <- Frame.line_terminators(),
+                  second <- Frame.line_terminators(),
+                  (first <> second) not in Frame.line_terminators(),
+                  do: first <> second
+
+  # Every terminator contains a CR or an LF, so the single-byte ones are the
+  # cheap "could this chunk have completed a line?" test over the same set.
+  @terminators Enum.filter(Frame.line_terminators(), &(byte_size(&1) == 1))
 
   defstruct buffer: [], size: 0, max_bytes: nil, retry: nil
 
@@ -115,6 +130,18 @@ defmodule DMEx.Transport.SSE.Decoder do
     end
   end
 
+  # Both error paths — this one and `Frame.parse/1`'s above — throw away the
+  # rows the same `push/2` already decoded. That is the **opposite** of what
+  # `DMEx.Transport.SSE.responses/3` decides for the same question one layer up,
+  # where rows ahead of a terminal response are returned and the terminal is
+  # parked. Named rather than reconciled, because the two situations differ in
+  # the only way that matters: there, the terminal is the connection ending and
+  # holding the rows back would strand the subscription forever. Here the
+  # offending bytes are a property of the data, not of the chunking — the
+  # remainder is one unterminated block, and a malformed frame is malformed on
+  # every read — so a reconnect from the durable cursor replays them and fails
+  # identically. Returning the rows ahead would shorten one re-read and never
+  # buy progress.
   defp check_size(%{size: size, max_bytes: max} = decoder, _frames) when size > max do
     {:error, :frame_too_large, decoder}
   end

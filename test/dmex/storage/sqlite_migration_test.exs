@@ -4,8 +4,19 @@ defmodule DMEx.Storage.SQLiteMigrationTest do
   # thing under test here.
   use DMEx.Case, async: false, database: true, repo: DMEx.Test.SQLiteRepo
 
+  alias DMEx.Storage.SQLite
   alias DMEx.Storage.SQLite.Migration
   alias Ecto.Adapters.SQL
+
+  @some "orders/some"
+
+  # Every column stamped with the adapter's timestamp expression, and the two
+  # writers of each.
+  @timestamps [
+    {"dmex_messages", "inserted_at"},
+    {"dmex_cursors", "updated_at"},
+    {"dmex_dead_messages", "inserted_at"}
+  ]
 
   describe "dmex_messages" do
     test "ids are AUTOINCREMENT, so a deleted tail cannot be reissued" do
@@ -92,6 +103,50 @@ defmodule DMEx.Storage.SQLiteMigrationTest do
       # From `id` down this is dmex_messages, so replay needs no reshaping.
       assert columns["data"].type == "TEXT"
       assert columns["metadata"].dflt_value == "'{}'"
+    end
+  end
+
+  # Fixed width is what makes byte comparison equal chronological comparison,
+  # which the `(inserted_at, id)` index and `c:DMEx.Storage.cursor_at/2` both
+  # rest on — see `DMEx.Storage.SQLite.Migration`. All three tables, because the
+  # format is one invariant and holding it for `dmex_messages` alone would be an
+  # accident rather than a property. (This subsumes the `dmex_messages`-only
+  # assertion that used to sit in the first describe block: same two assertions,
+  # widened to the other two tables.)
+  describe "the stored timestamp format" do
+    test "every default renders the adapter's one expression rather than copying it" do
+      for {table, column} <- @timestamps do
+        default = table_info(table)[column].dflt_value
+
+        assert String.contains?(default, SQLite.__now__()),
+               "#{table}.#{column} defaults to #{inspect(default)}, which is not " <>
+                 "DMEx.Storage.SQLite.__now__/0"
+      end
+    end
+
+    test "every stamped value is 24 bytes of millisecond ISO-8601" do
+      {:ok, _} = insert("A", ~s({"n":1}))
+
+      # Not a raw INSERT: `dmex_cursors.updated_at` has a second writer, and it
+      # is the adapter rather than the column default.
+      :ok = SQLite.advance(%{repo: Repo}, @some, 7)
+
+      {:ok, _} =
+        SQL.query(
+          Repo,
+          """
+          INSERT INTO dmex_dead_messages (subscription, id, message_type, data, metadata)
+               VALUES (?1, ?2, ?3, ?4, ?5)
+          """,
+          [@some, 7, "A", ~s({"n":1}), "{}"]
+        )
+
+      for {table, column} <- @timestamps do
+        assert [[at]] = query("SELECT #{column} FROM #{table} LIMIT 1")
+
+        assert byte_size(at) == 24, "#{table}.#{column} stamped #{inspect(at)}, not 24 bytes"
+        assert {:ok, _datetime, 0} = DateTime.from_iso8601(at)
+      end
     end
   end
 

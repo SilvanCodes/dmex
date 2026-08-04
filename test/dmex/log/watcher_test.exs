@@ -82,7 +82,7 @@ defmodule DMEx.Log.WatcherTest do
 
       pid =
         spawn(fn ->
-          {:ok, status} = DMEx.Log.Registry.register(Log, 20)
+          {:ok, status} = DMEx.Log.Registry.register(Log, 20, :all)
           send(parent, :registered)
 
           SendLoop.loop(ClosingAdapter.conn(parent, 100, state: :chunked), state(opts, status))
@@ -98,7 +98,7 @@ defmodule DMEx.Log.WatcherTest do
 
   defp state(opts, status) do
     %{
-      SendLoop.initial_state(Log, transport: DMEx.Transport.SSE, status: status)
+      SendLoop.connect(Log, transport: DMEx.Transport.SSE, status: status)
       | storage: Stub,
         storage_opts: opts
     }
@@ -112,7 +112,7 @@ defmodule DMEx.Log.WatcherTest do
 
     pid =
       spawn(fn ->
-        {:ok, status} = DMEx.Log.Registry.register(Log, budget(budget))
+        {:ok, status} = DMEx.Log.Registry.register(Log, budget(budget), :all)
         send(parent, :registered)
 
         block(status, budget)

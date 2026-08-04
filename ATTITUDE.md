@@ -1,0 +1,5 @@
+- I believe it is worth thinking upfront.
+- I believe it is worth articulating a data model with the least redundancy and making every redundancy explicit and deliberate.
+- I believe it is worth spending a significant amount of time on finding a simple, understandable solution.
+- I believe it is worth working thorough and at a steady pace.
+- I believe that documenting the process from the start creates long term value.

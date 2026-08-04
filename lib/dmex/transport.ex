@@ -9,8 +9,14 @@ defmodule DMEx.Transport do
   the id chain — lives behind these callbacks.
 
   Both ends are on one module on purpose: they are the two halves of one wire
-  format, and splitting them would make it possible to configure a sender no
-  receiver understands. A transport is inferred from a `logs:` binding, never
+  format, and the encoder and the parser have to agree byte for byte. One
+  behaviour puts the thing they agree *on* next to both of its users —
+  `DMEx.Transport.SSE.Frame` is written by `write/2` and read by
+  `handle_message/2`, and splitting the callbacks would put a grammar in one
+  module and its only other user in another, free to drift.
+
+  Nothing here guards against *mismatched* ends being paired, because nothing
+  can pair them: a transport is inferred from a `logs:` binding, never
   configured — see `DMEx.Supervisor`.
 
   ## What a transport must preserve
@@ -32,6 +38,23 @@ defmodule DMEx.Transport do
   @typedoc "A transport's receive-side state."
   @type source :: term()
 
+  @typedoc """
+  What a transport says it just interpreted, and the vocabulary the stream acts on.
+
+    * `{:rows, rows, source}` — rows to run, in order, right now.
+    * `{:noreply, source}` — consumed, nothing to run.
+    * `:unknown` — nothing here for this transport.
+    * `{:disconnect, reason, source}` — this connection is over; the stream
+      flushes, closes and reconnects on its backoff schedule.
+    * `{:stop, reason}` — fatal. Reconnecting would repeat whatever caused it.
+  """
+  @type action ::
+          {:rows, [DMEx.Handler.Pipeline.row()], source()}
+          | {:noreply, source()}
+          | :unknown
+          | {:disconnect, term(), source()}
+          | {:stop, term()}
+
   @doc """
   Sends one read's rows, and reports whatever it can measure about the write.
 
@@ -49,6 +72,9 @@ defmodule DMEx.Transport do
   Signals liveness on a stream that has been idle for a whole heartbeat interval.
 
   A no-op for a transport whose reader cannot mistake silence for death.
+
+  Unmeasured on purpose, unlike `c:write/2`: `[:dmex, :stream, :heartbeat]`
+  carries no measurements at all, so there is no third element to return.
   """
   @callback heartbeat(sink()) :: {:ok, sink()} | {:error, term()}
 
@@ -62,28 +88,27 @@ defmodule DMEx.Transport do
   @callback connect(keyword()) :: {:ok, source()} | {:error, term()}
 
   @doc """
-  Interprets one process message.
+  Interprets one process message, and nothing else.
 
-    * `{:rows, rows, source}` — rows to run, in order, right now.
-    * `{:noreply, source}` — consumed, nothing to run.
-    * `:unknown` — not this transport's message.
-    * `{:disconnect, reason, source}` — this connection is over; the stream
-      flushes, closes and reconnects on its backoff schedule.
-    * `{:stop, reason}` — fatal. Reconnecting would repeat whatever caused it.
-
-  After running rows the stream calls this again with **`:continue`**, asking
-  whether one message carried anything beyond them. A transport that can produce
-  rows *and* a terminal event from a single message — an HTTP response ending
-  right after its last chunk — parks the terminal and returns it then, so it
-  never discards rows already verified. One with nothing to park answers
-  `:unknown`.
+  The message is whatever landed in `DMEx.Handler.Stream`'s mailbox — a socket
+  message, a linked reader's exit, anything. `:unknown` means it was not this
+  transport's, including when it happens to be an atom this transport uses
+  elsewhere.
   """
-  @callback handle_message(term(), source()) ::
-              {:rows, [DMEx.Handler.Pipeline.row()], source()}
-              | {:noreply, source()}
-              | :unknown
-              | {:disconnect, term(), source()}
-              | {:stop, term()}
+  @callback handle_message(message :: term(), source()) :: action()
+
+  @doc """
+  Whatever the last `c:handle_message/2` parked beyond the rows it returned.
+
+  Asked once after each batch of rows has run. A transport that can produce rows
+  *and* a terminal event from a single message — an HTTP response ending right
+  after its last chunk — parks the terminal and returns it here, so it never
+  discards rows already verified. One with nothing to park answers `:unknown`.
+
+  Separate from `c:handle_message/2` because it is a separate question: that one
+  is asked *of a message*, this one is asked of the transport itself.
+  """
+  @callback drain(source()) :: action()
 
   @doc "Releases whatever `c:connect/1` opened."
   @callback close(source()) :: :ok

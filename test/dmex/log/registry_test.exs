@@ -19,7 +19,7 @@ defmodule DMEx.Log.RegistryTest do
   end
 
   test "each/2 visits a registered process with its status and selection" do
-    {:ok, status} = LogRegistry.register(FakeLog, 5_000)
+    {:ok, status} = LogRegistry.register(FakeLog, 5_000, :all)
 
     LogRegistry.each(FakeLog, fn pid, entry_status, selection ->
       send(pid, {:visited, entry_status, selection})
@@ -34,7 +34,7 @@ defmodule DMEx.Log.RegistryTest do
     pids =
       for _ <- 1..3 do
         spawn_link(fn ->
-          {:ok, _status} = LogRegistry.register(FakeLog, 5_000)
+          {:ok, _status} = LogRegistry.register(FakeLog, 5_000, :all)
           send(parent, {:registered, self()})
 
           receive do
@@ -53,7 +53,7 @@ defmodule DMEx.Log.RegistryTest do
   test "counts live streams" do
     assert LogRegistry.count(FakeLog) == 0
 
-    {:ok, _status} = LogRegistry.register(FakeLog, 5_000)
+    {:ok, _status} = LogRegistry.register(FakeLog, 5_000, :all)
 
     assert LogRegistry.count(FakeLog) == 1
   end
@@ -66,7 +66,7 @@ defmodule DMEx.Log.RegistryTest do
 
     pid =
       spawn(fn ->
-        {:ok, _status} = LogRegistry.register(FakeLog, 5_000)
+        {:ok, _status} = LogRegistry.register(FakeLog, 5_000, :all)
         send(parent, :registered)
 
         receive do
@@ -87,7 +87,7 @@ defmodule DMEx.Log.RegistryTest do
   # For a connect that registers and then fails before becoming a stream: its
   # process is the keep-alive connection process and does not die with it.
   test "unregister/1 drops the caller's entry while it is still alive" do
-    {:ok, _status} = LogRegistry.register(FakeLog, 5_000)
+    {:ok, _status} = LogRegistry.register(FakeLog, 5_000, :all)
     assert LogRegistry.count(FakeLog) == 1
 
     assert :ok = LogRegistry.unregister(FakeLog)

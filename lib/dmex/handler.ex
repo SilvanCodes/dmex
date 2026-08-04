@@ -575,24 +575,11 @@ defmodule DMEx.Handler do
   ## Compile-time validation
 
   defp validate_keys!(module, opts) do
-    unless Keyword.keyword?(opts) do
-      raise ArgumentError,
-            "`use DMEx.Handler` takes a keyword list in #{inspect(module)}, " <>
-              "got: #{inspect(opts)}"
-    end
+    source = "`use DMEx.Handler` in #{inspect(module)}"
 
-    known = @handler_opts ++ Config.handler_keys()
-
-    case Enum.reject(Keyword.keys(opts), &(&1 in known)) do
-      [] ->
-        :ok
-
-      unknown ->
-        raise ArgumentError,
-              "unknown option#{if length(unknown) > 1, do: "s"} " <>
-                "#{inspect(unknown)} passed to `use DMEx.Handler` in " <>
-                "#{inspect(module)}. Known options: #{inspect(Enum.sort(known))}"
-    end
+    opts
+    |> DMEx.keyword!(source)
+    |> DMEx.validate_keys!(@handler_opts ++ Config.handler_keys(), source)
   end
 
   # Kept as the declared keyword rather than the resolved map, so DMEx's

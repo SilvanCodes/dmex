@@ -135,7 +135,7 @@ defmodule DMEx.Log.RestartTest do
 
     pid =
       spawn(fn ->
-        {:ok, _status} = LogRegistry.register(Log, 5_000)
+        {:ok, _status} = LogRegistry.register(Log, 5_000, :all)
         send(parent, :stream_ready)
         Process.sleep(:infinity)
       end)
@@ -153,7 +153,7 @@ defmodule DMEx.Log.RestartTest do
 
     pid =
       spawn(fn ->
-        {:ok, _status} = LogRegistry.register(Log, 5_000)
+        {:ok, _status} = LogRegistry.register(Log, 5_000, :all)
         send(parent, {ref, :registered})
 
         receive do

@@ -48,7 +48,11 @@ defmodule DMEx.Test.StubLog do
       prefix: nil,
       config: config,
       storage_opts: Map.put(storage_opts, :log, __MODULE__),
-      notifier_opts: %{repo: DMEx.Test.Storage, log: __MODULE__, channel: "dmex_stub"}
+      notifier_opts: %{
+        repo: DMEx.Test.Storage,
+        name: Module.concat(__MODULE__, "Notifications"),
+        channel: "dmex_stub"
+      }
     }
   end
 end

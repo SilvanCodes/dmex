@@ -53,9 +53,10 @@ defmodule DMEx.Storage.SQLite do
 
   alias Ecto.Adapters.SQL
 
-  @messages "dmex_messages"
-  @cursors "dmex_cursors"
-  @dead_messages "dmex_dead_messages"
+  # From the behaviour, not restated: see `DMEx.Storage.__table__/1`.
+  @messages DMEx.Storage.__table__(:messages)
+  @cursors DMEx.Storage.__table__(:cursors)
+  @dead_messages DMEx.Storage.__table__(:dead_messages)
 
   # SQLite's own limit is 32766 bound parameters (999 before 3.32). This is the
   # conservative one, and the point is a named error rather than an opaque one
@@ -64,8 +65,18 @@ defmodule DMEx.Storage.SQLite do
   @max_types 900
 
   # `strftime('%f')` renders `SS.SSS`, so every stored value is fixed-width and
-  # comparable as bytes. The column defaults use this same expression.
+  # comparable as bytes — which is what the `(inserted_at, id)` index and
+  # `cursor_at/2` rest on. Stated once: `DMEx.Storage.SQLite.Migration` renders
+  # all three of its column defaults from `__now__/0` below, so no writer of
+  # these tables can disagree about the format.
   @now "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')"
+
+  # Public so `DMEx.Storage.SQLite.Migration` stamps its defaults with the same
+  # expression `advance/3` writes with — the counterpart to
+  # `DMEx.Storage.Postgres.__table__/2`, shared for the same reason.
+  @doc false
+  @spec __now__() :: String.t()
+  def __now__, do: @now
 
   @impl DMEx.Storage
   def default_notifier, do: DMEx.Notifier.Beam
@@ -360,6 +371,10 @@ defmodule DMEx.Storage.SQLite do
 
   ## Row shaping
 
+  # This head **is** the SELECT list, in order: change the column list without
+  # changing the head and the rows come out mis-keyed. Not silently —
+  # `test/dmex/storage/conformance_test.exs` value-pins `message_type`, so the
+  # mismatch is a failing suite rather than a wrong wire frame.
   defp to_row([id, message_type, data, metadata, inserted_at]) do
     %{
       id: id,

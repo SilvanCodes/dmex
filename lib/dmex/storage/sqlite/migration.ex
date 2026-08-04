@@ -40,6 +40,12 @@ defmodule DMEx.Storage.SQLite.Migration do
   transaction that draws the rowid, so the column ascends with `id` — SQLite has
   no transaction-start clock to reach for by mistake.
 
+  All three tables' defaults render `DMEx.Storage.SQLite.__now__/0` rather than
+  spelling the expression out, because the adapter is a fourth writer of the
+  format: `advance/3` stamps `dmex_cursors.updated_at` itself, and `cursor_at/2`
+  renders its bound parameter to match. One statement, so the invariant cannot
+  hold for one table and not another.
+
   ## The `message_type` CHECK, in GLOB
 
   SQLite has no regex operator, so Postgres's `~ '^[A-Za-z0-9_.]+$'` becomes
@@ -56,6 +62,21 @@ defmodule DMEx.Storage.SQLite.Migration do
   """
 
   use Ecto.Migration
+
+  alias DMEx.Storage.SQLite
+
+  # From the behaviour, not restated: see `DMEx.Storage.__table__/1`. The same
+  # three names `DMEx.Storage.SQLite` writes its queries against.
+  @messages DMEx.Storage.__table__(:messages)
+  @cursors DMEx.Storage.__table__(:cursors)
+  @dead_messages DMEx.Storage.__table__(:dead_messages)
+
+  # The one statement of the timestamp format is `DMEx.Storage.SQLite`'s, because
+  # the adapter writes it too — `advance/3` stamps `updated_at` with the same
+  # expression. Rendered here rather than repeated, so the fixed-width invariant
+  # this module's documentation argues for cannot hold in one table and not
+  # another.
+  @now SQLite.__now__()
 
   @doc false
   @spec up([:log | :subscriptions], String.t() | nil) :: :ok
@@ -74,12 +95,12 @@ defmodule DMEx.Storage.SQLite.Migration do
     refuse_prefix!(prefix)
 
     if :subscriptions in tables do
-      execute("DROP TABLE IF EXISTS dmex_dead_messages")
-      execute("DROP TABLE IF EXISTS dmex_cursors")
+      execute("DROP TABLE IF EXISTS #{@dead_messages}")
+      execute("DROP TABLE IF EXISTS #{@cursors}")
     end
 
     if :log in tables do
-      execute("DROP TABLE IF EXISTS dmex_messages")
+      execute("DROP TABLE IF EXISTS #{@messages}")
     end
 
     :ok
@@ -98,21 +119,21 @@ defmodule DMEx.Storage.SQLite.Migration do
 
   defp up_log do
     execute("""
-    CREATE TABLE IF NOT EXISTS dmex_messages (
+    CREATE TABLE IF NOT EXISTS #{@messages} (
       id           INTEGER PRIMARY KEY AUTOINCREMENT,
       message_type TEXT NOT NULL
                    CHECK (message_type <> '' AND message_type NOT GLOB '*[^A-Za-z0-9_.]*'),
       data         TEXT NOT NULL CHECK (json_valid(data)),
       metadata     TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(metadata)),
-      inserted_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      inserted_at  TEXT NOT NULL DEFAULT (#{@now})
     )
     """)
 
     # The same one the Postgres migration creates, for the same query — see
     # `DMEx.Storage.Migration` for when it earns its per-append cost.
     execute("""
-    CREATE INDEX IF NOT EXISTS dmex_messages_message_type_id_index
-        ON dmex_messages (message_type, id)
+    CREATE INDEX IF NOT EXISTS #{@messages}_message_type_id_index
+        ON #{@messages} (message_type, id)
     """)
 
     :ok
@@ -122,10 +143,10 @@ defmodule DMEx.Storage.SQLite.Migration do
     # `NOT NULL` spelled out: SQLite lets a rowid table's declared PRIMARY KEY
     # hold NULL, for backwards compatibility with a long-ago bug.
     execute("""
-    CREATE TABLE IF NOT EXISTS dmex_cursors (
+    CREATE TABLE IF NOT EXISTS #{@cursors} (
       subscription TEXT NOT NULL PRIMARY KEY,
       last_seen    INTEGER NOT NULL,
-      updated_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      updated_at   TEXT NOT NULL DEFAULT (#{@now})
     )
     """)
 
@@ -133,13 +154,13 @@ defmodule DMEx.Storage.SQLite.Migration do
     # replay needs no reshaping. `inserted_at` is the exception: here it records
     # when the row landed, not when the message was appended.
     execute("""
-    CREATE TABLE IF NOT EXISTS dmex_dead_messages (
+    CREATE TABLE IF NOT EXISTS #{@dead_messages} (
       subscription TEXT NOT NULL,
       id           INTEGER NOT NULL,
       message_type TEXT NOT NULL,
       data         TEXT NOT NULL CHECK (json_valid(data)),
       metadata     TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(metadata)),
-      inserted_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      inserted_at  TEXT NOT NULL DEFAULT (#{@now}),
       PRIMARY KEY (subscription, id)
     )
     """)

@@ -31,9 +31,12 @@ defmodule DMEx.LogTest do
                prefix: nil
              }
 
+      # The notifier's process name is derived here and nowhere else, which is
+      # why neither adapter rebuilds it from `:log` — and why `:log` is not in
+      # this map at all.
       assert notifier_opts == %{
                repo: DMEx.Test.Repo,
-               log: Log,
+               name: DMEx.Test.Log.Notifications,
                channel: "dmex_dm_ex_test_log"
              }
     end

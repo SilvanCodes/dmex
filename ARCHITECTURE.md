@@ -35,6 +35,13 @@ type over an append-only Postgres log.
 One append-only log per application: a totally-ordered stream of every message
 it appended, in one table. `DMEx.Storage.Migration` ships the DDL.
 
+The block below is **illustrative and restates rather than defines**:
+`DMEx.Storage.Postgres.Migration` is authoritative, `DMEx.Storage.SQLite.Migration`
+is the same schema on the other engine, and neither `dmex_cursors` nor
+`dmex_dead_messages` is shown here. It is already not literal — the migration adds
+the `message_type` CHECK as a named constraint through a `DO` block rather than
+inline, so that it stays re-runnable.
+
 ```sql
 CREATE TABLE dmex_messages (
   id            bigserial   PRIMARY KEY,

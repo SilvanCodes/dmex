@@ -38,26 +38,32 @@ defmodule DMEx.Handler.Fingerprint do
   import Bitwise
 
   @typedoc """
-  A built filter: its seed, the block length its three hash positions derive
-  from, and the fingerprint array.
+  A built filter: its seed and the fingerprint array. Those two are the blob,
+  and the blob is everything the filter is.
+
+  The block length the three hash positions derive from is **not** stored: it
+  falls out of the array's length, exactly as §6 of the spec has a decoder
+  derive it, so no filter can carry a block length its own array contradicts.
 
   The array is a binary rather than a list, so `member?/2` is three O(1) reads and
   `decode/1` is a slice with no per-element work.
   """
   @type t :: %__MODULE__{
           seed: non_neg_integer(),
-          block: pos_integer(),
           fingerprints: binary()
         }
 
-  defstruct [:seed, :block, :fingerprints]
+  defstruct [:seed, :fingerprints]
 
   @u64 0xFFFFFFFFFFFFFFFF
   @u32 0xFFFFFFFF
 
-  # 16-bit fingerprints. Pinned, not configurable — see the module docs.
-  @fingerprint_mask 0xFFFF
-  @fingerprint_bytes 2
+  # 16-bit fingerprints. Pinned, not configurable — see the module docs. The
+  # width is spelled once: the mask, the array stride and both the big-endian
+  # write and read below derive from it.
+  @fingerprint_bits 16
+  @fingerprint_bytes div(@fingerprint_bits, 8)
+  @fingerprint_mask bsl(1, @fingerprint_bits) - 1
 
   # The XOR filter's space overhead. 1.23 is the constant from the paper; the
   # +32 is the slack small sets need to peel reliably, since the asymptotic
@@ -133,8 +139,8 @@ defmodule DMEx.Handler.Fingerprint do
   @spec decode(String.t()) :: {:ok, t()} | {:error, :invalid}
   def decode(blob) when is_binary(blob) do
     with {:ok, <<seed::unsigned-big-64, fps::binary>>} <- Base.url_decode64(blob, padding: false),
-         {:ok, count} <- fingerprint_count(fps) do
-      {:ok, %__MODULE__{seed: seed, block: div(count, 3), fingerprints: fps}}
+         true <- whole_blocks?(fps) do
+      {:ok, %__MODULE__{seed: seed, fingerprints: fps}}
     else
       _ -> {:error, :invalid}
     end
@@ -142,7 +148,7 @@ defmodule DMEx.Handler.Fingerprint do
 
   @doc "How many fingerprint slots the array holds. For `bench/fingerprint_sweep.exs`."
   @spec slots(t()) :: pos_integer()
-  def slots(%__MODULE__{block: block}), do: block * 3
+  def slots(%__MODULE__{fingerprints: fps}), do: div(byte_size(fps), @fingerprint_bytes)
 
   @doc false
   # Exposed for `bench/fingerprint_sweep.exs`, which tests millions of
@@ -157,9 +163,9 @@ defmodule DMEx.Handler.Fingerprint do
   @doc false
   # The `member?/2` inner loop, against an already-hashed key. Same reason.
   @spec member_hash?(t(), non_neg_integer()) :: boolean()
-  def member_hash?(%__MODULE__{seed: seed, block: block, fingerprints: fps}, key) do
+  def member_hash?(%__MODULE__{seed: seed, fingerprints: fps} = filter, key) do
     hash = mixed(key, seed)
-    {h0, h1, h2} = positions(hash, block)
+    {h0, h1, h2} = positions(hash, block(filter))
 
     fingerprint(hash) == bxor(at(fps, h0), bxor(at(fps, h1), at(fps, h2)))
   end
@@ -175,7 +181,7 @@ defmodule DMEx.Handler.Fingerprint do
 
     case peel(keys, seed, capacity, block) do
       {:ok, stack} ->
-        {:ok, %__MODULE__{seed: seed, block: block, fingerprints: assign(stack, capacity, block)}}
+        {:ok, %__MODULE__{seed: seed, fingerprints: assign(stack, capacity, block)}}
 
       :error ->
         # A fresh seed, derived rather than random, so a retry is as reproducible
@@ -260,7 +266,9 @@ defmodule DMEx.Handler.Fingerprint do
       :atomics.put(fps, slot, band(value, @fingerprint_mask))
     end)
 
-    for slot <- 1..capacity, into: <<>>, do: <<:atomics.get(fps, slot)::unsigned-big-16>>
+    for slot <- 1..capacity,
+        into: <<>>,
+        do: <<:atomics.get(fps, slot)::unsigned-big-size(@fingerprint_bits)>>
   end
 
   ## Geometry
@@ -272,6 +280,12 @@ defmodule DMEx.Handler.Fingerprint do
 
     [fun.(h0 + 1), fun.(h1 + 1), fun.(h2 + 1)]
   end
+
+  # Three equal blocks, so this is the array length over three. Recomputed per
+  # `member_hash?/2` — at most once per known type per connect — rather than
+  # cached in the struct, where nothing would stop it disagreeing with the array
+  # it indexes.
+  defp block(filter), do: div(slots(filter), 3)
 
   defp positions(hash, block) do
     {
@@ -325,23 +339,21 @@ defmodule DMEx.Handler.Fingerprint do
     |> key_hash()
   end
 
-  defp fingerprint_count(fps) do
+  # A non-empty whole number of fingerprints, filling three equal blocks.
+  defp whole_blocks?(fps) do
     size = byte_size(fps)
 
-    if size > 0 and rem(size, @fingerprint_bytes) == 0 and
-         rem(div(size, @fingerprint_bytes), 3) == 0 do
-      {:ok, div(size, @fingerprint_bytes)}
-    else
-      :error
-    end
+    size > 0 and rem(size, @fingerprint_bytes) == 0 and
+      rem(div(size, @fingerprint_bytes), 3) == 0
   end
 
-  # Two `:binary.at/2` reads rather than `:binary.part/3` plus a decode: both are
-  # O(1), but this allocates no sub-binary and runs three times per type per
-  # connect.
+  # A skip and one big-endian read: O(1), allocating no sub-binary, and spelling
+  # the width as the constant rather than as a shift that silently means 16.
   defp at(fps, index) do
     offset = index * @fingerprint_bytes
 
-    bsl(:binary.at(fps, offset), 8) ||| :binary.at(fps, offset + 1)
+    <<_::binary-size(^offset), fp::unsigned-big-size(@fingerprint_bits), _::binary>> = fps
+
+    fp
   end
 end

@@ -41,6 +41,8 @@ defmodule DMEx.Log.StreamTest do
     @impl DMEx.Transport
     def handle_message(_message, _source), do: :unknown
     @impl DMEx.Transport
+    def drain(_source), do: :unknown
+    @impl DMEx.Transport
     def close(_source), do: :ok
     @impl DMEx.Transport
     def liveness(_source), do: :infinity
@@ -542,14 +544,19 @@ defmodule DMEx.Log.StreamTest do
       storage_opts: opts,
       cursor: Keyword.get(test_opts, :cursor, 0),
       batch_interval: Keyword.get(test_opts, :batch_interval, 1),
-      max_batch_size: Keyword.get(test_opts, :max_batch_size, 500),
-      heartbeat_ms: Keyword.get(test_opts, :heartbeat_ms, 60_000),
-      max_batch_bytes: Keyword.get(test_opts, :max_batch_bytes, 1_048_576),
-      stall_timeout: Keyword.get(test_opts, :stall_timeout, 30_000),
+      # Built by `DMEx.Config` rather than spelled out, so this harness cannot
+      # drift from what a real log hands the loop.
+      config:
+        DMEx.Config.log!(
+          max_batch_size: Keyword.get(test_opts, :max_batch_size, 500),
+          heartbeat_ms: Keyword.get(test_opts, :heartbeat_ms, 60_000),
+          max_batch_bytes: Keyword.get(test_opts, :max_batch_bytes, 1_048_576),
+          stall_timeout: Keyword.get(test_opts, :stall_timeout, 30_000),
+          metadata: Keyword.get(test_opts, :lift, [])
+        ),
       last_sent_at: nil,
       status: Keyword.get(test_opts, :status) || Status.new(30_000),
-      types: Keyword.get(test_opts, :types, :all),
-      lift: Keyword.get(test_opts, :lift, [])
+      types: Keyword.get(test_opts, :types, :all)
     }
   end
 end

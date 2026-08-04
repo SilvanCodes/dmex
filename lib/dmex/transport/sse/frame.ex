@@ -37,6 +37,8 @@ defmodule DMEx.Transport.SSE.Frame do
   `event:` line cannot be appended. See `DMEx.Storage.Migration`.
   """
 
+  @line_terminators ["\r\n", "\n", "\r"]
+
   @typedoc "A log row on the log's side, as `c:DMEx.Storage.read/5` returns it."
   @type row :: DMEx.Storage.row()
 
@@ -58,6 +60,16 @@ defmodule DMEx.Transport.SSE.Frame do
   @type parsed :: {:message, decoded_row()} | {:retry, pos_integer()} | :ignore
 
   @type error :: {:invalid_json, term()} | {:invalid_data_shape, term()}
+
+  @doc """
+  The SSE line terminators: CRLF, LF and CR.
+
+  The grammar fact, stated here once. `DMEx.Transport.SSE.Decoder`'s blank-line
+  delimiters are this set crossed with itself and derive from it at compile
+  time, so neither module can be changed alone.
+  """
+  @spec line_terminators() :: [binary(), ...]
+  def line_terminators, do: @line_terminators
 
   @doc """
   Encodes one log row as one frame, as iodata.
@@ -126,6 +138,10 @@ defmodule DMEx.Transport.SSE.Frame do
         # but a generic producer may not.
         lines |> Enum.reverse() |> Enum.join("\n") |> decode_row(id, event)
 
+      # Second, so a block carrying a message *and* a `retry:` yields only the
+      # message and the interval is dropped. Spec-legal input; DMEx and every
+      # SSE server it has met send `retry:` in a frame of its own, and the cost
+      # of missing one is that `SSE.liveness/1` keeps the previous interval.
       %{retry: retry} ->
         {:ok, {:retry, retry}}
 
@@ -134,6 +150,11 @@ defmodule DMEx.Transport.SSE.Frame do
     end
   end
 
+  # `encode_row/1` always writes `metadata`, but only `data` is required to
+  # decode: this is the liberal half of the contract, so a generic producer's
+  # frame is accepted without one and `DMEx.Handler.Pipeline` defaults it to
+  # `%{}`. Deliberate, and the reason the shape check below is nonetheless
+  # precise — a payload that is not an object at all cannot be a row.
   defp decode_row(payload, id, event) do
     case JSON.decode(payload) do
       {:ok, %{"data" => _} = decoded} ->
@@ -151,7 +172,7 @@ defmodule DMEx.Transport.SSE.Frame do
 
   ## Internals
 
-  defp split_lines(block), do: String.split(block, ["\r\n", "\n", "\r"])
+  defp split_lines(block), do: String.split(block, @line_terminators)
 
   defp collect_field(line, acc) do
     case parse_line(line) do

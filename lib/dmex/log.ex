@@ -102,19 +102,17 @@ defmodule DMEx.Log do
 
   ## Why appends are serialized
 
-  Postgres allocates sequence values at INSERT time but makes rows visible at
-  COMMIT time, so two concurrent appends can commit out of allocation order. A
-  reader scanning `id > cursor ORDER BY id` would advance straight over the row
-  that had not committed yet and lose it permanently — silently, since
-  `last_seen` moved right over the gap.
+  `append/2` requires that **id assignment order equals commit order**: every
+  read path is an `id > cursor ORDER BY id` scan, which would advance straight
+  over a lower id that had not committed yet and lose it permanently and
+  silently.
 
-  So `append/2` takes a transaction-scoped advisory lock keyed on the app key.
-  Appends to one log are effectively serial, in exchange for a reader model with
-  no gap-detection logic in it.
-
-  One consequence worth knowing before it bites: an `append/2` made *inside* an
-  enclosing transaction extends that lock for the transaction's lifetime, so a
-  long-running caller serializes every other append in the app.
+  *How* that is bought is the storage adapter's, not this module's, and the two
+  shipped ones differ — `DMEx.Storage.Postgres` takes a transaction-scoped
+  advisory lock keyed on the app, `DMEx.Storage.SQLite` takes no lock because
+  the engine has one writer database-wide. The requirement, both answers, and
+  their consequences for a caller appending inside its own transaction are
+  stated once in `DMEx.Storage`.
 
   ## Telemetry
 
@@ -222,7 +220,11 @@ defmodule DMEx.Log do
       },
       notifier_opts: %{
         repo: repo,
-        log: module,
+        # The one derivation of the notifier's process name. Both adapters read
+        # it rather than rebuilding it from `:log`, which is why `:log` is not
+        # in this map: naming their processes was the only thing they used it
+        # for. See `t:DMEx.Notifier.opts/0`.
+        name: Module.concat(module, "Notifications"),
         channel: channel
       }
     }
@@ -251,7 +253,7 @@ defmodule DMEx.Log do
 
     # Here rather than at compile time, because an adapter may need to read the
     # repo's configuration — and the repo is started by now.
-    validate_storage!(storage, storage_opts)
+    :ok = DMEx.Storage.validate!(storage, storage_opts)
 
     # Whatever the notifier needs sits between the registry and the dispatcher,
     # and this module has no idea what it is. Postgres puts a LISTEN connection
@@ -262,6 +264,25 @@ defmodule DMEx.Log do
         [{DMEx.Log.Dispatcher, log: log}] ++
         watcher_children(log, config)
 
+    # `:one_for_one` because no child here holds state derived from a sibling
+    # that would outlive that sibling's restart, and the one cross-child
+    # dependency is already covered:
+    #
+    #   * The dispatcher subscribes to the notifier, monitors it, and re-listens
+    #     on its next poll — so a notifier restarting under it costs one poll
+    #     interval of latency and nothing else. That is the same path a notifier
+    #     that has not started yet takes.
+    #   * A dying registry takes its streams with it: `Registry` links to every
+    #     process it holds an entry for, so it cannot restart into a world of
+    #     live connections registered nowhere. The clients reconnect. See
+    #     `DMEx.Log.Registry`.
+    #
+    # `:rest_for_one` would therefore restart working children to rebuild
+    # nothing, and it is `DMEx.Supervisor` — where the registry *does* own what
+    # its siblings put in it — that needs the stronger strategy.
+    #
+    # Restart is also where a registered name can still be held by the previous
+    # incarnation, which is what `__start__/1` waits out.
     __start__(fn ->
       Supervisor.start_link(children,
         strategy: :one_for_one,
@@ -397,18 +418,11 @@ defmodule DMEx.Log do
   ## Compile-time validation
 
   defp validate_keys!(module, opts) do
-    known = @log_opts ++ Config.log_keys()
-
-    case Enum.reject(Keyword.keys(opts), &(&1 in known)) do
-      [] ->
-        :ok
-
-      unknown ->
-        raise ArgumentError,
-              "unknown option#{if length(unknown) > 1, do: "s"} " <>
-                "#{inspect(unknown)} passed to `use DMEx.Log` in #{inspect(module)}. " <>
-                "Known options: #{inspect(Enum.sort(known))}"
-    end
+    DMEx.validate_keys!(
+      opts,
+      @log_opts ++ Config.log_keys(),
+      "`use DMEx.Log` in #{inspect(module)}"
+    )
   end
 
   defp fetch_repo!(module, opts) do
@@ -421,16 +435,6 @@ defmodule DMEx.Log do
               "`use DMEx.Log` requires a `:repo`, e.g. " <>
                 "`use DMEx.Log, repo: MyApp.Repo` in #{inspect(module)}"
     end
-  end
-
-  @doc false
-  @spec validate_storage!(module(), DMEx.Storage.opts()) :: :ok
-  def validate_storage!(storage, storage_opts) do
-    if function_exported?(storage, :validate!, 1) do
-      storage.validate!(storage_opts)
-    end
-
-    :ok
   end
 
   # An adapter names the mechanism that fits it (`c:DMEx.Storage.default_notifier/0`),
@@ -526,12 +530,12 @@ defmodule DMEx.Log do
     [~s("message_type":), JSON.encode_to_iodata!(row.message_type)]
   end
 
+  # A `DateTime` and only a `DateTime`: `t:DMEx.Storage.row/0` narrowed
+  # `:inserted_at` to one precisely so a frame cannot lose its trailing `Z`, and
+  # accepting a `NaiveDateTime` here would be this module quietly undoing that.
   defp pair(row, :inserted_at) do
-    [~s("inserted_at":), row.inserted_at |> to_iso8601() |> JSON.encode_to_iodata!()]
+    [~s("inserted_at":), row.inserted_at |> DateTime.to_iso8601() |> JSON.encode_to_iodata!()]
   end
-
-  defp to_iso8601(%DateTime{} = at), do: DateTime.to_iso8601(at)
-  defp to_iso8601(%NaiveDateTime{} = at), do: NaiveDateTime.to_iso8601(at)
 
   defp splice(<<?{, rest::binary>>, pairs) do
     # An empty object has nothing for the pairs to precede, so it is the one case

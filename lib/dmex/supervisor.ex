@@ -74,7 +74,11 @@ defmodule DMEx.Supervisor do
   alias DMEx.Supervisor.Starter
 
   @default_name __MODULE__
-  @storage_opts [:repo, :storage, :prefix]
+  # Every storage option and its default, in one list: `storage/1` reads it and
+  # `validate_keys!/1` accepts it, so a fourth one cannot be added to the reader
+  # and forgotten in the vocabulary — which would reject a legal option.
+  @storage_defaults [storage: DMEx.Storage.Postgres, repo: nil, prefix: nil]
+  @storage_opts Keyword.keys(@storage_defaults)
   # `:handler` is deliberately absent: it is the positional argument, so a stray
   # `handler:` in the options is a mistake worth raising on.
   @subscription_opts [:supervisor, :logs, :log]
@@ -286,10 +290,9 @@ defmodule DMEx.Supervisor do
   """
   @spec storage(keyword()) :: {module(), DMEx.Storage.opts()}
   def storage(opts) do
-    {
-      Keyword.get(opts, :storage, DMEx.Storage.Postgres),
-      %{repo: Keyword.get(opts, :repo), prefix: Keyword.get(opts, :prefix)}
-    }
+    @storage_defaults
+    |> Map.new(fn {key, default} -> {key, Keyword.get(opts, key, default)} end)
+    |> Map.pop(:storage)
   end
 
   @doc """
@@ -308,7 +311,7 @@ defmodule DMEx.Supervisor do
         # The consumer half's one call site, matching `DMEx.Log.start_link/2` on
         # the log half — an option an adapter cannot honour fails here rather
         # than at whichever query first ignores it.
-        :ok = DMEx.Log.validate_storage!(storage, storage_opts)
+        :ok = DMEx.Storage.validate!(storage, storage_opts)
 
         resolved
     end
@@ -524,7 +527,7 @@ defmodule DMEx.Supervisor do
     # honour — `prefix:` on SQLite — fails at subscribe rather than silently
     # reading the unprefixed tables. Safe by this point: both branches above
     # have established a non-nil repo, which `c:DMEx.Storage.validate!/1` reads.
-    :ok = DMEx.Log.validate_storage!(config.storage, config.storage_opts)
+    :ok = DMEx.Storage.validate!(config.storage, config.storage_opts)
 
     config
   end
@@ -567,19 +570,13 @@ defmodule DMEx.Supervisor do
   end
 
   defp validate_keys!(opts) do
-    known = @subscription_opts ++ @storage_opts ++ Config.handler_keys()
-
-    case Enum.reject(Keyword.keys(opts), &(&1 in known)) do
-      [] ->
-        :ok
-
-      unknown ->
-        raise ArgumentError,
-              "unknown subscription option(s) #{inspect(unknown)}. " <>
-                "Known options: #{inspect(Enum.sort(known))}. " <>
-                "Note there is no filter or selection option here: the logs, the id, the " <>
-                "message types and `selective:` all belong to the handler module, not here."
-    end
+    DMEx.validate_keys!(
+      opts,
+      @subscription_opts ++ @storage_opts ++ Config.handler_keys(),
+      "`DMEx.Supervisor.subscribe/2`",
+      " Note there is no filter or selection option here: the logs, the id, the " <>
+        "message types and `selective:` all belong to the handler module, not here."
+    )
   end
 end
 

@@ -11,7 +11,7 @@ defmodule DMEx.Log.Registry do
   behalf. What an entry *does* carry is the connection's `DMEx.Log.Status` — two
   machine words the dispatcher and `DMEx.Log.Watcher` read without messaging the
   stream process, which matters most when it is wedged and would not answer —
-  and its **selection**, the message types it asked for.
+  and its `DMEx.Log.Selection`, the message types it asked for.
 
   **The selection lives in the entry, not the key.** One entry per connection, so
   registration, cleanup and every `each/2` pass do not multiply by the size of a
@@ -33,17 +33,10 @@ defmodule DMEx.Log.Registry do
   reconnect.
   """
 
+  alias DMEx.Log.Selection
   alias DMEx.Log.Status
 
   @key :streams
-
-  @typedoc """
-  Which message types a connection asked for.
-
-  `:all` is a whole-log subscription; a `MapSet` is a selective one, already
-  expanded from its filter against the log's own message types.
-  """
-  @type selection :: :all | MapSet.t(String.t())
 
   @doc "The registry name for a log module."
   @spec name(module()) :: atom()
@@ -64,6 +57,17 @@ defmodule DMEx.Log.Registry do
   kill. A restart racing that would fail `{:already_started, _}` on the
   partition, spend the log supervisor's restart intensity in a few hundred
   microseconds, and take the tree above down with it.
+
+  **`:partitions` is omitted deliberately** — it defaults to 1, and `Registry`'s
+  own docs recommend raising it under write concurrency, so this is a plausible
+  thing to "optimise" later. At one partition `Registry.dispatch/3` invokes
+  `each/2`'s callback exactly once, with every entry. Partitioned, it invokes it
+  once per partition, and `:parallel` — inert today — starts running it in
+  `Task` processes. Per-entry work survives both; per-*pass* work does not, and
+  both walkers do per-pass work: `DMEx.Log.Watcher` takes one clock reading per
+  sweep and `DMEx.Log.Dispatcher` emits one telemetry event per broadcast. Both
+  keep it outside the callback, which is what makes them correct. Raising
+  `:partitions` means checking that they still do.
   """
   @spec start_link(module()) :: Supervisor.on_start()
   def start_link(log) when is_atom(log) do
@@ -81,8 +85,8 @@ defmodule DMEx.Log.Registry do
   the entry alongside `selection`. Keeping both there rather than in a table
   of their own is what makes cleanup free.
   """
-  @spec register(module(), Status.budget(), selection()) :: {:ok, Status.t()}
-  def register(log, budget, selection \\ :all) when is_atom(log) do
+  @spec register(module(), Status.budget(), Selection.t()) :: {:ok, Status.t()}
+  def register(log, budget, selection) when is_atom(log) do
     status = Status.new(budget)
 
     # This registry is `keys: :duplicate`, so registration cannot be refused —
@@ -103,34 +107,33 @@ defmodule DMEx.Log.Registry do
   def unregister(log) when is_atom(log), do: Registry.unregister(name(log), @key)
 
   @doc """
-  How many message types a selection admits, or `nil` for the whole log.
-
-  For the `matched:` measurement on `[:dmex, :stream, :connect]`, which both
-  transports emit — shared so the two cannot report it differently.
-  """
-  @spec matched(selection()) :: non_neg_integer() | nil
-  def matched(:all), do: nil
-  def matched(selection), do: MapSet.size(selection)
-
-  @doc """
   Runs `fun` for every registered stream, with its pid, status and selection.
 
   There is deliberately no blanket `broadcast/2`: the dispatcher decides per
   connection whether a wakeup is worth sending, and `DMEx.Log.Watcher` uses this
-  to read every connection's deadline. `fun` runs in the calling process
-  (`Registry.dispatch/3` guarantees that), so a slow or dead stream cannot block
-  the caller — and it must not block.
+  to read every connection's deadline. It is one ETS read and no message to any
+  stream, so a wedged connection cannot stall the walk — but `fun` runs in the
+  caller's own process, so it must not block either.
+
+  One call per entry, in one pass. See `start_link/1` for what that rests on.
   """
-  @spec each(module(), (pid(), Status.t(), selection() -> any())) :: :ok
+  @spec each(module(), (pid(), Status.t(), Selection.t() -> any())) :: :ok
   def each(log, fun) when is_atom(log) and is_function(fun, 3) do
     Registry.dispatch(name(log), @key, fn entries ->
       Enum.each(entries, fn {pid, {status, selection}} -> fun.(pid, status, selection) end)
     end)
   end
 
-  @doc "How many streams are currently registered. For telemetry and tests."
+  @doc """
+  How many streams are currently registered. For tests.
+
+  `Registry.count/1` is `:ets.info(size)`; counting the entries under `@key`
+  instead would be `:ets.select_count/2`, a full scan for the same answer —
+  every entry is under that one key. A broadcast counts its own pass, so
+  nothing on the hot path calls this.
+  """
   @spec count(module()) :: non_neg_integer()
   def count(log) when is_atom(log) do
-    Registry.count_match(name(log), @key, :_)
+    Registry.count(name(log))
   end
 end

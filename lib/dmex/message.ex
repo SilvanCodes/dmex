@@ -12,16 +12,19 @@ defmodule DMEx.Message do
       end
 
   `use DMEx.Message` takes `fields:` in exactly the shape `defstruct/1` takes
-  them and generates the `defstruct`, the `@derive JSON.Encoder`, `c:type/0`,
-  `c:cast/1`, and a `t/0` type whose fields are all `term()` — a field list says
-  what the fields are and never what they hold.
-  Omit `fields:` entirely for a message carrying no data.
+  them and generates the `defstruct`, the `@derive JSON.Encoder`, `c:type/0` and
+  `c:cast/1`. Omit `fields:` entirely for a message carrying no data.
 
-  Because `@derive` and `t/0` are generated with the struct, a message module
-  must define neither itself: `@derive` only takes effect before `defstruct`,
-  and a second `@type t` is a redefinition. A module defined at *runtime* is the
-  one place the derivation cannot land, since protocols are consolidated by
-  then; such a module still casts, it just cannot be encoded.
+  No `t/0` is generated. A field list says what the fields are and never what
+  they hold, so a generated one could only say `term()` per field — and since a
+  second `@type t` is a redefinition, generating that would forbid the module
+  from declaring the informative version itself. Write it where it is worth
+  having: `@type t :: %__MODULE__{order_id: pos_integer()}`.
+
+  Because `@derive` is generated with the struct, a message module must not
+  repeat it: `@derive` only takes effect before `defstruct`. A module defined at
+  *runtime* is the one place the derivation cannot land, since protocols are
+  consolidated by then; such a module still casts, it just cannot be encoded.
 
   ## `c:type/0` — the wire type
 
@@ -41,8 +44,9 @@ defmodule DMEx.Message do
   stops resolving them and skips them silently, exactly the way renaming the
   module used to. There is no rename tooling.
 
-  Restricted to `[A-Za-z0-9_.]+`, because the type goes onto an SSE `event:` line
-  and SSE field lines have no escaping. Dots are available for namespacing —
+  Restricted to `[A-Za-z0-9_]+` segments joined by dots, because the type goes
+  onto an SSE `event:` line and SSE field lines have no escaping. Dots are
+  available for namespacing —
   `"acme.orders.placed"` — which is worth using: two producers declaring a bare
   `"order_placed"` collide on a consumer that reads both, and nothing outside a
   single node can detect that.
@@ -93,7 +97,10 @@ defmodule DMEx.Message do
   """
 
   @message_opts [:type, :fields]
-  @type_format ~r/\A[A-Za-z0-9_.]+\z/
+  # Dot-separated segments rather than "the dot is a legal character", so the
+  # degenerate namespaces — `"."`, `".foo"`, `"foo."` — are illegal by
+  # construction rather than merely never written.
+  @type_format ~r/\A[A-Za-z0-9_]+(\.[A-Za-z0-9_]+)*\z/
 
   @doc """
   The message's wire type — the string it declared.
@@ -116,26 +123,23 @@ defmodule DMEx.Message do
 
     type = fetch_type!(module, opts)
     fields = opts |> Keyword.get(:fields, []) |> validate_fields!()
-    struct_type = struct_type(fields)
 
     quote do
       @behaviour DMEx.Message
 
       # Persisted, so `DMEx.Message.message?/1` can recognise a message module by
       # a mark only this macro writes rather than by the shape of its exports.
-      Module.register_attribute(__MODULE__, :dmex_message_type, persist: true)
-      @dmex_message_type unquote(type)
+      # A mark and nothing more: the wire type has one home, `type/0`.
+      Module.register_attribute(__MODULE__, :dmex_message, persist: true)
+      @dmex_message true
 
       # Every appended message has to be JSON-encodable, and the derive has to
       # precede the `defstruct`.
       @derive JSON.Encoder
       defstruct unquote(fields)
 
-      @typedoc "The #{inspect(__MODULE__)} message."
-      @type t :: unquote(struct_type)
-
       @impl true
-      def type, do: @dmex_message_type
+      def type, do: unquote(type)
 
       @impl true
       def cast(data) when is_map(data), do: DMEx.Message.cast_default(__MODULE__, data)
@@ -144,36 +148,12 @@ defmodule DMEx.Message do
     end
   end
 
-  # `%__MODULE__{field: term(), ...}` — see the moduledoc for why `term()`.
-  defp struct_type(fields) do
-    pairs =
-      Enum.map(fields, fn
-        field when is_atom(field) -> {field, quote(do: term())}
-        {field, _default} -> {field, quote(do: term())}
-      end)
-
-    quote do
-      %__MODULE__{unquote_splicing(pairs)}
-    end
-  end
-
   defp validate_keys!(module, opts) do
-    unless Keyword.keyword?(opts) do
-      raise ArgumentError,
-            "`use DMEx.Message` takes a keyword list in #{inspect(module)}, " <>
-              "got: #{Macro.to_string(opts)}"
-    end
+    source = "`use DMEx.Message` in #{inspect(module)}"
 
-    case Enum.reject(Keyword.keys(opts), &(&1 in @message_opts)) do
-      [] ->
-        :ok
-
-      unknown ->
-        raise ArgumentError,
-              "unknown option#{if length(unknown) > 1, do: "s"} " <>
-                "#{inspect(unknown)} passed to `use DMEx.Message` in " <>
-                "#{inspect(module)}. Known options: #{inspect(@message_opts)}"
-    end
+    opts
+    |> DMEx.keyword!(source)
+    |> DMEx.validate_keys!(@message_opts, source)
   end
 
   # Atoms and binaries must render identically — otherwise a style change at the
@@ -270,7 +250,7 @@ defmodule DMEx.Message do
   is not a message should be rejected by name rather than blow up as an
   `UndefinedFunctionError` on `type/0`.
 
-  Tested by the `@dmex_message_type` attribute `use DMEx.Message` persists into the
+  Tested by the `@dmex_message` attribute `use DMEx.Message` persists into the
   BEAM, not by the presence of `type/0` and `cast/1`. Those two are a shape a
   module can have by coincidence, and every module of every application
   depending on `:dmex` is offered to this predicate — a stranger admitted here
@@ -288,7 +268,7 @@ defmodule DMEx.Message do
   @spec message?(module()) :: boolean()
   def message?(module) when is_atom(module) do
     Code.ensure_loaded?(module) and
-      Keyword.has_key?(module.module_info(:attributes), :dmex_message_type)
+      Keyword.has_key?(module.module_info(:attributes), :dmex_message)
   end
 
   @doc """

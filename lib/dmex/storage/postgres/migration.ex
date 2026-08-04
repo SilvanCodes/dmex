@@ -13,6 +13,12 @@ defmodule DMEx.Storage.Postgres.Migration do
 
   alias DMEx.Storage.Postgres
 
+  # From the behaviour, not restated: see `DMEx.Storage.__table__/1`. The same
+  # three names `DMEx.Storage.Postgres` writes its queries against.
+  @messages DMEx.Storage.__table__(:messages)
+  @cursors DMEx.Storage.__table__(:cursors)
+  @dead_messages DMEx.Storage.__table__(:dead_messages)
+
   @doc false
   @spec up([:log | :subscriptions], String.t() | nil) :: :ok
   def up(tables, prefix) do
@@ -28,19 +34,19 @@ defmodule DMEx.Storage.Postgres.Migration do
   @spec down([:log | :subscriptions], String.t() | nil) :: :ok
   def down(tables, prefix) do
     if :subscriptions in tables do
-      drop_if_exists(table(:dmex_dead_messages, prefix: prefix))
-      drop_if_exists(table(:dmex_cursors, prefix: prefix))
+      drop_if_exists(table(@dead_messages, prefix: prefix))
+      drop_if_exists(table(@cursors, prefix: prefix))
     end
 
     if :log in tables do
-      drop_if_exists(table(:dmex_messages, prefix: prefix))
+      drop_if_exists(table(@messages, prefix: prefix))
     end
 
     :ok
   end
 
   defp up_log(prefix) do
-    create_if_not_exists table(:dmex_messages, primary_key: false, prefix: prefix) do
+    create_if_not_exists table(@messages, primary_key: false, prefix: prefix) do
       # bigint, not int: a log nothing deletes from outgrows 2^31, and every
       # consumer cursor in the network is denominated in this column.
       add(:id, :bigserial, primary_key: true)
@@ -84,7 +90,7 @@ defmodule DMEx.Storage.Postgres.Migration do
     # it. It is also the reason a whole-log read is a *separate statement* (see
     # `DMEx.Storage.Postgres.read/5`): folding both into one query with a
     # nullable predicate would defeat this index and the primary key at once.
-    create_if_not_exists(index(:dmex_messages, [:message_type, :id], prefix: prefix))
+    create_if_not_exists(index(@messages, [:message_type, :id], prefix: prefix))
 
     # Written out rather than through `constraint/3`, because Ecto has no
     # `create_if_not_exists` for constraints and Postgres has no
@@ -92,8 +98,8 @@ defmodule DMEx.Storage.Postgres.Migration do
     # re-runnable, which is worth keeping for the whole migration.
     execute("""
     DO $$ BEGIN
-      ALTER TABLE #{qualified(:dmex_messages, prefix)}
-        ADD CONSTRAINT dmex_messages_type_charset
+      ALTER TABLE #{qualified(@messages, prefix)}
+        ADD CONSTRAINT #{@messages}_type_charset
         CHECK (message_type ~ '^[A-Za-z0-9_.]+$');
     EXCEPTION WHEN duplicate_object THEN NULL;
     END $$;
@@ -107,7 +113,7 @@ defmodule DMEx.Storage.Postgres.Migration do
   defp qualified(name, prefix), do: Postgres.__table__(name, prefix)
 
   defp up_subscriptions(prefix) do
-    create_if_not_exists table(:dmex_cursors, primary_key: false, prefix: prefix) do
+    create_if_not_exists table(@cursors, primary_key: false, prefix: prefix) do
       # The `log/id` pair a handler declares, as the key rather than a surrogate
       # id: the resulting unique index enforces "one cursor per subscription" in
       # storage, not only in the process registry. Keying on the declaration
@@ -130,7 +136,7 @@ defmodule DMEx.Storage.Postgres.Migration do
     # Deliberately **not** here: the exception and the attempt count. A failure
     # is an event, not a property of the message, so it goes to logs and
     # telemetry — persisting it would stop a row from simply being a message.
-    create_if_not_exists table(:dmex_dead_messages, primary_key: false, prefix: prefix) do
+    create_if_not_exists table(@dead_messages, primary_key: false, prefix: prefix) do
       # The table is shared across every subscription in the application, so a
       # row has to say which owns it, by the same identifier `dmex_cursors` is
       # keyed on. That plus the log id is the identity: a subscription reads

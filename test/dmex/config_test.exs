@@ -217,6 +217,56 @@ defmodule DMEx.ConfigTest do
     end
   end
 
+  describe "settings" do
+    # A setting is spelled three times: the defaults keyword, the `@type`, and
+    # the validator. Added to the defaults alone it gets a default, a
+    # `*_keys/0` entry and acceptance by `cast!/2` for free — so the other two
+    # spellings are the ones that go missing, both of them silently.
+    test "every log setting is validated" do
+      assert unvalidated(Config.log_keys(), &Config.log!/1) == []
+    end
+
+    test "every handler setting is validated" do
+      assert unvalidated(Config.handler_keys(), &Config.handler!/1) == []
+    end
+
+    test "the log type names exactly the log settings" do
+      assert type_keys(:log) == Enum.sort(Config.log_keys())
+    end
+
+    test "the handler type names exactly the handler settings" do
+      assert type_keys(:handler) == Enum.sort(Config.handler_keys())
+    end
+  end
+
+  # A reference is outside every setting's domain, so a key that accepts one is
+  # a key nothing validates.
+  defp unvalidated(keys, build) do
+    Enum.reject(keys, fn key ->
+      try do
+        build.([{key, make_ref()}])
+        false
+      rescue
+        ArgumentError -> true
+      end
+    end)
+  end
+
+  # The field names of `@type log` / `@type handler`, read back out of the BEAM.
+  defp type_keys(name) do
+    {:ok, types} = Code.Typespec.fetch_types(Config)
+
+    fields =
+      Enum.find_value(types, fn
+        {:type, {^name, {:type, _, :map, fields}, []}} -> fields
+        _other -> nil
+      end)
+
+    fields
+    |> Enum.map(fn {:type, _, :map_field_exact, [{:atom, _, key}, _]} -> key end)
+    |> Enum.sort()
+  end
+
   # Pulls `| `setting` | `value` | why |` rows out of one `## <heading>` section
   # and evaluates each cell back into the term it denotes.
   defp documented_defaults(moduledoc, heading) do

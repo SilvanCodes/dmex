@@ -24,9 +24,9 @@ defmodule DMEx.Log.Plug do
   ## Selection is resolved once, at connect
 
   A filter cannot be pushed into a SQL index — membership is a computation, not
-  something an index can seek on — so the plug expands it against the log's
-  compiled message modules before the send loop starts, turning it into the
-  concrete type list the read path's `message_type = ANY($1)` predicate wants.
+  something an index can seek on — so `DMEx.Log.Selection` expands it against
+  the log's compiled message modules before the send loop starts, turning it
+  into the concrete type list the read path's `message_type = ANY($1)` wants.
   The resulting set also routes wakeups, so an append only disturbs the
   connections that asked for that type.
 
@@ -79,9 +79,9 @@ defmodule DMEx.Log.Plug do
   """
 
   alias DMEx.Config
-  alias DMEx.Handler.Fingerprint
   alias DMEx.Log.Params
   alias DMEx.Log.Registry, as: LogRegistry
+  alias DMEx.Log.Selection
   alias DMEx.Log.Status
   alias DMEx.Log.Stream, as: SendLoop
   alias DMEx.Transport.SSE.Frame
@@ -128,22 +128,13 @@ defmodule DMEx.Log.Plug do
 
   ## Selection
 
-  # Expanded once against the compiled message modules of the application owning
-  # the log, rather than against what the log happens to contain — see
-  # `DMEx.message_types/1` for why those are not interchangeable, and why the
-  # set is not per log.
-  defp select(conn, log, %{selection: :all} = params, config) do
-    stream(conn, log, params, config, :all)
-  end
-
+  # Expanded once, by `DMEx.Log.Selection`, which owns every question asked of
+  # the result from here on. `size/1` is `nil` for a whole-log selection, which
+  # is the one that can never be empty.
   defp select(conn, log, params, config) do
-    selection =
-      log
-      |> DMEx.message_types()
-      |> Enum.filter(&Fingerprint.member?(params.selection, &1))
-      |> MapSet.new()
+    selection = Selection.expand(log, params.selection)
 
-    if MapSet.size(selection) == 0 do
+    if Selection.size(selection) == 0 do
       not_found(conn)
     else
       stream(conn, log, params, config, selection)
@@ -181,9 +172,9 @@ defmodule DMEx.Log.Plug do
   defp open(conn, log, config, selection, status, cursor) do
     # Re-armed because `resolve_cursor/2` above can query — an absent
     # `Last-Event-ID` costs a `max_id`, which takes a pool checkout like any
-    # other read. The
-    # registration's arm covers that query; this one gives the header write
-    # that follows its own full budget rather than what the query left of it.
+    # other read. The registration's arm covers that query; this one gives the
+    # header write that follows its own full budget rather than what the query
+    # left.
     Status.arm(status, config.stall_timeout)
 
     conn =
@@ -191,26 +182,20 @@ defmodule DMEx.Log.Plug do
       |> put_stream_headers(selection)
       |> Plug.Conn.send_chunked(200)
 
-    :telemetry.execute(
-      [:dmex, :stream, :connect],
-      %{cursor: cursor, matched: LogRegistry.matched(selection)},
-      %{log: log, selective: selection != :all}
-    )
+    # Announces the connect and builds the loop's state — the same call
+    # `DMEx.Transport.Local` makes, so the two cannot report a connect
+    # differently. Before `advertise_retry/3`, which may find the socket gone.
+    state =
+      SendLoop.connect(log,
+        transport: DMEx.Transport.SSE,
+        cursor: cursor,
+        status: status,
+        selection: selection
+      )
 
     case advertise_retry(conn, config, status) do
-      {:ok, conn} ->
-        SendLoop.loop(
-          conn,
-          SendLoop.initial_state(log,
-            transport: DMEx.Transport.SSE,
-            cursor: cursor,
-            status: status,
-            selection: selection
-          )
-        )
-
-      {:error, _reason} ->
-        conn
+      {:ok, conn} -> SendLoop.loop(conn, state)
+      {:error, _reason} -> conn
     end
   end
 
@@ -247,10 +232,12 @@ defmodule DMEx.Log.Plug do
     |> put_matched(selection)
   end
 
-  defp put_matched(conn, :all), do: conn
-
+  # `nil` is a whole-log stream, which sends no header at all.
   defp put_matched(conn, selection) do
-    Plug.Conn.put_resp_header(conn, @matched, Integer.to_string(MapSet.size(selection)))
+    case Selection.size(selection) do
+      nil -> conn
+      matched -> Plug.Conn.put_resp_header(conn, @matched, Integer.to_string(matched))
+    end
   end
 
   defp put_keep_alive(conn) do

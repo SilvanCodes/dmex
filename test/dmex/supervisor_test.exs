@@ -272,7 +272,7 @@ defmodule DMEx.SupervisorTest do
 
     test "rejects an unknown option, and says there is no filter" do
       assert_raise ArgumentError,
-                   ~r/unknown subscription option.*no filter or selection option here/s,
+                   ~r/unknown option.*subscribe\/2.*no filter or selection option here/s,
                    fn -> subscribe(Handlers.Echo, filter: ["Some.Type"]) end
     end
 
@@ -288,7 +288,7 @@ defmodule DMEx.SupervisorTest do
     # What is consumed and from whom belongs to the handler module, so naming
     # either here is a mistake rather than an override.
     test "rejects an attempt to name the log or the message types here" do
-      assert_raise ArgumentError, ~r/unknown subscription option\(s\) \[:url\]/, fn ->
+      assert_raise ArgumentError, ~r/unknown option \[:url\]/, fn ->
         subscribe(Handlers.Echo, url: @url)
       end
 

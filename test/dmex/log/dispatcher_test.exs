@@ -31,7 +31,7 @@ defmodule DMEx.Log.DispatcherTest do
     # real commits and lives in test/integration.
     test "wakes registered streams after an append" do
       start_dispatcher()
-      {:ok, _status} = LogRegistry.register(FastLog, 5_000)
+      {:ok, _status} = LogRegistry.register(FastLog, 5_000, :all)
 
       {:ok, _} = FastLog.append(%OrderPlaced{order_id: 1})
 
@@ -43,14 +43,14 @@ defmodule DMEx.Log.DispatcherTest do
     # completely idle log. The guard is that max(id) has to have moved.
     test "an idle log produces no wakeups at all" do
       start_dispatcher()
-      {:ok, _status} = LogRegistry.register(FastLog, 5_000)
+      {:ok, _status} = LogRegistry.register(FastLog, 5_000, :all)
 
       refute_receive :wakeup, @poll * 5
     end
 
     test "stops waking once the log stops moving" do
       start_dispatcher()
-      {:ok, _status} = LogRegistry.register(FastLog, 5_000)
+      {:ok, _status} = LogRegistry.register(FastLog, 5_000, :all)
 
       {:ok, _} = FastLog.append(%OrderPlaced{order_id: 1})
       assert_receive :wakeup, 1_000
@@ -66,14 +66,14 @@ defmodule DMEx.Log.DispatcherTest do
       {:ok, _} = FastLog.append(%OrderPlaced{order_id: 1})
 
       start_dispatcher()
-      {:ok, _status} = LogRegistry.register(FastLog, 5_000)
+      {:ok, _status} = LogRegistry.register(FastLog, 5_000, :all)
 
       refute_receive :wakeup, @poll * 5
     end
 
     test "coalesces a burst into far fewer broadcasts than appends" do
       start_dispatcher()
-      {:ok, _status} = LogRegistry.register(FastLog, 5_000)
+      {:ok, _status} = LogRegistry.register(FastLog, 5_000, :all)
 
       for n <- 1..20, do: {:ok, _} = FastLog.append(%OrderPlaced{order_id: n})
 
@@ -93,7 +93,7 @@ defmodule DMEx.Log.DispatcherTest do
       pids =
         for _ <- 1..3 do
           spawn_link(fn ->
-            {:ok, _status} = LogRegistry.register(FastLog, 5_000)
+            {:ok, _status} = LogRegistry.register(FastLog, 5_000, :all)
             send(parent, {:registered, self()})
 
             receive do
@@ -123,7 +123,7 @@ defmodule DMEx.Log.DispatcherTest do
       # appending — otherwise this races the very thing it is testing.
       :sys.get_state(pid)
 
-      {:ok, _status} = LogRegistry.register(BeamLog, 5_000)
+      {:ok, _status} = LogRegistry.register(BeamLog, 5_000, :all)
 
       {:ok, _} = BeamLog.append(%OrderPlaced{order_id: 1})
 
@@ -137,7 +137,7 @@ defmodule DMEx.Log.DispatcherTest do
     # registered process here never clears, which is exactly that situation.
     test "a connection that has not cleared its flag is told nothing further" do
       start_dispatcher()
-      {:ok, _status} = LogRegistry.register(FastLog, 5_000)
+      {:ok, _status} = LogRegistry.register(FastLog, 5_000, :all)
 
       for n <- 1..10 do
         {:ok, _} = FastLog.append(%OrderPlaced{order_id: n})
@@ -150,7 +150,7 @@ defmodule DMEx.Log.DispatcherTest do
 
     test "clearing the flag re-arms the connection for the next append" do
       start_dispatcher()
-      {:ok, status} = LogRegistry.register(FastLog, 5_000)
+      {:ok, status} = LogRegistry.register(FastLog, 5_000, :all)
 
       {:ok, _} = FastLog.append(%OrderPlaced{order_id: 1})
       assert_receive :wakeup, 1_000
@@ -168,7 +168,7 @@ defmodule DMEx.Log.DispatcherTest do
       ref = :telemetry_test.attach_event_handlers(self(), [[:dmex, :dispatcher, :broadcast]])
 
       start_dispatcher()
-      {:ok, _status} = LogRegistry.register(FastLog, 5_000)
+      {:ok, _status} = LogRegistry.register(FastLog, 5_000, :all)
 
       {:ok, _} = FastLog.append(%OrderPlaced{order_id: 1})
 
@@ -176,6 +176,23 @@ defmodule DMEx.Log.DispatcherTest do
       assert measurements.streams == 1
       assert measurements.woken == 1
       assert metadata.log == FastLog
+    end
+
+    # Both numbers come out of the one walk now, so this pins that they still
+    # answer different questions: everyone registered, versus everyone told.
+    test "counts every registered stream, not only the woken ones" do
+      ref = :telemetry_test.attach_event_handlers(self(), [[:dmex, :dispatcher, :broadcast]])
+
+      start_dispatcher()
+
+      spawn_stream(MapSet.new(["order_placed"]))
+      spawn_stream(MapSet.new(["order_shipped"]))
+
+      {:ok, _} = FastLog.append(%OrderPlaced{order_id: 1})
+
+      assert_receive {[:dmex, :dispatcher, :broadcast], ^ref, measurements, _metadata}, 1_000
+      assert measurements.streams == 2
+      assert measurements.woken == 1
     end
   end
 
@@ -185,7 +202,7 @@ defmodule DMEx.Log.DispatcherTest do
     # the SQLite path, where no notification mechanism exists in the first place.
     test "runs polling-only when no notifier is reachable" do
       start_dispatcher()
-      {:ok, _status} = LogRegistry.register(FastLog, 5_000)
+      {:ok, _status} = LogRegistry.register(FastLog, 5_000, :all)
 
       {:ok, _} = FastLog.append(%OrderPlaced{order_id: 1})
 
@@ -198,13 +215,30 @@ defmodule DMEx.Log.DispatcherTest do
     # correctness. That is what makes it safe to start one after connections
     # already exist.
     test "streams registered before the dispatcher starts still get woken" do
-      {:ok, _status} = LogRegistry.register(FastLog, 5_000)
+      {:ok, _status} = LogRegistry.register(FastLog, 5_000, :all)
 
       start_dispatcher()
 
       {:ok, _} = FastLog.append(%OrderPlaced{order_id: 1})
 
       assert_receive :wakeup, 1_000
+    end
+
+    # A notifier whose message is not `DMEx.Notifier`'s tuple leaves this
+    # dispatcher polling-only forever. `listen/1` succeeded, so the LISTEN
+    # warning never fires and the failure is otherwise completely silent.
+    test "says so once when it is sent something it does not understand" do
+      pid = start_dispatcher()
+
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          send(pid, {:notification, self(), make_ref(), "wrong", "shape", :extra})
+          send(pid, :also_not_a_notification)
+          :sys.get_state(pid)
+        end)
+
+      assert log =~ "unexpected message"
+      assert [_once] = Regex.scan(~r/unexpected message/, log)
     end
   end
 

@@ -36,6 +36,16 @@ defmodule DMEx.MessageTest do
     test "accepts dots, for namespacing" do
       assert compile_type(~s|type: "acme.orders.placed.v1"|) == "acme.orders.placed.v1"
     end
+
+    test "rejects a dot that separates nothing" do
+      # A dot is a namespace separator, not a legal character: `"."` and
+      # `"foo."` name a segment that is not there.
+      for bad <- [~s|"."|, ~s|"..."|, ~s|".foo"|, ~s|"foo."|, ~s|"a..b"|] do
+        assert_raise ArgumentError, ~r/must be an atom or a string matching/, fn ->
+          compile_message("type: #{bad}")
+        end
+      end
+    end
   end
 
   describe "use DMEx.Message type" do
@@ -230,12 +240,17 @@ defmodule DMEx.MessageTest do
       assert JSON.decode!(encoded) == %{"order_id" => 7, "customer_id" => 3, "total" => 1999}
     end
 
-    test "generates a t/0 type over the declared fields" do
-      spec = type_spec(OrderShipped)
+    test "generates no t/0, so a module can declare the informative one itself" do
+      refute type_spec(OrderShipped)
 
-      assert spec =~ "OrderShipped"
-      assert spec =~ "order_id: term()"
-      assert spec =~ "carrier: term()"
+      # A generated `t/0` could only say `term()` per field, and would make this
+      # a redefinition — a compile error rather than a weaker type.
+      module =
+        compile_message(~s|type: "with_own_t", fields: [:order_id]|, """
+        @type t :: %__MODULE__{order_id: pos_integer()}
+        """)
+
+      assert module.type() == "with_own_t"
     end
 
     test "omitting fields: yields a struct with no fields" do
@@ -269,7 +284,7 @@ defmodule DMEx.MessageTest do
 
   # Compiled into a uniquely-named module each time, so nothing here depends on
   # a module name — which is the point of the design under test.
-  defp compile_message(declaration) do
+  defp compile_message(declaration, body \\ "") do
     name = "DMEx.MessageTest.Generated#{System.unique_integer([:positive])}"
 
     {{:module, module, _, _}, _} =
@@ -277,6 +292,7 @@ defmodule DMEx.MessageTest do
         """
         defmodule #{name} do
           use DMEx.Message, #{declaration}
+          #{body}
         end
         """,
         [],
@@ -288,8 +304,10 @@ defmodule DMEx.MessageTest do
 
   defp type_spec(module) do
     {:ok, types} = Code.Typespec.fetch_types(module)
-    {:type, type} = Enum.find(types, &match?({:type, {:t, _, []}}, &1))
 
-    type |> Code.Typespec.type_to_quoted() |> Macro.to_string()
+    case Enum.find(types, &match?({:type, {:t, _, []}}, &1)) do
+      {:type, type} -> type |> Code.Typespec.type_to_quoted() |> Macro.to_string()
+      nil -> nil
+    end
   end
 end

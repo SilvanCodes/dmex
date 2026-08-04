@@ -26,6 +26,19 @@ defmodule DMEx.Notifier.Postgres do
     name = name(opts)
     repo = Map.fetch!(opts, :repo)
 
+    # Hand-maintained, because Postgrex exports no list of its own connect
+    # options — there is no `Postgrex.start_option/0` to derive this from, so
+    # nothing links it to the driver at compile time and it can only drift.
+    # Taking rather than dropping is still the right direction: `repo.config()`
+    # carries Ecto's settings too (`:pool`, `:telemetry_prefix`), and handing
+    # those to Postgrex is a connection that fails to start.
+    #
+    # The failure mode of a missing key is quiet, which is why this is worth a
+    # comment: a 13th key a user sets — an `:ssl_opts` variant, say — reaches the
+    # repo's pool and not this connection, so the notifier works in dev against a
+    # plaintext database and silently falls back to polling in production, where
+    # `DMEx.Log.Dispatcher` covers it at one poll interval of latency and logs a
+    # warning once. Add the key here when that happens.
     conn_opts =
       repo.config()
       |> Keyword.take([
@@ -53,6 +66,9 @@ defmodule DMEx.Notifier.Postgres do
     # true` means Postgrex records the subscription and re-issues every `LISTEN`
     # when the connection comes back. Answering it as anything else would take
     # the dispatcher down every time a log boots ahead of its database.
+    #
+    # The ref is dropped because there is nothing to hand it to: the behaviour
+    # has no `unlisten` and deliberately so — see `c:DMEx.Notifier.listen/1`.
     with pid when is_pid(pid) <- Process.whereis(name(opts)),
          {tag, _ref} when tag in [:ok, :eventually] <-
            safe_listen(pid, Map.fetch!(opts, :channel)) do
@@ -84,5 +100,6 @@ defmodule DMEx.Notifier.Postgres do
     :exit, reason -> {:error, reason}
   end
 
-  defp name(opts), do: opts |> Map.fetch!(:log) |> Module.concat("Notifications")
+  # Derived by the log, not here — see `t:DMEx.Notifier.opts/0`.
+  defp name(opts), do: Map.fetch!(opts, :name)
 end

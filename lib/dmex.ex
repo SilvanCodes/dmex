@@ -251,6 +251,36 @@ defmodule DMEx do
     end
   end
 
+  # Every option vocabulary in DMEx — `use DMEx.Log`, `use DMEx.Handler`,
+  # `use DMEx.Message`, `DMEx.Supervisor.subscribe/2` — is checked here, so the
+  # four say the same thing about an unknown key and none of them can drift.
+  # `source` names the call site ("`use DMEx.Log` in MyApp.Log"); `hint` is
+  # whatever else that one site has to say.
+
+  @doc false
+  @spec keyword!(Macro.t(), String.t()) :: keyword()
+  def keyword!(opts, source) do
+    if Keyword.keyword?(opts) do
+      opts
+    else
+      raise ArgumentError, "#{source} takes a keyword list, got: #{Macro.to_string(opts)}"
+    end
+  end
+
+  @doc false
+  @spec validate_keys!(keyword(), [atom()], String.t(), String.t()) :: :ok
+  def validate_keys!(opts, known, source, hint \\ "") do
+    case Enum.reject(Keyword.keys(opts), &(&1 in known)) do
+      [] ->
+        :ok
+
+      unknown ->
+        raise ArgumentError,
+              "unknown option#{if length(unknown) > 1, do: "s"} #{inspect(unknown)} " <>
+                "passed to #{source}. Known options: #{inspect(Enum.sort(known))}." <> hint
+    end
+  end
+
   @doc """
   The jittered exponential backoff delay in ms before attempt `attempt`,
   counting from 1. Shared by reconnects and local retries.

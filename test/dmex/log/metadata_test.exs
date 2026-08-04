@@ -57,12 +57,6 @@ defmodule DMEx.Log.MetadataTest do
       assert decoded([:id], metadata: ~s({"id":"publishers"})) == %{"id" => 1042}
     end
 
-    test "accepts a NaiveDateTime as well as a DateTime" do
-      assert decoded([:inserted_at], inserted_at: ~N[2026-07-27 10:31:04]) == %{
-               "inserted_at" => "2026-07-27T10:31:04"
-             }
-    end
-
     # A row's fields are binaries — `t:DMEx.Storage.row/0` — so a merged row is
     # still an ordinary row and nothing downstream has to know one happened.
     # Iodata belongs to the frame, not here.
