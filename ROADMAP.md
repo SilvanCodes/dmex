@@ -92,7 +92,7 @@ it is built.
   itself discloses, so on an open mount it leaks nothing new; behind auth it is
   one more thing to authorize. Belongs with the wider
   [auth question](ARCHITECTURE.md#open-questions); the likely answer is an
-  `init_opts` flag defaulting to on.
+  `DMEx.Log.Plug` option defaulting to on.
 - **Counts.** `count(*)` per type is the obvious next column and the expensive
   one: min and max are index endpoints, a count is every row. Maybe behind an
   opt-in, maybe an estimate from planner statistics, maybe not at all.

@@ -14,10 +14,7 @@ defmodule DMEx.Test.Server do
     plug(:match)
     plug(:dispatch)
 
-    forward("/stream",
-      to: DMEx.Log.Plug,
-      init_opts: [log: DMEx.Test.IntegrationLog]
-    )
+    forward("/stream", to: DMEx.Log.Plug, log: DMEx.Test.IntegrationLog)
 
     match _ do
       send_resp(conn, 404, "not found")

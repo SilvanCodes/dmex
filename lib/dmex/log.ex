@@ -17,7 +17,7 @@ defmodule DMEx.Log do
       ]
 
       # in a Phoenix router, a Plug.Router, or a bare Plug pipeline
-      forward "/stream", to: DMEx.Log.Plug, init_opts: [log: MyApp.Log]
+      forward "/stream", to: DMEx.Log.Plug, log: MyApp.Log
 
       MyApp.Log.append(%MyApp.Messages.OrderPlaced{order_id: 7})
       #=> {:ok, 1042}

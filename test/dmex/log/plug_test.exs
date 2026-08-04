@@ -17,7 +17,7 @@ defmodule DMEx.Log.PlugTest do
 
   describe "init/1" do
     test "requires a log, and says how to give it one" do
-      assert_raise ArgumentError, ~r/requires a `:log`.*init_opts:/s, fn ->
+      assert_raise ArgumentError, ~r/requires a `:log`.*log: MyApp.Log/s, fn ->
         LogPlug.init([])
       end
     end

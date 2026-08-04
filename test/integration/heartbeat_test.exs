@@ -38,10 +38,7 @@ defmodule DMEx.Integration.HeartbeatTest do
     plug(:match)
     plug(:dispatch)
 
-    forward("/stream",
-      to: DMEx.Log.Plug,
-      init_opts: [log: DMEx.Integration.HeartbeatTest.Log]
-    )
+    forward("/stream", to: DMEx.Log.Plug, log: DMEx.Integration.HeartbeatTest.Log)
 
     match _ do
       send_resp(conn, 404, "not found")

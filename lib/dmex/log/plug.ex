@@ -9,7 +9,7 @@ defmodule DMEx.Log.Plug do
   Mount it wherever you mount plugs — a Phoenix router, a `Plug.Router`, or a
   bare Bandit/Cowboy pipeline:
 
-      forward "/stream", to: DMEx.Log.Plug, init_opts: [log: MyApp.Log]
+      forward "/stream", to: DMEx.Log.Plug, log: MyApp.Log
 
   The mount is a prefix `forward`, and two things hang off it:
 
@@ -94,8 +94,7 @@ defmodule DMEx.Log.Plug do
       Keyword.get(opts, :log) ||
         raise ArgumentError,
               "DMEx.Log.Plug requires a `:log`, e.g. " <>
-                "`forward \"/stream\", to: DMEx.Log.Plug, " <>
-                "init_opts: [log: MyApp.Log]`"
+                "`forward \"/stream\", to: DMEx.Log.Plug, log: MyApp.Log`"
 
     # Deliberately no database or registry access: under Phoenix's default
     # `init_mode` this runs at compile time.
