@@ -16,12 +16,10 @@ defmodule DMEx.Integration.ResumptionTest do
   alias DMEx.Test.Messages.OrderPlaced
   alias DMEx.Test.Server
 
-  @moduletag :capture_log
-
   setup do
     Handlers.report_to(self())
 
-    start_supervised!({Log, otp_app: :dmex})
+    start_supervised!(Log)
 
     # The server binds port 0, so the log map is necessarily built at
     # runtime — which is exactly why it lives on the child spec rather than in
@@ -91,7 +89,13 @@ defmodule DMEx.Integration.ResumptionTest do
 
     Process.exit(pid, :kill)
 
-    # Nothing new to send, so a restart that replayed from 0 would redeliver all
+    # A sixth row first, so the negative below means "the cursor held" rather
+    # than "the stream had not come back yet" — the reconnect delay is a
+    # jittered draw and would otherwise decide this test.
+    {:ok, _} = Log.append(%OrderPlaced{order_id: 6})
+    assert drain(1) == [6]
+
+    # Nothing else to send, so a restart that replayed from 0 would redeliver all
     # five — and duplicate suppression would have to be what saved it. This
     # asserts the cursor did the work, not the suppression.
     refute_receive {:handled, _, _}, 1_000

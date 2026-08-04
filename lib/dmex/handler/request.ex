@@ -4,12 +4,13 @@ defmodule DMEx.Handler.Request do
 
   The consumer half of the contract `DMEx.Log.Params` validates on the log side,
   kept pure so both ends are data rather than buried in a process. Used by
-  `DMEx.Transport.SSE`.
+  `DMEx.Transport.SSE` — there is no request to build without a wire, and
+  `position/2` is the one part `DMEx.Transport.Local` shares.
 
   The only header DMEx contributes is `last-event-id`, alongside the `accept`
   every SSE client sends.
 
-  `stream_from:` reaches here already resolved by `DMEx.Handler.Stream.init/1`,
+  `stream_from:` reaches here already resolved by `DMEx.Handler.Stream`'s `init/1`,
   so it is a positive id or a `DateTime` and never `:current`. The two are the
   same request in different units, and only one of them needs arithmetic:
 
@@ -49,8 +50,10 @@ defmodule DMEx.Handler.Request do
 
   A durable cursor wins over `stream_from:` whenever there is one — that is the
   whole of resumption. `DMEx.Transport.SSE` needs the same answer for its
-  predecessor check as the header carries, so both derive from here rather than
-  each recomputing the `- 1`.
+  predecessor check as the header carries, and `DMEx.Transport.Local` resolves
+  the same two forms against the log directly — so the id form's `- 1` is
+  computed here and nowhere else. It is the only function in this module a
+  transport with no wire has any use for.
   """
   @spec position(cursor(), Config.handler()) :: non_neg_integer() | DateTime.t()
   def position(:none, %{stream_from: %DateTime{} = at}), do: at

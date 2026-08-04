@@ -100,6 +100,29 @@ defmodule DMEx.Handler.PipelineFailureTest do
 
       assert dead_count() == 0
     end
+
+    # The pause has to happen in the process that is about to die: a restart
+    # builds fresh state and connects immediately, so nothing after the crash is
+    # in a position to pace the loop. Without it a poison message reconnects to
+    # another application's log as fast as the supervisor can restart this
+    # process — which is what `DMEx.Handler.Supervisor`'s absent restart budget
+    # assumes is not happening.
+    test "pauses for reconnect_backoff before re-raising", ctx do
+      state =
+        state(ctx,
+          handler: Handlers.Raising,
+          on_failure: :crash,
+          reconnect_backoff: 200,
+          reconnect_backoff_max: 200
+        )
+
+      {elapsed, _} = :timer.tc(fn -> catch_error(Pipeline.run(row(1), state)) end)
+
+      # A jittered draw over [1, 200], so only the ceiling is assertable — but a
+      # loop with no pause at all lands far below it every time.
+      assert elapsed <= 220_000
+      assert Enum.any?(1..12, fn _ -> pause_of(ctx) > 20 end)
+    end
   end
 
   describe ":skip" do
@@ -260,8 +283,25 @@ defmodule DMEx.Handler.PipelineFailureTest do
 
   ## Helpers
 
+  # The pause is a jittered draw, so one sample proves nothing. Callers take
+  # several and assert that at least one is clearly non-zero.
+  defp pause_of(ctx) do
+    state =
+      state(ctx,
+        handler: Handlers.Raising,
+        on_failure: :crash,
+        reconnect_backoff: 200,
+        reconnect_backoff_max: 200
+      )
+
+    {elapsed, _} = :timer.tc(fn -> catch_error(Pipeline.run(row(1), state)) end)
+
+    div(elapsed, 1000)
+  end
+
   defp state(ctx, opts) do
-    {config_opts, opts} = Keyword.split(opts, [:on_failure, :max_attempts])
+    {config_opts, opts} =
+      Keyword.split(opts, [:on_failure, :max_attempts, :reconnect_backoff, :reconnect_backoff_max])
 
     Pipeline.build(
       storage: DMEx.Storage.Postgres,
@@ -270,8 +310,18 @@ defmodule DMEx.Handler.PipelineFailureTest do
       origin: @url,
       cursor: 0,
       # A short backoff: these tests are about which terminal action runs, not
-      # about how long the schedule waits.
-      config: Config.handler!([retry_backoff: 1, retry_backoff_max: 2] ++ config_opts)
+      # about how long the schedule waits. `reconnect_backoff` matters here too —
+      # `:crash` pauses on it before re-raising, and at the 500 ms default three
+      # tests would sit in `Process.sleep/1` for no reason.
+      config:
+        Config.handler!(
+          [
+            retry_backoff: 1,
+            retry_backoff_max: 2,
+            reconnect_backoff: 1,
+            reconnect_backoff_max: 2
+          ] ++ config_opts
+        )
     )
   end
 

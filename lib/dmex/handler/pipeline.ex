@@ -86,7 +86,7 @@ defmodule DMEx.Handler.Pipeline do
   skipped. The default because it is the only mode refusing both bad outcomes:
   one message a handler cannot process is not a reason for every *later* message
   to stop arriving, nor a reason to lose the failing one. What is stored is the
-  message and only the message — see `DMEx.Storage.Migration`.
+  message and only the message — see `c:DMEx.Storage.dead_message/2`.
 
   **`:crash`** re-raises with the original stacktrace and without advancing, so a
   pending run of skips is re-skipped after the restart. The supervisor restarts
@@ -94,8 +94,9 @@ defmodule DMEx.Handler.Pipeline do
   *before* this one — and the log's range scan re-streams the message that
   killed it, forever. Choose it when later messages must not be processed
   without this one, or when a loud alarm beats a growing table nobody watches.
-  Reconnect backoff keeps the loop off the log's database and off its siblings;
-  `DMEx.Handler.Supervisor` deliberately sets no restart budget.
+  A jittered `reconnect_backoff` pause before the re-raise keeps the loop off the
+  log's database and off its siblings; `DMEx.Handler.Supervisor` deliberately
+  sets no restart budget.
 
   **`:skip`** advances past the failing message without the handler having
   succeeded. Nothing durable is recorded: the log line and
@@ -176,6 +177,53 @@ defmodule DMEx.Handler.Pipeline do
     {:ok, %{state | pending: false}}
   end
 
+  @doc """
+  Builds pipeline state from the handler's declaration, once per subscription.
+
+  The message set was derived and validated at compile time, so there is nothing
+  left for this to check but the handler itself — and nothing to carry, since
+  resolving a `message_type` is the handler's own `__dmex_cast__/3`, compiled
+  from that set. Never `String.to_atom/1` on whatever the log sent, which would
+  be an unbounded-atom-table risk on attacker-controlled input.
+  """
+  @spec build(keyword()) :: t()
+  def build(opts) do
+    handler = Keyword.fetch!(opts, :handler)
+
+    unless Handler.handler?(handler) do
+      raise ArgumentError,
+            "#{inspect(handler)} is not a DMEx handler. " <>
+              "Add `use DMEx.Handler` to it."
+    end
+
+    declaration = handler.__dmex__()
+
+    %{
+      storage: Keyword.fetch!(opts, :storage),
+      storage_opts: Keyword.fetch!(opts, :storage_opts),
+      handler: handler,
+      subscription: Keyword.get_lazy(opts, :subscription, fn -> subscription!(declaration) end),
+      origin: Keyword.fetch!(opts, :origin),
+      cursor: Keyword.get(opts, :cursor, 0),
+      pending: false,
+      config: Keyword.get_lazy(opts, :config, fn -> DMEx.Config.handler!([]) end)
+    }
+  end
+
+  # `DMEx.Handler.Stream` always names the subscription it runs, since it is one
+  # of possibly several. A caller that did not — a test — only has an answer
+  # when there is exactly one, and it renders that answer through
+  # `Handler.subscription_id/2` rather than concatenating its own.
+  defp subscription!(%{logs: [only], handler: handler}) do
+    Handler.subscription_id(handler, only)
+  end
+
+  defp subscription!(%{logs: logs, handler: handler}) do
+    raise ArgumentError,
+          "#{inspect(handler)} reads #{length(logs)} logs (#{Enum.join(logs, ", ")}), so a " <>
+            "pipeline for it has to be built with the `subscription:` it is running."
+  end
+
   ## Internals
 
   defp dispatch(row, id, state) do
@@ -229,10 +277,28 @@ defmodule DMEx.Handler.Pipeline do
 
   defp resolve(state, row, id, exception, stacktrace, attempts) do
     case state.config.on_failure do
-      :crash -> reraise(exception, stacktrace)
-      :skip -> give_up(state, row, id, exception, attempts, :skip)
-      :dead_message -> give_up(state, row, id, exception, attempts, :dead_message)
+      :crash ->
+        # The pause has to happen *here*, in the process that is about to die.
+        # A restart builds fresh state and connects straight away, so nothing
+        # after the crash is in a position to pace the loop — and without this a
+        # poison message reconnects to another application's log as fast as the
+        # supervisor can restart this process, which is why
+        # `DMEx.Handler.Supervisor` can afford to set no restart budget.
+        state.config
+        |> crash_backoff()
+        |> Process.sleep()
+
+        reraise(exception, stacktrace)
+
+      mode ->
+        give_up(state, row, id, exception, attempts, mode)
     end
+  end
+
+  # A flat jittered draw rather than an escalating one: the counter an escalating
+  # schedule needs cannot survive the restart it is meant to pace.
+  defp crash_backoff(config) do
+    DMEx.backoff(1, config.reconnect_backoff, config.reconnect_backoff_max)
   end
 
   defp give_up(state, row, id, exception, attempts, mode) do
@@ -309,49 +375,5 @@ defmodule DMEx.Handler.Pipeline do
 
   defp advance!(state, id) do
     :ok = state.storage.advance(state.storage_opts, state.subscription, id)
-  end
-
-  @doc """
-  Builds pipeline state from the handler's declaration, once per subscription.
-
-  The message set was derived and validated at compile time, so there is nothing
-  left for this to check but the handler itself — and nothing to carry, since
-  resolving a `message_type` is the handler's own `__dmex_cast__/3`, compiled
-  from that set. Never `String.to_atom/1` on whatever the log sent, which would
-  be an unbounded-atom-table risk on attacker-controlled input.
-  """
-  @spec build(keyword()) :: t()
-  def build(opts) do
-    handler = Keyword.fetch!(opts, :handler)
-
-    unless Handler.handler?(handler) do
-      raise ArgumentError,
-            "#{inspect(handler)} is not a DMEx handler. " <>
-              "Add `use DMEx.Handler` to it."
-    end
-
-    declaration = handler.__dmex__()
-
-    %{
-      storage: Keyword.fetch!(opts, :storage),
-      storage_opts: Keyword.fetch!(opts, :storage_opts),
-      handler: handler,
-      subscription: Keyword.get_lazy(opts, :subscription, fn -> subscription!(declaration) end),
-      origin: Keyword.fetch!(opts, :origin),
-      cursor: Keyword.get(opts, :cursor, 0),
-      pending: false,
-      config: Keyword.get_lazy(opts, :config, fn -> DMEx.Config.handler!([]) end)
-    }
-  end
-
-  # `DMEx.Handler.Stream` always names the subscription it runs, since it is one
-  # of possibly several. A caller that did not — a test, or a replay — only has
-  # an answer when there is exactly one.
-  defp subscription!(%{logs: [only], id: id}), do: only <> "/" <> id
-
-  defp subscription!(%{logs: logs, handler: handler}) do
-    raise ArgumentError,
-          "#{inspect(handler)} reads #{length(logs)} logs (#{Enum.join(logs, ", ")}), so a " <>
-            "pipeline for it has to be built with the `subscription:` it is running."
   end
 end

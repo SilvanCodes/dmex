@@ -6,8 +6,7 @@ defmodule DMEx.Log.Plug do
   connects to. A subscription in the same application reads the log directly and
   never comes here — see `DMEx.Transport.Local`.
 
-  Mount it wherever you mount plugs — a Phoenix router, a `Plug.Router`, or a
-  bare Bandit/Cowboy pipeline:
+  Mount it in a `Plug.Router`:
 
       forward "/stream", to: DMEx.Log.Plug, log: MyApp.Log
 
@@ -61,7 +60,7 @@ defmodule DMEx.Log.Plug do
     * **`x-accel-buffering: no`** — nginx-specific; stops it buffering the
       stream. See `guides/deployment.md`.
     * **`dmex-matched-messages`** — on a selective stream only, how many of the
-      log's types the filter admitted.
+      application's types the filter admitted.
 
   `connection: keep-alive` is set only on HTTP/1.1, where it means something; it
   is illegal on HTTP/2.
@@ -70,14 +69,17 @@ defmodule DMEx.Log.Plug do
 
   A `400` for a malformed `Last-Event-ID` or a path segment that is not a
   decodable filter. A `404` for a filter matching none of the application's
-  message types. A `405` with `allow: GET` for any other method.
+  message types. A `405` with `allow: GET` for any other method. A `503` when the
+  connect cursor cannot be resolved — a `Last-Event-ID` instant whose
+  `c:DMEx.Storage.cursor_at/2` query fails.
 
-  There is no `503`/`Retry-After` admission control — see `ROADMAP.md`.
+  There is no `503`/`Retry-After` *admission control* — see `ROADMAP.md`.
   """
 
   alias DMEx.Config
   alias DMEx.Handler.Fingerprint
   alias DMEx.Log.Params
+  alias DMEx.Log.Registry, as: LogRegistry
   alias DMEx.Log.Status
   alias DMEx.Log.Stream, as: SendLoop
   alias DMEx.Transport.SSE.Frame
@@ -85,6 +87,10 @@ defmodule DMEx.Log.Plug do
   require Logger
 
   @behaviour Plug
+
+  # Sent only on a selective stream, saying how many of the application's types
+  # the filter admitted.
+  @matched "dmex-matched-messages"
 
   @impl Plug
   def init(opts) do
@@ -136,10 +142,7 @@ defmodule DMEx.Log.Plug do
       |> MapSet.new()
 
     if MapSet.size(selection) == 0 do
-      not_found(
-        conn,
-        "this filter matched none of the message types this application knows about"
-      )
+      not_found(conn)
     else
       stream(conn, log, params, config, selection)
     end
@@ -155,8 +158,7 @@ defmodule DMEx.Log.Plug do
     # block exactly as the send loop can. The selection rides along so
     # `DMEx.Log.Dispatcher` can decide whether an append is worth waking this
     # connection for without messaging it.
-    {:ok, status} =
-      DMEx.Log.Registry.register(log, config.stall_timeout, selection)
+    {:ok, status} = LogRegistry.register(log, config.stall_timeout, selection)
 
     case resolve_cursor(log, params.cursor) do
       {:ok, cursor} -> open(conn, log, config, selection, status, cursor)
@@ -178,7 +180,7 @@ defmodule DMEx.Log.Plug do
 
     :telemetry.execute(
       [:dmex, :stream, :connect],
-      %{cursor: cursor, matched: matched(selection)},
+      %{cursor: cursor, matched: LogRegistry.matched(selection)},
       %{log: log, selective: selection != :all}
     )
 
@@ -229,14 +231,14 @@ defmodule DMEx.Log.Plug do
     |> Plug.Conn.put_resp_header("cache-control", "no-cache")
     |> Plug.Conn.put_resp_header("x-accel-buffering", "no")
     |> put_keep_alive()
-    |> put_resp_headers(matched_headers(selection))
+    |> put_matched(selection)
   end
 
-  defp matched_headers(:all), do: []
-  defp matched_headers(selection), do: Params.matched_header(MapSet.size(selection))
+  defp put_matched(conn, :all), do: conn
 
-  defp matched(:all), do: nil
-  defp matched(selection), do: MapSet.size(selection)
+  defp put_matched(conn, selection) do
+    Plug.Conn.put_resp_header(conn, @matched, Integer.to_string(MapSet.size(selection)))
+  end
 
   defp put_keep_alive(conn) do
     if Plug.Conn.get_http_protocol(conn) == :"HTTP/1.1" do
@@ -246,18 +248,16 @@ defmodule DMEx.Log.Plug do
     end
   end
 
-  defp put_resp_headers(conn, headers) do
-    Enum.reduce(headers, conn, fn {name, value}, acc ->
-      Plug.Conn.put_resp_header(acc, name, value)
-    end)
-  end
-
   defp bad_request(conn, error) do
     respond(conn, 400, Params.describe(error))
   end
 
-  defp not_found(conn, body) do
-    respond(conn, 404, body)
+  defp not_found(conn) do
+    respond(
+      conn,
+      404,
+      "this filter matched none of the message types this application knows about"
+    )
   end
 
   # 503, not 500: the request was well-formed and the log's storage is momentarily

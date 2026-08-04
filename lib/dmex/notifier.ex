@@ -64,7 +64,7 @@ defmodule DMEx.Notifier do
   @doc """
   Announces one append, by message type.
 
-  Called by `DMEx.Log.append/2` **after** the row is written, never inside the
+  Called by a log module's `append/2` **after** the row is written, never inside the
   append's transaction: a notifier that fails must not turn a committed append
   into an error, so this returns `:ok` regardless. The lost notification costs
   one poll interval.

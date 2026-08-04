@@ -16,7 +16,7 @@ defmodule DMEx.Log do
         {DMEx.Supervisor, repo: MyApp.Repo, logs: [orders: MyApp.Log]}
       ]
 
-      # in a Phoenix router, a Plug.Router, or a bare Plug pipeline
+      # in a Plug.Router
       forward "/stream", to: DMEx.Log.Plug, log: MyApp.Log
 
       MyApp.Log.append(%MyApp.Messages.OrderPlaced{order_id: 7})
@@ -125,7 +125,6 @@ defmodule DMEx.Log do
   alias DMEx.Config
 
   @log_opts [:repo, :storage, :notifier, :app, :prefix]
-  @app_key_format ~r/\A[a-z][a-z0-9_]*\z/
   @app_key_max_bytes 58
 
   # A fixed namespace for every DMEx advisory lock, so DMEx's lock space is
@@ -161,15 +160,15 @@ defmodule DMEx.Log do
       def append(message, opts \\ []), do: DMEx.Log.__append__(__MODULE__, message, opts)
 
       @doc false
-      def child_spec(opts), do: DMEx.Log.child_spec(__MODULE__, opts)
+      def child_spec(_opts), do: DMEx.Log.child_spec(__MODULE__)
 
       @doc """
       Starts this log's supervision subtree.
 
       Usually called for you by putting `MyApp.Log` in a supervision tree.
       """
-      @spec start_link(keyword()) :: Supervisor.on_start()
-      def start_link(opts \\ []), do: DMEx.Log.start_link(__MODULE__, opts)
+      @spec start_link() :: Supervisor.on_start()
+      def start_link, do: DMEx.Log.start_link(__MODULE__)
     end
   end
 
@@ -226,18 +225,18 @@ defmodule DMEx.Log do
   end
 
   @doc false
-  @spec child_spec(module(), keyword()) :: Supervisor.child_spec()
-  def child_spec(log, opts) do
+  @spec child_spec(module()) :: Supervisor.child_spec()
+  def child_spec(log) do
     %{
       id: log,
-      start: {__MODULE__, :start_link, [log, opts]},
+      start: {__MODULE__, :start_link, [log]},
       type: :supervisor
     }
   end
 
   @doc false
-  @spec start_link(module(), keyword()) :: Supervisor.on_start()
-  def start_link(log, opts \\ []) do
+  @spec start_link(module()) :: Supervisor.on_start()
+  def start_link(log) do
     %{
       storage: storage,
       storage_opts: storage_opts,
@@ -261,7 +260,7 @@ defmodule DMEx.Log do
 
     Supervisor.start_link(children,
       strategy: :one_for_one,
-      name: Keyword.get(opts, :name, Module.concat(log, "Supervisor"))
+      name: Module.concat(log, "Supervisor")
     )
   end
 
@@ -277,7 +276,7 @@ defmodule DMEx.Log do
   # a one-line call and nothing else.
   @doc false
   @spec __append__(module(), struct(), keyword()) :: {:ok, pos_integer()} | {:error, term()}
-  def __append__(log, message, opts) when is_atom(log) and is_struct(message) do
+  def __append__(log, message, opts) when is_atom(log) do
     validate_append_opts!(opts)
 
     %{storage: storage, storage_opts: storage_opts} = config = log.__dmex__()
@@ -306,14 +305,25 @@ defmodule DMEx.Log do
     )
   end
 
+  # `DMEx.Message.message?/1` rather than `function_exported?(module, :type, 0)`:
+  # exporting `type/0` is a shape a struct can have by coincidence, and one that
+  # gets past this dies further in, inside `JSON.encode!/1`.
   defp message_type!(%module{} = message) do
-    if function_exported?(module, :type, 0) do
+    if DMEx.Message.message?(module) do
       module.type()
     else
       raise ArgumentError,
             "#{inspect(module)} is not a DMEx message module, so #{inspect(message)} " <>
               "cannot be appended. Add `use DMEx.Message` to #{inspect(module)}."
     end
+  end
+
+  # A non-struct gets the same `ArgumentError` the generated `append/2` promises,
+  # rather than a `FunctionClauseError` from a guard.
+  defp message_type!(other) do
+    raise ArgumentError,
+          "#{inspect(other)} is not a struct built with `use DMEx.Message`, " <>
+            "so it cannot be appended."
   end
 
   defp validate_append_opts!(opts) do
@@ -391,10 +401,10 @@ defmodule DMEx.Log do
         other -> raise ArgumentError, ":app must be an atom or a string, got: #{inspect(other)}"
       end
 
-    unless Regex.match?(@app_key_format, key) do
+    unless DMEx.identifier?(key) do
       raise ArgumentError,
             "the app key #{inspect(key)} derived for #{inspect(module)} is not a legal " <>
-              "identifier. It must match #{inspect(@app_key_format)} — pass `app: :your_key`."
+              "identifier. It must match #{inspect(DMEx.identifier_format())} — pass `app: :your_key`."
     end
 
     if byte_size(key) > @app_key_max_bytes do

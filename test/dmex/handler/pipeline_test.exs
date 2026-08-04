@@ -170,7 +170,11 @@ defmodule DMEx.Handler.PipelineTest do
 
       Pipeline.run(narrowed_row(1, 9), state)
 
-      refute_receive {[:dmex, :handler, :message, _], ^ref, _, _}
+      # Scoped to this test's own handler. `:telemetry_test` attaches globally,
+      # so a bare pattern also matches spans emitted by any other async test
+      # running a handler at the same moment — which made this refute fail on
+      # an unlucky interleaving rather than on a regression.
+      refute_receive {[:dmex, :handler, :message, _], ^ref, _, %{handler: Handlers.Narrowed}}
     end
 
     # The one thing this must not do: a clause head that did not match means

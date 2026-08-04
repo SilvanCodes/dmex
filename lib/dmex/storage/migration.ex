@@ -46,7 +46,7 @@ defmodule DMEx.Storage.Migration do
   timestamp — but `stream_from: :current` is the default, so in practice every
   subscription reads it exactly once at startup.
 
-  ## The one CHECK constraint
+  ## The `message_type` CHECK
 
   `message_type` is restricted to `[A-Za-z0-9_.]+` because it goes on the wire as
   an SSE `event:` line and SSE field lines have no escaping. Everything else on

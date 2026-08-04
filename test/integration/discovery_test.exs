@@ -17,12 +17,10 @@ defmodule DMEx.Integration.DiscoveryTest do
   alias DMEx.Test.Messages.OrderPlaced
   alias DMEx.Test.Server
 
-  @moduletag :capture_log
-
   setup do
     Handlers.report_to(self())
 
-    start_supervised!({Log, otp_app: :dmex})
+    start_supervised!(Log)
 
     url = Server.start!() <> "/stream"
 

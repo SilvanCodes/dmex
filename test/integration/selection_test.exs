@@ -40,12 +40,10 @@ defmodule DMEx.Integration.SelectionTest do
   alias DMEx.Test.Messages.OrderShipped
   alias DMEx.Test.Server
 
-  @moduletag :capture_log
-
   setup do
     Handlers.report_to(self())
 
-    start_supervised!({Log, otp_app: :dmex})
+    start_supervised!(Log)
 
     base = Server.start!()
 
@@ -164,6 +162,14 @@ defmodule DMEx.Integration.SelectionTest do
       # permanently dead subscription.
       {:ok, [pid]} =
         DMEx.Supervisor.subscribe(__MODULE__.AheadOfLog, supervisor: TestSupervisor)
+
+      # Observing the 404 itself, not just the absence of a death: without
+      # this the assertions below hold for any healthy subscription, and the
+      # retry policy would be untested end to end.
+      telemetry = :telemetry_test.attach_event_handlers(self(), [[:dmex, :handler, :reconnect]])
+
+      assert_receive {[:dmex, :handler, :reconnect], ^telemetry, _measurements, metadata}, 5_000
+      assert {:no_matching_types, _url} = metadata.reason
 
       ref = Process.monitor(pid)
 

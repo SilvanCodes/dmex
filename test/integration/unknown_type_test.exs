@@ -24,12 +24,10 @@ defmodule DMEx.Integration.UnknownTypeTest do
   alias DMEx.Test.Messages.OrderShipped
   alias DMEx.Test.Server
 
-  @moduletag :capture_log
-
   setup do
     Handlers.report_to(self())
 
-    start_supervised!({Log, otp_app: :dmex})
+    start_supervised!(Log)
 
     # The server binds port 0, so the log map is necessarily built at
     # runtime — which is exactly why it lives on the child spec rather than in
@@ -81,6 +79,14 @@ defmodule DMEx.Integration.UnknownTypeTest do
     # is one id away or ten million.
     refute_receive {:handled, _, _}, 500
     assert cursor() == {:ok, nil}
+
+    # Anchored on a positive: without this the two assertions above also pass
+    # for a subscription that never connected at all. One selected row proves
+    # the stream is live and filtering, rather than absent.
+    {:ok, placed} = Log.append(%OrderPlaced{order_id: 6})
+
+    assert_receive {:handled, %OrderPlaced{order_id: 6}, _}, 5_000
+    eventually(fn -> cursor() == {:ok, placed} end)
   end
 
   test "the whole log still arrives, and still skips, with selective: false", _ctx do

@@ -74,8 +74,6 @@ defmodule DMEx.Supervisor do
   # `handler:` in the options is a mistake worth raising on.
   @subscription_opts [:supervisor, :logs, :log]
 
-  @log_name ~r/\A[a-z][a-z0-9_]*\z/
-
   @doc false
   @spec child_spec(keyword()) :: Supervisor.child_spec()
   def child_spec(opts) do
@@ -168,11 +166,12 @@ defmodule DMEx.Supervisor do
   def subscribe(handler, opts \\ []) when is_atom(handler) and is_list(opts) do
     supervisor = Keyword.get(opts, :supervisor, @default_name)
 
-    unless Handler.handler?(handler), do: raise_not_a_handler(handler)
+    # `declaration!/1` rather than a second `handler?/1` check plus a copy of its
+    # message: it is the one place a module becomes its declaration, so every
+    # caller rejects a non-handler identically.
+    declaration = Handler.declaration!(handler)
 
     validate_keys!(opts)
-
-    declaration = handler.__dmex__()
     bound = resolve_logs!(opts, supervisor)
     storage = Map.to_list(resolve_storage!(opts, supervisor))
     config = Config.handler!(Keyword.merge(declaration.config, opts))
@@ -185,7 +184,7 @@ defmodule DMEx.Supervisor do
       child =
         [
           handler: handler,
-          subscription: log <> "/" <> declaration.id,
+          subscription: Handler.subscription_id(handler, log),
           fingerprint: declaration.fingerprint,
           transport: transport,
           origin: origin,
@@ -321,8 +320,10 @@ defmodule DMEx.Supervisor do
   end
 
   defp reject_unbound_logs!(handlers, logs) do
-    for handler <- handlers, log <- Handler.declaration!(handler).logs do
-      _ = transport!(handler.__dmex__(), log, logs)
+    for handler <- handlers,
+        declaration = Handler.declaration!(handler),
+        log <- declaration.logs do
+      _ = transport!(declaration, log, logs)
     end
 
     :ok
@@ -399,10 +400,10 @@ defmodule DMEx.Supervisor do
     do: log_name!(Atom.to_string(name))
 
   defp log_name!(name) when is_binary(name) do
-    unless Regex.match?(@log_name, name) do
+    unless DMEx.identifier?(name) do
       raise ArgumentError,
             "the log name #{inspect(name)} is not a legal identifier: it must match " <>
-              "#{inspect(@log_name)}, the same charset a handler's `logs:` and `id:` use, " <>
+              "#{inspect(DMEx.identifier_format())}, the same charset a handler's `logs:` and `id:` use, " <>
               "so \"/\" can join them with no escaping."
     end
 
@@ -455,28 +456,32 @@ defmodule DMEx.Supervisor do
   ## Storage resolution
 
   defp resolve_storage!(opts, supervisor) do
-    if Keyword.has_key?(opts, :repo) do
-      storage_config!(opts)
-    else
-      with pid when is_pid(pid) <- Process.whereis(registry(supervisor)),
-           {:ok, %{storage_opts: %{repo: repo}} = config} when not is_nil(repo) <-
-             Registry.meta(registry(supervisor), :storage) do
-        config
+    config =
+      if Keyword.has_key?(opts, :repo) do
+        storage_config!(opts)
       else
-        _ -> raise_no_repo(supervisor)
+        with pid when is_pid(pid) <- Process.whereis(registry(supervisor)),
+             {:ok, %{storage_opts: %{repo: repo}} = config} when not is_nil(repo) <-
+               Registry.meta(registry(supervisor), :storage) do
+          config
+        else
+          _ -> raise_no_repo(supervisor)
+        end
       end
-    end
+
+    # Here rather than only in `storage!/1`, so an option an adapter cannot
+    # honour — `prefix:` on SQLite — fails at subscribe rather than silently
+    # reading the unprefixed tables. Safe by this point: both branches above
+    # have established a non-nil repo, which `c:DMEx.Storage.validate!/1` reads.
+    :ok = DMEx.Log.validate_storage!(config.storage, config.storage_opts)
+
+    config
   end
 
   defp storage_config!(opts) do
     {storage, storage_opts} = storage(opts)
 
     %{storage: storage, storage_opts: storage_opts}
-  end
-
-  defp raise_not_a_handler(module) do
-    raise ArgumentError,
-          "#{inspect(module)} is not a DMEx handler. Add `use DMEx.Handler` to it."
   end
 
   defp raise_no_repo(supervisor) do

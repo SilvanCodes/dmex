@@ -8,8 +8,9 @@ defmodule DMEx.Notifier.Postgres do
 
   `pg_notify/2` rather than `NOTIFY <channel>`, so neither a derived channel
   name nor a message type needs identifier quoting or can be an injection site.
-  Postgres caps a notification payload at 8000 bytes, which a module name cannot
-  reach.
+  The payload is the message type, which `DMEx.Message`'s `[A-Za-z0-9_.]+` rule
+  keeps well inside Postgres' 8000-byte notification cap in practice — and an
+  over-long one costs a swallowed error and one poll interval, nothing more.
 
   **Not usable behind a transaction-pooling connection pooler.** `LISTEN` is
   session state and PgBouncer in transaction mode hands the session back after
@@ -38,7 +39,8 @@ defmodule DMEx.Notifier.Postgres do
         :ssl,
         :ssl_opts,
         :parameters,
-        :connect_timeout
+        :connect_timeout,
+        :socket_options
       ])
       |> Keyword.merge(name: name, auto_reconnect: true)
 
@@ -47,8 +49,13 @@ defmodule DMEx.Notifier.Postgres do
 
   @impl DMEx.Notifier
   def listen(opts) do
+    # `{:eventually, ref}` is a success, not a degradation: `auto_reconnect:
+    # true` means Postgrex records the subscription and re-issues every `LISTEN`
+    # when the connection comes back. Answering it as anything else would take
+    # the dispatcher down every time a log boots ahead of its database.
     with pid when is_pid(pid) <- Process.whereis(name(opts)),
-         {:ok, _ref} <- safe_listen(pid, Map.fetch!(opts, :channel)) do
+         {tag, _ref} when tag in [:ok, :eventually] <-
+           safe_listen(pid, Map.fetch!(opts, :channel)) do
       {:ok, pid}
     else
       nil -> {:error, :not_running}

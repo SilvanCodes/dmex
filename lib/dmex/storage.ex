@@ -187,8 +187,9 @@ defmodule DMEx.Storage do
   | before the first row, or an empty log | 0 | the whole log |
 
   **This requires `inserted_at` to ascend with `id`**, which is why
-  `DMEx.Storage.Migration` defaults it to `clock_timestamp()` rather than `now()` — see
-  the fourth contract in the module documentation. Across an inversion, "the
+  `DMEx.Storage.Postgres.Migration` defaults it to `clock_timestamp()` rather than
+  `now()`, and `DMEx.Storage.SQLite.Migration` to a statement-time `strftime` — see
+  the second contract in the module documentation. Across an inversion, "the
   last row before `at`" can land past a lower id that belongs *after* the cut,
   and a cursor set too high skips it permanently. The interleaving-proof
   alternative is the forward `min(id) WHERE inserted_at >= $1` minus one, which

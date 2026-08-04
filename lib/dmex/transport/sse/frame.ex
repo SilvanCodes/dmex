@@ -153,6 +153,8 @@ defmodule DMEx.Transport.SSE.Frame do
     end
   end
 
+  ## Internals
+
   defp split_lines(block), do: String.split(block, ["\r\n", "\n", "\r"])
 
   defp collect_field(line, acc) do
@@ -166,13 +168,15 @@ defmodule DMEx.Transport.SSE.Frame do
   end
 
   # The value is everything after the colon, minus one optional leading space.
-  defp parse_line(":" <> _comment), do: :comment
+  # A comment and an empty line are both `:ignore`: `collect_field/2` has one
+  # clause for everything that is not a field it wants, so nothing distinguishes
+  # them.
+  defp parse_line(":" <> _comment), do: :ignore
 
   defp parse_line(line) do
     case :binary.split(line, ":") do
       [field, " " <> value] -> {field, value}
       [field, value] -> {field, value}
-      [""] -> :blank
       [field] -> {field, ""}
     end
   end

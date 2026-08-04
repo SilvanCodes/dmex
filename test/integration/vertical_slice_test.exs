@@ -18,8 +18,6 @@ defmodule DMEx.Integration.VerticalSliceTest do
   alias DMEx.Test.Server
   alias Ecto.Adapters.SQL
 
-  @moduletag :capture_log
-
   defmodule SecondHandler do
     @moduledoc false
     use DMEx.Handler, logs: [:test], id: :second
@@ -38,7 +36,7 @@ defmodule DMEx.Integration.VerticalSliceTest do
   setup do
     Handlers.report_to(self())
 
-    start_supervised!({Log, otp_app: :dmex})
+    start_supervised!(Log)
 
     # The server binds port 0, so the log map is necessarily built at
     # runtime — which is exactly why it lives on the child spec rather than in

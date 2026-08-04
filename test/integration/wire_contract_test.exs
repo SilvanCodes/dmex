@@ -20,10 +20,8 @@ defmodule DMEx.Integration.WireContractTest do
   alias DMEx.Test.Server
   alias DMEx.Transport.SSE.Frame
 
-  @moduletag :capture_log
-
   setup do
-    start_supervised!({Log, otp_app: :dmex})
+    start_supervised!(Log)
 
     uri = URI.parse(Server.start!())
 
@@ -46,8 +44,11 @@ defmodule DMEx.Integration.WireContractTest do
     test "carries no DMEx headers in either direction", ctx do
       {200, headers, _} = request(ctx, [])
 
-      assert Enum.reject(headers, fn {name, _} -> name == "dmex-matched-messages" end)
-             |> Enum.all?(fn {name, _} -> not String.starts_with?(name, "dmex-") end)
+      # No exemption: this is a bare `GET /stream`, so `dmex-matched-messages`
+      # is not set either — and exempting the one header the plug can emit would
+      # blind the assertion to exactly what it is named for. Its presence on a
+      # selective stream is asserted in `selection_test.exs`.
+      assert Enum.all?(headers, fn {name, _} -> not String.starts_with?(name, "dmex-") end)
     end
 
     test "opens the stream with a retry: frame carrying the effective heartbeat", ctx do

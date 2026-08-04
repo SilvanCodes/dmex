@@ -98,12 +98,8 @@ defmodule DMEx.Handler.Fingerprint do
   Three array reads and no loop, whatever the set size.
   """
   @spec member?(t(), String.t()) :: boolean()
-  def member?(%__MODULE__{seed: seed, block: block, fingerprints: fps}, type)
-      when is_binary(type) do
-    hash = mixed(key_hash(type), seed)
-    {h0, h1, h2} = positions(hash, block)
-
-    fingerprint(hash) == bxor(at(fps, h0), bxor(at(fps, h1), at(fps, h2)))
+  def member?(%__MODULE__{} = filter, type) when is_binary(type) do
+    member_hash?(filter, key_hash(type))
   end
 
   @doc """

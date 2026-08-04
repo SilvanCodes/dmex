@@ -14,28 +14,11 @@ defmodule DMEx.Integration.StallReclaimTest do
 
   alias DMEx.Log.Watcher
   alias DMEx.Test.Messages.OrderPlaced
+  alias DMEx.Test.PatientLog, as: Patient
+  alias DMEx.Test.StallLog, as: Log
 
   @stall_timeout 300
   @check_interval 50
-
-  defmodule Log do
-    @moduledoc false
-    use DMEx.Log,
-      repo: DMEx.Test.IntegrationRepo,
-      app: :dmex_stall,
-      heartbeat_ms: 60_000,
-      max_batch_bytes: 16_384,
-      stall_timeout: 300,
-      stall_check_interval: 50
-  end
-
-  defmodule Patient do
-    @moduledoc "Same log, no watcher: `stall_timeout: :infinity` starts none."
-    use DMEx.Log,
-      repo: DMEx.Test.IntegrationRepo,
-      app: :dmex_stall_patient,
-      stall_timeout: :infinity
-  end
 
   defmodule Router do
     @moduledoc false
@@ -52,7 +35,7 @@ defmodule DMEx.Integration.StallReclaimTest do
   end
 
   setup do
-    start_supervised!({Log, otp_app: :dmex})
+    start_supervised!(Log)
 
     {:ok, server} =
       Bandit.start_link(

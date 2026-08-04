@@ -66,7 +66,6 @@ defmodule DMEx.Log.Params do
   @type error :: {:invalid, source :: String.t(), value :: String.t()}
 
   @last_event_id "last-event-id"
-  @matched "dmex-matched-messages"
 
   # What a filter path segment is called when a `400` has to name it.
   @filter "filter"
@@ -91,16 +90,6 @@ defmodule DMEx.Log.Params do
     end
   end
 
-  @doc """
-  Builds the header saying how many of the log's types a filter admitted.
-
-  Sent only on a selective stream.
-  """
-  @spec matched_header(non_neg_integer()) :: [{String.t(), String.t()}]
-  def matched_header(count) when is_integer(count) and count >= 0 do
-    [{@matched, Integer.to_string(count)}]
-  end
-
   @doc "What a `400` should say back to the client."
   @spec describe(error()) :: String.t()
   def describe({:invalid, @filter, value}) do
@@ -114,10 +103,9 @@ defmodule DMEx.Log.Params do
 
   ## Internals
 
-  # `GET /stream` and `GET /stream/` are the same resource: a trailing slash
-  # would otherwise be a permanent `400`, and a `400` is fatal to a consumer.
+  # Plug drops empty path segments, so `GET /stream/` arrives here as `[]` and
+  # is the same resource as the bare mount without needing a clause of its own.
   defp selection([]), do: {:ok, :all}
-  defp selection([""]), do: {:ok, :all}
 
   defp selection([blob]) do
     case Fingerprint.decode(blob) do

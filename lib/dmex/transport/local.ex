@@ -3,21 +3,25 @@ defmodule DMEx.Transport.Local do
   Reading a log this application owns, in this VM.
 
   Chosen for a `logs:` entry that is a module rather than a URL. There is no
-  wire, so there is no framing, no fingerprint and no heartbeat — only a read
-  and a handler.
+  wire, so there is no framing and no fingerprint — only a read and a handler.
+  The loop's heartbeat branch still runs; `heartbeat/1` is a no-op because there
+  is no reader that could mistake silence for death.
 
   **It is the same send loop.** `connect/1` starts a linked process that
   registers with `DMEx.Log.Registry` — the same registration a request process
   serving SSE makes — and runs `DMEx.Log.Stream.loop/2` with this module as its
   transport. So a local subscription gets `LISTEN`/`NOTIFY` wakeups,
   selection-based routing, pacing and `DMEx.Log.Watcher` reclaim by construction
-  rather than reimplementation. Only `c:DMEx.Transport.write/2` differs.
+  rather than reimplementation. Only `c:DMEx.Transport.write/2` and
+  `c:DMEx.Transport.heartbeat/1` differ.
 
   **Backpressure is a call, not a window.** `write/2` is a `GenServer.call/3`
   whose reply comes only after the pipeline has run the whole batch, so the loop
-  reads nothing meanwhile. A handler that never returns therefore wedges its
-  reader rather than the subscription, and the watcher reclaims it like any
-  other stalled stream.
+  reads nothing meanwhile. The pipeline runs in the *subscription* process, so a
+  handler that never returns wedges that process first and the reader behind it.
+  `DMEx.Log.Watcher` reclaims the reader, which stops the log holding a
+  registration and a deadline for a stream that is not draining — the same thing
+  it does to a stalled request process.
 
   **Selection is a list, not a filter.** A remote subscription encodes its
   message types into a `DMEx.Handler.Fingerprint` blob because they cross a wire and are
@@ -29,6 +33,7 @@ defmodule DMEx.Transport.Local do
 
   alias DMEx.Handler
   alias DMEx.Handler.Request
+  alias DMEx.Log.Registry, as: LogRegistry
   alias DMEx.Log.Stream, as: SendLoop
 
   ## Send side — the loop process writes into its owner
@@ -48,8 +53,9 @@ defmodule DMEx.Transport.Local do
   @impl DMEx.Transport
   def heartbeat(sink), do: {:ok, sink}
 
-  # The pipeline takes the shape `Frame.parse/1` yields, so this decodes `data`
-  # and `metadata` and nothing else.
+  # The pipeline reads `id`, `message_type`, `data` and `metadata`. There is no
+  # wire, so there is no `previous_id` chain for it to check, which is the one
+  # place the two transports hand it different shapes.
   defp row(row) do
     %{
       "id" => row.id,
@@ -79,11 +85,11 @@ defmodule DMEx.Transport.Local do
       spawn_link(fn ->
         # Registered by the reader itself, so the entry dies with it — the same
         # reason the SSE side registers the request process.
-        {:ok, status} = DMEx.Log.Registry.register(log, config.stall_timeout, selection)
+        {:ok, status} = LogRegistry.register(log, config.stall_timeout, selection)
 
         :telemetry.execute(
           [:dmex, :stream, :connect],
-          %{cursor: cursor, matched: matched(selection)},
+          %{cursor: cursor, matched: LogRegistry.matched(selection)},
           %{log: log, selective: selection != :all}
         )
 
@@ -160,7 +166,4 @@ defmodule DMEx.Transport.Local do
       :all
     end
   end
-
-  defp matched(:all), do: nil
-  defp matched(selection), do: MapSet.size(selection)
 end

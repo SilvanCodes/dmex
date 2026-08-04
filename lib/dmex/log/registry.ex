@@ -59,16 +59,27 @@ defmodule DMEx.Log.Registry do
   the entry alongside `selection`. Keeping both there rather than in a table
   of their own is what makes cleanup free.
   """
-  @spec register(module(), Status.budget(), selection()) ::
-          {:ok, Status.t()} | {:error, term()}
+  @spec register(module(), Status.budget(), selection()) :: {:ok, Status.t()}
   def register(log, budget, selection \\ :all) when is_atom(log) do
     status = Status.new(budget)
 
-    case Registry.register(name(log), @key, {status, selection}) do
-      {:ok, _owner} -> {:ok, status}
-      {:error, reason} -> {:error, reason}
-    end
+    # This registry is `keys: :duplicate`, so registration cannot be refused —
+    # `{:error, {:already_registered, _}}` is a `:unique` result. A missing
+    # registry raises, which is a supervision fault rather than a connect error.
+    {:ok, _owner} = Registry.register(name(log), @key, {status, selection})
+
+    {:ok, status}
   end
+
+  @doc """
+  How many message types a selection admits, or `nil` for the whole log.
+
+  For the `matched:` measurement on `[:dmex, :stream, :connect]`, which both
+  transports emit — shared so the two cannot report it differently.
+  """
+  @spec matched(selection()) :: non_neg_integer() | nil
+  def matched(:all), do: nil
+  def matched(selection), do: MapSet.size(selection)
 
   @doc """
   Runs `fun` for every registered stream, with its pid, status and selection.

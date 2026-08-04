@@ -43,7 +43,7 @@ defmodule DMEx.Storage.SQLite do
   `inserted_at` is fixed-width ISO-8601 to the millisecond, so byte order is
   time order. A `DateTime` bound against it has to be rendered the same way —
   `DateTime.to_iso8601/1` alone is wrong in both directions — which is what
-  `iso8601_ms/1` below is for. The consequence is that `c:cursor_at/2` resolves
+  `iso8601_ms/1` below is for. The consequence is that `c:DMEx.Storage.cursor_at/2` resolves
   to the millisecond here and to the microsecond on Postgres.
 
   ## No `:prefix`
@@ -137,6 +137,15 @@ defmodule DMEx.Storage.SQLite do
     query(opts, read_sql(""), [cursor, limit, max_bytes])
   end
 
+  # Ahead of the list clause: an empty selection admits nothing, and building
+  # `IN ()` out of it would be a descending range and an unbindable statement.
+  # `DMEx.Storage.Postgres` answers the same call with an empty `= ANY($4)`.
+  def read(_opts, cursor, limit, max_bytes, [])
+      when is_integer(cursor) and cursor >= 0 and is_integer(limit) and limit > 0 and
+             is_integer(max_bytes) and max_bytes > 0 do
+    {:ok, []}
+  end
+
   def read(opts, cursor, limit, max_bytes, types)
       when is_integer(cursor) and cursor >= 0 and is_integer(limit) and limit > 0 and
              is_integer(max_bytes) and max_bytes > 0 and is_list(types) do
@@ -146,7 +155,7 @@ defmodule DMEx.Storage.SQLite do
     # `= ANY($4)`. Still a *separate statement* and never a nullable predicate —
     # see `c:DMEx.Storage.read/5`; the reason is the index, not the syntax. The
     # varying arity costs nothing: exqlite prepares every statement anyway.
-    placeholders = Enum.map_join(4..(3 + length(types)), ",", &"?#{&1}")
+    placeholders = Enum.map_join(4..(3 + length(types))//1, ",", &"?#{&1}")
 
     query(opts, read_sql("AND message_type IN (#{placeholders})"), [
       cursor,

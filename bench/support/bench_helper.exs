@@ -23,7 +23,7 @@ defmodule DMEx.BenchHelper do
   standalone and second in line.
   """
   def start_log! do
-    case DMEx.Test.IntegrationLog.start_link(otp_app: :dmex) do
+    case DMEx.Test.IntegrationLog.start_link() do
       {:ok, pid} -> pid
       {:error, {:already_started, pid}} -> pid
     end

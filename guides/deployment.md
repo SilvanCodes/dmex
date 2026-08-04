@@ -156,7 +156,7 @@ healthy stream looks dead to both the consumer's liveness check and the proxy's
 own idle timeout.
 
 `proxy_read_timeout` must comfortably exceed the producer's **effective**
-heartbeat interval, `heartbeat_ms` plus one batch interval (15 200 ms with the
+heartbeat interval, `heartbeat_ms` plus one batch interval (15 010 ms with the
 defaults), because the loop's throttle runs after the heartbeat branch. The
 producer advertises that figure as SSE's `retry:`, so you can read it off the
 wire rather than recomputing it.
@@ -189,15 +189,17 @@ not raw query load.
   and cannot override it.
 - **The producer needs one extra connection beyond the pool.** `LISTEN` cannot
   share a pooled connection, since it must stay checked out for its whole life,
-  so `DMEx.Storage.Postgres` opens a dedicated `Postgrex.Notifications`
-  connection per producer. Budget for it in `max_connections`.
+  so `DMEx.Notifier.Postgres` — the default notifier for Postgres storage —
+  opens a dedicated `Postgrex.Notifications` connection per log. Budget for it in
+  `max_connections`; `DMEx.Notifier.Beam` needs none.
 
 A reclaimed stream returns whatever it had checked out: the pool monitors its
 client, so killing a request process wedged on a query or a checkout hands that
 connection back rather than leaking it.
 
-Measured on a developer machine, 200 concurrent streams showed no pool queueing;
-`bench/e2e/fanout_reads.exs` finds where your own ceiling is.
+Pool checkout queueing appears somewhere between 50 and 200 concurrent streams
+on a 10-connection pool; `bench/e2e/fanout_reads.exs` finds where your own
+ceiling is.
 
 ## What DMEx deliberately does not do
 

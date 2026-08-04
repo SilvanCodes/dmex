@@ -33,19 +33,13 @@ defmodule DMEx.Storage.Postgres do
       when is_binary(type) and is_binary(data) and is_binary(metadata) do
     repo = Map.fetch!(opts, :repo)
 
-    result =
-      repo.transaction(fn ->
-        # First, and released only by COMMIT. See DMEx.Storage's module
-        # documentation for why anything shorter reintroduces silent id gaps.
-        lock!(repo, opts)
+    repo.transaction(fn ->
+      # First, and released only by COMMIT. See DMEx.Storage's module
+      # documentation for why anything shorter reintroduces silent id gaps.
+      lock!(repo, opts)
 
-        insert!(repo, opts, type, data, metadata)
-      end)
-
-    case result do
-      {:ok, id} -> {:ok, id}
-      {:error, reason} -> {:error, reason}
-    end
+      insert!(repo, opts, type, data, metadata)
+    end)
   end
 
   @impl DMEx.Storage
@@ -279,8 +273,6 @@ defmodule DMEx.Storage.Postgres do
 
   @impl DMEx.Storage
   def dead_messages(opts, subscription) when is_binary(subscription) do
-    repo = Map.fetch!(opts, :repo)
-
     # `read/5`'s columns minus `previous_id`, which a dead row has no delivered
     # sequence for.
     sql = """
@@ -290,10 +282,7 @@ defmodule DMEx.Storage.Postgres do
      ORDER BY id
     """
 
-    case SQL.query(repo, sql, [subscription]) do
-      {:ok, %{rows: rows}} -> {:ok, Enum.map(rows, &to_row/1)}
-      {:error, reason} -> {:error, reason}
-    end
+    query(opts, sql, [subscription])
   end
 
   @impl DMEx.Storage
@@ -358,10 +347,12 @@ defmodule DMEx.Storage.Postgres do
 
   ## Naming
 
-  defp table(opts, name) do
-    case Map.get(opts, :prefix) do
-      nil -> ~s("#{name}")
-      prefix -> ~s("#{prefix}"."#{name}")
-    end
-  end
+  defp table(opts, name), do: __table__(name, Map.get(opts, :prefix))
+
+  # Public so `DMEx.Storage.Postgres.Migration` renders qualified names the same
+  # way the queries do.
+  @doc false
+  @spec __table__(String.t() | atom(), String.t() | nil) :: String.t()
+  def __table__(name, nil), do: ~s("#{name}")
+  def __table__(name, prefix), do: ~s("#{prefix}"."#{name}")
 end

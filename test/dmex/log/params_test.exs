@@ -112,13 +112,6 @@ defmodule DMEx.Log.ParamsTest do
       assert {:ok, %Params{selection: :all}} = Params.parse([], [])
     end
 
-    # A trailing slash in a log URL would otherwise be a permanent 400, and
-    # a 400 is fatal to a consumer — one stray character killing a subscription
-    # forever is not a defensible reading of "GET /stream/".
-    test "an empty segment is the same resource as no segment" do
-      assert {:ok, %Params{selection: :all}} = Params.parse([""], [])
-    end
-
     test "a filter blob decodes into a selection" do
       {:ok, filter} = Fingerprint.build(["A.B", "C.D"])
       blob = Fingerprint.encode(filter)
@@ -144,17 +137,6 @@ defmodule DMEx.Log.ParamsTest do
       # is the one that decides which resource was even asked for.
       assert {:error, {:invalid, "filter", "nope!"}} =
                Params.parse(["nope!"], [{"last-event-id", "garbage"}])
-    end
-  end
-
-  describe "matched_header/1" do
-    test "reports how many of the log's types a filter admitted" do
-      # The blob is opaque and cannot be reversed, so this is the only thing
-      # that makes a subscription legible from outside: a count of 0 where ten
-      # types were selected is an encoding mismatch, visible at connect rather
-      # than through silence.
-      assert Params.matched_header(7) == [{"dmex-matched-messages", "7"}]
-      assert Params.matched_header(0) == [{"dmex-matched-messages", "0"}]
     end
   end
 

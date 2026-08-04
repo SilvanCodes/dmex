@@ -142,6 +142,16 @@ for {storage, repo, tag} <- [
 
         assert {:ok, []} = @storage.read(opts, 0, 100, @megabyte, ["Z"])
       end
+
+      # An empty list is a selection that admits nothing, which is a different
+      # question from `:all`. No shipped caller passes one — the plug 404s an
+      # empty expansion first — so nothing but this pins the two adapters to the
+      # same answer, and one of them used to build unbindable SQL out of it.
+      test "an empty selection reads empty rather than failing", %{opts: opts} do
+        {:ok, _} = append(opts, "A", %{n: 1})
+
+        assert {:ok, []} = @storage.read(opts, 0, 100, @megabyte, [])
+      end
     end
 
     # Every row states the id of the row before it *in what this read returned*.

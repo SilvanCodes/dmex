@@ -47,7 +47,9 @@ defmodule DMEx.Transport.SSE.Decoder do
           retry: pos_integer() | nil
         }
 
-  @type error :: :frame_too_large | {:invalid_json, term()} | {:invalid_data_shape, term()}
+  # `extract/2` passes a parse failure through untouched, so the two types are
+  # structurally coupled and composing them says so.
+  @type error :: :frame_too_large | Frame.error()
 
   @doc """
   Builds a decoder buffering at most `max_bytes` of an unterminated frame.

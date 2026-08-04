@@ -93,7 +93,6 @@ defmodule DMEx.Handler do
   alias DMEx.Config
   alias DMEx.Handler.Fingerprint
 
-  @identifier ~r/\A[a-z][a-z0-9_]*\z/
   @handler_opts [:logs, :id, :selective]
 
   @typedoc """
@@ -257,9 +256,21 @@ defmodule DMEx.Handler do
   @doc "Every subscription `handler` declares — one per log it reads."
   @spec subscription_ids(module()) :: [String.t()]
   def subscription_ids(handler) when is_atom(handler) do
-    declaration = declaration!(handler)
+    handler
+    |> declaration!()
+    |> Map.fetch!(:logs)
+    |> Enum.map(&subscription_id(handler, &1))
+  end
 
-    Enum.map(declaration.logs, &(&1 <> "/" <> declaration.id))
+  @doc """
+  The subscription a `log:` option addresses, for the operator-facing modules.
+
+  `DMEx.Handler.Cursors` and `DMEx.Handler.DeadMessages` resolve the same option
+  the same way, so they cannot drift.
+  """
+  @spec subscription_id!(module(), keyword()) :: String.t()
+  def subscription_id!(handler, opts) when is_atom(handler) and is_list(opts) do
+    subscription_id(handler, log!(handler, opts))
   end
 
   @doc """
@@ -593,7 +604,7 @@ defmodule DMEx.Handler do
         other -> raise_identifier(module, key, other)
       end
 
-    unless Regex.match?(@identifier, value), do: raise_identifier(module, key, value)
+    unless DMEx.identifier?(value), do: raise_identifier(module, key, value)
 
     value
   end
@@ -620,7 +631,7 @@ defmodule DMEx.Handler do
   defp raise_identifier(module, key, value) do
     raise ArgumentError,
           "#{inspect(key)} in #{inspect(module)} must be an atom or a string matching " <>
-            "#{inspect(@identifier)}, got: #{inspect(value)}. Both halves of a subscription " <>
+            "#{inspect(DMEx.identifier_format())}, got: #{inspect(value)}. Both halves of a subscription " <>
             "identifier are restricted to that charset so \"/\" can separate them with no " <>
             "escaping — which rules out UUIDs, dots and dashes."
   end

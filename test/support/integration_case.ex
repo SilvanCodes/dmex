@@ -23,6 +23,12 @@ defmodule DMEx.IntegrationCase do
 
       @moduletag :integration
       @moduletag :database
+
+      # Here rather than per file: every integration test drives real
+      # reconnects, reclaims and dead messages, so DMEx's own warnings are the
+      # behaviour under test and not output worth reading. Eleven files opted in
+      # by hand and three forgot, which is the wrong default.
+      @moduletag :capture_log
     end
   end
 

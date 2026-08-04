@@ -18,8 +18,11 @@ defmodule DMEx.Telemetry do
   ### `[:dmex, :stream, :connect]`
 
   A consumer opened a stream. Measurements: `:cursor`, the resolved starting
-  position, and `:matched`, how many of the log's types a selective connection
-  admitted (`nil` for a whole-log one). Metadata: `:log`, `:selective`.
+  position, and `:matched`, how many types a selective connection admitted
+  (`nil` for a whole-log one) — the application's types the filter matched over
+  SSE, the handler's declared types for a local reader, which needs no
+  resolution and so has no `404` for an empty one. Metadata: `:log`,
+  `:selective`.
 
   ### `[:dmex, :stream, :write]`
 
@@ -29,7 +32,7 @@ defmodule DMEx.Telemetry do
 
   ### `[:dmex, :stream, :heartbeat]`
 
-  A `: hb` comment frame on an idle connection. Metadata: `:log`. Heartbeats
+  A liveness tick on an idle connection — a `: hb` comment frame over SSE, nothing on the wire for a local reader. Metadata: `:log`. Heartbeats
   stopping while connections remain open means loops are wedged.
 
   ### `[:dmex, :stream, :reclaim]`

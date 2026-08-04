@@ -6,6 +6,8 @@ defmodule DMEx.Log.DispatcherTest do
   alias DMEx.Log.Dispatcher
   alias DMEx.Log.Registry, as: LogRegistry
   alias DMEx.Log.Status
+  alias DMEx.Test.BeamNotifiedLog, as: BeamLog
+  alias DMEx.Test.FastPollLog, as: FastLog
   alias DMEx.Test.Messages.OrderPlaced
 
   # No notifier runs in this suite, so every dispatcher logs its documented
@@ -16,23 +18,6 @@ defmodule DMEx.Log.DispatcherTest do
   # Fast enough that a test does not wait on it, slow enough that "one poll" is
   # still distinguishable from "none".
   @poll 50
-
-  defmodule FastLog do
-    @moduledoc false
-    use DMEx.Log, repo: DMEx.Test.Repo, poll_interval: 50
-  end
-
-  defmodule BeamLog do
-    @moduledoc false
-    # Postgres storage, in-BEAM notification. Storage and notifier are separate
-    # axes, and this is the only pairing whose *notification* half a sandboxed
-    # test can observe at all: `:pg` delivers on send, not on COMMIT. The poll is
-    # effectively off, so a wakeup here can only have come from the notifier.
-    use DMEx.Log,
-      repo: DMEx.Test.Repo,
-      notifier: DMEx.Notifier.Beam,
-      poll_interval: 60_000
-  end
 
   setup do
     start_supervised!(LogRegistry.child_spec(FastLog))

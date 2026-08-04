@@ -5,14 +5,10 @@ defmodule DMEx.Log.WatcherTest do
   alias DMEx.Log.Stream, as: SendLoop
   alias DMEx.Log.Watcher
   alias DMEx.Test.ClosingAdapter
+  alias DMEx.Test.ImpatientLog, as: Log
   alias DMEx.Test.Storage, as: Stub
 
   @moduletag :capture_log
-
-  defmodule Log do
-    @moduledoc false
-    use DMEx.Log, repo: DMEx.Test.Repo, stall_timeout: 20, stall_check_interval: 10
-  end
 
   setup do
     start_supervised!(DMEx.Log.Registry.child_spec(Log))

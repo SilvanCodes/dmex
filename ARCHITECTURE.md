@@ -43,6 +43,9 @@ CREATE TABLE dmex_messages (
   metadata      jsonb       NOT NULL DEFAULT '{}',
   inserted_at   timestamptz NOT NULL DEFAULT clock_timestamp()
 );
+
+CREATE INDEX ON dmex_messages (message_type, id);
+CREATE INDEX ON dmex_messages (inserted_at, id);
 ```
 
 - `id` is the offset and the only ordering and resumption mechanism. `bigint`
@@ -67,9 +70,11 @@ CREATE TABLE dmex_messages (
   `event:` line, and SSE field lines have no escaping. Dots survive so a
   declared type can namespace itself.
 
-**Two indexes, one per read shape.** The primary key serves a whole-log
+**Three indexes, one per read shape.** The primary key serves a whole-log
 `id > cursor` range scan; `(message_type, id)` serves a selective one, and the
 planner takes whichever is cheaper (see *What has been measured*).
+`(inserted_at, id)` serves `c:DMEx.Storage.cursor_at/2`, read once per connect
+to resolve a `stream_from:` instant and never per row.
 
 **A row says what a message *is*, never who might want it.** A grouping stamped
 in at append time would be immutable with the table: fixed message by message,
@@ -427,7 +432,8 @@ What follows for handler authors: **side effects through the consumer's own repo
 are exactly-once for free**, because they roll back with the transaction that
 would have recorded them. Effects that leave it — an HTTP call, a write to
 another database — must be idempotent on something in the message or its
-metadata, since the log id is deliberately not exposed. A local write plus a
+metadata — the log id reaches a handler only when that log lifts it with
+`metadata: [:id]`, so a consumer cannot count on it. A local write plus a
 separate outbox is the pattern that stays correct.
 
 **No-loss is checked, not assumed.** At-least-once is only meaningful if it is
@@ -503,7 +509,7 @@ of scope.
   hour to replay, and that is the figure "arbitrarily replayable" should be
   quoted with. A mostly-skipped log replays at wire speed.
 
-  The first and third figures are paced by the log's `max_batch_frequency`
+  The ~36 000 and ~39 000 figures are paced by the log's `max_batch_frequency`
   (100/s by default, so `max_batch_size` × 100 is the ceiling), not by a limit
   the design imposes; only the ~265 is a property of the consumer.
 - **The selection filter behaves as the design assumes.** `mix bench.fingerprint`
@@ -522,10 +528,11 @@ of scope.
 
   It also puts a number on the request-line ceiling: **~2 400 message types** at
   an 8 KB limit.
-- **The `(message_type, id)` index is taken exactly when it pays.** `EXPLAIN` on
-  a 500k-row skewed log (one type at 98.9%, one at 1%, one at 0.1%): the 0.1%
-  type uses the index; the 1% type or larger uses the primary key and filters, at
-  fewer buffers than the index plan would cost. A hand-written per-type `LATERAL`
+- **The `(message_type, id)` index is taken exactly when it pays.** This one is
+  a one-off `EXPLAIN` session rather than a `bench/` artifact — nothing in
+  `bench/` runs `EXPLAIN`. On a 500k-row skewed log (one type at 99%, one at
+  0.9%, one at 0.1%): the 0.1% type uses the index; the 0.9% type or larger uses
+  the primary key and filters, at fewer buffers than the index plan would cost. A hand-written per-type `LATERAL`
   seek — the usual loose-index-scan workaround — is *worse* everywhere except the
   most extreme selectivity, because each branch fetches a whole `LIMIT` per type
   and discards the surplus. So plain `message_type = ANY($1)` is the right query

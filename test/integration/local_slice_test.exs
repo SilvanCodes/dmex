@@ -19,8 +19,6 @@ defmodule DMEx.Integration.LocalSliceTest do
   alias DMEx.Test.Messages.OrderPlaced
   alias DMEx.Test.Messages.OrderShipped
 
-  @moduletag :capture_log
-
   setup do
     Handlers.report_to(self())
 

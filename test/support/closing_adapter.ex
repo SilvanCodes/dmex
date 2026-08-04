@@ -16,6 +16,10 @@ defmodule DMEx.Test.ClosingAdapter do
   Starts `:unset`, so a plug under test can set its own response headers and
   call `send_chunked/2` for real. Pass `state: :chunked` to hand the conn
   straight to code that expects an already-open stream.
+
+  `path_info:` is what a mount would have left after its prefix — `[]` for a
+  bare `GET /stream`, one segment for a filter blob. It defaults to `[]`, which
+  is the whole-log path.
   """
   # `%Plug.Conn{}` rather than `Plug.Conn.t()`: a conn built as a literal keeps
   # Plug's own struct defaults in every field it does not set, and some of those
@@ -31,6 +35,7 @@ defmodule DMEx.Test.ClosingAdapter do
       owner: owner,
       req_headers: Keyword.get(opts, :req_headers, []),
       method: Keyword.get(opts, :method, "GET"),
+      path_info: Keyword.get(opts, :path_info, []),
       request_path: "/stream"
     }
   end

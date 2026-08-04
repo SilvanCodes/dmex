@@ -22,7 +22,7 @@ afford — and the corollary, that a producer under that pressure cannot say no.
 
 This is a roadmap entry rather than a new design because the seat already
 exists. The watcher runs one process per producer, sweeps the live set on an
-interval, and holds every connection's deadline. A budget is a counter and a
+interval, and can already read every connection's deadline out of the registry. A budget is a counter and a
 policy on a process that is already there; `DMEx.Log.Plug` is already the single
 place a connect attempt passes through before registering.
 

@@ -34,7 +34,7 @@ defmodule DMEx do
           fields: [:order_id, :customer_id, :total]
       end
 
-      # in a Phoenix router, a Plug.Router, or a bare Bandit/Cowboy pipeline
+      # in a Plug.Router
       forward "/stream", to: DMEx.Log.Plug, log: MyApp.Log
 
       MyApp.Log.append(%MyApp.Messages.OrderPlaced{order_id: 7})
@@ -110,6 +110,23 @@ defmodule DMEx do
 
   `DMEx.Telemetry` documents every event DMEx emits.
   """
+
+  # A log name, a handler's `id:`, and a log's `app:` are all the same kind of
+  # name, and the errors for each say so — so the rule is written once.
+  @identifier ~r/\A[a-z][a-z0-9_]*\z/
+
+  @doc """
+  The charset every DMEx identifier shares — a log name, a handler `id:`, a log
+  `app:`. Exposed so the three call sites cannot drift, and so each can quote it
+  in its own error.
+  """
+  @spec identifier_format() :: Regex.t()
+  def identifier_format, do: @identifier
+
+  @doc "Whether `value` is a well-formed DMEx identifier."
+  @spec identifier?(term()) :: boolean()
+  def identifier?(value) when is_binary(value), do: Regex.match?(@identifier, value)
+  def identifier?(_value), do: false
 
   @doc """
   Every module of every application that could hold a DMEx declaration.
@@ -209,7 +226,7 @@ defmodule DMEx do
   Rescans and caches an application's message types, raising if two modules
   declare one type.
 
-  Called once from `DMEx.Supervisor.init/1` with its `otp_app:`, which is both
+  Called once from `DMEx.Supervisor`'s `init/1` with its `otp_app:`, which is both
   the boot-time collision check and the cache seed — so an application owning no
   log gets the check too.
   """

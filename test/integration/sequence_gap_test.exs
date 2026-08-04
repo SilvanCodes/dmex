@@ -21,8 +21,6 @@ defmodule DMEx.Integration.SequenceGapTest do
   alias DMEx.Test.Messages.OrderPlaced
   alias DMEx.Test.Server
 
-  @moduletag :capture_log
-
   # Frame 2 is simply never written. Frame 3 chains honestly — it says its
   # predecessor was 2 — which is exactly what a log sends and exactly what
   # the consumer must notice it never received.

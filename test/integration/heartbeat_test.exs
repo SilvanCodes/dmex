@@ -19,8 +19,6 @@ defmodule DMEx.Integration.HeartbeatTest do
   alias DMEx.Test.Server
   alias DMEx.Transport.SSE.Decoder
 
-  @moduletag :capture_log
-
   @heartbeat 150
 
   defmodule Router do
@@ -68,7 +66,7 @@ defmodule DMEx.Integration.HeartbeatTest do
   setup do
     Handlers.report_to(self())
 
-    start_supervised!({Log, otp_app: :dmex})
+    start_supervised!(Log)
     base = Server.start!(plug: Router)
     uri = URI.parse(base)
 

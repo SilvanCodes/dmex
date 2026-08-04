@@ -15,7 +15,6 @@ defmodule DMEx.Integration.CatchupTest do
   alias DMEx.Test.Server
   alias Ecto.Adapters.SQL
 
-  @moduletag :capture_log
   @moduletag timeout: 180_000
 
   @backlog 2_000
@@ -23,7 +22,7 @@ defmodule DMEx.Integration.CatchupTest do
   setup do
     Handlers.report_to(self())
 
-    start_supervised!({Log, otp_app: :dmex})
+    start_supervised!(Log)
 
     # The server binds port 0, so the log map is necessarily built at
     # runtime — which is exactly why it lives on the child spec rather than in

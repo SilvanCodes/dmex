@@ -9,7 +9,7 @@ defmodule DMEx.Handler.DeadMessages do
       DMEx.Handler.DeadMessages.replay(MyApp.OrderProjection, repo: MyApp.Repo)
 
   The stored columns are `dmex_messages`' columns, so a dead row *is* a log row
-  and replay hands it straight back with no reshaping — see `DMEx.Storage.Migration`
+  and replay hands it straight back with no reshaping — see `c:DMEx.Storage.dead_message/2`
   for the shape and for what is deliberately not stored.
 
   ## Replay does not touch the cursor
@@ -41,7 +41,7 @@ defmodule DMEx.Handler.DeadMessages do
   def list(handler, opts) when is_atom(handler) do
     {storage, storage_opts} = DMEx.Supervisor.storage!(opts)
 
-    storage.dead_messages(storage_opts, subscription!(handler, opts))
+    storage.dead_messages(storage_opts, Handler.subscription_id!(handler, opts))
   end
 
   @doc """
@@ -58,13 +58,12 @@ defmodule DMEx.Handler.DeadMessages do
   def replay(handler, opts) when is_atom(handler) do
     {storage, storage_opts} = DMEx.Supervisor.storage!(opts)
 
-    declaration = Handler.declaration!(handler)
-    subscription = subscription!(handler, opts)
+    subscription = Handler.subscription_id!(handler, opts)
 
     {:ok, rows} = storage.dead_messages(storage_opts, subscription)
 
     Enum.reduce(rows, %{replayed: 0, failed: 0}, fn row, counts ->
-      case replay_one(row, declaration, subscription, storage, storage_opts) do
+      case replay_one(row, handler, subscription, storage, storage_opts) do
         :ok -> Map.update!(counts, :replayed, &(&1 + 1))
         :error -> Map.update!(counts, :failed, &(&1 + 1))
       end
@@ -81,21 +80,16 @@ defmodule DMEx.Handler.DeadMessages do
   def discard(handler, id, opts) when is_atom(handler) and is_integer(id) do
     {storage, storage_opts} = DMEx.Supervisor.storage!(opts)
 
-    :ok = storage.delete_dead_message(storage_opts, subscription!(handler, opts), id)
+    :ok = storage.delete_dead_message(storage_opts, Handler.subscription_id!(handler, opts), id)
   end
 
   ## Internals
-
-  defp subscription!(handler, opts) do
-    Handler.subscription_id(handler, Handler.log!(handler, opts))
-  end
 
   # The same question the pipeline asks before delivering, answered the same
   # way: `nil` for a type no clause declares and for a value no head accepts
   # alike. Calling the handler to find either out would report a raise where a
   # stream skips.
-  defp replay_one(row, declaration, subscription, storage, storage_opts) do
-    handler = declaration.handler
+  defp replay_one(row, handler, subscription, storage, storage_opts) do
     metadata = JSON.decode!(row.metadata)
 
     case handler.__dmex_cast__(row.message_type, JSON.decode!(row.data), metadata) do

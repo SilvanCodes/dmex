@@ -6,6 +6,15 @@ defmodule DMEx.Log.AppendTest do
   alias DMEx.Test.Messages.OrderPlaced
   alias DMEx.Test.Messages.OrderShipped
 
+  # Top level rather than inside the test, so the struct literal below can
+  # expand. Exporting `type/0` without `use DMEx.Message` is exactly the shape
+  # the append path must not accept.
+  defmodule LooksLikeAMessage do
+    @moduledoc false
+    defstruct [:order_id]
+    def type, do: "order_placed"
+  end
+
   setup do
     %{opts: Log.__dmex__().storage_opts}
   end
@@ -103,6 +112,22 @@ defmodule DMEx.Log.AppendTest do
     test "a struct that is not a DMEx message names the fix" do
       assert_raise ArgumentError, ~r/is not a DMEx message module.*use DMEx.Message/s, fn ->
         Log.append(%URI{})
+      end
+    end
+
+    # Exporting `type/0` is a shape a struct can have by coincidence, so the
+    # check has to be `DMEx.Message.message?/1` and not `function_exported?/3`.
+    # Under the weaker test this got past validation and died further in, inside
+    # `JSON.encode!/1`, naming a protocol rather than the missing `use`.
+    test "a look-alike exporting type/0 is still not a message" do
+      assert_raise ArgumentError, ~r/is not a DMEx message module/, fn ->
+        Log.append(%LooksLikeAMessage{order_id: 1})
+      end
+    end
+
+    test "something that is not a struct at all raises the documented error" do
+      assert_raise ArgumentError, ~r/is not a struct built with `use DMEx.Message`/, fn ->
+        Log.append(%{order_id: 1})
       end
     end
 

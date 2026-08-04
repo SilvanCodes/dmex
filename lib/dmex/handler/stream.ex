@@ -16,9 +16,11 @@ defmodule DMEx.Handler.Stream do
 
   ## Reconnects are jittered
 
-  `DMEx.Handler.Supervisor` sets no restart budget, so the pacing is here: each
-  restart triggers a fresh read against a *different application's* database
-  when the transport is a wire.
+  `DMEx.Handler.Supervisor` sets no restart budget, so the pacing is here for a
+  *disconnect*: each reconnect triggers a fresh read against a *different
+  application's* database when the transport is a wire. A restart is not paced
+  here at all — `init/1` starts at `attempt: 0` and connects immediately — so a
+  crash loop is paced by `DMEx.Handler.Pipeline` instead, before it re-raises.
 
   One retry policy covers every transport: a transport says only whether an
   event ends this connection (`{:disconnect, reason, source}`) or the

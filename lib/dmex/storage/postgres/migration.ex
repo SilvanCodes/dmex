@@ -109,8 +109,9 @@ defmodule DMEx.Storage.Postgres.Migration do
     :ok
   end
 
-  defp qualified(name, nil), do: ~s("#{name}")
-  defp qualified(name, prefix), do: ~s("#{prefix}"."#{name}")
+  # One renderer for both halves of the adapter, so a prefixed name in DDL and a
+  # prefixed name in a query cannot disagree.
+  defp qualified(name, prefix), do: DMEx.Storage.Postgres.__table__(name, prefix)
 
   defp up_subscriptions(prefix) do
     create_if_not_exists table(:dmex_cursors, primary_key: false, prefix: prefix) do

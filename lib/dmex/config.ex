@@ -43,7 +43,7 @@ defmodule DMEx.Config do
   | `max_attempts` | `3` | total attempts — enough to ride out a transient deadlock, few enough that a poison message reaches its terminal action in under a second of backoff. |
   | `retry_backoff` | `100` | ms; base for `100 × 2^(attempt - 1)` with full jitter. |
   | `retry_backoff_max` | `5_000` | ms; cap on that schedule. |
-  | `reconnect_backoff` | `500` | ms; base for the jittered reconnect schedule. Bounds a crash-loop's reconnect rate against a *different application's* database. |
+  | `reconnect_backoff` | `500` | ms; base for the jittered reconnect schedule, and the flat jittered pause `on_failure: :crash` takes before re-raising. Bounds a crash-loop's reconnect rate against a *different application's* database. |
   | `reconnect_backoff_max` | `30_000` | ms; cap on that schedule. |
   | `max_frame_bytes` | `4_194_304` | bytes; the largest unterminated frame the decoder buffers. A frame is **one row**, so this has to exceed the largest single message any log sends, not its whole batch. Exceeding it drops the connection, which costs only a re-read. |
   | `missed_heartbeats` | `3` | silences of the log's advertised interval before giving up — long enough that one GC pause on the log is not a disconnect. |
@@ -65,7 +65,7 @@ defmodule DMEx.Config do
       since it is not before it. An explicit offset is required (a naive
       timestamp is ambiguous) and any offset is normalised to UTC here, once.
     * **`:current`** — the tip. Resolved to `DateTime.utc_now()` once in
-      `DMEx.Handler.Stream.init/1` and reused across every reconnect, so a
+      `DMEx.Handler.Stream`'s `init/1` and reused across every reconnect, so a
       subscription that has not yet handled its first message does not skip what
       arrives while it is disconnected. The atom exists because there is no
       static spelling of "now": `DateTime.utc_now()` written here would freeze at
@@ -303,7 +303,9 @@ defmodule DMEx.Config do
   end
 
   defp validate_stream_from!(:current), do: :current
-  defp validate_stream_from!(%DateTime{} = at), do: at
+  # Shifted, so the string form and the struct form normalise identically —
+  # otherwise only the parsed one is UTC and the doc's "once, here" is a lie.
+  defp validate_stream_from!(%DateTime{} = at), do: DateTime.shift_zone!(at, "Etc/UTC")
   defp validate_stream_from!(id) when is_integer(id) and id > 0, do: id
 
   # Worth its own message: 0 is the value someone reaches for meaning "from the

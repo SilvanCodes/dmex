@@ -33,7 +33,7 @@ defmodule MyApp.Messages.OrderPlaced do
   use DMEx.Message, type: "order_placed", fields: [:order_id, :customer_id, :total]
 end
 
-# in a Phoenix router, a Plug.Router, or a bare Bandit/Cowboy pipeline
+# in a Plug.Router
 forward "/stream", to: DMEx.Log.Plug, log: MyApp.Log
 
 MyApp.Log.append(%MyApp.Messages.OrderPlaced{order_id: 7})
@@ -139,9 +139,10 @@ The SQLite half of the storage suite needs no server — `mix test --only sqlite
 runs it, and it is one of the two adapters the conformance suite covers.
 
 Point `DMEX_POSTGRES_URL` at your own instance. The integration database is
-derived from it by rewriting a trailing `/dmex_test`, so if yours is named
-anything else, set `DMEX_POSTGRES_INTEGRATION_URL` too — otherwise both suites
-resolve to the same database and the integration one is not sandboxed.
+derived from it by replacing the database name with `dmex_integration_test`, so
+any name works. Set `DMEX_POSTGRES_INTEGRATION_URL` to override it; pointing both
+at one database raises at config load, since the integration one is not
+sandboxed.
 
 The integration suite is separate because it cannot use the Ecto sandbox — see
 `config/test.exs`.

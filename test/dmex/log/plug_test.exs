@@ -1,6 +1,7 @@
 defmodule DMEx.Log.PlugTest do
   use DMEx.Case, async: true
 
+  alias DMEx.Handler.Fingerprint
   alias DMEx.Log.Plug, as: LogPlug
   alias DMEx.Log.Registry, as: LogRegistry
   alias DMEx.Test.ClosingAdapter
@@ -26,6 +27,60 @@ defmodule DMEx.Log.PlugTest do
       # Under Phoenix's default init_mode this runs at compile time, so it must
       # not do either.
       assert %{log: StubLog} = LogPlug.init(log: StubLog)
+    end
+  end
+
+  # The selective branch of `select/4`, which is the only path that consults
+  # `DMEx.message_types/1` — and therefore the only one sensitive to how that
+  # set is discovered and which application it is cached under. It had been
+  # exercised only by `:integration` tests, which `mix test` excludes, so two
+  # separate regressions in message discovery left the default run green.
+  describe "the selective path" do
+    test "a filter over a known type streams and reports the count",
+         %{opts: opts, plug: plug} do
+      Stub.put_rows(opts, 1)
+      {:ok, filter} = Fingerprint.build(["order_placed"])
+
+      conn = stream(opts, plug, [], path_info: [Fingerprint.encode(filter)])
+
+      assert conn.status == 200
+      assert get_header(conn, "dmex-matched-messages") == "1"
+    end
+
+    test "a whole-log stream sends no matched header", %{opts: opts, plug: plug} do
+      Stub.put_rows(opts, 1)
+
+      conn = stream(opts, plug)
+
+      assert get_header(conn, "dmex-matched-messages") == nil
+    end
+
+    test "a filter matching none of the application's types is a 404",
+         %{opts: opts, plug: plug} do
+      {:ok, filter} = Fingerprint.build(["Nothing.Anyone.Has.Ever.Appended"])
+
+      conn = call(opts, plug, [], [Fingerprint.encode(filter)])
+
+      assert conn.status == 404
+      assert_received {:resp, 404, body}
+      assert body =~ "matched none of the message types"
+    end
+
+    test "a segment that does not decode is a 400 naming the filter",
+         %{opts: opts, plug: plug} do
+      conn = call(opts, plug, [], ["not-a-blob!"])
+
+      assert conn.status == 400
+      assert_received {:resp, 400, body}
+      assert body =~ "invalid filter segment"
+    end
+
+    test "a 404 registers nothing", %{opts: opts, plug: plug} do
+      {:ok, filter} = Fingerprint.build(["Nothing.Anyone.Has.Ever.Appended"])
+
+      call(opts, plug, [], [Fingerprint.encode(filter)])
+
+      assert LogRegistry.count(StubLog) == 0
     end
   end
 
@@ -270,10 +325,13 @@ defmodule DMEx.Log.PlugTest do
 
   ## Harness
 
-  defp call(opts, plug, req_headers) do
+  defp call(opts, plug, req_headers, path_info \\ []) do
     StubLog.install(opts)
 
-    LogPlug.call(ClosingAdapter.conn(self(), 1, req_headers: req_headers), plug)
+    LogPlug.call(
+      ClosingAdapter.conn(self(), 1, req_headers: req_headers, path_info: path_info),
+      plug
+    )
   end
 
   # Runs the plug to completion — the connection closes after `chunks` writes —
@@ -293,7 +351,11 @@ defmodule DMEx.Log.PlugTest do
     :ok = StubLog.install(opts, Keyword.get(test_opts, :config, []))
     exported = StubLog.export()
 
-    conn = ClosingAdapter.conn(parent, chunks, req_headers: req_headers)
+    conn =
+      ClosingAdapter.conn(parent, chunks,
+        req_headers: req_headers,
+        path_info: Keyword.get(test_opts, :path_info, [])
+      )
 
     pid =
       spawn(fn ->

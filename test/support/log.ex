@@ -54,3 +54,59 @@ defmodule DMEx.Test.SQLiteLog do
     storage: DMEx.Storage.SQLite,
     app: :dmex_sqlite
 end
+
+defmodule DMEx.Test.StallLog do
+  @moduledoc """
+  Log for the stall-reclaim suite: a short deadline and a small write cap.
+
+  Here rather than in the test file for the same reason as
+  `DMEx.Test.HeartbeatLog` — `DMEx.message_types/1` keys on the application
+  owning the log module, and a module defined inside a test file belongs to
+  none, so every selective connect against it would 404.
+  """
+
+  use DMEx.Log,
+    repo: DMEx.Test.IntegrationRepo,
+    app: :dmex_stall,
+    heartbeat_ms: 60_000,
+    max_batch_bytes: 16_384,
+    stall_timeout: 300,
+    stall_check_interval: 50
+end
+
+defmodule DMEx.Test.PatientLog do
+  @moduledoc "`DMEx.Test.StallLog` with no watcher: `stall_timeout: :infinity` starts none."
+
+  use DMEx.Log,
+    repo: DMEx.Test.IntegrationRepo,
+    app: :dmex_stall_patient,
+    stall_timeout: :infinity
+end
+
+defmodule DMEx.Test.FastPollLog do
+  @moduledoc "Log for the dispatcher suite, polling fast enough to observe."
+
+  use DMEx.Log, repo: DMEx.Test.Repo, poll_interval: 50
+end
+
+defmodule DMEx.Test.BeamNotifiedLog do
+  @moduledoc """
+  Postgres storage, in-BEAM notification.
+
+  Storage and notifier are separate axes, and this is the only pairing whose
+  *notification* half a sandboxed test can observe at all: `:pg` delivers on
+  send, not on COMMIT. The poll is effectively off, so a wakeup here can only
+  have come from the notifier.
+  """
+
+  use DMEx.Log,
+    repo: DMEx.Test.Repo,
+    notifier: DMEx.Notifier.Beam,
+    poll_interval: 60_000
+end
+
+defmodule DMEx.Test.ImpatientLog do
+  @moduledoc "Log for the watcher suite: a deadline short enough to trip in a test."
+
+  use DMEx.Log, repo: DMEx.Test.Repo, stall_timeout: 20, stall_check_interval: 10
+end
