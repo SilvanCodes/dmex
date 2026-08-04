@@ -14,13 +14,29 @@ defmodule DMEx.Handler.Pipeline do
   cover a crash between a handler's side effects landing and its transaction
   committing, because it is that commit that records the message as processed.
 
-  ## 2. An unknown message type is skipped, not an error
+  ## 2. A message no clause matches is skipped, not an error
 
-  An unknown type is **not** a fault: a filter false positive admits one, and a
-  handler declared `selective: false` asks for the whole log outright. Such a
-  row advances the cursor exactly as a handled one does — it must, or a handler
-  would wedge forever on the first type it does not know — and emits
-  `[:dmex, :handler, :skip]`.
+  Two rows land here. One whose `message_type` names no declared module: a
+  filter false positive admits one, and a handler declared `selective: false`
+  asks for the whole log outright. And one whose type *is* declared but whose
+  value no clause head accepts, because selection is by type while a clause may
+  narrow further — `%OrderPlaced{status: "paid"}` declares `OrderPlaced` and the
+  log has no way to send only the paid ones.
+
+  Neither is a fault. Both advance the cursor exactly as a handled row does —
+  they must, or a handler would wedge forever on the first row it does not want
+  — and both emit `[:dmex, :handler, :skip]`.
+
+  **They are one question, so they are one call.** `__dmex_cast__/3` — which
+  `DMEx.Handler` compiles from the handler's own clauses — decodes the row and
+  hands it back only if a clause head accepts it, and answers `nil` otherwise.
+  There is no separate type lookup to disagree with the clauses, and no way to
+  decode a row without asking whether it is wanted.
+
+  It is asked *before* the transaction opens, so a row nothing wants costs a
+  call and a struct match. Nothing calls the handler and rescues a
+  `FunctionClauseError` to find out, which leaves raising meaning only what
+  section 4 says it means.
 
   ## 2a. A skip's advance is coalesced; a handled message's is not
 
@@ -113,7 +129,6 @@ defmodule DMEx.Handler.Pipeline do
           required(:storage_opts) => DMEx.Storage.opts(),
           required(:handler) => module(),
           required(:subscription) => String.t(),
-          required(:modules) => %{String.t() => module()},
           required(:origin) => term(),
           required(:cursor) => non_neg_integer(),
           required(:pending) => boolean(),
@@ -164,17 +179,13 @@ defmodule DMEx.Handler.Pipeline do
   ## Internals
 
   defp dispatch(row, id, state) do
-    case Map.fetch(state.modules, Map.fetch!(row, "message_type")) do
-      {:ok, module} -> handle(row, id, module, state)
-      :error -> skip(row, id, state)
-    end
-  end
-
-  defp handle(row, id, module, state) do
-    message = module.cast(Map.fetch!(row, "data"))
     metadata = Map.get(row, "metadata") || %{}
+    type = Map.fetch!(row, "message_type")
 
-    attempt(row, id, message, metadata, state, 1)
+    case state.handler.__dmex_cast__(type, Map.fetch!(row, "data"), metadata) do
+      nil -> skip(row, id, state)
+      message -> attempt(row, id, message, metadata, state, 1)
+    end
   end
 
   defp attempt(row, id, message, metadata, state, attempt) do
@@ -304,11 +315,10 @@ defmodule DMEx.Handler.Pipeline do
   Builds pipeline state from the handler's declaration, once per subscription.
 
   The message set was derived and validated at compile time, so there is nothing
-  left for this to check but the handler itself.
-
-  Resolving `message_type` per row is a map lookup against the resulting
-  registry — never `String.to_atom/1` on whatever the log sent, which would be
-  an unbounded-atom-table risk on attacker-controlled input.
+  left for this to check but the handler itself — and nothing to carry, since
+  resolving a `message_type` is the handler's own `__dmex_cast__/3`, compiled
+  from that set. Never `String.to_atom/1` on whatever the log sent, which would
+  be an unbounded-atom-table risk on attacker-controlled input.
   """
   @spec build(keyword()) :: t()
   def build(opts) do
@@ -327,7 +337,6 @@ defmodule DMEx.Handler.Pipeline do
       storage_opts: Keyword.fetch!(opts, :storage_opts),
       handler: handler,
       subscription: Keyword.get_lazy(opts, :subscription, fn -> subscription!(declaration) end),
-      modules: DMEx.Message.registry(declaration.messages),
       origin: Keyword.fetch!(opts, :origin),
       cursor: Keyword.get(opts, :cursor, 0),
       pending: false,

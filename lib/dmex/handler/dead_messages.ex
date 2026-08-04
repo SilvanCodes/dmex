@@ -28,7 +28,6 @@ defmodule DMEx.Handler.DeadMessages do
   """
 
   alias DMEx.Handler
-  alias DMEx.Message
 
   require Logger
 
@@ -60,13 +59,12 @@ defmodule DMEx.Handler.DeadMessages do
     {storage, storage_opts} = DMEx.Supervisor.storage!(opts)
 
     declaration = Handler.declaration!(handler)
-    modules = Message.registry(declaration.messages)
     subscription = subscription!(handler, opts)
 
     {:ok, rows} = storage.dead_messages(storage_opts, subscription)
 
     Enum.reduce(rows, %{replayed: 0, failed: 0}, fn row, counts ->
-      case replay_one(row, declaration, subscription, modules, storage, storage_opts) do
+      case replay_one(row, declaration, subscription, storage, storage_opts) do
         :ok -> Map.update!(counts, :replayed, &(&1 + 1))
         :error -> Map.update!(counts, :failed, &(&1 + 1))
       end
@@ -92,33 +90,33 @@ defmodule DMEx.Handler.DeadMessages do
     Handler.subscription_id(handler, Handler.log!(handler, opts))
   end
 
-  defp replay_one(row, declaration, subscription, modules, storage, storage_opts) do
-    case Map.fetch(modules, row.message_type) do
-      :error ->
+  # The same question the pipeline asks before delivering, answered the same
+  # way: `nil` for a type no clause declares and for a value no head accepts
+  # alike. Calling the handler to find either out would report a raise where a
+  # stream skips.
+  defp replay_one(row, declaration, subscription, storage, storage_opts) do
+    handler = declaration.handler
+    metadata = JSON.decode!(row.metadata)
+
+    case handler.__dmex_cast__(row.message_type, JSON.decode!(row.data), metadata) do
+      nil ->
         Logger.warning(
-          "DMEx cannot replay dead message #{row.id}: #{inspect(declaration.handler)} " <>
-            "has no clause for #{row.message_type}. Add one to handle_message/2."
+          "DMEx cannot replay dead message #{row.id}: no #{inspect(handler)} clause matches a " <>
+            "#{row.message_type}. Widen one and replay again, or discard/3 it."
         )
 
         :error
 
-      {:ok, module} ->
-        run(row, module, declaration, subscription, storage, storage_opts)
+      message ->
+        {:ok, _} =
+          storage.transaction(storage_opts, fn ->
+            _ = handler.handle_message(message, metadata)
+
+            :ok = storage.delete_dead_message(storage_opts, subscription, row.id)
+          end)
+
+        :ok
     end
-  end
-
-  defp run(row, module, declaration, subscription, storage, storage_opts) do
-    message = module.cast(JSON.decode!(row.data))
-    metadata = JSON.decode!(row.metadata)
-
-    {:ok, _} =
-      storage.transaction(storage_opts, fn ->
-        _ = declaration.handler.handle_message(message, metadata)
-
-        :ok = storage.delete_dead_message(storage_opts, subscription, row.id)
-      end)
-
-    :ok
   rescue
     exception ->
       Logger.warning(

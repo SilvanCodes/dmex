@@ -37,7 +37,13 @@ defmodule DMEx.Handler do
 
   Derivation covers **types, not values**: a clause narrowed to
   `%OrderPlaced{status: "paid"}` still declares `OrderPlaced`, so an unpaid one
-  arrives and raises. Match the struct and branch inside the body.
+  arrives — and is skipped like any other message no clause matches, advancing
+  the cursor and emitting `[:dmex, :handler, :skip]`. Narrowing is a filter, not
+  an assertion. The heads, guards and all, are compiled into a `__dmex_cast__/3`
+  that decodes a row and returns it only if a clause accepts it — `nil` covering
+  both a type nothing declares and a value nothing wants, since they are the
+  same answer. The pipeline asks it before it opens a transaction, so a row no
+  clause wants costs a struct match.
 
   Rejected at compile time: a clause whose first argument is not a struct
   pattern (a bare variable declares nothing, and cannot serve as a fallback
@@ -133,13 +139,27 @@ defmodule DMEx.Handler do
       # @before_compile, and hence carrying these across in an attribute.
       @dmex_declared DMEx.Handler.__declared__(__MODULE__, opts)
 
+      # The clause heads *as written*. `Module.get_definition/2` has them too,
+      # but expanded and normalized past the point of being reinjectable, and
+      # `__dmex_cast__/3`'s match test is built by reinjecting them.
+      Module.register_attribute(__MODULE__, :dmex_heads, accumulate: true)
+      @on_definition DMEx.Handler
+
       @before_compile DMEx.Handler
     end
   end
 
   @doc false
+  def __on_definition__(env, :def, :handle_message, [message, metadata], guards, _body) do
+    Module.put_attribute(env.module, :dmex_heads, {message, metadata, guards})
+  end
+
+  def __on_definition__(_env, _kind, _name, _args, _guards, _body), do: :ok
+
+  @doc false
   defmacro __before_compile__(env) do
     declaration = __declaration__(env)
+    match = matcher(env, declaration.messages)
 
     quote do
       @doc """
@@ -147,6 +167,8 @@ defmodule DMEx.Handler do
       """
       @spec __dmex__() :: DMEx.Handler.declaration()
       def __dmex__, do: unquote(Macro.escape(declaration))
+
+      unquote(match)
     end
   end
 
@@ -311,6 +333,93 @@ defmodule DMEx.Handler do
     end
   end
 
+  ## Asking whether a clause wants a message
+
+  # Selection is by type, so a clause narrowed below its type —
+  # `%OrderPlaced{status: "paid"}` — is sent messages no clause accepts, and the
+  # pipeline has to know which *before* it opens the transaction the handler
+  # would have run in. Calling and rescuing the `FunctionClauseError` answers a
+  # transaction too late; this answers from the same heads, on a function whose
+  # bodies are `true`.
+  #
+  # It is one function because it is one question. A row a consumer has no
+  # module for and a row no clause head accepts are the same answer — `nil` —
+  # and a caller cannot decode without asking, or ask without decoding.
+  defp matcher(env, messages) do
+    heads = Enum.reverse(Module.get_attribute(env.module, :dmex_heads))
+    {:v1, :def, _meta, clauses} = Module.get_definition(env.module, {:handle_message, 2})
+
+    unless length(heads) == length(clauses), do: raise_unseen_clauses(env, heads, clauses)
+
+    accepts = Enum.map(heads, &matcher_clause/1)
+    casts = Enum.map(messages, &cast_clause/1)
+
+    # What turns a narrowed-away value down. Marked generated because a handler
+    # narrowing nothing has heads covering every struct its own cast can return,
+    # so this reads as unreachable to anything checking — in a user's dialyzer
+    # run, say, where every call site is now visible.
+    turn_down =
+      quote generated: true do
+        defp __dmex_match__(_message, _metadata), do: false
+      end
+
+    quote do
+      @doc false
+      @spec __dmex_cast__(String.t(), term(), map()) :: struct() | nil
+      unquote_splicing(casts)
+      def __dmex_cast__(_message_type, _data, _metadata), do: nil
+
+      unquote_splicing(accepts)
+      unquote(turn_down)
+    end
+  end
+
+  # One clause per declared type, compiled from the set rather than looked up in
+  # a map built from it at boot — and never `String.to_atom/1` on whatever the
+  # log sent. A type with no clause falls to the `nil` above without decoding.
+  defp cast_clause(module) do
+    quote do
+      def __dmex_cast__(unquote(module.type()), data, metadata) do
+        message = unquote(module).cast(data)
+
+        if __dmex_match__(message, metadata), do: message
+      end
+    end
+  end
+
+  defp matcher_clause({message, metadata, guards}) do
+    head = quote do: __dmex_match__(unquote(message), unquote(metadata))
+    head = if guards == [], do: head, else: {:when, [], [head, chain(guards)]}
+
+    quote do
+      defp unquote(generated(head)), do: true
+    end
+  end
+
+  # `def f(x) when a when b` — alternative guard sequences, which the hook hands
+  # over flat and a clause head wants nested.
+  defp chain([guard]), do: guard
+  defp chain([guard | rest]), do: {:when, [], [guard, chain(rest)]}
+
+  # These are the user's own patterns moved to a function they did not write, so
+  # a binding this copy has no body to use is not their mistake to be warned
+  # about.
+  defp generated(ast) do
+    Macro.prewalk(ast, fn node -> Macro.update_meta(node, &mark/1) end)
+  end
+
+  defp mark(meta), do: Keyword.put(meta, :generated, true)
+
+  defp raise_unseen_clauses(env, heads, clauses) do
+    raise ArgumentError, """
+    #{inspect(env.module)} defines #{length(clauses)} handle_message/2 clause(s), but \
+    `use DMEx.Handler` saw #{length(heads)} of them.
+
+    It has to come first. The `use` is what installs the hook that reads the clause \
+    patterns, and a clause defined above it would be delivered nothing at all.
+    """
+  end
+
   ## Deriving the message set
 
   # `Module.get_definition/2` hands back the stored clauses with their aliases
@@ -389,9 +498,9 @@ defmodule DMEx.Handler do
 
         def handle_message(%MyApp.Messages.OrderPlaced{} = message, _metadata), do: :ok
 
-    A catch-all clause cannot serve as a fallback here — the pipeline only ever
-    delivers the types these clauses declare, so nothing would reach it. Match
-    the struct and branch inside the body instead.
+    A catch-all clause cannot serve as a fallback here — it declares no type,
+    and the pipeline only ever delivers declared ones. A message a narrower
+    clause does not match is skipped, so there is nothing for it to catch.
     """
   end
 

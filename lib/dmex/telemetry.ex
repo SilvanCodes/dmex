@@ -70,8 +70,10 @@ defmodule DMEx.Telemetry do
 
   ### `[:dmex, :handler, :skip]`
 
-  A row whose `message_type` matched no declared module. Measurements: `:id`.
-  Extra metadata: `:message_type`.
+  A row no clause matched: either its `message_type` names no declared module,
+  or the type is declared but a clause narrowed to a field's value turned it
+  down. Neither reached a handler, so neither is inside a `:message` span.
+  Measurements: `:id`. Extra metadata: `:message_type`.
 
   **Worth a dashboard even though it is not a fault**: a consumer silently
   discarding most of a stream and one silently discarding the single type it

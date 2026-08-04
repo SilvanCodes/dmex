@@ -250,6 +250,104 @@ defmodule DMEx.HandlerTest do
     end
   end
 
+  # Decoding and "is this wanted" are one call, asked before the pipeline opens
+  # a transaction — see `DMEx.Handler.Pipeline`, section 2. `nil` is the whole
+  # vocabulary for "no", whether the type is undeclared or the value unwanted.
+  describe "the generated cast" do
+    test "returns what the clause matches and nil for a type it never declared" do
+      module = compile_module(clause())
+
+      assert %OrderPlaced{order_id: 1} = module.__dmex_cast__("order_placed", placed(1), %{})
+      assert module.__dmex_cast__("order_shipped", %{"order_id" => 1}, %{}) == nil
+    end
+
+    test "carries a narrowed field" do
+      body = """
+      def handle_message(%DMEx.Test.Messages.OrderPlaced{customer_id: 7}, _md), do: :ok
+      """
+
+      module = compile_module(body)
+
+      assert module.__dmex_cast__("order_placed", %{"customer_id" => 7}, %{})
+      assert module.__dmex_cast__("order_placed", %{"customer_id" => 9}, %{}) == nil
+    end
+
+    # The binding this copy has no body to use, and the guard that does use one.
+    test "carries the clause's guards" do
+      body = """
+      def handle_message(%DMEx.Test.Messages.OrderPlaced{total: total} = message, _md)
+          when total > 100 do
+        message
+      end
+      """
+
+      module = compile_module(body)
+
+      assert module.__dmex_cast__("order_placed", %{"total" => 500}, %{})
+      assert module.__dmex_cast__("order_placed", %{"total" => 50}, %{}) == nil
+    end
+
+    test "matches on the metadata too" do
+      body = """
+      def handle_message(%DMEx.Test.Messages.OrderPlaced{}, %{"t" => "acme"}), do: :ok
+      """
+
+      module = compile_module(body)
+
+      assert module.__dmex_cast__("order_placed", placed(1), %{"t" => "acme"})
+      assert module.__dmex_cast__("order_placed", placed(1), %{"t" => "other"}) == nil
+    end
+
+    test "answers for every clause" do
+      body = """
+      def handle_message(%DMEx.Test.Messages.OrderPlaced{}, _metadata), do: :ok
+      def handle_message(%DMEx.Test.Messages.OrderShipped{}, _metadata), do: :ok
+      """
+
+      module = compile_module(body)
+
+      assert module.__dmex_cast__("order_placed", placed(1), %{})
+      assert module.__dmex_cast__("order_shipped", %{"order_id" => 2}, %{})
+    end
+
+    # The type nothing declares never reaches a `cast/1` at all — it falls to
+    # the same `nil` a turned-down value gets, one clause earlier.
+    test "decodes nothing for a type it never declared" do
+      module = compile_module(clause())
+
+      assert module.__dmex_cast__("nothing_it_declares", %{"order_id" => 1}, %{}) == nil
+    end
+
+    test "casts each declared type into its own module" do
+      body = """
+      def handle_message(%DMEx.Test.Messages.OrderPlaced{}, _metadata), do: :ok
+      def handle_message(%DMEx.Test.Messages.OrderShipped{}, _metadata), do: :ok
+      """
+
+      module = compile_module(body)
+
+      assert %OrderPlaced{order_id: 1} = module.__dmex_cast__("order_placed", placed(1), %{})
+
+      assert %OrderShipped{order_id: 2} =
+               module.__dmex_cast__("order_shipped", %{"order_id" => 2}, %{})
+    end
+
+    # Otherwise the hook that reads the patterns is installed after them, the
+    # test answers false for everything, and the subscription silently skips its
+    # whole log.
+    test "rejects clauses defined above the `use`" do
+      assert_raise ArgumentError, ~r/saw 0 of them/, fn ->
+        Code.eval_string("""
+        defmodule DMEx.HandlerTest.Late#{System.unique_integer([:positive])} do
+          def handle_message(%DMEx.Test.Messages.OrderPlaced{}, _metadata), do: :ok
+
+          use DMEx.Handler, logs: [:orders], id: :some_id
+        end
+        """)
+      end
+    end
+  end
+
   describe "validating the options" do
     test "requires :logs" do
       assert_raise ArgumentError, ~r/requires :logs/, fn ->
@@ -314,6 +412,8 @@ defmodule DMEx.HandlerTest do
     "def handle_message(%DMEx.Test.Messages.OrderPlaced{}, _metadata), do: :ok"
   end
 
+  defp placed(order_id), do: %{"order_id" => order_id}
+
   defp declare(opts) do
     opts
     |> Enum.map_join(", ", fn {key, value} -> "#{key}: #{inspect(value)}" end)
@@ -323,11 +423,17 @@ defmodule DMEx.HandlerTest do
 
   defp compile(body), do: compile_raw("logs: [:orders], id: :some_id", body)
 
+  defp compile_module(body), do: compile_module_raw("logs: [:orders], id: :some_id", body)
+
   defp messages_of(body), do: body |> compile() |> Map.fetch!(:messages)
+
+  defp compile_raw(declaration, body) do
+    compile_module_raw(declaration, body).__dmex__()
+  end
 
   # Compiled into a uniquely-named module each time, so nothing here depends on
   # a module name — which is the point of the design under test.
-  defp compile_raw(declaration, body) do
+  defp compile_module_raw(declaration, body) do
     name = "DMEx.HandlerTest.Generated#{System.unique_integer([:positive])}"
 
     {{:module, module, _, _}, _} =
@@ -343,6 +449,6 @@ defmodule DMEx.HandlerTest do
         file: __ENV__.file
       )
 
-    module.__dmex__()
+    module
   end
 end

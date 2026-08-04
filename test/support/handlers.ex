@@ -96,6 +96,58 @@ defmodule DMEx.Test.Handlers do
     end
   end
 
+  defmodule Narrowed do
+    @moduledoc """
+    Matches a field's value, not just the type.
+
+    Selection is by type, so the log sends every `OrderPlaced`; the ones this
+    clause turns down are skipped rather than raising.
+    """
+    use DMEx.Handler, logs: [:test], id: :narrowed
+
+    alias DMEx.Test.Handlers
+    alias DMEx.Test.Messages.OrderPlaced
+
+    @impl true
+    def handle_message(%OrderPlaced{customer_id: 7} = message, metadata) do
+      send(Handlers.owner(), {:handled, message, metadata})
+
+      :ok
+    end
+  end
+
+  defmodule Guarded do
+    @moduledoc "Narrows with a guard rather than with a pattern."
+    use DMEx.Handler, logs: [:test], id: :guarded
+
+    alias DMEx.Test.Handlers
+    alias DMEx.Test.Messages.OrderPlaced
+
+    @impl true
+    def handle_message(%OrderPlaced{total: total} = message, metadata) when total > 100 do
+      send(Handlers.owner(), {:handled, message, metadata})
+
+      :ok
+    end
+  end
+
+  defmodule RaisesFunctionClause do
+    @moduledoc """
+    Raises a `FunctionClauseError` from inside its body.
+
+    The distinction the skip path has to keep: a clause head that did not match
+    means the handler was never entered, while this one was and failed.
+    """
+    use DMEx.Handler, logs: [:test], id: :raises_function_clause
+
+    alias DMEx.Test.Messages.OrderPlaced
+
+    @impl true
+    def handle_message(%OrderPlaced{} = message, _metadata), do: classify(message.total)
+
+    defp classify(total) when is_integer(total), do: :ok
+  end
+
   defmodule Fanned do
     @moduledoc """
     One handler, two logs.

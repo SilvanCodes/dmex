@@ -37,9 +37,9 @@ defmodule DMEx.Message do
   on their own schedules.
 
   **This is the one line in a message module that must not be edited casually.**
-  Changing it orphans every row already appended under the old type: a consumer's
-  registry stops resolving them and skips them silently, exactly the way renaming
-  the module used to. There is no rename tooling.
+  Changing it orphans every row already appended under the old type: a consumer
+  stops resolving them and skips them silently, exactly the way renaming the
+  module used to. There is no rename tooling.
 
   Restricted to `[A-Za-z0-9_.]+`, because the type goes onto an SSE `event:` line
   and SSE field lines have no escaping. Dots are available for namespacing —
@@ -264,19 +264,6 @@ defmodule DMEx.Message do
     Code.ensure_loaded?(module) and function_exported?(module, :type, 0) and
       function_exported?(module, :cast, 1)
   end
-
-  @doc """
-  Builds a `message_type => module` lookup from a set of message modules.
-
-  How a consumer resolves the `message_type` on a row back to a module. Always
-  built from the consumer's own declared set — never by atomizing whatever
-  string the producer sent.
-
-  Takes the `MapSet` a handler's `:messages` already is, so the only collision
-  left to report is the real one: two *different* modules declaring one `type:`.
-  """
-  @spec registry(MapSet.t(module())) :: %{String.t() => module()}
-  def registry(modules) when is_struct(modules, MapSet), do: index!(modules)
 
   @doc """
   Lists every message module compiled into the applications `DMEx.discovery/1` scans.
