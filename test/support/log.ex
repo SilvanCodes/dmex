@@ -23,6 +23,23 @@ defmodule DMEx.Test.IntegrationLog do
     app: :dmex_integration
 end
 
+defmodule DMEx.Test.HeartbeatLog do
+  @moduledoc """
+  Log for the heartbeat suite, beating fast enough that a test does not sit
+  through 15 seconds of it.
+
+  Here rather than in the test file because `DMEx.message_types/1` keys on the
+  application owning the log module, and a module defined inside a test file
+  belongs to no application.
+  """
+
+  use DMEx.Log,
+    repo: DMEx.Test.IntegrationRepo,
+    app: :dmex_heartbeat,
+    heartbeat_ms: 150,
+    poll_interval: 100
+end
+
 defmodule DMEx.Test.SQLiteLog do
   @moduledoc """
   Log for the SQLite integration suite.

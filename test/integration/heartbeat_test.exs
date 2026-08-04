@@ -14,6 +14,7 @@ defmodule DMEx.Integration.HeartbeatTest do
   use DMEx.IntegrationCase
 
   alias DMEx.Test.Handlers
+  alias DMEx.Test.HeartbeatLog, as: Log
   alias DMEx.Test.Messages.OrderPlaced
   alias DMEx.Test.Server
   alias DMEx.Transport.SSE.Decoder
@@ -22,15 +23,6 @@ defmodule DMEx.Integration.HeartbeatTest do
 
   @heartbeat 150
 
-  defmodule Log do
-    @moduledoc "Beats fast enough that a test does not sit through 15 seconds of it."
-    use DMEx.Log,
-      repo: DMEx.Test.IntegrationRepo,
-      app: :dmex_heartbeat,
-      heartbeat_ms: 150,
-      poll_interval: 100
-  end
-
   defmodule Router do
     @moduledoc false
     use Plug.Router
@@ -38,7 +30,7 @@ defmodule DMEx.Integration.HeartbeatTest do
     plug(:match)
     plug(:dispatch)
 
-    forward("/stream", to: DMEx.Log.Plug, log: DMEx.Integration.HeartbeatTest.Log)
+    forward("/stream", to: DMEx.Log.Plug, log: DMEx.Test.HeartbeatLog)
 
     match _ do
       send_resp(conn, 404, "not found")
