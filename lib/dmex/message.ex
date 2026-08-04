@@ -266,21 +266,6 @@ defmodule DMEx.Message do
   end
 
   @doc """
-  Builds a `message_type => module` lookup from a set of message modules.
-
-  The mapping as data, for code that wants it that way. A subscription does not:
-  it resolves a row through the `__dmex_cast__/2` `DMEx.Handler` compiles from
-  the same set, so there is no second lookup to disagree with the clauses. Both
-  are built from the consumer's own declared set — never by atomizing whatever
-  string the producer sent.
-
-  Takes the `MapSet` a handler's `:messages` already is, so the only collision
-  left to report is the real one: two *different* modules declaring one `type:`.
-  """
-  @spec registry(MapSet.t(module())) :: %{String.t() => module()}
-  def registry(modules) when is_struct(modules, MapSet), do: index!(modules)
-
-  @doc """
   Lists every message module compiled into the applications `DMEx.discovery/1` scans.
 
   The mirror of `DMEx.Handler.discover/1`. Sorted, so a collision is reported

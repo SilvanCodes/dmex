@@ -1,7 +1,6 @@
 defmodule DMEx.MessageTest do
   use DMEx.Case, async: true
 
-  alias DMEx.Test.Handlers
   alias DMEx.Test.Messages.OrderPlaced
   alias DMEx.Test.Messages.OrderShipped
   alias DMEx.Test.Messages.WithCustomCast
@@ -159,39 +158,6 @@ defmodule DMEx.MessageTest do
     end
   end
 
-  describe "registry/1" do
-    test "maps each module's type to the module" do
-      assert DMEx.Message.registry(MapSet.new([OrderPlaced, OrderShipped])) == %{
-               "order_placed" => OrderPlaced,
-               "order_shipped" => OrderShipped
-             }
-    end
-
-    test "an empty set yields an empty registry" do
-      assert DMEx.Message.registry(MapSet.new()) == %{}
-    end
-
-    test "takes the set a handler's declaration already carries" do
-      # Not a list: the same module twice is unrepresentable in the input rather
-      # than tolerated by the reduce, which is why the collision check below can
-      # be unconditional.
-      assert DMEx.Message.registry(Handlers.EchoAll.__dmex__().messages) == %{
-               "order_placed" => OrderPlaced,
-               "order_shipped" => OrderShipped
-             }
-    end
-
-    test "raises when two modules declare the same type" do
-      # Reachable through two ordinary declarations now that the type is
-      # declared rather than derived, which is what makes the check load-bearing.
-      twin = compile_message(~s|type: "order_placed"|)
-
-      assert_raise ArgumentError, ~r/declared by both.*give one of them a different/s, fn ->
-        DMEx.Message.registry(MapSet.new([OrderPlaced, twin]))
-      end
-    end
-  end
-
   describe "types!/1" do
     test "returns the declared types" do
       assert DMEx.Message.types!([OrderPlaced, OrderShipped]) ==
@@ -204,7 +170,7 @@ defmodule DMEx.MessageTest do
       # unreachable and every row of its type silently skipped.
       twin = compile_message(~s|type: "order_placed"|)
 
-      assert_raise ArgumentError, ~r/declared by both/, fn ->
+      assert_raise ArgumentError, ~r/declared by both.*give one of them a different/s, fn ->
         DMEx.Message.types!([OrderPlaced, twin])
       end
     end
