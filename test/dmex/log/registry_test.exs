@@ -84,6 +84,17 @@ defmodule DMEx.Log.RegistryTest do
     eventually(fn -> LogRegistry.count(FakeLog) == 0 end)
   end
 
+  # For a connect that registers and then fails before becoming a stream: its
+  # process is the keep-alive connection process and does not die with it.
+  test "unregister/1 drops the caller's entry while it is still alive" do
+    {:ok, _status} = LogRegistry.register(FakeLog, 5_000)
+    assert LogRegistry.count(FakeLog) == 1
+
+    assert :ok = LogRegistry.unregister(FakeLog)
+
+    assert LogRegistry.count(FakeLog) == 0
+  end
+
   test "each/2 over nobody is fine" do
     assert :ok =
              LogRegistry.each(FakeLog, fn pid, _status, _selection ->

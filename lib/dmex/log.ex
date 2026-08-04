@@ -127,6 +127,10 @@ defmodule DMEx.Log do
   @log_opts [:repo, :storage, :notifier, :app, :prefix]
   @app_key_max_bytes 58
 
+  # How long a start waits for a name held by a previous incarnation. Only ever
+  # spent when the holder is not dying, i.e. when it is a genuine duplicate.
+  @start_timeout 5_000
+
   # A fixed namespace for every DMEx advisory lock, so DMEx's lock space is
   # disjoint from any other library sharing the database. Two ints rather than
   # one bigint follows Oban's convention for the same reason.
@@ -258,10 +262,67 @@ defmodule DMEx.Log do
         [{DMEx.Log.Dispatcher, log: log}] ++
         watcher_children(log, config)
 
-    Supervisor.start_link(children,
-      strategy: :one_for_one,
-      name: Module.concat(log, "Supervisor")
-    )
+    __start__(fn ->
+      Supervisor.start_link(children,
+        strategy: :one_for_one,
+        name: Module.concat(log, "Supervisor")
+      )
+    end)
+  end
+
+  @doc false
+  # Restart, not first boot, is what needs this. A brutally killed subtree
+  # dispatches exit signals to its children and to its own supervisor
+  # concurrently, so the restart can begin while the processes it is about to
+  # re-register are still queued behind their own exit signal — a registered
+  # name outlives the signal that announced its owner's death. The start then
+  # fails `{:already_started, pid}` and the supervisor retries just as fast, so
+  # the restart intensity is spent before anything could have changed and the
+  # whole tree above comes down with it.
+  #
+  # `{:already_started, pid}` names the process that is in the way, so this
+  # waits on that process dying rather than on a duration. The deadline is only
+  # for the case where the name is held by a genuine duplicate, which never dies.
+  @spec __start__((-> Supervisor.on_start())) :: Supervisor.on_start()
+  def __start__(start) when is_function(start, 0) do
+    await_start(start, System.monotonic_time(:millisecond) + @start_timeout)
+  end
+
+  defp await_start(start, deadline) do
+    case start.() do
+      {:error, reason} = error -> retry_start(start, deadline, error, lingering(reason))
+      started -> started
+    end
+  end
+
+  defp retry_start(start, deadline, error, pid) when is_pid(pid) do
+    remaining = deadline - System.monotonic_time(:millisecond)
+
+    if remaining > 0 and down?(pid, remaining) do
+      await_start(start, deadline)
+    else
+      error
+    end
+  end
+
+  defp retry_start(_start, _deadline, error, nil), do: error
+
+  # The name may be held by the child itself or by anything under it: a
+  # `Registry` is a subtree, and its partition is the one that lingers.
+  defp lingering({:already_started, pid}) when is_pid(pid), do: pid
+  defp lingering({:shutdown, {:failed_to_start_child, _id, reason}}), do: lingering(reason)
+  defp lingering(_reason), do: nil
+
+  defp down?(pid, timeout) do
+    ref = Process.monitor(pid)
+
+    receive do
+      {:DOWN, ^ref, :process, ^pid, _reason} -> true
+    after
+      timeout ->
+        Process.demonitor(ref, [:flush])
+        false
+    end
   end
 
   # With no stall timeout there is no deadline to enforce, so the watcher is not

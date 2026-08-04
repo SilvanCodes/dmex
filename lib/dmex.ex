@@ -226,9 +226,10 @@ defmodule DMEx do
   Rescans and caches an application's message types, raising if two modules
   declare one type.
 
-  Called once from `DMEx.Supervisor`'s `init/1` with its `otp_app:`, which is both
-  the boot-time collision check and the cache seed — so an application owning no
-  log gets the check too.
+  Called from `DMEx.Supervisor`'s `init/1` with its `otp_app:` — so an
+  application owning no log gets the check too — and once more per application
+  owning one of its logs, since that is the key `message_types/1` reads under.
+  Both the boot-time collision check and the cache seed.
   """
   @spec refresh_message_types(atom() | nil) :: MapSet.t(String.t())
   def refresh_message_types(otp_app \\ nil) do
@@ -241,7 +242,9 @@ defmodule DMEx do
 
   defp message_types_key(otp_app), do: {__MODULE__, :message_types, otp_app}
 
-  defp owning_app(module) do
+  @doc false
+  @spec owning_app(module()) :: atom() | nil
+  def owning_app(module) do
     case :application.get_application(module) do
       {:ok, app} -> app
       :undefined -> nil

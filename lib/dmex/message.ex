@@ -54,8 +54,8 @@ defmodule DMEx.Message do
   for anything absent, and ignores anything undeclared.
 
   It is **overridable**, because the default can only be right for what JSON
-  models directly. A field holding a `DateTime`, a `Decimal`, or a nested struct
-  round-trips as a string or a plain map and needs its own `cast/1`:
+  models directly. A `DateTime` or a `Decimal` field comes back as a string, a
+  nested struct as a plain map, and each needs its own `cast/1`:
 
       defmodule MyApp.Messages.OrderPlaced do
         use DMEx.Message, type: "order_placed", fields: [:order_id, :placed_at]
@@ -69,8 +69,20 @@ defmodule DMEx.Message do
         end
       end
 
-  This mirrors `@derive JSON.Encoder` on the writing side: a default covering
-  the common shape, replaced where the type demands it.
+  The write side is the stricter half, and this is the invariant it imposes:
+  **a message field must hold something `JSON.Encoder` already encodes.** A map,
+  a list, a string, a number, a boolean, `nil`, or a struct implementing the
+  protocol — `Date`, `DateTime`, `Time`, `NaiveDateTime`, `Duration`, and
+  `Decimal` where that dependency is present. A nested struct that derives
+  nothing is the case that bites: `JSON.encode!/1` raises
+  `Protocol.UndefinedError` on it inside `MyApp.Log.append/2`, before the row is
+  written and before the `[:dmex, :append, :start]` event. Enrichment past that
+  line belongs on the read side, in `cast/1`.
+
+  The derivation itself is replaceable, just not with a second `@derive` — that
+  one lands after `defstruct` and is a no-op. An explicit
+  `defimpl JSON.Encoder, for: __MODULE__` wins over it, whichever order the two
+  compile in, and is the only way to change what a message encodes to.
 
   **Atom safety.** The default `cast/1` walks the struct's *own* fields and
   looks each up in the incoming map, rather than converting the incoming map's

@@ -61,6 +61,27 @@ defmodule DMEx.Handler.DeadMessagesTest do
     end
   end
 
+  defmodule TransactionFails do
+    @moduledoc """
+    Postgres with a `transaction/2` that always answers `{:error, :pool_timeout}`.
+
+    Storage failing *underneath* a replay, which is not the handler failing
+    again. Only the callbacks replay uses, so there is no `@behaviour` to
+    satisfy with a dozen delegates.
+    """
+    alias DMEx.Storage.Postgres
+
+    def transaction(_opts, _fun), do: {:error, :pool_timeout}
+
+    defdelegate dead_messages(opts, subscription), to: Postgres
+    defdelegate delete_dead_message(opts, subscription, id), to: Postgres
+  end
+
+  defmodule ReadFails do
+    @moduledoc "Storage whose `dead_messages/2` itself fails."
+    def dead_messages(_opts, _subscription), do: {:error, :pool_timeout}
+  end
+
   setup do
     Handlers.report_to(self())
 
@@ -195,6 +216,77 @@ defmodule DMEx.Handler.DeadMessagesTest do
     test "is a no-op when there is nothing dead", ctx do
       assert %{replayed: 0, failed: 0} = DeadMessages.replay(@handler, ctx.replay)
     end
+
+    # Replay is the recovery operation, so it cannot be the one place a
+    # transient failure is fatal: a message dead-lettered after N transient
+    # failures gets the same `max_attempts` here that delivery gave it.
+    test "retries a transient failure exactly as delivery does", ctx do
+      kill(ctx, 1)
+
+      # Fails twice, succeeds on the third attempt — inside the default
+      # `max_attempts` of 3, so this is a message normal delivery would commit.
+      Handlers.FailTimes.set(2)
+
+      assert %{replayed: 1, failed: 0} =
+               DeadMessages.replay(@handler, ctx.replay ++ [retry_backoff: 1])
+
+      assert attempts() == 3
+      assert {:ok, []} = DeadMessages.list(@handler, ctx.opts)
+    end
+
+    test "gives up after max_attempts, like delivery does", ctx do
+      kill(ctx, 1)
+      Handlers.FailTimes.set(10)
+
+      assert %{replayed: 0, failed: 1} =
+               DeadMessages.replay(@handler, ctx.replay ++ [retry_backoff: 1])
+
+      assert attempts() == 3
+    end
+
+    # A replay is a handler call, so it is inside the same span every dashboard
+    # built on `DMEx.Telemetry`'s handler vocabulary reads.
+    test "emits the handler message span", ctx do
+      kill(ctx, 1)
+      Handlers.FailTimes.set(0)
+
+      ref = :telemetry_test.attach_event_handlers(self(), [[:dmex, :handler, :message, :stop]])
+
+      DeadMessages.replay(@handler, ctx.replay)
+
+      assert_receive {[:dmex, :handler, :message, :stop], ^ref, %{duration: duration},
+                      %{
+                        subscription: @subscription,
+                        handler: @handler,
+                        message_type: "order_placed",
+                        origin: origin,
+                        id: 1,
+                        attempt: 1
+                      }}
+
+      assert is_integer(duration)
+      refute is_nil(origin)
+    end
+
+    # Section 4 of the pipeline, on this path too: `{:error, reason}` from
+    # storage says the message was never processed, so it is not a verdict on
+    # the message and must not be counted as one.
+    test "an unreachable database is not the handler failing again", ctx do
+      kill(ctx, 1)
+      Handlers.FailTimes.set(0)
+
+      assert_raise DMEx.StorageError, fn ->
+        DeadMessages.replay(@handler, ctx.replay ++ [storage: TransactionFails])
+      end
+
+      assert {:ok, [_row]} = DeadMessages.list(@handler, ctx.opts)
+    end
+
+    test "a read that fails raises rather than mismatching", ctx do
+      assert_raise DMEx.StorageError, fn ->
+        DeadMessages.replay(@handler, ctx.replay ++ [storage: ReadFails])
+      end
+    end
   end
 
   describe "discard/3" do
@@ -251,6 +343,15 @@ defmodule DMEx.Handler.DeadMessagesTest do
       {:attempted, _} -> drain()
     after
       0 -> :ok
+    end
+  end
+
+  # How many times the handler actually ran, counted from what it reported.
+  defp attempts(seen \\ 0) do
+    receive do
+      {:attempted, _} -> attempts(seen + 1)
+    after
+      0 -> seen
     end
   end
 end

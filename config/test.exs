@@ -47,6 +47,10 @@ config :dmex, DMEx.Test.IntegrationRepo,
   pool_size: 10,
   log: false
 
+# `setup_sqlite!/0` deletes these files before every run, so two suites sharing a
+# path destroy each other mid-flight. Overridable to let concurrent runs isolate.
+sqlite_dir = System.get_env("DMEX_SQLITE_DIR") || Path.expand("../tmp", __DIR__)
+
 # SQLite needs no server, so this half of the storage suite runs anywhere. The
 # two non-default settings are the ones `DMEx.Storage.SQLite` requires of any
 # repo it is given, and it says so at boot:
@@ -57,7 +61,7 @@ config :dmex, DMEx.Test.IntegrationRepo,
 #     in rollback-journal mode a writer blocks readers, and DMEx's read path is one
 #     continuous reader per open connection.
 config :dmex, DMEx.Test.SQLiteRepo,
-  database: Path.expand("../tmp/dmex_test.db", __DIR__),
+  database: Path.join(sqlite_dir, "dmex_test.db"),
   pool: Ecto.Adapters.SQL.Sandbox,
   pool_size: 5,
   journal_mode: :wal,
@@ -66,7 +70,7 @@ config :dmex, DMEx.Test.SQLiteRepo,
   log: false
 
 config :dmex, DMEx.Test.SQLiteIntegrationRepo,
-  database: Path.expand("../tmp/dmex_integration_test.db", __DIR__),
+  database: Path.join(sqlite_dir, "dmex_integration_test.db"),
   pool_size: 5,
   journal_mode: :wal,
   default_transaction_mode: :immediate,
@@ -75,6 +79,6 @@ config :dmex, DMEx.Test.SQLiteIntegrationRepo,
 
 # Deliberately left at the ecto_sqlite3 default, for the test that
 # `DMEx.Storage.SQLite` refuses it.
-config :dmex, DMEx.Test.DeferredRepo, database: Path.expand("../tmp/dmex_deferred.db", __DIR__)
+config :dmex, DMEx.Test.DeferredRepo, database: Path.join(sqlite_dir, "dmex_deferred.db")
 
 config :logger, level: :warning

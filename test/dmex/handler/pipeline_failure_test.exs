@@ -1,3 +1,81 @@
+defmodule DMEx.Handler.PipelineFailureTest.FlakyStorage do
+  @moduledoc """
+  The in-memory stub with a scripted `transaction/2`.
+
+  Local to this test rather than in `test/support`, because it models the one
+  thing no other test cares about: storage failing *underneath* a handler that
+  did nothing wrong. The script is a list of faults, one consumed per
+  `transaction/2` call, `:ok` meaning "behave normally".
+  """
+
+  @behaviour DMEx.Storage
+
+  alias DMEx.Test.Storage
+
+  @doc "Storage opts whose `transaction/2` follows `faults`, then behaves."
+  @spec new([:ok | :timeout | :commit]) :: DMEx.Storage.opts()
+  def new(faults) do
+    {:ok, pid} = Agent.start_link(fn -> faults end)
+
+    Map.put(Storage.new(), :faults, pid)
+  end
+
+  @impl DMEx.Storage
+  def transaction(opts, fun) do
+    case next_fault(opts) do
+      # A checkout that timed out: the callback never ran.
+      :timeout ->
+        {:error, :pool_timeout}
+
+      # A commit that failed after the callback returned — a serialization
+      # failure, say. The callback ran and its writes rolled back.
+      :commit ->
+        state = Agent.get(store(opts), & &1)
+        _ = fun.()
+        Agent.update(store(opts), fn _ -> state end)
+
+        {:error, :serialization_failure}
+
+      :ok ->
+        Storage.transaction(opts, fun)
+    end
+  end
+
+  defp next_fault(opts) do
+    Agent.get_and_update(Map.fetch!(opts, :faults), fn
+      [] -> {:ok, []}
+      [fault | rest] -> {fault, rest}
+    end)
+  end
+
+  defp store(opts), do: Map.fetch!(opts, :store)
+
+  @impl DMEx.Storage
+  defdelegate append(opts, type, data, metadata), to: Storage
+  @impl DMEx.Storage
+  defdelegate read(opts, cursor, limit, max_bytes, types), to: Storage
+  @impl DMEx.Storage
+  defdelegate max_id(opts), to: Storage
+  @impl DMEx.Storage
+  defdelegate cursor_at(opts, at), to: Storage
+  @impl DMEx.Storage
+  defdelegate appended_since(opts, cursor), to: Storage
+  @impl DMEx.Storage
+  defdelegate last_seen(opts, subscription), to: Storage
+  @impl DMEx.Storage
+  defdelegate cursor(opts, subscription), to: Storage
+  @impl DMEx.Storage
+  defdelegate delete_cursor(opts, subscription), to: Storage
+  @impl DMEx.Storage
+  defdelegate advance(opts, subscription, id), to: Storage
+  @impl DMEx.Storage
+  defdelegate dead_message(opts, attrs), to: Storage
+  @impl DMEx.Storage
+  defdelegate dead_messages(opts, subscription), to: Storage
+  @impl DMEx.Storage
+  defdelegate delete_dead_message(opts, subscription, id), to: Storage
+end
+
 defmodule DMEx.Handler.PipelineFailureTest do
   @moduledoc """
   `on_failure` — section 6 of `DMEx.Handler.Pipeline`.
@@ -11,6 +89,7 @@ defmodule DMEx.Handler.PipelineFailureTest do
 
   alias DMEx.Config
   alias DMEx.Handler.Pipeline
+  alias DMEx.Handler.PipelineFailureTest.FlakyStorage
   alias DMEx.Storage.Postgres
   alias DMEx.Test.Handlers
   alias DMEx.Test.Messages.OrderPlaced
@@ -281,6 +360,69 @@ defmodule DMEx.Handler.PipelineFailureTest do
     end
   end
 
+  # Section 6 is about a message *a handler* could not process. Storage failing
+  # underneath it is a different event with a different answer: nothing ran, or
+  # nothing committed, so the message is still owed and the durable cursor still
+  # points below it.
+  describe "an infrastructure failure" do
+    test "does not dead-letter a message the handler never rejected" do
+      # Fails for every attempt and heals in time for the terminal action —
+      # a transient blip, which is exactly what retries exist for.
+      opts = FlakyStorage.new([:commit, :commit, :commit])
+      state = stub_state(opts, handler: Handlers.Echo, max_attempts: 3)
+
+      assert_raise DMEx.StorageError, fn -> Pipeline.run(row(1), state) end
+
+      assert stub_dead(opts, "test/echo") == []
+      assert {:ok, nil} = FlakyStorage.last_seen(opts, "test/echo")
+    end
+
+    test "does not consume the handler's retry attempts" do
+      opts = FlakyStorage.new([:commit, :commit, :commit])
+      state = stub_state(opts, handler: Handlers.Echo, max_attempts: 3)
+
+      catch_error(Pipeline.run(row(1), state))
+
+      # The handler succeeded; retrying it three times would be answering a
+      # database problem by re-running side effects that never failed.
+      assert_received {:handled, %OrderPlaced{order_id: 1}, _}
+      refute_received {:handled, _, _}
+    end
+
+    test "propagates when the callback never even ran" do
+      opts = FlakyStorage.new([:timeout])
+      state = stub_state(opts, handler: Handlers.Echo, max_attempts: 3)
+
+      assert_raise DMEx.StorageError, ~r/pool_timeout/, fn -> Pipeline.run(row(1), state) end
+
+      refute_received {:handled, _, _}
+      assert stub_dead(opts, "test/echo") == []
+      assert {:ok, nil} = FlakyStorage.last_seen(opts, "test/echo")
+    end
+
+    # The two commits answer the same event the same way. Here the handler
+    # genuinely failed, retries ran out, and it is the terminal action's own
+    # transaction that cannot commit.
+    test "on the terminal action is the same answer, not a different one" do
+      opts = FlakyStorage.new([:ok, :ok, :ok, :commit])
+      state = stub_state(opts, handler: Handlers.Raising, max_attempts: 3)
+
+      assert_raise DMEx.StorageError, fn -> Pipeline.run(row(1), state) end
+
+      assert stub_dead(opts, "test/raising") == []
+      assert {:ok, nil} = FlakyStorage.last_seen(opts, "test/raising")
+    end
+
+    test "in flush/1 is not silently swallowed either" do
+      opts = FlakyStorage.new([:timeout])
+      state = stub_state(opts, handler: Handlers.Echo, max_attempts: 3)
+
+      assert_raise DMEx.StorageError, fn ->
+        Pipeline.flush(%{state | cursor: 7, pending: true})
+      end
+    end
+  end
+
   ## Helpers
 
   # The pause is a jittered draw, so one sample proves nothing. Callers take
@@ -297,6 +439,30 @@ defmodule DMEx.Handler.PipelineFailureTest do
     {elapsed, _} = :timer.tc(fn -> catch_error(Pipeline.run(row(1), state)) end)
 
     div(elapsed, 1000)
+  end
+
+  defp stub_state(storage_opts, opts) do
+    Pipeline.build(
+      storage: FlakyStorage,
+      storage_opts: storage_opts,
+      handler: Keyword.fetch!(opts, :handler),
+      origin: @url,
+      cursor: 0,
+      config:
+        Config.handler!(
+          retry_backoff: 1,
+          retry_backoff_max: 2,
+          reconnect_backoff: 1,
+          reconnect_backoff_max: 2,
+          max_attempts: Keyword.fetch!(opts, :max_attempts)
+        )
+    )
+  end
+
+  defp stub_dead(storage_opts, subscription) do
+    {:ok, rows} = FlakyStorage.dead_messages(storage_opts, subscription)
+
+    rows
   end
 
   defp state(ctx, opts) do

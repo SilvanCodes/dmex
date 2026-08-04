@@ -4,6 +4,7 @@ defmodule DMEx.MessageTest do
   alias DMEx.Test.Messages.OrderPlaced
   alias DMEx.Test.Messages.OrderShipped
   alias DMEx.Test.Messages.WithCustomCast
+  alias DMEx.Test.Messages.WithCustomEncoder
 
   describe "type/0" do
     test "returns the declared type" do
@@ -155,6 +156,44 @@ defmodule DMEx.MessageTest do
                |> JSON.encode!()
                |> JSON.decode!()
                |> OrderPlaced.cast()
+    end
+
+    test "a hand-written cast/1 inverts the encoding too" do
+      # The default cast/1 and the derivation are generated from one field list
+      # and cannot disagree. A hand-written one can, which is the only place a
+      # round-trip test says anything.
+      original = %WithCustomCast{order_id: 7, placed_at: ~U[2026-07-27 10:31:04Z]}
+
+      assert original ==
+               original
+               |> JSON.encode!()
+               |> JSON.decode!()
+               |> WithCustomCast.cast()
+    end
+  end
+
+  describe "encoding" do
+    test "a field must hold something JSON.Encoder already encodes" do
+      # The invariant the moduledoc states. `URI` stands in for any struct that
+      # derives nothing: the derivation encodes fields with `JSON.Encoder`, and
+      # there is no implementation to reach for.
+      refute JSON.Encoder.impl_for(%URI{})
+
+      assert_raise Protocol.UndefinedError, fn ->
+        JSON.encode!(%OrderPlaced{order_id: 7, total: %URI{path: "/x"}})
+      end
+    end
+
+    test "a struct JSON.Encoder does implement encodes as that implementation renders it" do
+      assert JSON.encode!(%OrderPlaced{order_id: 7, total: ~U[2026-07-27 10:31:04Z]}) =~
+               ~s("total":"2026-07-27T10:31:04Z")
+    end
+
+    test "an explicit defimpl replaces the generated derivation" do
+      # The write-side escape hatch: a second `@derive` cannot work — it would
+      # land after the generated `defstruct` — but an implementation does.
+      assert JSON.decode!(JSON.encode!(%WithCustomEncoder{order_id: 7, secret: "shh"})) ==
+               %{"order_id" => 7}
     end
   end
 

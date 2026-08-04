@@ -51,7 +51,9 @@ defmodule DMEx.Log.Plug do
 
   Registration happens before anything that can block, and hands back the
   connection's `DMEx.Log.Status`, which puts even the connect path under
-  `DMEx.Log.Watcher`.
+  `DMEx.Log.Watcher`. A connect that then fails unregisters: the request process
+  is reused for the next keep-alive request, so its entry cannot be left to die
+  with it.
 
   ## Response headers
 
@@ -151,18 +153,28 @@ defmodule DMEx.Log.Plug do
   ## Streaming
 
   defp stream(conn, log, params, config, selection) do
-    # The request process registers *itself*, so the entry dies with the
-    # connection. Before the first read, so an append landing in between is
-    # picked up by that read; before the first *write*, so the connect path is
-    # under the watcher too, since resolving a cursor and sending headers can
-    # block exactly as the send loop can. The selection rides along so
+    # The request process registers *itself*, so a stream's entry dies with it.
+    # Before the first read, so an append landing in between is picked up by
+    # that read; before the first *write*, so the connect path is under the
+    # watcher too, since resolving a cursor and sending headers can block
+    # exactly as the send loop can. The selection rides along so
     # `DMEx.Log.Dispatcher` can decide whether an append is worth waking this
     # connection for without messaging it.
     {:ok, status} = LogRegistry.register(log, config.stall_timeout, selection)
 
     case resolve_cursor(log, params.cursor) do
-      {:ok, cursor} -> open(conn, log, config, selection, status, cursor)
-      {:error, reason} -> unavailable(conn, reason)
+      {:ok, cursor} ->
+        open(conn, log, config, selection, status, cursor)
+
+      {:error, reason} ->
+        # The one path that registers and never becomes a stream, so the only
+        # one that has to undo it: over HTTP/1.1 keep-alive this process is the
+        # *connection* process and lives on to serve the next request. Left
+        # behind, the entry is armed for a stall nothing will ever clear, and
+        # the watcher reclaims a connection that never streamed.
+        LogRegistry.unregister(log)
+
+        unavailable(conn, reason)
     end
   end
 

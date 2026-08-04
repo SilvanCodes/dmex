@@ -3,7 +3,9 @@ defmodule DMEx.Handler.Pipeline do
   Processes one row: suppress, resolve, decode, handle, advance.
 
   Every handler-side semantic lives here, and the order of operations *is* the
-  specification.
+  specification. `DMEx.Handler.DeadMessages` replays through `deliver/3` rather
+  than repeating any of it — see there for the one section it deliberately does
+  not inherit.
 
   ## 1. Duplicate suppression, by id
 
@@ -69,6 +71,15 @@ defmodule DMEx.Handler.Pipeline do
   deadlock or a blipped downstream. Jittered, because a shared downstream fails
   every handler at once.
 
+  **Only the handler's own failure counts.** `c:DMEx.Storage.transaction/2`
+  answering `{:error, reason}` says the message was never processed — a checkout
+  that timed out, a dropped connection, a serialization failure — so it raises
+  `DMEx.StorageError` and nothing here rescues it. Retrying would re-run side
+  effects that never failed, and section 6 would resolve a message no handler
+  rejected. The stream dies, the supervisor restarts it, and it resumes from its
+  durable cursor — which still points *below* this message, since the advance
+  went down with the transaction.
+
   ## 5. The handler and the cursor share one transaction
 
   `handle_message/2` succeeding is what advances `last_seen`, both in one
@@ -79,6 +90,10 @@ defmodule DMEx.Handler.Pipeline do
   The retry step is identical in all three. Both non-crashing modes commit an
   **absolute** advance to the failing row's id, carrying any coalesced run of
   skips below it (section 2a).
+
+  **What reaches here is a handler that ran and raised, `max_attempts` times.**
+  A storage failure never does (section 4), and neither does a row no clause
+  wanted (section 2) — those are not messages a handler could not process.
 
   **`:dead_message`** (the default) advances past the failing message, writing it
   to `dmex_dead_messages` first, in the same transaction — so there is no state
@@ -143,16 +158,72 @@ defmodule DMEx.Handler.Pipeline do
   whether it is waiting on `flush/1`.
 
   Propagates whatever the handler raises once retries are exhausted and
-  `on_failure` says `:crash`.
+  `on_failure` says `:crash`, and `DMEx.StorageError` whenever storage itself
+  failed — that one at once, and whatever `on_failure` says.
   """
   @spec run(row(), t()) :: {:ok, t()}
   def run(row, state) do
     id = Map.fetch!(row, "id")
 
-    if id <= state.cursor do
-      {:ok, state}
-    else
-      dispatch(row, id, state)
+    if id <= state.cursor, do: {:ok, state}, else: settle(row, state, id)
+  end
+
+  defp settle(row, state, id) do
+    case deliver(state, row, fn -> advance!(state, id) end) do
+      # No transaction and no write happened. The advance is deferred into
+      # `:pending` and settled by `flush/1` or by the next handled message —
+      # see section 2a.
+      :skipped ->
+        {:ok, %{state | cursor: id, pending: true}}
+
+      {:handled, _attempts} ->
+        {:ok, %{state | cursor: id, pending: false}}
+
+      {:failed, exception, stacktrace, attempts} ->
+        resolve(state, row, id, exception, stacktrace, attempts)
+    end
+  end
+
+  @typedoc """
+  What `deliver/3` did with a row, and after how many handler calls.
+  """
+  @type verdict ::
+          :skipped
+          | {:handled, pos_integer()}
+          | {:failed, Exception.t(), Exception.stacktrace(), pos_integer()}
+
+  @doc """
+  Resolves a row, hands it to the handler, and commits `commit` with it.
+
+  Sections 2 to 5 in one call: the cast that decides skip-or-deliver, the
+  `[:dmex, :handler, :skip]` event, the retry schedule, the
+  `[:dmex, :handler, :message]` span, and the rule that storage failing is not
+  the handler failing. `commit` runs inside the handler's transaction, after it
+  returns — the cursor advance here, the dead row's delete in
+  `DMEx.Handler.DeadMessages`, which is the only thing that differs between the
+  two callers of this.
+
+  It never applies `on_failure`: a handler that ran out of attempts comes back
+  as `{:failed, ...}` and section 6 is `run/2`'s answer to it, so a caller for
+  which those terminal actions are meaningless does not inherit them.
+  """
+  @spec deliver(t(), row(), (-> any())) :: verdict()
+  def deliver(state, row, commit) do
+    id = Map.fetch!(row, "id")
+    type = Map.fetch!(row, "message_type")
+    metadata = Map.get(row, "metadata") || %{}
+
+    case state.handler.__dmex_cast__(type, Map.fetch!(row, "data"), metadata) do
+      nil ->
+        skip(state, id, type)
+
+      message ->
+        attempt(
+          state,
+          %{id: id, message_type: type, message: message, metadata: metadata},
+          commit,
+          1
+        )
     end
   end
 
@@ -226,36 +297,33 @@ defmodule DMEx.Handler.Pipeline do
 
   ## Internals
 
-  defp dispatch(row, id, state) do
-    metadata = Map.get(row, "metadata") || %{}
-    type = Map.fetch!(row, "message_type")
-
-    case state.handler.__dmex_cast__(type, Map.fetch!(row, "data"), metadata) do
-      nil -> skip(row, id, state)
-      message -> attempt(row, id, message, metadata, state, 1)
-    end
-  end
-
-  defp attempt(row, id, message, metadata, state, attempt) do
+  defp attempt(state, delivery, commit, attempt) do
     telemetry = %{
       subscription: state.subscription,
       handler: state.handler,
-      message_type: Map.fetch!(row, "message_type"),
+      message_type: delivery.message_type,
       origin: state.origin,
-      id: id,
+      id: delivery.id,
       attempt: attempt
     }
 
     :telemetry.span([:dmex, :handler, :message], telemetry, fn ->
       commit!(state, fn ->
-        _ = state.handler.handle_message(message, metadata)
+        _ = state.handler.handle_message(delivery.message, delivery.metadata)
 
-        advance!(state, id)
+        commit.()
       end)
 
-      {{:ok, %{state | cursor: id, pending: false}}, telemetry}
+      {{:handled, attempt}, telemetry}
     end)
   rescue
+    # Storage failing is not the handler failing. Retrying re-runs side effects
+    # that never failed, and `on_failure` would dead-letter a message the
+    # handler accepted — so this leaves by the same door `give_up/6` and
+    # `flush/1` use, with the cursor still below the message.
+    storage_error in DMEx.StorageError ->
+      reraise storage_error, __STACKTRACE__
+
     exception ->
       stacktrace = __STACKTRACE__
 
@@ -267,9 +335,9 @@ defmodule DMEx.Handler.Pipeline do
         |> DMEx.backoff(state.config.retry_backoff, state.config.retry_backoff_max)
         |> Process.sleep()
 
-        attempt(row, id, message, metadata, state, attempt + 1)
+        attempt(state, delivery, commit, attempt + 1)
       else
-        resolve(state, row, id, exception, stacktrace, attempt)
+        {:failed, exception, stacktrace, attempt}
       end
   end
 
@@ -302,6 +370,10 @@ defmodule DMEx.Handler.Pipeline do
   end
 
   defp give_up(state, row, id, exception, attempts, mode) do
+    # Outside any rescue, and so is `attempt/4`'s commit now: a `DMEx.StorageError`
+    # from either one leaves the same way, with the cursor still below the
+    # message. The record and the advance are one transaction, so a failure here
+    # means neither happened and the restart re-delivers the row.
     commit!(state, fn ->
       if mode == :dead_message, do: record_dead!(state, row, id)
 
@@ -350,27 +422,30 @@ defmodule DMEx.Handler.Pipeline do
     )
   end
 
-  # No transaction and no write. The advance is deferred into `:pending` and
-  # settled by `flush/1` or by the next handled message — see section 2a.
-  defp skip(row, id, state) do
+  defp skip(state, id, message_type) do
     :telemetry.execute(
       [:dmex, :handler, :skip],
       %{id: id},
       %{
         subscription: state.subscription,
         handler: state.handler,
-        message_type: Map.fetch!(row, "message_type"),
+        message_type: message_type,
         origin: state.origin
       }
     )
 
-    {:ok, %{state | cursor: id, pending: true}}
+    :skipped
   end
 
+  # `{:error, reason}` is storage saying *it* failed — a checkout that timed
+  # out, a connection that dropped, a serialization failure. Not a verdict on
+  # the message, so it gets its own exception rather than whatever a failed
+  # match would have produced, and every caller lets it through.
   defp commit!(state, fun) do
-    {:ok, result} = state.storage.transaction(state.storage_opts, fun)
-
-    result
+    case state.storage.transaction(state.storage_opts, fun) do
+      {:ok, result} -> result
+      {:error, reason} -> raise DMEx.StorageError, reason
+    end
   end
 
   defp advance!(state, id) do

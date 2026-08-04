@@ -20,7 +20,17 @@ defmodule DMEx.Log.Registry do
 
   Entries are registered by the stream process itself — the request process over
   SSE, the reader process for `DMEx.Transport.Local` — so an entry dies with its
-  connection and nothing has to be cleaned up.
+  process and a live stream needs no cleanup.
+
+  The one exception is a connect that registers and then fails before it becomes
+  a stream: over HTTP/1.1 keep-alive the request process is the *connection*
+  process and outlives its response, so that path calls `unregister/1`.
+
+  It runs the other way too, which is what a registry crash means for the
+  connections in it: `Registry` links to every process it holds an entry for, so
+  a registry that dies takes its streams down with it rather than leaving them
+  live and registered nowhere. The subtree restarts empty and the clients
+  reconnect.
   """
 
   alias DMEx.Log.Status
@@ -42,10 +52,22 @@ defmodule DMEx.Log.Registry do
   @doc "The child spec a log's supervisor uses to start this registry."
   @spec child_spec(module()) :: Supervisor.child_spec()
   def child_spec(log) when is_atom(log) do
-    Supervisor.child_spec(
-      {Registry, keys: :duplicate, name: name(log)},
-      id: name(log)
-    )
+    %{id: name(log), start: {__MODULE__, :start_link, [log]}, type: :supervisor}
+  end
+
+  @doc """
+  Starts this log's registry.
+
+  Through `DMEx.Log.__start__/1` rather than `Registry.start_link/1` directly,
+  because a `Registry` is itself a subtree: its partition traps exits, so it
+  releases its registered name only once it has been *scheduled* to handle the
+  kill. A restart racing that would fail `{:already_started, _}` on the
+  partition, spend the log supervisor's restart intensity in a few hundred
+  microseconds, and take the tree above down with it.
+  """
+  @spec start_link(module()) :: Supervisor.on_start()
+  def start_link(log) when is_atom(log) do
+    DMEx.Log.__start__(fn -> Registry.start_link(keys: :duplicate, name: name(log)) end)
   end
 
   @doc """
@@ -70,6 +92,15 @@ defmodule DMEx.Log.Registry do
 
     {:ok, status}
   end
+
+  @doc """
+  Drops the calling process's entry.
+
+  Only for a connect that registered and then failed before becoming a stream —
+  a stream's entry goes when its process does.
+  """
+  @spec unregister(module()) :: :ok
+  def unregister(log) when is_atom(log), do: Registry.unregister(name(log), @key)
 
   @doc """
   How many message types a selection admits, or `nil` for the whole log.

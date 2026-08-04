@@ -344,6 +344,59 @@ defmodule DMEx.Handler do
     end
   end
 
+  @doc """
+  Raises if `declaration` was compiled against message types that have since changed.
+
+  A declaration caches its message set **as strings**: the fingerprint it
+  requests, and one `__dmex_cast__/3` clause per type. The handler depends on
+  its message modules by *export* (see `message!/2`), and `c:DMEx.Message.type/0`
+  is a function body — so editing a `type:` recompiles the message module and
+  **not** the handler, leaving both halves naming a type nothing appends. The
+  subscription then selects no rows and skips the ones it does get: silent
+  message loss, which is what this turns into a boot failure.
+
+  Re-deriving from the loaded modules is exact rather than heuristic, because
+  the fingerprint's seed is a pure function of the sorted type list — the same
+  set encodes to the same blob on every machine, so a difference *is* a changed
+  set. Both cached halves come from that one list, so this covers the cast
+  clauses too.
+
+  `selective: false` carries no fingerprint and so has nothing to compare
+  against; its cast clauses can still go stale.
+  """
+  @spec verify_fresh!(declaration()) :: :ok
+  def verify_fresh!(%{fingerprint: nil}), do: :ok
+
+  def verify_fresh!(%{fingerprint: fingerprint} = declaration) do
+    types = Enum.map(declaration.messages, & &1.type())
+
+    case Fingerprint.build(types) do
+      {:ok, live} ->
+        if Fingerprint.encode(live) == fingerprint, do: :ok, else: raise_stale(declaration, types)
+
+      {:error, _reason} ->
+        raise_stale(declaration, types)
+    end
+  end
+
+  defp raise_stale(declaration, types) do
+    raise ArgumentError, """
+    #{inspect(declaration.handler)} is stale: it was compiled against message types that have \
+    since changed.
+
+    Its message modules now declare: #{inspect(Enum.sort(types))}
+
+    A handler bakes its message set into its selection fingerprint and its decode clauses at \
+    compile time, and depends on the message modules by export — so editing a `type:` \
+    recompiles the message and not the handler. Running it as compiled would ask the log for \
+    types nothing appends and skip every row that arrived anyway.
+
+    Recompile it:
+
+        mix compile --force
+    """
+  end
+
   ## Asking whether a clause wants a message
 
   # Selection is by type, so a clause narrowed below its type —

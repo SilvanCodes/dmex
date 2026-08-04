@@ -321,6 +321,41 @@ defmodule DMEx.Log.PlugTest do
       assert conn.status == 503
       assert Stub.reads(opts) == []
     end
+
+    # Bandit and Cowboy reuse one process per *connection* across HTTP/1.1
+    # keep-alive requests, so a 503 hands that process back to the server alive.
+    # An entry left behind is armed for a stall nobody will ever clear, and the
+    # watcher reclaims a connection that never streamed — taking the next,
+    # healthy stream on the same process with it.
+    test "a 503 leaves nothing registered", %{opts: opts, plug: plug} do
+      Stub.fail_cursor_at(opts, :pool_timeout)
+      parent = self()
+
+      pid =
+        spawn(fn ->
+          StubLog.install(opts)
+
+          conn =
+            LogPlug.call(
+              ClosingAdapter.conn(parent, 1,
+                req_headers: [{"last-event-id", "2026-07-27T11:00:00Z"}]
+              ),
+              plug
+            )
+
+          send(parent, {:responded, conn.status})
+
+          receive do
+            :stop -> :ok
+          end
+        end)
+
+      on_exit(fn -> Process.exit(pid, :kill) end)
+
+      assert_receive {:responded, 503}
+
+      assert LogRegistry.count(StubLog) == 0
+    end
   end
 
   ## Harness

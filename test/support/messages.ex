@@ -15,6 +15,19 @@ defmodule DMEx.Test.Messages do
     use DMEx.Message, type: "order_shipped", fields: [:order_id, carrier: "unknown"]
   end
 
+  defmodule WithCustomEncoder do
+    @moduledoc false
+    use DMEx.Message, type: "with_custom_encoder", fields: [:order_id, :secret]
+  end
+
+  # An explicit implementation replaces the derivation `use DMEx.Message`
+  # generates — the write-side counterpart to overriding `cast/1`.
+  defimpl JSON.Encoder, for: WithCustomEncoder do
+    def encode(%{order_id: order_id}, encoder) do
+      JSON.encode_to_iodata!(%{order_id: order_id}, encoder)
+    end
+  end
+
   defmodule WithCustomCast do
     @moduledoc false
     use DMEx.Message, type: "with_custom_cast", fields: [:order_id, :placed_at]

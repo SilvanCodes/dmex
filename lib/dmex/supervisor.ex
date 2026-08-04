@@ -33,10 +33,12 @@ defmodule DMEx.Supervisor do
 
     * `:logs` — a keyword list of log name to either a `DMEx.Log` module (owned)
       or a stream URL (remote).
-    * `:otp_app` — the application whose modules are scanned, for handlers and
-      for the message types an owned log can append. Defaults to the Mix project;
-      worth stating in a release, though every application depending on `:dmex`
-      is scanned regardless. `otp_app: nil` scans nothing beyond those.
+    * `:otp_app` — the application whose modules are scanned for handlers, and
+      for the message types a *pure consumer* can see. Defaults to the Mix
+      project; worth stating in a release, though every application depending on
+      `:dmex` is scanned regardless. `otp_app: nil` scans nothing beyond those.
+      The types an owned log can append are scanned under the application owning
+      that log module, which is this one only for a single-app host.
     * `:repo` — the Ecto repo holding `dmex_cursors`.
     * `:storage` — the `DMEx.Storage` adapter; defaults to `DMEx.Storage.Postgres`.
       `DMEx.Storage.SQLite` is the other shipped one.
@@ -63,10 +65,13 @@ defmodule DMEx.Supervisor do
 
   use Supervisor
 
+  require Logger
+
   alias DMEx.Config
   alias DMEx.Handler
   alias DMEx.Handler.Stream, as: Subscription
   alias DMEx.Handler.Supervisor, as: Subscriptions
+  alias DMEx.Supervisor.Starter
 
   @default_name __MODULE__
   @storage_opts [:repo, :storage, :prefix]
@@ -97,15 +102,22 @@ defmodule DMEx.Supervisor do
     logs = logs!(opts)
     otp_app = otp_app(opts)
 
-    # Before any child starts, and loudly. It cannot live in
-    # `start_discovered/2`: that runs inside a `Task` with `restart:
-    # :temporary`, so a raise there would kill the Task silently.
+    # Before any child starts, and loudly. It cannot live in the starter: that
+    # runs after `init/1` has returned, so a raise there is a child crash the
+    # supervisor answers with a restart, not a refusal to boot.
     handlers = __startable__!(Handler.discover(otp_app), logs)
 
     # Both the collision check and the cache seed, and the only scan on the boot
     # path: an application owning no log — a pure consumer — is checked too, and
     # no connection pays for the scan later. See `DMEx.message_types/1`.
     _ = DMEx.refresh_message_types(otp_app)
+
+    # That cache is read under the application owning the *log module*, which is
+    # `otp_app` only for a single-app host: an umbrella parent, or a log shipped
+    # in a dependency, reads under a key `otp_app` never seeds. Seeding those
+    # keys too is what keeps the collision check at boot for them, rather than
+    # as a 500 from the first selective connect that scans lazily.
+    for app <- log_apps(logs), app != otp_app, do: DMEx.refresh_message_types(app)
 
     children =
       owned_logs(logs) ++
@@ -116,20 +128,44 @@ defmodule DMEx.Supervisor do
           {Registry,
            keys: :unique, name: registry(name), meta: [storage: storage_config!(opts), logs: logs]},
           {Subscriptions, name: subscriptions(name)},
-          {Task, fn -> start_discovered(name, handlers) end}
+          {Starter, {name, handlers}}
         ]
 
     # `:rest_for_one` because the registry owns what the subscriptions register
-    # in. The owned logs sit in front of it and supervise their own children, so
-    # their death is rare and taking the subscriptions with it costs a reconnect.
+    # in, so everything after a dead child is rebuilt — including the starter,
+    # which is what puts the discovered subscriptions back. A `Task` could not:
+    # OTP never restarts a `:temporary` child, and one that has already run to
+    # completion is gone from the child list altogether, so an owned log's death
+    # would cost every discovered subscription for the lifetime of the node with
+    # nothing logged and the supervisor still reporting healthy. `:transient` is
+    # no better — a child that exited `:normal` is deleted just the same.
     Supervisor.init(children, strategy: :rest_for_one)
   end
 
-  # Runs once and exits; `Task`'s own child spec is `restart: :temporary`, which
-  # is what a one-shot wants.
-  defp start_discovered(name, handlers) do
+  # The applications owning the logs this supervisor starts, which is where
+  # `DMEx.Log.Plug` looks their message types up.
+  defp log_apps(logs) do
+    logs |> owned_logs() |> Enum.map(&DMEx.owning_app/1) |> Enum.uniq()
+  end
+
+  @doc false
+  @spec __start_discovered__(atom(), [module()]) :: :ok
+  def __start_discovered__(name, handlers) do
     Enum.each(handlers, fn handler ->
-      {:ok, _pids} = subscribe(handler, supervisor: name)
+      case subscribe(handler, supervisor: name) do
+        {:ok, _pids} ->
+          :ok
+
+        # Logged and skipped rather than matched: the handlers are independent,
+        # and one that cannot start is no reason for the ones after it never to
+        # be attempted. Raising here would also put the starter in a restart
+        # loop that `:rest_for_one` would spread to every sibling.
+        {:error, reason} ->
+          Logger.error(
+            "DMEx could not start #{inspect(handler)}: #{inspect(reason)}. Its subscriptions " <>
+              "are not running; the remaining handlers were started."
+          )
+      end
     end)
   end
 
@@ -170,6 +206,10 @@ defmodule DMEx.Supervisor do
     # message: it is the one place a module becomes its declaration, so every
     # caller rejects a non-handler identically.
     declaration = Handler.declaration!(handler)
+
+    # Before anything is started, because a stale declaration is a subscription
+    # that connects, advances its cursor and delivers nothing.
+    :ok = Handler.verify_fresh!(declaration)
 
     validate_keys!(opts)
     bound = resolve_logs!(opts, supervisor)
@@ -292,8 +332,19 @@ defmodule DMEx.Supervisor do
   def __startable__!(handlers, logs) do
     reject_duplicate_ids!(handlers)
     reject_unbound_logs!(handlers, logs)
+    reject_stale!(handlers)
 
     handlers
+  end
+
+  # Also here and not only in `subscribe/2`: a discovered handler is subscribed
+  # from the starter, where a raise is a restart loop rather than a refusal to
+  # boot.
+  defp reject_stale!(handlers) do
+    for handler <- handlers,
+        do: :ok = handler |> Handler.declaration!() |> Handler.verify_fresh!()
+
+    :ok
   end
 
   # Names both modules, because "duplicate subscription id" without them is a
@@ -529,5 +580,35 @@ defmodule DMEx.Supervisor do
                 "Note there is no filter or selection option here: the logs, the id, the " <>
                 "message types and `selective:` all belong to the handler module, not here."
     end
+  end
+end
+
+defmodule DMEx.Supervisor.Starter do
+  @moduledoc false
+
+  # Starts the discovered handlers' subscriptions, then idles.
+  #
+  # A process that stays up rather than a one-shot that exits, because
+  # `:rest_for_one` can only restart what is still in the child list — and a
+  # child that has finished is not in it, whatever its `:restart` says.
+
+  use GenServer
+
+  @doc false
+  @spec start_link({atom(), [module()]}) :: GenServer.on_start()
+  def start_link({supervisor, handlers}),
+    do: GenServer.start_link(__MODULE__, {supervisor, handlers})
+
+  @impl GenServer
+  def init(state), do: {:ok, state, {:continue, :subscribe}}
+
+  # In `handle_continue/2` so `init/1` returns first: the supervisor is still
+  # starting children while this runs, and every subscription started here talks
+  # to siblings that are already up.
+  @impl GenServer
+  def handle_continue(:subscribe, {supervisor, handlers} = state) do
+    DMEx.Supervisor.__start_discovered__(supervisor, handlers)
+
+    {:noreply, state}
   end
 end

@@ -18,7 +18,9 @@ defmodule DMEx.Notifier.PostgresTest do
       assert id == DMEx.Test.Log.Notifications
       assert conn_opts[:name] == DMEx.Test.Log.Notifications
       assert conn_opts[:auto_reconnect] == true
-      assert conn_opts[:database] == "dmex_test"
+      # From the repo's own config, not a literal: the suite's database name is
+      # overridable via DMEX_POSTGRES_URL so concurrent runs can isolate.
+      assert conn_opts[:database] == Repo.config()[:database]
     end
 
     test "passes Postgrex only keys it understands", %{opts: opts} do
