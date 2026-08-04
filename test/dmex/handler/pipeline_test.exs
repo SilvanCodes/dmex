@@ -357,13 +357,15 @@ defmodule DMEx.Handler.PipelineTest do
       end
     end
 
-    test "builds the type registry once, from the handler's own declaration", ctx do
-      state = state(ctx, handler: Handlers.EchoAll)
+    # Nothing is carried for resolving a type: the handler's own
+    # `__dmex_cast__/2` is compiled from the set its clauses declare.
+    test "carries no message registry", ctx do
+      refute Map.has_key?(state(ctx, handler: Handlers.EchoAll), :modules)
 
-      assert state.modules == %{
-               "order_placed" => OrderPlaced,
-               "order_shipped" => OrderShipped
-             }
+      assert %OrderShipped{order_id: 1} =
+               Handlers.EchoAll.__dmex_cast__("order_shipped", %{"order_id" => 1})
+
+      assert Handlers.EchoAll.__dmex_cast__("nothing_it_declares", %{}) == nil
     end
 
     test "carries the handler's subscription id", ctx do

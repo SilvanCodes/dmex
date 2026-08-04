@@ -41,7 +41,9 @@ defmodule DMEx.Handler do
   the cursor and emitting `[:dmex, :handler, :skip]`. Narrowing is a filter, not
   an assertion. The heads, guards and all, are compiled into a `__dmex_match__/2`
   the pipeline asks before it opens a transaction, so a message no clause wants
-  costs a struct match.
+  costs a struct match. Its partner `__dmex_cast__/2` is compiled from the same
+  clauses and answers `nil` for an undeclared type, which no head takes either —
+  so "no clause wants this row" is one question with one answer.
 
   Rejected at compile time: a clause whose first argument is not a struct
   pattern (a bare variable declares nothing, and cannot serve as a fallback
@@ -157,7 +159,7 @@ defmodule DMEx.Handler do
   @doc false
   defmacro __before_compile__(env) do
     declaration = __declaration__(env)
-    match = matcher(env)
+    match = matcher(env, declaration.messages)
 
     quote do
       @doc """
@@ -339,19 +341,38 @@ defmodule DMEx.Handler do
   # would have run in. Calling and rescuing the `FunctionClauseError` answers a
   # transaction too late; this answers from the same heads, on a function whose
   # bodies are `true`.
-  defp matcher(env) do
+  #
+  # `__dmex_cast__/2` is the other half, and the reason a consumer needs no
+  # second test for a type it does not know: an undeclared one casts to `nil`,
+  # and `nil` matches no clause, because every head is a struct pattern.
+  defp matcher(env, messages) do
     heads = Enum.reverse(Module.get_attribute(env.module, :dmex_heads))
     {:v1, :def, _meta, clauses} = Module.get_definition(env.module, {:handle_message, 2})
 
     unless length(heads) == length(clauses), do: raise_unseen_clauses(env, heads, clauses)
 
     accepts = Enum.map(heads, &matcher_clause/1)
+    casts = Enum.map(messages, &cast_clause/1)
 
     quote do
       @doc false
-      @spec __dmex_match__(struct(), map()) :: boolean()
+      @spec __dmex_match__(struct() | nil, map()) :: boolean()
       unquote_splicing(accepts)
       def __dmex_match__(_message, _metadata), do: false
+
+      @doc false
+      @spec __dmex_cast__(String.t(), term()) :: struct() | nil
+      unquote_splicing(casts)
+      def __dmex_cast__(_message_type, _data), do: nil
+    end
+  end
+
+  # Compiled from the declared set rather than looked up in a map built from it
+  # at boot: one derived thing instead of two, and never `String.to_atom/1` on
+  # whatever the log sent.
+  defp cast_clause(module) do
+    quote do
+      def __dmex_cast__(unquote(module.type()), data), do: unquote(module).cast(data)
     end
   end
 

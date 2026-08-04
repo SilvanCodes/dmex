@@ -309,6 +309,30 @@ defmodule DMEx.HandlerTest do
       assert module.__dmex_match__(%OrderShipped{}, %{})
     end
 
+    # What lets the pipeline ask one question instead of two: an undeclared type
+    # casts to nil, and nil is not a struct, so no head can take it.
+    test "turns down the nil an undeclared type casts to" do
+      module = compile_module(clause())
+
+      assert module.__dmex_cast__("order_placed", %{"order_id" => 1})
+      assert module.__dmex_cast__("nothing_it_declares", %{"order_id" => 1}) == nil
+      refute module.__dmex_match__(nil, %{})
+    end
+
+    test "casts each declared type into its own module" do
+      body = """
+      def handle_message(%DMEx.Test.Messages.OrderPlaced{}, _metadata), do: :ok
+      def handle_message(%DMEx.Test.Messages.OrderShipped{}, _metadata), do: :ok
+      """
+
+      module = compile_module(body)
+
+      assert %OrderPlaced{order_id: 1} = module.__dmex_cast__("order_placed", %{"order_id" => 1})
+
+      assert %OrderShipped{order_id: 2} =
+               module.__dmex_cast__("order_shipped", %{"order_id" => 2})
+    end
+
     # Otherwise the hook that reads the patterns is installed after them, the
     # test answers false for everything, and the subscription silently skips its
     # whole log.

@@ -28,7 +28,6 @@ defmodule DMEx.Handler.DeadMessages do
   """
 
   alias DMEx.Handler
-  alias DMEx.Message
 
   require Logger
 
@@ -60,13 +59,12 @@ defmodule DMEx.Handler.DeadMessages do
     {storage, storage_opts} = DMEx.Supervisor.storage!(opts)
 
     declaration = Handler.declaration!(handler)
-    modules = Message.registry(declaration.messages)
     subscription = subscription!(handler, opts)
 
     {:ok, rows} = storage.dead_messages(storage_opts, subscription)
 
     Enum.reduce(rows, %{replayed: 0, failed: 0}, fn row, counts ->
-      case replay_one(row, declaration, subscription, modules, storage, storage_opts) do
+      case replay_one(row, declaration, subscription, storage, storage_opts) do
         :ok -> Map.update!(counts, :replayed, &(&1 + 1))
         :error -> Map.update!(counts, :failed, &(&1 + 1))
       end
@@ -92,32 +90,19 @@ defmodule DMEx.Handler.DeadMessages do
     Handler.subscription_id(handler, Handler.log!(handler, opts))
   end
 
-  defp replay_one(row, declaration, subscription, modules, storage, storage_opts) do
-    case Map.fetch(modules, row.message_type) do
-      :error ->
-        Logger.warning(
-          "DMEx cannot replay dead message #{row.id}: #{inspect(declaration.handler)} " <>
-            "has no clause for #{row.message_type}. Add one to handle_message/2."
-        )
-
-        :error
-
-      {:ok, module} ->
-        run(row, module, declaration, subscription, storage, storage_opts)
-    end
-  end
-
-  defp run(row, module, declaration, subscription, storage, storage_opts) do
-    message = module.cast(JSON.decode!(row.data))
+  # The same pair the pipeline asks before delivering, in the same order and for
+  # the same reason: an undeclared type casts to `nil` and no clause takes that,
+  # a declared one can still be turned down by a narrowed head, and calling the
+  # handler to find either out would report a raise where a stream skips.
+  defp replay_one(row, declaration, subscription, storage, storage_opts) do
+    handler = declaration.handler
+    message = handler.__dmex_cast__(row.message_type, JSON.decode!(row.data))
     metadata = JSON.decode!(row.metadata)
 
-    # The same test the pipeline asks before delivering: a clause narrowed to a
-    # value can turn this message down, and calling the handler to find that out
-    # would report a raise where a stream would have skipped.
-    if declaration.handler.__dmex_match__(message, metadata) do
+    if handler.__dmex_match__(message, metadata) do
       {:ok, _} =
         storage.transaction(storage_opts, fn ->
-          _ = declaration.handler.handle_message(message, metadata)
+          _ = handler.handle_message(message, metadata)
 
           :ok = storage.delete_dead_message(storage_opts, subscription, row.id)
         end)
@@ -125,8 +110,8 @@ defmodule DMEx.Handler.DeadMessages do
       :ok
     else
       Logger.warning(
-        "DMEx cannot replay dead message #{row.id}: no #{inspect(declaration.handler)} clause " <>
-          "matches it. Widen one and replay again, or discard/3 it."
+        "DMEx cannot replay dead message #{row.id}: no #{inspect(handler)} clause matches a " <>
+          "#{row.message_type}. Widen one and replay again, or discard/3 it."
       )
 
       :error

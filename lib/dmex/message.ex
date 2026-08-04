@@ -37,9 +37,9 @@ defmodule DMEx.Message do
   on their own schedules.
 
   **This is the one line in a message module that must not be edited casually.**
-  Changing it orphans every row already appended under the old type: a consumer's
-  registry stops resolving them and skips them silently, exactly the way renaming
-  the module used to. There is no rename tooling.
+  Changing it orphans every row already appended under the old type: a consumer
+  stops resolving them and skips them silently, exactly the way renaming the
+  module used to. There is no rename tooling.
 
   Restricted to `[A-Za-z0-9_.]+`, because the type goes onto an SSE `event:` line
   and SSE field lines have no escaping. Dots are available for namespacing —
@@ -268,8 +268,10 @@ defmodule DMEx.Message do
   @doc """
   Builds a `message_type => module` lookup from a set of message modules.
 
-  How a consumer resolves the `message_type` on a row back to a module. Always
-  built from the consumer's own declared set — never by atomizing whatever
+  The mapping as data, for code that wants it that way. A subscription does not:
+  it resolves a row through the `__dmex_cast__/2` `DMEx.Handler` compiles from
+  the same set, so there is no second lookup to disagree with the clauses. Both
+  are built from the consumer's own declared set — never by atomizing whatever
   string the producer sent.
 
   Takes the `MapSet` a handler's `:messages` already is, so the only collision
