@@ -105,7 +105,6 @@ defmodule DMEx.Handler.Stream do
           source: nil,
           last_activity: nil,
           liveness_timer: nil,
-          cursor: nil,
           attempt: 0
         }
 
@@ -231,11 +230,11 @@ defmodule DMEx.Handler.Stream do
        %{
          state
          | source: source,
-           cursor: cursor,
-           # The durable cursor just read is the authority, so anything still
-           # marked pending was either already written or is about to be
-           # re-delivered and re-skipped. Either way it is not owed a write.
-           pipeline: %{state.pipeline | pending: false},
+           # The durable cursor just read is the authority, so it is seeded here
+           # rather than carried alongside — and anything still marked pending
+           # was either already written or is about to be re-delivered and
+           # re-skipped. Either way it is not owed a write.
+           pipeline: %{state.pipeline | cursor: resume_at(cursor), pending: false},
            attempt: 0
        }
        |> touch()}
@@ -254,6 +253,14 @@ defmodule DMEx.Handler.Stream do
     Keyword.merge(state.opts, cursor: cursor, owner: self(), config: state.config)
   end
 
+  # The transport is handed the cursor raw, `:none` included, because that is
+  # what `DMEx.Handler.Request.position/2` needs to apply `stream_from:`. The
+  # pipeline is handed this instead: it compares `id <= cursor`, and every number
+  # sorts below every atom in Erlang term order, so `:none` there would suppress
+  # every row as a duplicate rather than none of them.
+  defp resume_at(:none), do: 0
+  defp resume_at(cursor), do: cursor
+
   # `:none` rather than 0 for "never committed anything" — that distinction is
   # what makes `stream_from:` apply exactly once.
   defp durable_cursor(state) do
@@ -270,13 +277,10 @@ defmodule DMEx.Handler.Stream do
   ## Running
 
   defp run(row, state) do
-    {:ok, pipeline} = Pipeline.run(row, %{state.pipeline | cursor: cursor_of(state)})
+    {:ok, pipeline} = Pipeline.run(row, state.pipeline)
 
-    %{state | pipeline: pipeline, cursor: pipeline.cursor}
+    %{state | pipeline: pipeline}
   end
-
-  defp cursor_of(%{cursor: :none}), do: 0
-  defp cursor_of(%{cursor: cursor}), do: cursor
 
   ## Reconnecting
 

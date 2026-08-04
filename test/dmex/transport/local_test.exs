@@ -125,6 +125,31 @@ defmodule DMEx.Transport.LocalTest do
 
       assert %DateTime{} = stream_from(pid)
     end
+
+    # A subscription that has never committed reads its durable cursor as
+    # `:none`, which is what makes `stream_from:` apply exactly once. The
+    # pipeline compares `id <= cursor` and must never see that atom: every
+    # number sorts below every atom in Erlang term order, so `id <= :none` is
+    # always true and *every row* would be dropped as a duplicate — a
+    # subscription that connects, looks healthy and delivers nothing. The
+    # transport still gets the raw `:none`; only the pipeline is normalised.
+    test "a never-committed cursor reaches the pipeline as 0, not :none" do
+      [pid] = subscribe(Handlers.Echo, stream_from: 1)
+
+      assert {:ok, nil} = Postgres.last_seen(Log.__dmex__().storage_opts, "test/echo")
+
+      eventually(fn -> :sys.get_state(pid).source != nil end)
+
+      assert :sys.get_state(pid).pipeline.cursor == 0
+    end
+
+    test "a subscription with no durable cursor still delivers from the start" do
+      {:ok, _} = Log.append(%OrderPlaced{order_id: 1})
+
+      subscribe(Handlers.Echo, stream_from: 1)
+
+      assert_receive {:handled, %OrderPlaced{order_id: 1}, _}, 2_000
+    end
   end
 
   describe "the reader" do
