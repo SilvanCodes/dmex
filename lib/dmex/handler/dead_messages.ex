@@ -90,31 +90,32 @@ defmodule DMEx.Handler.DeadMessages do
     Handler.subscription_id(handler, Handler.log!(handler, opts))
   end
 
-  # The same pair the pipeline asks before delivering, in the same order and for
-  # the same reason: an undeclared type casts to `nil` and no clause takes that,
-  # a declared one can still be turned down by a narrowed head, and calling the
-  # handler to find either out would report a raise where a stream skips.
+  # The same question the pipeline asks before delivering, answered the same
+  # way: `nil` for a type no clause declares and for a value no head accepts
+  # alike. Calling the handler to find either out would report a raise where a
+  # stream skips.
   defp replay_one(row, declaration, subscription, storage, storage_opts) do
     handler = declaration.handler
-    message = handler.__dmex_cast__(row.message_type, JSON.decode!(row.data))
     metadata = JSON.decode!(row.metadata)
 
-    if handler.__dmex_match__(message, metadata) do
-      {:ok, _} =
-        storage.transaction(storage_opts, fn ->
-          _ = handler.handle_message(message, metadata)
+    case handler.__dmex_cast__(row.message_type, JSON.decode!(row.data), metadata) do
+      nil ->
+        Logger.warning(
+          "DMEx cannot replay dead message #{row.id}: no #{inspect(handler)} clause matches a " <>
+            "#{row.message_type}. Widen one and replay again, or discard/3 it."
+        )
 
-          :ok = storage.delete_dead_message(storage_opts, subscription, row.id)
-        end)
+        :error
 
-      :ok
-    else
-      Logger.warning(
-        "DMEx cannot replay dead message #{row.id}: no #{inspect(handler)} clause matches a " <>
-          "#{row.message_type}. Widen one and replay again, or discard/3 it."
-      )
+      message ->
+        {:ok, _} =
+          storage.transaction(storage_opts, fn ->
+            _ = handler.handle_message(message, metadata)
 
-      :error
+            :ok = storage.delete_dead_message(storage_opts, subscription, row.id)
+          end)
+
+        :ok
     end
   rescue
     exception ->

@@ -39,11 +39,11 @@ defmodule DMEx.Handler do
   `%OrderPlaced{status: "paid"}` still declares `OrderPlaced`, so an unpaid one
   arrives — and is skipped like any other message no clause matches, advancing
   the cursor and emitting `[:dmex, :handler, :skip]`. Narrowing is a filter, not
-  an assertion. The heads, guards and all, are compiled into a `__dmex_match__/2`
-  the pipeline asks before it opens a transaction, so a message no clause wants
-  costs a struct match. Its partner `__dmex_cast__/2` is compiled from the same
-  clauses and answers `nil` for an undeclared type, which no head takes either —
-  so "no clause wants this row" is one question with one answer.
+  an assertion. The heads, guards and all, are compiled into a `__dmex_cast__/3`
+  that decodes a row and returns it only if a clause accepts it — `nil` covering
+  both a type nothing declares and a value nothing wants, since they are the
+  same answer. The pipeline asks it before it opens a transaction, so a row no
+  clause wants costs a struct match.
 
   Rejected at compile time: a clause whose first argument is not a struct
   pattern (a bare variable declares nothing, and cannot serve as a fallback
@@ -141,7 +141,7 @@ defmodule DMEx.Handler do
 
       # The clause heads *as written*. `Module.get_definition/2` has them too,
       # but expanded and normalized past the point of being reinjectable, and
-      # `__dmex_match__/2` is built by reinjecting them.
+      # `__dmex_cast__/3`'s match test is built by reinjecting them.
       Module.register_attribute(__MODULE__, :dmex_heads, accumulate: true)
       @on_definition DMEx.Handler
 
@@ -342,9 +342,9 @@ defmodule DMEx.Handler do
   # transaction too late; this answers from the same heads, on a function whose
   # bodies are `true`.
   #
-  # `__dmex_cast__/2` is the other half, and the reason a consumer needs no
-  # second test for a type it does not know: an undeclared one casts to `nil`,
-  # and `nil` matches no clause, because every head is a struct pattern.
+  # It is one function because it is one question. A row a consumer has no
+  # module for and a row no clause head accepts are the same answer — `nil` —
+  # and a caller cannot decode without asking, or ask without decoding.
   defp matcher(env, messages) do
     heads = Enum.reverse(Module.get_attribute(env.module, :dmex_heads))
     {:v1, :def, _meta, clauses} = Module.get_definition(env.module, {:handle_message, 2})
@@ -354,25 +354,36 @@ defmodule DMEx.Handler do
     accepts = Enum.map(heads, &matcher_clause/1)
     casts = Enum.map(messages, &cast_clause/1)
 
+    # What turns a narrowed-away value down. Marked generated because a handler
+    # narrowing nothing has heads covering every struct its own cast can return,
+    # so this reads as unreachable to anything checking — in a user's dialyzer
+    # run, say, where every call site is now visible.
+    turn_down =
+      quote generated: true do
+        defp __dmex_match__(_message, _metadata), do: false
+      end
+
     quote do
       @doc false
-      @spec __dmex_match__(struct() | nil, map()) :: boolean()
-      unquote_splicing(accepts)
-      def __dmex_match__(_message, _metadata), do: false
-
-      @doc false
-      @spec __dmex_cast__(String.t(), term()) :: struct() | nil
+      @spec __dmex_cast__(String.t(), term(), map()) :: struct() | nil
       unquote_splicing(casts)
-      def __dmex_cast__(_message_type, _data), do: nil
+      def __dmex_cast__(_message_type, _data, _metadata), do: nil
+
+      unquote_splicing(accepts)
+      unquote(turn_down)
     end
   end
 
-  # Compiled from the declared set rather than looked up in a map built from it
-  # at boot: one derived thing instead of two, and never `String.to_atom/1` on
-  # whatever the log sent.
+  # One clause per declared type, compiled from the set rather than looked up in
+  # a map built from it at boot — and never `String.to_atom/1` on whatever the
+  # log sent. A type with no clause falls to the `nil` above without decoding.
   defp cast_clause(module) do
     quote do
-      def __dmex_cast__(unquote(module.type()), data), do: unquote(module).cast(data)
+      def __dmex_cast__(unquote(module.type()), data, metadata) do
+        message = unquote(module).cast(data)
+
+        if __dmex_match__(message, metadata), do: message
+      end
     end
   end
 
@@ -381,7 +392,7 @@ defmodule DMEx.Handler do
     head = if guards == [], do: head, else: {:when, [], [head, chain(guards)]}
 
     quote do
-      def unquote(generated(head)), do: true
+      defp unquote(generated(head)), do: true
     end
   end
 

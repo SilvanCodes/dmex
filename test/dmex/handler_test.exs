@@ -250,14 +250,15 @@ defmodule DMEx.HandlerTest do
     end
   end
 
-  # Selection is by type and a clause may narrow below one, so the pipeline asks
-  # this before it opens a transaction — see `DMEx.Handler.Pipeline`, section 2.
-  describe "the generated match test" do
-    test "accepts what the clause matches and turns down the rest" do
+  # Decoding and "is this wanted" are one call, asked before the pipeline opens
+  # a transaction — see `DMEx.Handler.Pipeline`, section 2. `nil` is the whole
+  # vocabulary for "no", whether the type is undeclared or the value unwanted.
+  describe "the generated cast" do
+    test "returns what the clause matches and nil for a type it never declared" do
       module = compile_module(clause())
 
-      assert module.__dmex_match__(%OrderPlaced{order_id: 1}, %{})
-      refute module.__dmex_match__(%OrderShipped{order_id: 1}, %{})
+      assert %OrderPlaced{order_id: 1} = module.__dmex_cast__("order_placed", placed(1), %{})
+      assert module.__dmex_cast__("order_shipped", %{"order_id" => 1}, %{}) == nil
     end
 
     test "carries a narrowed field" do
@@ -267,8 +268,8 @@ defmodule DMEx.HandlerTest do
 
       module = compile_module(body)
 
-      assert module.__dmex_match__(%OrderPlaced{customer_id: 7}, %{})
-      refute module.__dmex_match__(%OrderPlaced{customer_id: 9}, %{})
+      assert module.__dmex_cast__("order_placed", %{"customer_id" => 7}, %{})
+      assert module.__dmex_cast__("order_placed", %{"customer_id" => 9}, %{}) == nil
     end
 
     # The binding this copy has no body to use, and the guard that does use one.
@@ -282,8 +283,8 @@ defmodule DMEx.HandlerTest do
 
       module = compile_module(body)
 
-      assert module.__dmex_match__(%OrderPlaced{total: 500}, %{})
-      refute module.__dmex_match__(%OrderPlaced{total: 50}, %{})
+      assert module.__dmex_cast__("order_placed", %{"total" => 500}, %{})
+      assert module.__dmex_cast__("order_placed", %{"total" => 50}, %{}) == nil
     end
 
     test "matches on the metadata too" do
@@ -293,8 +294,8 @@ defmodule DMEx.HandlerTest do
 
       module = compile_module(body)
 
-      assert module.__dmex_match__(%OrderPlaced{}, %{"t" => "acme"})
-      refute module.__dmex_match__(%OrderPlaced{}, %{"t" => "other"})
+      assert module.__dmex_cast__("order_placed", placed(1), %{"t" => "acme"})
+      assert module.__dmex_cast__("order_placed", placed(1), %{"t" => "other"}) == nil
     end
 
     test "answers for every clause" do
@@ -305,18 +306,16 @@ defmodule DMEx.HandlerTest do
 
       module = compile_module(body)
 
-      assert module.__dmex_match__(%OrderPlaced{}, %{})
-      assert module.__dmex_match__(%OrderShipped{}, %{})
+      assert module.__dmex_cast__("order_placed", placed(1), %{})
+      assert module.__dmex_cast__("order_shipped", %{"order_id" => 2}, %{})
     end
 
-    # What lets the pipeline ask one question instead of two: an undeclared type
-    # casts to nil, and nil is not a struct, so no head can take it.
-    test "turns down the nil an undeclared type casts to" do
+    # The type nothing declares never reaches a `cast/1` at all — it falls to
+    # the same `nil` a turned-down value gets, one clause earlier.
+    test "decodes nothing for a type it never declared" do
       module = compile_module(clause())
 
-      assert module.__dmex_cast__("order_placed", %{"order_id" => 1})
-      assert module.__dmex_cast__("nothing_it_declares", %{"order_id" => 1}) == nil
-      refute module.__dmex_match__(nil, %{})
+      assert module.__dmex_cast__("nothing_it_declares", %{"order_id" => 1}, %{}) == nil
     end
 
     test "casts each declared type into its own module" do
@@ -327,10 +326,10 @@ defmodule DMEx.HandlerTest do
 
       module = compile_module(body)
 
-      assert %OrderPlaced{order_id: 1} = module.__dmex_cast__("order_placed", %{"order_id" => 1})
+      assert %OrderPlaced{order_id: 1} = module.__dmex_cast__("order_placed", placed(1), %{})
 
       assert %OrderShipped{order_id: 2} =
-               module.__dmex_cast__("order_shipped", %{"order_id" => 2})
+               module.__dmex_cast__("order_shipped", %{"order_id" => 2}, %{})
     end
 
     # Otherwise the hook that reads the patterns is installed after them, the
@@ -412,6 +411,8 @@ defmodule DMEx.HandlerTest do
   defp clause do
     "def handle_message(%DMEx.Test.Messages.OrderPlaced{}, _metadata), do: :ok"
   end
+
+  defp placed(order_id), do: %{"order_id" => order_id}
 
   defp declare(opts) do
     opts

@@ -27,15 +27,14 @@ defmodule DMEx.Handler.Pipeline do
   they must, or a handler would wedge forever on the first row it does not want
   — and both emit `[:dmex, :handler, :skip]`.
 
-  **They are one question, so they are one branch.** `__dmex_cast__/2` turns an
-  undeclared `message_type` into `nil`, and `nil` matches no clause of
-  `__dmex_match__/2`, because every clause head is a struct pattern — see
-  `DMEx.Handler`. Both are compiled from the handler's own clauses, so "does
-  this row have a clause" has exactly one answer and no second lookup can
-  disagree with it.
+  **They are one question, so they are one call.** `__dmex_cast__/3` — which
+  `DMEx.Handler` compiles from the handler's own clauses — decodes the row and
+  hands it back only if a clause head accepts it, and answers `nil` otherwise.
+  There is no separate type lookup to disagree with the clauses, and no way to
+  decode a row without asking whether it is wanted.
 
-  Both are also answered *before* the transaction opens, so a row nothing wants
-  costs a call and a struct match. Nothing calls the handler and rescues a
+  It is asked *before* the transaction opens, so a row nothing wants costs a
+  call and a struct match. Nothing calls the handler and rescues a
   `FunctionClauseError` to find out, which leaves raising meaning only what
   section 4 says it means.
 
@@ -180,14 +179,12 @@ defmodule DMEx.Handler.Pipeline do
   ## Internals
 
   defp dispatch(row, id, state) do
-    handler = state.handler
-    message = handler.__dmex_cast__(Map.fetch!(row, "message_type"), Map.fetch!(row, "data"))
     metadata = Map.get(row, "metadata") || %{}
+    type = Map.fetch!(row, "message_type")
 
-    if handler.__dmex_match__(message, metadata) do
-      attempt(row, id, message, metadata, state, 1)
-    else
-      skip(row, id, state)
+    case state.handler.__dmex_cast__(type, Map.fetch!(row, "data"), metadata) do
+      nil -> skip(row, id, state)
+      message -> attempt(row, id, message, metadata, state, 1)
     end
   end
 
@@ -319,7 +316,7 @@ defmodule DMEx.Handler.Pipeline do
 
   The message set was derived and validated at compile time, so there is nothing
   left for this to check but the handler itself — and nothing to carry, since
-  resolving a `message_type` is the handler's own `__dmex_cast__/2`, compiled
+  resolving a `message_type` is the handler's own `__dmex_cast__/3`, compiled
   from that set. Never `String.to_atom/1` on whatever the log sent, which would
   be an unbounded-atom-table risk on attacker-controlled input.
   """
