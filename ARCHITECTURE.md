@@ -145,11 +145,9 @@ through one prefix `forward`. The bare form is the whole log; the blob narrows
 it. There is no application segment and no query string: one mount serves
 exactly one log, and the mount path plus hostname identify it.
 
-`/stream/...` is a namespace with a closed reserved list matched *before* any
-blob decode. `stats` is reserved and not yet implemented, answered `404`. A
-segment that is neither reserved nor decodable is a `400`. A trailing slash is
-the same resource as the bare mount. Any method other than `GET` is a `405`
-with an `Allow: GET` header.
+A segment that is not decodable is a `400`. A trailing slash is the same
+resource as the bare mount. Any method other than `GET` is a `405` with an
+`Allow: GET` header.
 
 **Request headers**, validated by `DMEx.Log.Params`:
 
@@ -542,8 +540,7 @@ of scope.
   That is a given inside one umbrella and an open problem between separate teams,
   repos and languages. The options — a shared package, a self-describing schema
   endpoint, a loose map-plus-type-string decode, an external registry — are not
-  mutually exclusive, and [`GET /stream/stats`](ROADMAP.md#stream-stats-get-streamstats)
-  is the small first step of the second. One constraint: dropping `origin` rests
+  mutually exclusive. One constraint: dropping `origin` rests
   on `message_type` being unique across producers, which a declared `type:` makes
   a producer's own choice rather than a property of the module name. Nothing
   outside a single node can detect two producers declaring one type, so any

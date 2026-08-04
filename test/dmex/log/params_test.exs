@@ -102,10 +102,6 @@ defmodule DMEx.Log.ParamsTest do
       assert message =~ "invalid filter segment"
       assert message =~ "fingerprint-spec.md"
     end
-
-    test "a reserved name says it is reserved rather than malformed" do
-      assert Params.describe({:reserved, "stats"}) =~ "reserved sub-resource"
-    end
   end
 
   describe "the selection path segment" do
@@ -141,14 +137,6 @@ defmodule DMEx.Log.ParamsTest do
 
     test "more segments than one is a 400" do
       assert {:error, {:invalid, "filter", "a/b"}} = Params.parse(["a", "b"], [])
-    end
-
-    # Reserved names are matched *before* any decode is attempted, which is what
-    # makes the namespace guarantee structural rather than probabilistic. The two
-    # vocabularies could hardly collide anyway — the shortest valid blob is a
-    # 64-bit seed plus three fingerprints — but "hardly" is not a guarantee.
-    test "a reserved name is a named sub-resource, not a candidate filter" do
-      assert {:error, {:reserved, "stats"}} = Params.parse(["stats"], [])
     end
 
     test "the selection is parsed before the headers are" do

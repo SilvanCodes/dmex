@@ -7,7 +7,7 @@ defmodule DMEx.Log.Params do
 
   | carried in | meaning | absent | invalid |
   | --- | --- | --- | --- |
-  | the path segment | which message types | the whole log | `400`, or `404` if reserved |
+  | the path segment | which message types | the whole log | `400` |
   | `last-event-id` | resume position, as `previous/current`, a bare id, or an instant | from the beginning | `400` |
 
   **DMEx defines no request headers.** See the wire contract in
@@ -61,20 +61,12 @@ defmodule DMEx.Log.Params do
   Why a request was rejected.
 
   `:invalid` names the offending header or path segment and its value, and is
-  answered with a `400`. `:reserved` means the segment is a named sub-resource
-  of the log rather than a filter, and is answered with a `404` until one is
-  implemented.
+  answered with a `400`.
   """
-  @type error ::
-          {:invalid, source :: String.t(), value :: String.t()}
-          | {:reserved, name :: String.t()}
+  @type error :: {:invalid, source :: String.t(), value :: String.t()}
 
   @last_event_id "last-event-id"
   @matched "dmex-matched-messages"
-
-  # Named sub-resources of the log, matched before any blob decode. Closed
-  # list: adding one is a wire-contract change, not a routing detail.
-  @reserved ~w(stats)
 
   # What a filter path segment is called when a `400` has to name it.
   @filter "filter"
@@ -88,8 +80,7 @@ defmodule DMEx.Log.Params do
   `GET /stream`, one segment for anything under it.
 
   Returns `{:error, {:invalid, source, value}}` for a header or segment that is
-  present but outside its vocabulary, which the caller answers with a `400`, and
-  `{:error, {:reserved, name}}` for a reserved sub-resource.
+  present but outside its vocabulary, which the caller answers with a `400`.
   """
   @spec parse([String.t()], [{String.t(), String.t()}]) :: {:ok, t()} | {:error, error()}
   def parse(path_info, req_headers)
@@ -110,7 +101,7 @@ defmodule DMEx.Log.Params do
     [{@matched, Integer.to_string(count)}]
   end
 
-  @doc "What a `400` or `404` should say back to the client."
+  @doc "What a `400` should say back to the client."
   @spec describe(error()) :: String.t()
   def describe({:invalid, @filter, value}) do
     "invalid filter segment: #{inspect(value)}. It must be a DMEx message-type " <>
@@ -121,19 +112,12 @@ defmodule DMEx.Log.Params do
     "invalid #{header} header: #{inspect(value)}"
   end
 
-  def describe({:reserved, name}) do
-    "#{inspect(name)} is a reserved sub-resource of this stream and is not implemented"
-  end
-
   ## Internals
 
-  # Reserved names first, before any decode. `GET /stream` and `GET /stream/`
-  # are the same resource: a trailing slash would otherwise be a permanent
-  # `400`, and a `400` is fatal to a consumer.
+  # `GET /stream` and `GET /stream/` are the same resource: a trailing slash
+  # would otherwise be a permanent `400`, and a `400` is fatal to a consumer.
   defp selection([]), do: {:ok, :all}
   defp selection([""]), do: {:ok, :all}
-
-  defp selection([name]) when name in @reserved, do: {:error, {:reserved, name}}
 
   defp selection([blob]) do
     case Fingerprint.decode(blob) do

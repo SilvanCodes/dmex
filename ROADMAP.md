@@ -4,114 +4,13 @@
 > already made stay compatible with it. The code is what DMEx does and
 > [ARCHITECTURE.md](ARCHITECTURE.md) is the map of it.
 
-Three things are planned:
+Two things are planned:
 
-- **[Stream Stats](#stream-stats-get-streamstats)** — `GET /stream/stats`, a
-  plain JSON description of the message types a log contains and the id range
-  each spans.
 - **[Global Resource Limits](#global-resource-limits)** — an aggregate
   connection budget and admission control, seated on the watcher that already
   runs per producer.
 - **[Compression](#compression)** — `Content-Encoding: gzip`, producer-side
   opt-in with explicitly-sized zlib parameters.
-
-## Stream Stats (`GET /stream/stats`)
-
-A second, non-streaming endpoint under the same mount: **the message types the
-log actually contains, and for each one the lowest and highest id it appears
-at.** Plain JSON, one request, no subscription, no consumer state.
-
-```json
-{
-  "max_id": 1180,
-  "message_types": [
-    {"message_type": "MyApp.Messages.OrderPlaced",  "min_id": 1,   "max_id": 1180},
-    {"message_type": "MyApp.Messages.OrderShipped", "min_id": 4,   "max_id": 1177},
-    {"message_type": "MyApp.Messages.OrderRefunded","min_id": 902, "max_id": 1101}
-  ]
-}
-```
-
-Top-level `max_id` is the log's own latest id. Nothing on the stream carries it
-— the wire has no tip — so this is the only place it is available.
-`message_types` is sorted, so two fetches of an unchanged log compare cleanly.
-
-**Why it earns a place.** Four questions have no answer short of reading the
-whole log, and one endpoint answers all of them:
-
-- **Where to rewind to after adding a message type.** This is the concrete
-  payoff, and it repairs the sharpest edge in
-  [selection](ARCHITECTURE.md#message-type-selection): adding a module selects
-  that type from the cursor forward, so a consumer wanting the history has to
-  move its cursor back — and without stats its only safe choice is the beginning
-  of the log, replaying every already-processed message of every other type on
-  the way. `min_id` for the new type is exactly how far back it needs to go.
-- **Whether the producer appends the type at all.** A filter naming a type the
-  producer never emits matches nothing, silently — correct behaviour and an
-  awful debugging experience. Stats makes it visible out of band, without
-  weakening the no-validation rule on the stream itself.
-- **What the type vocabulary is, for a non-Elixir consumer.** A consumer in
-  another language has to know the fully-qualified module-name strings to build
-  a filter at all. Stats is the smallest thing that makes a producer
-  self-describing, and stops well short of a schema endpoint.
-- **Whether `stream_from: :current` is about to skip something.** How much
-  history exists per type, before choosing between `1`, `:current`, an explicit
-  id, and an instant.
-
-**What it is not.** Three limits, and the first is load-bearing:
-
-- **Not a source for filter expansion.** Stats reports what the *log contains*;
-  expansion must resolve against what the producer's *code knows*, and the two
-  differ exactly when a deployed type has not been appended yet. Using stats as
-  the expansion source reintroduces the staleness failure `DMEx.message_types/1`
-  exists to avoid. The endpoint is for humans and consumer-side tooling, never
-  for the producer's own read path.
-- **Not a schema.** No field shapes, no versioning of payloads. Those belong to
-  the separate schema-endpoint question, which stats does not pre-empt.
-- **Not live.** A point-in-time snapshot, computed per request — an ordinary
-  JSON `200` with a body and an end, entirely outside the
-  frame/heartbeat/backpressure machinery.
-
-**Cost.** The query is `SELECT message_type, min(id), max(id) FROM dmex_messages
-GROUP BY message_type`. The index it wants already exists: `(message_type, id)`,
-where min and max of `id` within each type are the two ends of a contiguous
-range. That turns a sequential scan into a per-distinct-type index probe — but
-only if the planner takes it, which Postgres does well with a skip/loose scan
-and poorly without one, and is worth `EXPLAIN`ing on a real log. A short
-producer-side TTL is almost free, since the answer moves only when an append
-introduces a new type or extends a range and callers are humans and deploy-time
-tooling.
-
-The `stats` name is reserved in the `/stream` namespace and answers `404` until
-it is built.
-
-### Open, if and when it lands
-
-- **Whether it is on by default.** The endpoint exposes the type vocabulary and,
-  through id ranges, a rough shape of traffic — strictly less than the stream
-  itself discloses, so on an open mount it leaks nothing new; behind auth it is
-  one more thing to authorize. Belongs with the wider
-  [auth question](ARCHITECTURE.md#open-questions); the likely answer is an
-  `DMEx.Log.Plug` option defaulting to on.
-- **Counts.** `count(*)` per type is the obvious next column and the expensive
-  one: min and max are index endpoints, a count is every row. Maybe behind an
-  opt-in, maybe an estimate from planner statistics, maybe not at all.
-- **Timestamps as well as ids.** `min/max(inserted_at)` would let an operator
-  reason in wall-clock terms, which is what a human wants when choosing a rewind
-  point. The counter-argument is that `inserted_at` is explicitly
-  observability-only and never an ordering key, and putting it in an endpoint
-  whose output feeds cursor decisions invites exactly the confusion that rule
-  prevents. If it lands, ids must stay the operative values.
-- **Whether stats accepts a filter.** `/stream/<blob>/stats` is tidy and
-  symmetric, and immediately raises whether false positives should show up in
-  the answer. Reporting the unfiltered truth and letting the caller intersect is
-  simpler and probably right.
-- **Empty-log shape.** `{"max_id": null, "message_types": []}` versus omitting
-  `max_id` is a small decision clients will nonetheless depend on, so it wants
-  pinning in the spec.
-- **Cache semantics on the wire.** `Cache-Control: max-age=<ttl>`, an `ETag`, or
-  nothing and the caching stays private? An `ETag` is cheap and makes polling by
-  tooling nearly free.
 
 ## Global Resource Limits
 

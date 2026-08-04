@@ -226,15 +226,9 @@ truncating a selection.
 another: a connect request has no DMEx headers at all, so a producer answers it
 from the request line plus SSE's own `Last-Event-ID`.
 
-**Reserved names are matched before any decode is attempted**, which makes the
-guarantee structural rather than probabilistic. The reserved list is closed and
-currently holds one name:
-
-- `stats` — a named sub-resource of the producer. Not yet implemented; `404`.
-
-A segment that is neither a reserved name nor a decodable blob is a `400`. A
-filter that decodes but matches none of the producer's known message types is a
-`404`, which a consumer should **retry** rather than treat as fatal.
+A segment that is not a decodable blob is a `400`. A filter that decodes but
+matches none of the producer's known message types is a `404`, which a consumer
+should **retry** rather than treat as fatal.
 
 An **empty** segment — the trailing slash in `GET /stream/` — is the same
 resource as `GET /stream`: the whole log.

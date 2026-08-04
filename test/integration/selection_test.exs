@@ -98,14 +98,6 @@ defmodule DMEx.Integration.SelectionTest do
       assert body =~ "invalid filter segment"
     end
 
-    test "a reserved sub-resource is a 404, not a fingerprint", %{base: base} do
-      # `stats` is reserved before it is implemented, so a blob can never claim
-      # the name later.
-      assert {:ok, 404, _headers, body} = connect(base <> "/stream/stats")
-
-      assert body =~ "reserved"
-    end
-
     test "a fingerprint matching none of the log's types is a 404", %{base: base} do
       {:ok, fingerprint} = Fingerprint.build(["Some.Other.App.Messages.Whatever"])
 

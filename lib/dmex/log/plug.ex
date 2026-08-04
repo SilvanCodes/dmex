@@ -68,11 +68,9 @@ defmodule DMEx.Log.Plug do
 
   ## Errors
 
-  A `400` for a malformed `Last-Event-ID` or a path segment that is neither a
-  reserved name nor a decodable filter. A `404` for a reserved sub-resource that
-  is not implemented, or a filter matching none of the application's message
-  types. A
-  `405` with `allow: GET` for any other method.
+  A `400` for a malformed `Last-Event-ID` or a path segment that is not a
+  decodable filter. A `404` for a filter matching none of the application's
+  message types. A `405` with `allow: GET` for any other method.
 
   There is no `503`/`Retry-After` admission control — see `ROADMAP.md`.
   """
@@ -116,7 +114,6 @@ defmodule DMEx.Log.Plug do
 
     case Params.parse(conn.path_info, conn.req_headers) do
       {:ok, params} -> select(conn, log, params, config)
-      {:error, {:reserved, _name} = error} -> not_found(conn, Params.describe(error))
       {:error, error} -> bad_request(conn, error)
     end
   end
