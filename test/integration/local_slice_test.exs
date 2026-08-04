@@ -20,19 +20,14 @@ defmodule DMEx.Integration.LocalSliceTest do
   alias DMEx.Test.Messages.OrderShipped
 
   setup do
-    Handlers.report_to(self())
-
     # `:test` bound to the module rather than to a URL. That is the entire
     # difference from the SSE slice — no server, no port, no URL to build, and
-    # the log itself started as a child of this one entry.
+    # the log itself started as a child of this one entry, hence `log: nil`.
     #
     # `otp_app: nil` costs nothing here: the message scan it feeds is what
     # expands a *remote* subscription's filter, and a local read never builds
     # one.
-    start_supervised!(
-      {DMEx.Supervisor,
-       name: TestSupervisor, otp_app: nil, repo: DMEx.Test.IntegrationRepo, logs: [test: Log]}
-    )
+    start_stack!(log: nil, logs: [test: Log])
 
     %{storage_opts: Log.__dmex__().storage_opts}
   end

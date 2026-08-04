@@ -34,21 +34,7 @@ defmodule DMEx.Integration.VerticalSliceTest do
   end
 
   setup do
-    Handlers.report_to(self())
-
-    start_supervised!(Log)
-
-    # The server binds port 0, so the log map is necessarily built at
-    # runtime — which is exactly why it lives on the child spec rather than in
-    # application config.
-    url = Server.start!() <> "/stream"
-
-    start_supervised!(
-      {DMEx.Supervisor,
-       name: TestSupervisor, otp_app: nil, repo: DMEx.Test.IntegrationRepo, logs: Server.logs(url)}
-    )
-
-    %{url: url, storage_opts: Log.__dmex__().storage_opts}
+    Map.put(start_stack!(), :storage_opts, Log.__dmex__().storage_opts)
   end
 
   test "delivers an appended message to a handler and commits the cursor", _ctx do

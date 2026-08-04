@@ -12,30 +12,14 @@ defmodule DMEx.Integration.DiscoveryTest do
   use DMEx.IntegrationCase
 
   alias DMEx.Storage.Postgres
-  alias DMEx.Test.Handlers
   alias DMEx.Test.IntegrationLog, as: Log
   alias DMEx.Test.Messages.OrderPlaced
-  alias DMEx.Test.Server
 
   setup do
-    Handlers.report_to(self())
-
-    start_supervised!(Log)
-
-    url = Server.start!() <> "/stream"
-
     # `otp_app: :dmex` is the difference from every other integration setup: it
     # scans this suite's own modules, so `test/support/handlers.ex` is
     # discovered and every handler in it subscribes without being named here.
-    start_supervised!(
-      {DMEx.Supervisor,
-       name: TestSupervisor,
-       otp_app: :dmex,
-       repo: DMEx.Test.IntegrationRepo,
-       logs: Server.logs(url)}
-    )
-
-    %{url: url}
+    start_stack!(otp_app: :dmex)
   end
 
   test "a discovered handler delivers without anyone subscribing it", _ctx do

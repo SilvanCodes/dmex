@@ -47,21 +47,9 @@ defmodule DMEx.Integration.MessageTypeTest do
   alias DMEx.Test.Handlers
   alias DMEx.Test.IntegrationLog, as: Log
   alias DMEx.Test.Messages.OrderPlaced
-  alias DMEx.Test.Server
 
   setup do
-    Handlers.report_to(self())
-
-    start_supervised!(Log)
-
-    url = Server.start!() <> "/stream"
-
-    start_supervised!(
-      {DMEx.Supervisor,
-       name: TestSupervisor, otp_app: nil, repo: DMEx.Test.IntegrationRepo, logs: Server.logs(url)}
-    )
-
-    %{url: url}
+    start_stack!()
   end
 
   test "a consumer resolves rows by declared type, not by the appending module's name" do

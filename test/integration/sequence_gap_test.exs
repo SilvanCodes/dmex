@@ -19,7 +19,6 @@ defmodule DMEx.Integration.SequenceGapTest do
   alias DMEx.Storage.Postgres
   alias DMEx.Test.Handlers
   alias DMEx.Test.Messages.OrderPlaced
-  alias DMEx.Test.Server
 
   # Frame 2 is simply never written. Frame 3 chains honestly — it says its
   # predecessor was 2 — which is exactly what a log sends and exactly what
@@ -70,16 +69,9 @@ defmodule DMEx.Integration.SequenceGapTest do
   end
 
   setup do
-    Handlers.report_to(self())
-
-    url = Server.start!(plug: GappedRouter) <> "/stream"
-
-    start_supervised!(
-      {DMEx.Supervisor,
-       name: TestSupervisor, otp_app: nil, repo: DMEx.Test.IntegrationRepo, logs: Server.logs(url)}
-    )
-
-    %{url: url}
+    # `log: nil`, because `GappedRouter` serves the hand-written stream above
+    # instead of a real log — there is nothing to start behind it.
+    start_stack!(log: nil, plug: GappedRouter)
   end
 
   test "a frame that never arrives breaks the chain instead of being skipped", _ctx do

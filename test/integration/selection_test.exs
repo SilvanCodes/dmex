@@ -38,24 +38,9 @@ defmodule DMEx.Integration.SelectionTest do
   alias DMEx.Test.IntegrationLog, as: Log
   alias DMEx.Test.Messages.OrderPlaced
   alias DMEx.Test.Messages.OrderShipped
-  alias DMEx.Test.Server
 
   setup do
-    Handlers.report_to(self())
-
-    start_supervised!(Log)
-
-    base = Server.start!()
-
-    start_supervised!(
-      {DMEx.Supervisor,
-       name: TestSupervisor,
-       otp_app: nil,
-       repo: DMEx.Test.IntegrationRepo,
-       logs: Server.logs(base <> "/stream")}
-    )
-
-    %{base: base}
+    start_stack!()
   end
 
   describe "the wire" do

@@ -14,24 +14,9 @@ defmodule DMEx.Integration.ResumptionTest do
   alias DMEx.Test.Handlers
   alias DMEx.Test.IntegrationLog, as: Log
   alias DMEx.Test.Messages.OrderPlaced
-  alias DMEx.Test.Server
 
   setup do
-    Handlers.report_to(self())
-
-    start_supervised!(Log)
-
-    # The server binds port 0, so the log map is necessarily built at
-    # runtime — which is exactly why it lives on the child spec rather than in
-    # application config.
-    url = Server.start!() <> "/stream"
-
-    start_supervised!(
-      {DMEx.Supervisor,
-       name: TestSupervisor, otp_app: nil, repo: DMEx.Test.IntegrationRepo, logs: Server.logs(url)}
-    )
-
-    %{url: url}
+    start_stack!()
   end
 
   test "killing the stream loses nothing and repeats nothing", _ctx do

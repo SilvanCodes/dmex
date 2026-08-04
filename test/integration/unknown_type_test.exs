@@ -22,24 +22,9 @@ defmodule DMEx.Integration.UnknownTypeTest do
   alias DMEx.Test.IntegrationLog, as: Log
   alias DMEx.Test.Messages.OrderPlaced
   alias DMEx.Test.Messages.OrderShipped
-  alias DMEx.Test.Server
 
   setup do
-    Handlers.report_to(self())
-
-    start_supervised!(Log)
-
-    # The server binds port 0, so the log map is necessarily built at
-    # runtime — which is exactly why it lives on the child spec rather than in
-    # application config.
-    url = Server.start!() <> "/stream"
-
-    start_supervised!(
-      {DMEx.Supervisor,
-       name: TestSupervisor, otp_app: nil, repo: DMEx.Test.IntegrationRepo, logs: Server.logs(url)}
-    )
-
-    %{url: url}
+    start_stack!()
   end
 
   test "a type the consumer did not select never arrives, and the rest do", _ctx do

@@ -12,12 +12,17 @@ defmodule DMEx.IntegrationCase do
 
   use ExUnit.CaseTemplate
 
+  alias DMEx.Test.Handlers
   alias DMEx.Test.IntegrationRepo
+  alias DMEx.Test.Server
   alias Ecto.Adapters.SQL
 
   using do
     quote do
       import DMEx.Case, only: [eventually: 1, eventually: 2, eventually: 3]
+
+      import DMEx.IntegrationCase,
+        only: [start_stack!: 0, start_stack!: 1, start_supervisor!: 1, start_supervisor!: 2]
 
       alias DMEx.Test.IntegrationRepo, as: Repo
 
@@ -36,6 +41,74 @@ defmodule DMEx.IntegrationCase do
     truncate_all!()
     on_exit(&truncate_all!/0)
     :ok
+  end
+
+  @doc """
+  Starts what an integration setup starts: handler reports addressed to this
+  process, the log, an HTTP server in front of it, and a `DMEx.Supervisor`
+  bound to that server.
+
+  The server binds port 0, so the log map is necessarily built at runtime —
+  which is exactly why it lives on the child spec rather than in application
+  config, and why this returns the URL rather than taking one.
+
+  Options:
+
+    * `:log` — the log to `start_supervised!`, or `nil` for a file that serves a
+      hand-written plug or lets the supervisor start the log. Defaults to
+      `DMEx.Test.IntegrationLog`.
+    * `:plug` — the router the server mounts. Defaults to the one
+      `DMEx.Test.Server` mounts `DMEx.Log.Plug` on.
+    * `:otp_app` — `nil`, the default, keeps handler auto-discovery off so each
+      test subscribes explicitly.
+    * `:logs` — the log map, given directly. No server starts at all, for a
+      slice that binds a name to a module rather than to a URL.
+    * `:supervisor` — `false` leaves the `DMEx.Supervisor` unstarted, for a file
+      that starts it per describe.
+
+  Returns the context: `:base`, `:url`, `:host` and `:port` whenever a server ran.
+  """
+  @spec start_stack!(keyword()) :: map()
+  def start_stack!(opts \\ []) do
+    Handlers.report_to(self())
+
+    if log = Keyword.get(opts, :log, DMEx.Test.IntegrationLog), do: start_supervised!(log)
+
+    {logs, context} =
+      case Keyword.fetch(opts, :logs) do
+        {:ok, logs} ->
+          {logs, %{}}
+
+        :error ->
+          base = Server.start!(Keyword.take(opts, [:plug]))
+          url = base <> "/stream"
+          uri = URI.parse(base)
+
+          {Server.logs(url), %{base: base, url: url, host: uri.host, port: uri.port}}
+      end
+
+    if Keyword.get(opts, :supervisor, true) do
+      start_supervisor!(logs, Keyword.take(opts, [:otp_app]))
+    end
+
+    context
+  end
+
+  @doc """
+  Starts the `DMEx.Supervisor` the whole suite subscribes through, bound to `logs`.
+
+  Split out of `start_stack!/1` for the file that needs the server up before the
+  supervisor is, so only some of its describes have a consumer connected.
+  """
+  @spec start_supervisor!(keyword(), keyword()) :: pid()
+  def start_supervisor!(logs, opts \\ []) do
+    start_supervised!(
+      {DMEx.Supervisor,
+       name: TestSupervisor,
+       otp_app: Keyword.get(opts, :otp_app),
+       repo: IntegrationRepo,
+       logs: logs}
+    )
   end
 
   @doc """

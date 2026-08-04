@@ -64,13 +64,9 @@ defmodule DMEx.Integration.HeartbeatTest do
   end
 
   setup do
-    Handlers.report_to(self())
-
-    start_supervised!(Log)
-    base = Server.start!(plug: Router)
-    uri = URI.parse(base)
-
-    %{url: base <> "/stream", host: uri.host, port: uri.port}
+    # `supervisor: false`, because only the describe below wants a DMEx consumer
+    # attached — the raw-client tests must be the only reader on the stream.
+    start_stack!(log: Log, plug: Router, supervisor: false)
   end
 
   describe "what a raw client sees" do
@@ -110,13 +106,7 @@ defmodule DMEx.Integration.HeartbeatTest do
 
   describe "a DMEx consumer on a quiet stream" do
     setup ctx do
-      start_supervised!(
-        {DMEx.Supervisor,
-         name: TestSupervisor,
-         otp_app: nil,
-         repo: DMEx.Test.IntegrationRepo,
-         logs: Server.logs(ctx.url)}
-      )
+      start_supervisor!(Server.logs(ctx.url))
 
       :ok
     end
