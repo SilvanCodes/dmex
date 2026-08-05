@@ -359,7 +359,7 @@ each log supervises.
 
 | module | role |
 | --- | --- |
-| `DMEx.Log.Registry` | one entry per open stream, holding that connection's `DMEx.Log.Status` (wakeup flag and deadline) and its selection. The entry dies with the request process. |
+| `DMEx.Log.Streams` | one entry per open stream, holding that connection's `DMEx.Log.Status` (wakeup flag and deadline) and its selection. The entry dies with the request process. |
 | `DMEx.Notifier` children | whatever the notifier needs; `DMEx.Notifier.Postgres` puts its `LISTEN` connection here, `DMEx.Notifier.Beam` a `:pg` scope. |
 | `DMEx.Log.Dispatcher` | subscribes to the notifier, runs the poll timer, broadcasts wakeups. |
 | `DMEx.Log.Watcher` | sweeps deadlines and reclaims connections that stopped making progress. |

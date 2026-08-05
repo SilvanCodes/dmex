@@ -3,7 +3,7 @@ defmodule DMEx.Log.Watcher do
   Reclaims connections that stopped making progress.
 
   One per log, started by that log's supervisor. It holds no state about any
-  connection: every sweep reads the live set out of `DMEx.Log.Registry`,
+  connection: every sweep reads the live set out of `DMEx.Log.Streams`,
   compares each armed deadline against the clock, and kills whatever is past it.
 
   ## Why anything is needed at all
@@ -43,6 +43,7 @@ defmodule DMEx.Log.Watcher do
   use GenServer
 
   alias DMEx.Log.Status
+  alias DMEx.Log.Streams
 
   require Logger
 
@@ -108,7 +109,7 @@ defmodule DMEx.Log.Watcher do
     # `each/2` runs here rather than in the registry's own processes, so a sweep
     # costs one atomics read per connection and nothing that can block. A
     # deadline is a deadline whatever the connection selected.
-    DMEx.Log.Registry.each(state.log, fn pid, status, _selection ->
+    Streams.each(state.log, fn pid, status, _selection ->
       if Status.overdue?(status, now) do
         reclaim(state.log, pid, status, now)
         :counters.add(reclaimed, 1, 1)

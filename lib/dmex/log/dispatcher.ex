@@ -4,7 +4,7 @@ defmodule DMEx.Log.Dispatcher do
 
   One per log, started by that log's supervisor. It subscribes to the log's
   `DMEx.Notifier` and runs a poll timer; on either signal it broadcasts a bare
-  `:wakeup` across `DMEx.Log.Registry`.
+  `:wakeup` across `DMEx.Log.Streams`.
 
   **Belt and suspenders.** The notifier gives low latency; the poll makes
   dispatch *robust*. A missed or coalesced notification costs up to one poll
@@ -39,6 +39,7 @@ defmodule DMEx.Log.Dispatcher do
 
   alias DMEx.Log.Selection
   alias DMEx.Log.Status
+  alias DMEx.Log.Streams
 
   require Logger
 
@@ -199,7 +200,7 @@ defmodule DMEx.Log.Dispatcher do
 
   defp broadcast(state, types) do
     # Both telemetry measurements come out of the one walk. `streams` used to be
-    # a second pass over the same entries, and `DMEx.Log.Registry.count/1` was
+    # a second pass over the same entries, and `DMEx.Log.Streams.count/1` was
     # the expensive spelling of it.
     tally = :counters.new(2, [])
 
@@ -208,7 +209,7 @@ defmodule DMEx.Log.Dispatcher do
     # `Status.flip/1` asks whether it already has a wakeup queued. The second is
     # what bounds a stalled connection's mailbox at one wakeup rather than at the
     # append rate times the stall duration, however long it stalls.
-    DMEx.Log.Registry.each(state.log, fn pid, status, selection ->
+    Streams.each(state.log, fn pid, status, selection ->
       :counters.add(tally, @streams, 1)
 
       if Selection.concerns?(selection, types) and Status.flip(status) do

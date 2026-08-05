@@ -388,7 +388,7 @@ defmodule DMEx.Storage.SQLite do
   ## Timestamps
 
   # A `%DateTime{}` rather than the stored binary, because `t:DMEx.Storage.row/0`
-  # says so and `DMEx.Log.merge_metadata/2` dispatches on the struct.
+  # says so and `DMEx.Log.Metadata.merge/2` dispatches on the struct.
   defp datetime!(text) when is_binary(text) do
     {:ok, at, 0} = DateTime.from_iso8601(text)
 

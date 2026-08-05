@@ -8,7 +8,7 @@ defmodule DMEx.Transport.Local do
   is no reader that could mistake silence for death.
 
   **It is the same send loop.** `connect/1` starts a linked process that
-  registers with `DMEx.Log.Registry` — the same registration a request process
+  registers with `DMEx.Log.Streams` — the same registration a request process
   serving SSE makes — and runs `DMEx.Log.Stream.loop/2` with this module as its
   transport. So a local subscription gets `LISTEN`/`NOTIFY` wakeups,
   selection-based routing, pacing and `DMEx.Log.Watcher` reclaim by construction
@@ -33,9 +33,9 @@ defmodule DMEx.Transport.Local do
 
   alias DMEx.Handler
   alias DMEx.Handler.Request
-  alias DMEx.Log.Registry, as: LogRegistry
   alias DMEx.Log.Selection
   alias DMEx.Log.Stream, as: SendLoop
+  alias DMEx.Log.Streams
 
   ## Send side — the loop process writes into its owner
 
@@ -85,7 +85,7 @@ defmodule DMEx.Transport.Local do
       spawn_link(fn ->
         # Registered by the reader itself, so the entry dies with it — the same
         # reason the SSE side registers the request process.
-        {:ok, status} = LogRegistry.register(log, config.stall_timeout, selection)
+        {:ok, status} = Streams.register(log, config.stall_timeout, selection)
 
         # Announces the connect and builds the loop's state — the same call
         # `DMEx.Log.Plug` makes, so the two cannot report a connect differently.

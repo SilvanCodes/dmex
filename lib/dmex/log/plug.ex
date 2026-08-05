@@ -80,10 +80,10 @@ defmodule DMEx.Log.Plug do
 
   alias DMEx.Config
   alias DMEx.Log.Params
-  alias DMEx.Log.Registry, as: LogRegistry
   alias DMEx.Log.Selection
   alias DMEx.Log.Status
   alias DMEx.Log.Stream, as: SendLoop
+  alias DMEx.Log.Streams
   alias DMEx.Transport.SSE.Frame
 
   require Logger
@@ -151,7 +151,7 @@ defmodule DMEx.Log.Plug do
     # exactly as the send loop can. The selection rides along so
     # `DMEx.Log.Dispatcher` can decide whether an append is worth waking this
     # connection for without messaging it.
-    {:ok, status} = LogRegistry.register(log, config.stall_timeout, selection)
+    {:ok, status} = Streams.register(log, config.stall_timeout, selection)
 
     case resolve_cursor(log, params.cursor) do
       {:ok, cursor} ->
@@ -163,7 +163,7 @@ defmodule DMEx.Log.Plug do
         # *connection* process and lives on to serve the next request. Left
         # behind, the entry is armed for a stall nothing will ever clear, and
         # the watcher reclaims a connection that never streamed.
-        LogRegistry.unregister(log)
+        Streams.unregister(log)
 
         unavailable(conn, reason)
     end

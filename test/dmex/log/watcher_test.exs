@@ -3,6 +3,7 @@ defmodule DMEx.Log.WatcherTest do
 
   alias DMEx.Log.Status
   alias DMEx.Log.Stream, as: SendLoop
+  alias DMEx.Log.Streams
   alias DMEx.Log.Watcher
   alias DMEx.Test.ClosingAdapter
   alias DMEx.Test.ImpatientLog, as: Log
@@ -11,7 +12,7 @@ defmodule DMEx.Log.WatcherTest do
   @moduletag :capture_log
 
   setup do
-    start_supervised!(DMEx.Log.Registry.child_spec(Log))
+    start_supervised!(Streams.child_spec(Log))
     start_supervised!({Watcher, log: Log})
 
     :ok
@@ -34,7 +35,7 @@ defmodule DMEx.Log.WatcherTest do
       Process.sleep(100)
 
       assert Process.alive?(pid)
-      assert DMEx.Log.Registry.count(Log) == 1
+      assert Streams.count(Log) == 1
     end
 
     # The whole point of budgeting each step separately: a stream parked in its
@@ -82,7 +83,7 @@ defmodule DMEx.Log.WatcherTest do
 
       pid =
         spawn(fn ->
-          {:ok, status} = DMEx.Log.Registry.register(Log, 20, :all)
+          {:ok, status} = Streams.register(Log, 20, :all)
           send(parent, :registered)
 
           SendLoop.loop(ClosingAdapter.conn(parent, 100, state: :chunked), state(opts, status))
@@ -112,7 +113,7 @@ defmodule DMEx.Log.WatcherTest do
 
     pid =
       spawn(fn ->
-        {:ok, status} = DMEx.Log.Registry.register(Log, budget(budget), :all)
+        {:ok, status} = Streams.register(Log, budget(budget), :all)
         send(parent, :registered)
 
         block(status, budget)

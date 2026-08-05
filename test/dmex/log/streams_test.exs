@@ -1,7 +1,7 @@
-defmodule DMEx.Log.RegistryTest do
+defmodule DMEx.Log.StreamsTest do
   use DMEx.Case, async: true
 
-  alias DMEx.Log.Registry, as: LogRegistry
+  alias DMEx.Log.Streams
 
   defmodule FakeLog do
     @moduledoc false
@@ -9,19 +9,21 @@ defmodule DMEx.Log.RegistryTest do
   end
 
   setup do
-    start_supervised!(LogRegistry.child_spec(FakeLog))
+    start_supervised!(Streams.child_spec(FakeLog))
 
     :ok
   end
 
+  # The suffix is `Registry`, not `Streams`: it names the running Elixir
+  # `Registry`, not this module. See `DMEx.Log.Streams`.
   test "names the registry after the log" do
-    assert LogRegistry.name(FakeLog) == DMEx.Log.RegistryTest.FakeLog.Registry
+    assert Streams.name(FakeLog) == DMEx.Log.StreamsTest.FakeLog.Registry
   end
 
   test "each/2 visits a registered process with its status and selection" do
-    {:ok, status} = LogRegistry.register(FakeLog, 5_000, :all)
+    {:ok, status} = Streams.register(FakeLog, 5_000, :all)
 
-    LogRegistry.each(FakeLog, fn pid, entry_status, selection ->
+    Streams.each(FakeLog, fn pid, entry_status, selection ->
       send(pid, {:visited, entry_status, selection})
     end)
 
@@ -34,7 +36,7 @@ defmodule DMEx.Log.RegistryTest do
     pids =
       for _ <- 1..3 do
         spawn_link(fn ->
-          {:ok, _status} = LogRegistry.register(FakeLog, 5_000, :all)
+          {:ok, _status} = Streams.register(FakeLog, 5_000, :all)
           send(parent, {:registered, self()})
 
           receive do
@@ -45,17 +47,17 @@ defmodule DMEx.Log.RegistryTest do
 
     for pid <- pids, do: assert_receive({:registered, ^pid})
 
-    LogRegistry.each(FakeLog, fn pid, _status, _selection -> send(pid, :wakeup) end)
+    Streams.each(FakeLog, fn pid, _status, _selection -> send(pid, :wakeup) end)
 
     for pid <- pids, do: assert_receive({:woke, ^pid})
   end
 
   test "counts live streams" do
-    assert LogRegistry.count(FakeLog) == 0
+    assert Streams.count(FakeLog) == 0
 
-    {:ok, _status} = LogRegistry.register(FakeLog, 5_000, :all)
+    {:ok, _status} = Streams.register(FakeLog, 5_000, :all)
 
-    assert LogRegistry.count(FakeLog) == 1
+    assert Streams.count(FakeLog) == 1
   end
 
   # On the log side the request process *is* the stream, so a dead
@@ -66,7 +68,7 @@ defmodule DMEx.Log.RegistryTest do
 
     pid =
       spawn(fn ->
-        {:ok, _status} = LogRegistry.register(FakeLog, 5_000, :all)
+        {:ok, _status} = Streams.register(FakeLog, 5_000, :all)
         send(parent, :registered)
 
         receive do
@@ -75,29 +77,29 @@ defmodule DMEx.Log.RegistryTest do
       end)
 
     assert_receive :registered
-    assert LogRegistry.count(FakeLog) == 1
+    assert Streams.count(FakeLog) == 1
 
     ref = Process.monitor(pid)
     send(pid, :stop)
     assert_receive {:DOWN, ^ref, :process, ^pid, _}
 
-    eventually(fn -> LogRegistry.count(FakeLog) == 0 end)
+    eventually(fn -> Streams.count(FakeLog) == 0 end)
   end
 
   # For a connect that registers and then fails before becoming a stream: its
   # process is the keep-alive connection process and does not die with it.
   test "unregister/1 drops the caller's entry while it is still alive" do
-    {:ok, _status} = LogRegistry.register(FakeLog, 5_000, :all)
-    assert LogRegistry.count(FakeLog) == 1
+    {:ok, _status} = Streams.register(FakeLog, 5_000, :all)
+    assert Streams.count(FakeLog) == 1
 
-    assert :ok = LogRegistry.unregister(FakeLog)
+    assert :ok = Streams.unregister(FakeLog)
 
-    assert LogRegistry.count(FakeLog) == 0
+    assert Streams.count(FakeLog) == 0
   end
 
   test "each/2 over nobody is fine" do
     assert :ok =
-             LogRegistry.each(FakeLog, fn pid, _status, _selection ->
+             Streams.each(FakeLog, fn pid, _status, _selection ->
                send(pid, :wakeup)
              end)
   end

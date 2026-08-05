@@ -1,4 +1,4 @@
-defmodule DMEx.Log.Registry do
+defmodule DMEx.Log.Streams do
   @moduledoc """
   Where a log's live stream processes register themselves for wakeups.
 
@@ -31,6 +31,11 @@ defmodule DMEx.Log.Registry do
   a registry that dies takes its streams down with it rather than leaving them
   live and registered nowhere. The subtree restarts empty and the clients
   reconnect.
+
+  **The registered process is `<Log>.Registry`, not `<Log>.Streams`** — see
+  `name/1`. This module is `Streams` because that is what the table holds; the
+  process it starts is a plain Elixir `Registry` and its name says so. Renaming
+  the module is a source change, renaming a registered process is not.
   """
 
   alias DMEx.Log.Selection
@@ -38,7 +43,10 @@ defmodule DMEx.Log.Registry do
 
   @key :streams
 
-  @doc "The registry name for a log module."
+  @doc """
+  The registry name for a log module — `<Log>.Registry`, deliberately not
+  `<Log>.Streams`. It names the running Elixir `Registry`, not this module.
+  """
   @spec name(module()) :: atom()
   def name(log) when is_atom(log), do: Module.concat(log, "Registry")
 

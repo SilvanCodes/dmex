@@ -3,6 +3,7 @@ defmodule DMEx.Transport.LocalTest do
   # and the log's own supervisor is a singleton.
   use DMEx.Case, async: false, database: true
 
+  alias DMEx.Log.Streams
   alias DMEx.Storage.Postgres
   alias DMEx.Test.Handlers
   alias DMEx.Test.Log
@@ -196,7 +197,7 @@ defmodule DMEx.Transport.LocalTest do
     parent = self()
 
     :ok =
-      DMEx.Log.Registry.each(Log, fn _pid, _status, selection ->
+      Streams.each(Log, fn _pid, _status, selection ->
         send(parent, {:selection, selection})
       end)
 

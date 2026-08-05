@@ -20,6 +20,7 @@ defmodule DMEx.Integration.SQLiteAppendOrderingTest do
 
   use ExUnit.Case, async: false
 
+  alias DMEx.Log.Streams
   alias DMEx.Storage.SQLite
   alias DMEx.Test.Messages.OrderPlaced
   alias DMEx.Test.SQLiteIntegrationRepo, as: Repo
@@ -46,7 +47,7 @@ defmodule DMEx.Integration.SQLiteAppendOrderingTest do
     test "wakes a live stream on append, without waiting for the poll" do
       start_supervised!({Log, name: :sqlite_slice_log})
 
-      {:ok, _status} = DMEx.Log.Registry.register(Log, 5_000, :all)
+      {:ok, _status} = Streams.register(Log, 5_000, :all)
 
       {:ok, _} = Log.append(%OrderPlaced{order_id: 1})
 

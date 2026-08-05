@@ -18,7 +18,7 @@ defmodule DMEx.Log.Stream do
   The one thing it does to a row is merge in whichever columns the log's
   `metadata:` names — a change to the row, not to any wire format, and here
   rather than in a transport so both transports get it from one place. See
-  `DMEx.Log.merge_metadata/2`.
+  `DMEx.Log.Metadata`.
 
   Memory per connection is one batch and reads are gated on sends completing, so
   a stalled reader stalls its own loop and nothing else — ARCHITECTURE
@@ -41,7 +41,7 @@ defmodule DMEx.Log.Stream do
   configuration (ARCHITECTURE invariant 9).
   """
 
-  alias DMEx.Log
+  alias DMEx.Log.Metadata
   alias DMEx.Log.Selection
   alias DMEx.Log.Status
 
@@ -158,7 +158,7 @@ defmodule DMEx.Log.Stream do
   the other would report differently.
 
   Registration is deliberately *not* here — the two paths make the same
-  `DMEx.Log.Registry.register/3` call at different moments. `DMEx.Log.Plug`
+  `DMEx.Log.Streams.register/3` call at different moments. `DMEx.Log.Plug`
   registers before resolving its cursor, so `DMEx.Log.Watcher` covers that query
   too; `DMEx.Transport.Local` registers inside the reader process, which is the
   process that must own the entry.
@@ -221,7 +221,7 @@ defmodule DMEx.Log.Stream do
         {:empty, conn, state}
 
       {:ok, rows} ->
-        send_rows(conn, state, Enum.map(rows, &Log.merge_metadata(&1, state.config.metadata)))
+        send_rows(conn, state, Enum.map(rows, &Metadata.merge(&1, state.config.metadata)))
 
       {:error, reason} ->
         # If the log cannot be read there is nothing to send and nothing to say

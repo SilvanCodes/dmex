@@ -48,7 +48,7 @@ end
 # connection, and the gap against the control is what it still saves.
 lift = fn rows ->
   rows
-  |> Enum.map(&DMEx.Log.merge_metadata(&1, [:id, :inserted_at]))
+  |> Enum.map(&DMEx.Log.Metadata.merge(&1, [:id, :inserted_at]))
   |> Enum.map(&Frame.encode_row/1)
 end
 

@@ -12,6 +12,7 @@ defmodule DMEx.Integration.StallReclaimTest do
 
   use DMEx.IntegrationCase
 
+  alias DMEx.Log.Streams
   alias DMEx.Log.Watcher
   alias DMEx.Test.Messages.OrderPlaced
   alias DMEx.Test.PatientLog, as: Patient
@@ -66,7 +67,7 @@ defmodule DMEx.Integration.StallReclaimTest do
 
     socket = connect(ctx.port)
 
-    eventually(fn -> DMEx.Log.Registry.count(Log) == 1 end)
+    eventually(fn -> Streams.count(Log) == 1 end)
 
     # Enough bytes that the consumer's receive window closes and the log's
     # write blocks with nothing able to time it out from inside.
@@ -79,7 +80,7 @@ defmodule DMEx.Integration.StallReclaimTest do
 
     # The request process died, so its registry entry went with it — and the
     # socket closed, which is the only notification a stalled consumer can get.
-    eventually(fn -> DMEx.Log.Registry.count(Log) == 0 end)
+    eventually(fn -> Streams.count(Log) == 0 end)
     assert eventually(fn -> :gen_tcp.recv(socket, 0, 100) == {:error, :closed} end)
   end
 
@@ -88,7 +89,7 @@ defmodule DMEx.Integration.StallReclaimTest do
 
     ctx.port |> connect() |> read_in_background()
 
-    eventually(fn -> DMEx.Log.Registry.count(Log) == 1 end)
+    eventually(fn -> Streams.count(Log) == 1 end)
 
     # Reading happens in its own process, so the consumer keeps draining while
     # this one appends. A test that read only afterwards would be a stalled
@@ -97,7 +98,7 @@ defmodule DMEx.Integration.StallReclaimTest do
     Process.sleep(@stall_timeout * 3)
 
     refute_received {[:dmex, :stream, :reclaim], ^ref, _, _}
-    assert DMEx.Log.Registry.count(Log) == 1
+    assert Streams.count(Log) == 1
   end
 
   describe "in the supervision tree" do

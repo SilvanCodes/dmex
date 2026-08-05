@@ -11,7 +11,7 @@ defmodule DMEx.Transport.SSE.Frame do
   Nothing DMEx owns rides at the top level of `data:`. A log wanting its own
   columns on the wire lifts them into `metadata` with `metadata:` on
   `use DMEx.Log`, which happens before a row reaches here — see
-  `DMEx.Log.merge_metadata/2`.
+  `DMEx.Log.Metadata`.
 
   The column-to-slot table is in ARCHITECTURE.md's wire contract. `id:` is the
   row's own id, which is exactly the resume position, so a client echoing it

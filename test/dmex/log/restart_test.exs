@@ -12,7 +12,7 @@ defmodule DMEx.Log.RestartTest do
   # sandbox, and these tests kill globally named processes.
   use DMEx.Case, async: false, database: true
 
-  alias DMEx.Log.Registry, as: LogRegistry
+  alias DMEx.Log.Streams
   alias DMEx.Test.FastPollLog, as: Log
   alias DMEx.Test.Messages.OrderPlaced
 
@@ -34,12 +34,12 @@ defmodule DMEx.Log.RestartTest do
   describe "containment" do
     test "a killed log registry does not escalate, and the log serves again" do
       sup = Process.whereis(@sup)
-      registry = Process.whereis(LogRegistry.name(Log))
+      registry = Process.whereis(Streams.name(Log))
       stream = live_stream()
 
       Process.exit(registry, :kill)
 
-      assert_restarted(LogRegistry.name(Log), registry, sup)
+      assert_restarted(Streams.name(Log), registry, sup)
 
       assert Process.whereis(@sup) == sup
       assert Process.alive?(sup)
@@ -73,9 +73,9 @@ defmodule DMEx.Log.RestartTest do
       # Three, because a fourth in the same five seconds is the log supervisor's
       # restart intensity doing its job rather than the bug.
       for _ <- 1..3 do
-        registry = Process.whereis(LogRegistry.name(Log))
+        registry = Process.whereis(Streams.name(Log))
         Process.exit(registry, :kill)
-        assert_restarted(LogRegistry.name(Log), registry, sup)
+        assert_restarted(Streams.name(Log), registry, sup)
         assert Process.alive?(sup)
       end
 
@@ -88,8 +88,8 @@ defmodule DMEx.Log.RestartTest do
       # the kill — suspending it holds the name for exactly as long as we like,
       # which is what a loaded scheduler does by accident.
       sup = Process.whereis(@sup)
-      registry = Process.whereis(LogRegistry.name(Log))
-      partition = Process.whereis(Module.concat(LogRegistry.name(Log), "PIDPartition0"))
+      registry = Process.whereis(Streams.name(Log))
+      partition = Process.whereis(Module.concat(Streams.name(Log), "PIDPartition0"))
 
       :erlang.suspend_process(partition)
       Process.exit(registry, :kill)
@@ -99,7 +99,7 @@ defmodule DMEx.Log.RestartTest do
       Process.sleep(100)
       :erlang.resume_process(partition)
 
-      assert_restarted(LogRegistry.name(Log), registry, sup)
+      assert_restarted(Streams.name(Log), registry, sup)
       assert Process.alive?(sup)
       assert serving?()
     end
@@ -135,7 +135,7 @@ defmodule DMEx.Log.RestartTest do
 
     pid =
       spawn(fn ->
-        {:ok, _status} = LogRegistry.register(Log, 5_000, :all)
+        {:ok, _status} = Streams.register(Log, 5_000, :all)
         send(parent, :stream_ready)
         Process.sleep(:infinity)
       end)
@@ -153,7 +153,7 @@ defmodule DMEx.Log.RestartTest do
 
     pid =
       spawn(fn ->
-        {:ok, _status} = LogRegistry.register(Log, 5_000, :all)
+        {:ok, _status} = Streams.register(Log, 5_000, :all)
         send(parent, {ref, :registered})
 
         receive do

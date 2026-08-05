@@ -2,6 +2,7 @@ defmodule DMEx.Log.StatusTest do
   use DMEx.Case, async: true
 
   alias DMEx.Log.Status
+  alias DMEx.Log.Streams
 
   test "a fresh flag is clear" do
     refute Status.pending?(Status.new(5_000))
@@ -150,7 +151,7 @@ defmodule DMEx.Log.StatusTest do
     end
 
     setup do
-      start_supervised!(DMEx.Log.Registry.child_spec(FakeLog))
+      start_supervised!(Streams.child_spec(FakeLog))
 
       :ok
     end
@@ -158,7 +159,7 @@ defmodule DMEx.Log.StatusTest do
     test "registration hands back the connection's own status, armed" do
       now = System.monotonic_time(:millisecond)
 
-      assert {:ok, ref} = DMEx.Log.Registry.register(FakeLog, 5_000, :all)
+      assert {:ok, ref} = Streams.register(FakeLog, 5_000, :all)
 
       refute Status.pending?(ref)
       assert Status.flip(ref)
@@ -166,9 +167,9 @@ defmodule DMEx.Log.StatusTest do
     end
 
     test "the dispatcher reaches it through the entry" do
-      {:ok, mine} = DMEx.Log.Registry.register(FakeLog, 5_000, :all)
+      {:ok, mine} = Streams.register(FakeLog, 5_000, :all)
 
-      DMEx.Log.Registry.each(FakeLog, fn _pid, status, _selection ->
+      Streams.each(FakeLog, fn _pid, status, _selection ->
         Status.flip(status)
       end)
 
@@ -184,20 +185,20 @@ defmodule DMEx.Log.StatusTest do
 
       pid =
         spawn(fn ->
-          {:ok, _ref} = DMEx.Log.Registry.register(FakeLog, 5_000, :all)
+          {:ok, _ref} = Streams.register(FakeLog, 5_000, :all)
           send(parent, :registered)
           Process.sleep(:infinity)
         end)
 
       assert_receive :registered
-      assert DMEx.Log.Registry.count(FakeLog) == 1
+      assert Streams.count(FakeLog) == 1
 
       Process.exit(pid, :kill)
 
-      eventually(fn -> DMEx.Log.Registry.count(FakeLog) == 0 end)
+      eventually(fn -> Streams.count(FakeLog) == 0 end)
 
       # Nothing left to iterate, so nothing left to leak.
-      DMEx.Log.Registry.each(FakeLog, fn _pid, _status, _selection ->
+      Streams.each(FakeLog, fn _pid, _status, _selection ->
         flunk("entry outlived process")
       end)
     end

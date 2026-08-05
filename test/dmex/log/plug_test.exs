@@ -3,7 +3,7 @@ defmodule DMEx.Log.PlugTest do
 
   alias DMEx.Handler.Fingerprint
   alias DMEx.Log.Plug, as: LogPlug
-  alias DMEx.Log.Registry, as: LogRegistry
+  alias DMEx.Log.Streams
   alias DMEx.Test.ClosingAdapter
   alias DMEx.Test.Storage, as: Stub
   alias DMEx.Test.StubLog
@@ -15,7 +15,7 @@ defmodule DMEx.Log.PlugTest do
   @whole_log [{"last-event-id", "0"}]
 
   setup do
-    start_supervised!(LogRegistry.child_spec(StubLog))
+    start_supervised!(Streams.child_spec(StubLog))
 
     %{opts: Stub.new(), plug: LogPlug.init(log: StubLog)}
   end
@@ -84,7 +84,7 @@ defmodule DMEx.Log.PlugTest do
 
       call(opts, plug, [], [Fingerprint.encode(filter)])
 
-      assert LogRegistry.count(StubLog) == 0
+      assert Streams.count(StubLog) == 0
     end
   end
 
@@ -120,7 +120,7 @@ defmodule DMEx.Log.PlugTest do
       call(opts, plug, [{"last-event-id", "nope"}])
 
       assert Stub.reads(opts) == []
-      assert LogRegistry.count(StubLog) == 0
+      assert Streams.count(StubLog) == 0
     end
 
     # Without this a POST to the mount opens a chunked stream and sits there,
@@ -140,7 +140,7 @@ defmodule DMEx.Log.PlugTest do
       assert body =~ "only GET"
 
       assert Stub.reads(opts) == []
-      assert LogRegistry.count(StubLog) == 0
+      assert Streams.count(StubLog) == 0
     end
   end
 
@@ -230,11 +230,11 @@ defmodule DMEx.Log.PlugTest do
       # request *is* the stream, so the entry lives and dies with the connection.
       pid = start_stream(opts, plug, [], chunks: 5)
 
-      eventually(fn -> LogRegistry.count(StubLog) == 1 end)
+      eventually(fn -> Streams.count(StubLog) == 1 end)
 
       Process.exit(pid, :kill)
 
-      eventually(fn -> LogRegistry.count(StubLog) == 0 end)
+      eventually(fn -> Streams.count(StubLog) == 0 end)
     end
 
     test "emits a connect event with the resolved cursor", %{opts: opts, plug: plug} do
@@ -337,7 +337,7 @@ defmodule DMEx.Log.PlugTest do
 
       assert_receive {:responded, 503}
 
-      assert LogRegistry.count(StubLog) == 0
+      assert Streams.count(StubLog) == 0
     end
   end
 
