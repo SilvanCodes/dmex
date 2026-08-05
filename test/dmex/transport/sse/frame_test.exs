@@ -26,9 +26,8 @@ defmodule DMEx.Transport.SSE.FrameTest do
                  ~s(data: {"data":{"order_id":7},"metadata":{}}\n\n)
     end
 
-    # Nothing DMEx owns rides at the top level of `data:` — a log wanting its own
-    # columns there lifts them into `metadata` first, which happens before a row
-    # reaches the frame.
+    # Nothing DMEx owns rides inside `data:`: `metadata` is the publisher's, byte
+    # for byte.
     test "carries the payload and the metadata, and nothing else" do
       assert {:message, message} = reparse(encode(row(1042)))
 

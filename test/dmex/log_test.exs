@@ -146,18 +146,6 @@ defmodule DMEx.LogTest do
       end
     end
 
-    test "carries the columns to lift into metadata through" do
-      config = define!("WithLift", "repo: DMEx.Test.Repo, metadata: [:id, :inserted_at]").config
-
-      assert config.metadata == [:id, :inserted_at]
-    end
-
-    test "validates the columns to lift at compile time" do
-      assert_raise ArgumentError, ~r/:metadata may only lift/, fn ->
-        define!("BadLift", "repo: DMEx.Test.Repo, metadata: [:data]")
-      end
-    end
-
     test "rejects an unknown option rather than ignoring it" do
       # A silently-dropped `batch_windwo:` is a setting that never takes effect
       # and never says so.

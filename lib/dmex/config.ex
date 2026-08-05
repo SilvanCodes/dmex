@@ -23,7 +23,6 @@ defmodule DMEx.Config do
   | `poll_interval` | `1_000` | ms; Oban stager parity. The worst-case wakeup latency when a `NOTIFY` is lost, costing one `max(id)` index descent per app per second. |
   | `stall_timeout` | `30_000` | ms; the budget for any one blocking step of the send loop. Generous on purpose: killing a healthy slow handler costs a reconnect and a fresh catch-up read, where a wedged connection lingering 30 s costs one request process. At the 1 MiB write cap it tolerates a handler draining a full write at ~280 kbit/s. `:infinity` runs no watcher at all. |
   | `stall_check_interval` | `1_000` | ms; how often `DMEx.Log.Watcher` sweeps, so a stall is reclaimed within `stall_timeout + stall_check_interval`. A sweep is one atomics read per connection and no query. |
-  | `metadata` | `[]` | which of the log's own columns are merged into the metadata a handler sees — `:id`, `:message_type`, `:inserted_at`, in any order. Empty by default, so a frame carries exactly what the publisher wrote and nothing else. See `DMEx.Log.Metadata`. |
 
   `max_batch_size` and `max_batch_bytes` are not two spellings of one limit: a
   row costs heap both as payload, which the byte bound counts, and as a fixed
@@ -47,6 +46,7 @@ defmodule DMEx.Config do
   | `reconnect_backoff_max` | `30_000` | ms; cap on that schedule. |
   | `max_frame_bytes` | `4_194_304` | bytes; the largest unterminated frame the decoder buffers. A frame is **one row**, so this has to exceed the largest single message any log sends, not its whole batch. Exceeding it drops the connection, which costs only a re-read. |
   | `missed_heartbeats` | `3` | silences of the log's advertised interval before giving up — long enough that one GC pause on the log is not a disconnect. |
+  | `metadata` | `[]` | which of the row's own columns are lifted into the metadata a handler sees — only `:id`. Empty by default, so the map is exactly what the publisher wrote; `metadata: [:id]` reserves that name for this subscription, and `metadata: [id: :message_id]` reserves one of its choosing instead. Resolved to `column: key` with the key as a string, which is what a metadata key is. See `c:DMEx.Handler.handle_message/2`. |
 
   `retry_backoff`/`retry_backoff_max` and
   `reconnect_backoff`/`reconnect_backoff_max` are validated independently and
@@ -76,8 +76,6 @@ defmodule DMEx.Config do
   exercised against benchmarks and a deliberately slow test handler.
   """
 
-  alias DMEx.Log.Metadata
-
   @log_defaults [
     max_batch_frequency: 100,
     max_batch_size: 500,
@@ -85,8 +83,7 @@ defmodule DMEx.Config do
     poll_interval: 1_000,
     max_batch_bytes: 1_048_576,
     stall_timeout: 30_000,
-    stall_check_interval: 1_000,
-    metadata: []
+    stall_check_interval: 1_000
   ]
 
   @handler_defaults [
@@ -99,8 +96,13 @@ defmodule DMEx.Config do
     reconnect_backoff: 500,
     reconnect_backoff_max: 30_000,
     max_frame_bytes: 4_194_304,
-    missed_heartbeats: 3
+    missed_heartbeats: 3,
+    metadata: []
   ]
+
+  # A column, not a free-form key: lifting surfaces what the row already carries,
+  # and its id is the only part of it a handler cannot otherwise see.
+  @liftable [:id]
 
   @typedoc "A log's resolved configuration."
   @type log :: %{
@@ -110,8 +112,7 @@ defmodule DMEx.Config do
           poll_interval: pos_integer(),
           max_batch_bytes: pos_integer(),
           stall_timeout: pos_integer() | :infinity,
-          stall_check_interval: pos_integer(),
-          metadata: [Metadata.field()]
+          stall_check_interval: pos_integer()
         }
 
   @typedoc "A subscription's resolved configuration."
@@ -125,7 +126,8 @@ defmodule DMEx.Config do
           reconnect_backoff: pos_integer(),
           reconnect_backoff_max: pos_integer(),
           max_frame_bytes: pos_integer(),
-          missed_heartbeats: pos_integer()
+          missed_heartbeats: pos_integer(),
+          metadata: [{:id, String.t()}]
         }
 
   @doc """
@@ -226,7 +228,6 @@ defmodule DMEx.Config do
     end
 
     validate_stall_timeout!(config.stall_timeout)
-    validate_metadata!(config.metadata)
 
     config
   end
@@ -249,7 +250,10 @@ defmodule DMEx.Config do
 
     validate_last_seen!(config.last_seen)
 
-    config
+    # The one setting resolved rather than only checked: both spellings collapse
+    # to `column: key` here, once per subscription, so the pipeline never sees
+    # the shorthand and never converts a key per row.
+    %{config | metadata: metadata!(config.metadata)}
   end
 
   # The one setting that may be switched off rather than tuned: a log whose
@@ -261,24 +265,6 @@ defmodule DMEx.Config do
   defp validate_stall_timeout!(value) do
     raise ArgumentError,
           ":stall_timeout must be a positive integer or :infinity, got: #{inspect(value)}"
-  end
-
-  # Named columns rather than free-form keys, because the point is to surface
-  # what the log already stores — see `DMEx.Log.Metadata.fields/0`.
-  defp validate_metadata!(fields) when is_list(fields) do
-    case Enum.reject(fields, &(&1 in Metadata.fields())) do
-      [] ->
-        :ok
-
-      unknown ->
-        raise ArgumentError,
-              ":metadata may only lift #{inspect(Metadata.fields())}, " <>
-                "got: #{inspect(unknown)}"
-    end
-  end
-
-  defp validate_metadata!(value) do
-    raise ArgumentError, ":metadata must be a list of columns, got: #{inspect(value)}"
   end
 
   # `max_batch_frequency` is not a count, so it may be fractional: a stream
@@ -311,6 +297,28 @@ defmodule DMEx.Config do
   defp validate_last_seen!(value) do
     raise ArgumentError,
           ":last_seen must be a non-negative integer cursor or nil, got: #{inspect(value)}"
+  end
+
+  defp metadata!(fields) when is_list(fields), do: Enum.map(fields, &lifted!/1)
+
+  defp metadata!(value) do
+    raise ArgumentError, ":metadata must be a list of columns, got: #{inspect(value)}"
+  end
+
+  # A bare column lands under its own name; `column: key` renames it, for a
+  # subscription whose publishers already use `"id"` for something of their own.
+  defp lifted!(column) when column in @liftable, do: {column, Atom.to_string(column)}
+
+  defp lifted!({column, key}) when column in @liftable and is_binary(key), do: {column, key}
+
+  defp lifted!({column, key}) when column in @liftable and is_atom(key) and not is_nil(key) do
+    {column, Atom.to_string(key)}
+  end
+
+  defp lifted!(field) do
+    raise ArgumentError,
+          ":metadata may only lift #{inspect(@liftable)}, each on its own or as " <>
+            "`column: key` to rename it, got: #{inspect(field)}"
   end
 
   defp validate_inclusion!(field, value, allowed) do

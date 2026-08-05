@@ -62,9 +62,7 @@ defmodule DMEx.Storage.Postgres.Migration do
       # dropped, so stored bytes are not what the publisher encoded.
       add(:data, :jsonb, null: false)
 
-      # Publisher-owned as stored: nothing DMEx knows is ever written here. A log
-      # whose `metadata:` lifts columns merges them on the way out instead, so
-      # the reserved names that creates cost this column nothing. Defaulted
+      # Publisher-owned: nothing DMEx knows is ever written here. Defaulted
       # rather than nullable so no read path has to distinguish "no metadata"
       # from NULL.
       add(:metadata, :jsonb, null: false, default: fragment("'{}'::jsonb"))
@@ -80,9 +78,8 @@ defmodule DMEx.Storage.Postgres.Migration do
       # the lock's serialised region, by the same statement that draws `nextval`,
       # so the column ascends with `id` rather than with transaction starts.
       #
-      # Never an ordering key. `id` is. This column is observability: a log
-      # lifts it into delivered metadata with `metadata: [:inserted_at]`, and
-      # nothing in DMEx reads it.
+      # Never an ordering key. `id` is. This column is observability: nothing in
+      # DMEx reads it and it never reaches a handler.
       add(:inserted_at, :timestamptz, null: false, default: fragment("clock_timestamp()"))
     end
 

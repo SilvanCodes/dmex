@@ -12,8 +12,7 @@ defmodule DMEx.ConfigTest do
                poll_interval: 1_000,
                max_batch_bytes: 1_048_576,
                stall_timeout: 30_000,
-               stall_check_interval: 1_000,
-               metadata: []
+               stall_check_interval: 1_000
              } = Config.log!([])
     end
 
@@ -47,23 +46,6 @@ defmodule DMEx.ConfigTest do
 
       assert_raise ArgumentError, ~r/:stall_check_interval must be a positive integer/, fn ->
         Config.log!(stall_check_interval: 0)
-      end
-    end
-
-    # Columns, not free-form keys: the point is to surface what the log already
-    # stores, so a name it does not store is a mistake worth refusing.
-    test "takes only liftable columns for :metadata" do
-      assert Config.log!(metadata: [:id, :inserted_at]).metadata == [:id, :inserted_at]
-      assert Config.log!(metadata: [:message_type]).metadata == [:message_type]
-
-      for value <- [[:data], [:metadata], [:previous_id], [:id, :oops]] do
-        assert_raise ArgumentError, ~r/:metadata may only lift/, fn ->
-          Config.log!(metadata: value)
-        end
-      end
-
-      assert_raise ArgumentError, ~r/:metadata must be a list of columns/, fn ->
-        Config.log!(metadata: :id)
       end
     end
 
@@ -103,7 +85,8 @@ defmodule DMEx.ConfigTest do
                reconnect_backoff: 500,
                reconnect_backoff_max: 30_000,
                max_frame_bytes: 4_194_304,
-               missed_heartbeats: 3
+               missed_heartbeats: 3,
+               metadata: []
              } = Config.handler!([])
     end
 
@@ -150,6 +133,28 @@ defmodule DMEx.ConfigTest do
           Config.handler!(last_seen: last_seen)
         end
       end
+    end
+
+    # A column, not a free-form key: the id is the only thing the row carries
+    # that the publisher's map does not, so anything else is a mistake.
+    test "takes only liftable columns for :metadata" do
+      for value <- [[:inserted_at], [:message_type], [:data], [:id, :oops], [oops: :id]] do
+        assert_raise ArgumentError, ~r/:metadata may only lift/, fn ->
+          Config.handler!(metadata: value)
+        end
+      end
+
+      assert_raise ArgumentError, ~r/:metadata must be a list of columns/, fn ->
+        Config.handler!(metadata: :id)
+      end
+    end
+
+    # Both spellings resolve to the same `column: key` pair, with the key a
+    # string, because that is what a key in a metadata map is.
+    test "resolves :metadata to the key each column lands under" do
+      assert Config.handler!(metadata: [:id]).metadata == [id: "id"]
+      assert Config.handler!(metadata: [id: :message_id]).metadata == [id: "message_id"]
+      assert Config.handler!(metadata: [id: "message_id"]).metadata == [id: "message_id"]
     end
 
     test "raises on an illegal :on_failure" do

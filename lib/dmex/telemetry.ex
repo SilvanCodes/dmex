@@ -104,9 +104,7 @@ defmodule DMEx.Telemetry do
   is not a decision this side makes, it is what happens when the process is busy
   in a handler and therefore not re-arming the socket. And "how far behind am I"
   is not a question the wire can answer — it carries no `max_id` to subtract
-  from — so a subscription that wants it lifts the log's append time into its
-  metadata with `metadata: [:inserted_at]` and measures against its own clock.
-  See `DMEx.Log.Metadata`.
+  from, and no clock.
 
   ### `[:dmex, :handler, :reconnect]`
 

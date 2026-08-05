@@ -31,9 +31,9 @@ defmodule DMEx.Log do
     * The wire type comes from the message's **own module**
       (`c:DMEx.Message.type/0`), never from a call argument, so it cannot
       disagree with the struct it describes.
-    * `metadata` passes through **untouched** unless this log's `metadata:` names
-      columns to merge in, in which case those names — and only those — are
-      reserved. See `DMEx.Log.Metadata`.
+    * `metadata` passes through **untouched**. A subscription that wants the
+      row's id in the map its handler sees asks for it with `metadata: [:id]` on
+      its own side; nothing is written into the stored column.
     * Nothing records which log appended the message. `message_type` is fully
       qualified, so it already identifies the appending application.
 
@@ -48,9 +48,7 @@ defmodule DMEx.Log do
       module.
     * `:prefix` — a Postgres schema the DMEx tables live in.
       `DMEx.Storage.SQLite` raises on it, since SQLite has no schemas.
-    * any `DMEx.Config` log setting, including `metadata: [:id, :inserted_at]` —
-      which of this log's own columns are merged into the metadata a consumer's
-      handler receives. Empty by default; see `DMEx.Log.Metadata`.
+    * any `DMEx.Config` log setting.
 
   An unrecognised option raises at compile time rather than being ignored.
 

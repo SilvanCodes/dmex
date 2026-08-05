@@ -288,6 +288,37 @@ defmodule DMEx.Handler.PipelineTest do
       assert metadata == %{"trace_id" => "abc"}
     end
 
+    # The one thing a subscription may add to that map, and only when it asks.
+    test "lifts the row's id into metadata when the subscription asked for it", ctx do
+      state = state(ctx, handler: Handlers.Echo, cursor: 0, lift: [:id])
+
+      Pipeline.run(%{row(1) | "metadata" => %{"trace_id" => "abc"}}, state)
+
+      assert_received {:handled, _, metadata}
+      assert metadata == %{"trace_id" => "abc", "id" => 1}
+    end
+
+    # For a subscription whose publishers already spend `"id"` on something of
+    # their own.
+    test "lifts the id under the key the subscription named", ctx do
+      state = state(ctx, handler: Handlers.Echo, cursor: 0, lift: [id: :message_id])
+
+      Pipeline.run(%{row(1) | "metadata" => %{"id" => "the publisher's"}}, state)
+
+      assert_received {:handled, _, metadata}
+      assert metadata == %{"id" => "the publisher's", "message_id" => 1}
+    end
+
+    # Reserved for whoever opted in, so a handler that lifts can read it without
+    # checking who wrote it.
+    test "lifts the id over a publisher key of the same name", ctx do
+      state = state(ctx, handler: Handlers.Echo, cursor: 0, lift: [:id])
+
+      Pipeline.run(%{row(1) | "metadata" => %{"id" => "publisher's"}}, state)
+
+      assert_received {:handled, _, %{"id" => 1}}
+    end
+
     test "decodes into whichever module the type names", ctx do
       state = state(ctx, handler: Handlers.EchoAll, cursor: 0)
 
@@ -432,7 +463,11 @@ defmodule DMEx.Handler.PipelineTest do
       handler: Keyword.fetch!(opts, :handler),
       origin: @url,
       cursor: Keyword.get(opts, :cursor, 0),
-      config: DMEx.Config.handler!(on_failure: :crash)
+      config:
+        DMEx.Config.handler!(
+          on_failure: :crash,
+          metadata: Keyword.get(opts, :lift, [])
+        )
     )
   end
 

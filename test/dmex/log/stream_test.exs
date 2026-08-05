@@ -60,23 +60,7 @@ defmodule DMEx.Log.StreamTest do
       assert %{id: 1, message_type: _, data: _, metadata: _, inserted_at: _} = hd(rows)
     end
 
-    # The one edit the loop makes to a row, and the reason it is here rather than
-    # in a transport: both transports get it from one place.
-    test "merges the columns the log lifts into each row's metadata", %{opts: opts} do
-      Stub.put_rows(opts, [Stub.row(1, metadata: ~s({"trace_id":"abc"}))])
-
-      run_with(opts, chunks: 1, lift: [:id, :inserted_at])
-
-      assert_received {:wrote, [row]}
-
-      assert JSON.decode!(row.metadata) == %{
-               "trace_id" => "abc",
-               "id" => 1,
-               "inserted_at" => "2026-07-27T10:31:04.221Z"
-             }
-    end
-
-    test "leaves metadata exactly as read when the log lifts nothing", %{opts: opts} do
+    test "leaves metadata exactly as read", %{opts: opts} do
       Stub.put_rows(opts, [Stub.row(1, metadata: ~s({"trace_id":"abc"}))])
 
       run_with(opts, chunks: 1)
@@ -549,8 +533,7 @@ defmodule DMEx.Log.StreamTest do
           max_batch_size: Keyword.get(test_opts, :max_batch_size, 500),
           heartbeat_ms: Keyword.get(test_opts, :heartbeat_ms, 60_000),
           max_batch_bytes: Keyword.get(test_opts, :max_batch_bytes, 1_048_576),
-          stall_timeout: Keyword.get(test_opts, :stall_timeout, 30_000),
-          metadata: Keyword.get(test_opts, :lift, [])
+          stall_timeout: Keyword.get(test_opts, :stall_timeout, 30_000)
         ),
       last_sent_at: nil,
       status: Keyword.get(test_opts, :status) || Status.new(30_000),

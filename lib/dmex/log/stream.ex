@@ -15,10 +15,7 @@ defmodule DMEx.Log.Stream do
   frames anything and never touches a socket. `c:DMEx.Transport.write/2` takes a
   whole read's rows and reports whether the sink is still there.
 
-  The one thing it does to a row is merge in whichever columns the log's
-  `metadata:` names — a change to the row, not to any wire format, and here
-  rather than in a transport so both transports get it from one place. See
-  `DMEx.Log.Metadata`.
+  It does nothing to a row: what a read returns is what a transport writes.
 
   Memory per connection is one batch and reads are gated on sends completing, so
   a stalled reader stalls its own loop and nothing else — ARCHITECTURE
@@ -41,7 +38,6 @@ defmodule DMEx.Log.Stream do
   configuration (ARCHITECTURE invariant 9).
   """
 
-  alias DMEx.Log.Metadata
   alias DMEx.Log.Selection
   alias DMEx.Log.Status
 
@@ -221,7 +217,7 @@ defmodule DMEx.Log.Stream do
         {:empty, conn, state}
 
       {:ok, rows} ->
-        send_rows(conn, state, Enum.map(rows, &Metadata.merge(&1, state.config.metadata)))
+        send_rows(conn, state, rows)
 
       {:error, reason} ->
         # If the log cannot be read there is nothing to send and nothing to say

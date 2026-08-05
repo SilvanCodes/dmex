@@ -59,13 +59,12 @@ CREATE INDEX ON dmex_messages (message_type, id);
 - `message_type` is the string the appending module declared as its `type:`,
   independent of what that module is called, so a producer can reorganise its
   message modules without any of it reaching this column.
-- `metadata` is entirely publisher-owned as stored; DMEx writes nothing into this
-  column. A log may merge its own columns into the metadata it *delivers* with
-  `metadata: [:id, :inserted_at]`, which reserves those names on the way out and
-  nothing here.
+- `metadata` is entirely publisher-owned; DMEx writes nothing into this column
+  and nothing into what goes on the wire. A subscription may have its pipeline
+  lift the row's id into the map its handler sees with `metadata: [:id]`, which
+  reserves that name there and nothing here.
 - `inserted_at` is never an ordering key — `id` is, and nothing in DMEx reads
-  this column. It is observability, delivered only to a subscription whose log
-  lifts it with `metadata: [:inserted_at]`. `clock_timestamp()` rather than
+  this column. It is observability, never delivered. `clock_timestamp()` rather than
   `now()` so it still ascends with `id`: `now()` is the transaction's start
   time, taken before the advisory lock was acquired, so it says nothing about
   the order ids were assigned in.
@@ -203,8 +202,8 @@ data: {"data":{"order_id":7},"metadata":{"trace_id":"abc"}}
 | `id` | `id:` | it *is* the resume position, so a generic client's `Last-Event-ID` works with no DMEx knowledge |
 | `message_type` | `event:` | it *is* the event name, so `addEventListener("order_shipped", …)` works in a browser |
 | `data` | inside `data:` | the publisher's payload, verbatim |
-| `metadata` | inside `data:` | the publisher's metadata, verbatim, plus whichever columns this log's `metadata:` lifts |
-| `inserted_at` | nowhere, unless lifted | observability only, and a field on every frame for a signal most consumers never read |
+| `metadata` | inside `data:` | the publisher's metadata, verbatim |
+| `inserted_at` | nowhere | observability only, and a field on every frame for a signal most consumers never read |
 
 - **No batch envelope and no `max_id`.** Batching is a *write* batch, not a wire
   construct, so nothing on the consumer side has to know it happened. That lets
@@ -219,13 +218,9 @@ data: {"data":{"order_id":7},"metadata":{"trace_id":"abc"}}
   hands to its parser. JSON's grammar forbids raw control characters inside
   strings, which is what makes it safe to splice stored `jsonb` text in with no
   escaping pass.
-- **Nothing DMEx owns rides at the top level of `data:`.** How far behind a
-  consumer is can only be `now - inserted_at`, since the wire carries no tip to
-  subtract from — so a subscription that wants it has the log lift the column
-  with `metadata: [:inserted_at]`, and no other stream pays for the field. It
-  compares two machines' clocks, so it is an NTP-accurate seconds-scale signal
-  and not a finer one. No clock is on the wire anywhere else: a position is an
-  id, and only the producer's ids order the log.
+- **Nothing DMEx owns rides inside `data:`.** No clock is on the wire anywhere:
+  a position is an id, and only the producer's ids order the log. How far behind
+  a consumer is is therefore not answerable from a frame.
 
 The cost of putting the type on `event:` is that `EventSource.onmessage` stops
 firing — named events need `addEventListener`, which is the ordinary way to
@@ -335,11 +330,11 @@ plain run of one-row frames and runs each through `DMEx.Handler.Pipeline`
 separately — its own transaction, handler call, cursor advance and failure
 handling. A mid-batch failure rolls back exactly one message.
 
-**11. The handler sees its message and a metadata map, nothing else.** No frame,
-and no id or `message_type` unless the *log* chose to lift them into that map
-with `metadata:`. A handler stays a plain function of its domain data plus
-context, testable by constructing a struct and a map — the lift changes what is
-in the map, never the shape of the callback.
+**11. The handler sees its message and a metadata map, nothing else.** No frame
+and no `message_type`; the map is the publisher's, plus the row's id when the
+subscription asked for it with `metadata: [:id]`. A handler stays a plain
+function of its domain data plus context, testable by constructing a struct and a
+map — the lift changes what is in the map, never the shape of the callback.
 
 **12. An identity is its declaration, not its module name.** The `"log/id"` pair
 in `use DMEx.Handler` keys the cursor and the `type:` in `use DMEx.Message` keys
@@ -411,9 +406,9 @@ What follows for handler authors: **side effects through the consumer's own repo
 are exactly-once for free**, because they roll back with the transaction that
 would have recorded them. Effects that leave it — an HTTP call, a write to
 another database — must be idempotent on something in the message or its
-metadata — the log id reaches a handler only when that log lifts it with
-`metadata: [:id]`, so a consumer cannot count on it. A local write plus a
-separate outbox is the pattern that stays correct.
+metadata — the log id reaches a handler only when the subscription lifts it with
+`metadata: [:id]`. A local write plus a separate outbox is the pattern that stays
+correct.
 
 **No-loss rests on the producer.** The consumer cannot verify it: a position is
 one id, so a row lost *between* two that arrived is indistinguishable from a

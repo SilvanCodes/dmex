@@ -8,10 +8,8 @@ defmodule DMEx.Transport.SSE.Frame do
       event: MyApp.Messages.OrderShipped
       data: {"data":{"order_id":7},"metadata":{"trace_id":"abc"}}
 
-  Nothing DMEx owns rides at the top level of `data:`. A log wanting its own
-  columns on the wire lifts them into `metadata` with `metadata:` on
-  `use DMEx.Log`, which happens before a row reaches here — see
-  `DMEx.Log.Metadata`.
+  Nothing DMEx owns rides inside `data:`: `metadata` is the publisher's, byte for
+  byte, and the row's id is already the frame's `id:`.
 
   The column-to-slot table is in ARCHITECTURE.md's wire contract. `id:` is the
   row's own id, which is exactly the resume position, so a client echoing it

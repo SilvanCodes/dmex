@@ -102,8 +102,7 @@ defmodule DMEx.Storage do
   it to COMMIT — see the module documentation for why that is load-bearing.
 
   `data` and `metadata` arrive as already-encoded JSON binaries, handed to the
-  database without decoding, and nothing DMEx owns is merged into `metadata` —
-  what `DMEx.Log.Metadata` lifts happens on the way out, never on the way in.
+  database without decoding, and nothing DMEx owns is merged into `metadata`.
 
   A caller already inside a transaction extends that lock for the enclosing
   transaction's lifetime, serializing every other append in the app for its
@@ -136,9 +135,8 @@ defmodule DMEx.Storage do
       `($4 IS NULL OR message_type = ANY($4))` shape is a correct query and a
       ruinous plan, defeating the index on both branches.
 
-  Nothing about the log's tip comes back: the wire carries no `max_id`. A
-  consumer that needs to know how far behind it is has the log lift
-  `inserted_at` into its metadata — see `DMEx.Log.Metadata`.
+  Nothing about the log's tip comes back: the wire carries no `max_id`, so a
+  consumer cannot tell how far behind it is.
 
   For another adapter: `octet_length/1` is Postgres's spelling, SQLite's is
   `length(CAST(x AS BLOB))`. Both have window functions, so the running-sum
@@ -229,9 +227,8 @@ defmodule DMEx.Storage do
 
   `attrs` carries `:subscription` — the table is shared across the application —
   plus the log row itself: `:id`, `:message_type`, `:data`, `:metadata`, as the
-  consumer received them, which for `:metadata` includes whatever the log lifted
-  into it. Not `:inserted_at`, which here records when the row landed and is the
-  adapter's to stamp.
+  consumer received them. Not `:inserted_at`, which here records when the row
+  landed and is the adapter's to stamp.
 
   **Nothing about the failure is stored**, which is what lets
   `c:dead_messages/2` return the row as an ordinary `t:row/0`.
