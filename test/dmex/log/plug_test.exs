@@ -354,7 +354,7 @@ defmodule DMEx.Log.PlugTest do
 
   # Runs the plug to completion — the connection closes after `chunks` writes —
   # and returns the conn, so response headers are assertable.
-  defp stream(opts, plug, req_headers \\ [], test_opts \\ []) do
+  defp stream(opts, plug, req_headers, test_opts \\ []) do
     start_stream(opts, plug, req_headers, test_opts)
 
     assert_receive {:done, conn}, 2_000
