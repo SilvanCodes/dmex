@@ -201,56 +201,6 @@ Pool checkout queueing appears somewhere between 50 and 200 concurrent streams
 on a 10-connection pool; `bench/e2e/fanout_reads.exs` finds where your own
 ceiling is.
 
-## 5. Response compression — off unless you turn it on
-
-DMEx compresses nothing itself; the web server does, for clients that ask.
-**A DMEx subscription does not ask** — it sends no `Accept-Encoding`, so turning
-this on does nothing for DMEx-to-DMEx traffic today; see
-[Compression](../ROADMAP.md#compression) for that half. What it does reach is any
-other SSE client of yours that asks, and the wire is worth it where you pay for
-it: a 500-row write of small messages measures about **18x**. Three things decide
-whether it helps or hurts.
-
-**Only `deflate` can engage on a stream.** A stream is a chunked response, and
-Bandit compresses those with deflate alone; its gzip and zstd paths are for
-one-shot bodies. Browsers advertise gzip first, so the negotiation picks
-something unstreamable and falls back to identity. Naming `deflate` explicitly is
-what makes it engage at all:
-
-```elixir
-{Bandit,
- plug: MyApp.Router,
- http_options: [
-   response_encodings: ["deflate"],
-   # 32 KB of zlib state per stream instead of 256 KB — see below.
-   deflate_options: [window_bits: 12, mem_level: 4]
- ]}
-```
-
-**Size the window, or per-connection memory stops being bounded.** A deflate
-stream lives as long as the connection it belongs to. At zlib's defaults
-(`window_bits` 15, `mem_level` 8) that is ~263 KB measured, per open stream —
-260 MB at a thousand of them, against a producer whose per-connection cost is
-otherwise one batch. `window_bits` 12 / `mem_level` 4 is ~31 KB and **compresses
-DMEx's frames slightly better**, because a write already carries its own
-redundancy: one `chunk/2` call is a whole read's frames, with repeating field
-names, a small set of `message_type` strings and adjacent ids. There is nothing
-for a large window to reach back to.
-
-**Compression must flush per chunk, and a quiet stream pays for it.** Left to
-itself deflate buffers until it has a block worth emitting, holding a write on
-the wire until the *next* one pushes it out — unbounded latency and heartbeats
-arriving after they were needed. Bandit ends every chunk in a sync flush, so this
-is handled; anything else must be verified rather than assumed, Cowboy's
-`cowboy_compress_h` included. The cost of that flush is a few bytes per chunk,
-which on an idle stream is a net loss: 100 heartbeats measure 600 bytes
-uncompressed and 813 compressed.
-
-Compression also weakens backpressure. A stalled consumer is felt as `chunk/2`
-blocking on a full socket, and 18x fewer bytes means it blocks that much later —
-producer memory is still one batch, but more rows sit in kernel buffers before
-anything pushes back.
-
 ## What DMEx deliberately does not do
 
 Protection is per-connection; there is no aggregate budget and no admission

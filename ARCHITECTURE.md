@@ -438,8 +438,9 @@ of scope.
   addressed, and neither is a consumer that is pathologically slow while still
   technically progressing. See
   [Global Resource Limits](ROADMAP.md#global-resource-limits).
-- **No compression** — designed, not built. See
-  [Compression](ROADMAP.md#compression).
+- **No compression** — a stream is an ordinary chunked HTTP response, so
+  compressing it is the web server's to negotiate and configure. DMEx neither
+  asks for it on the consumer side nor does it on the producer side.
 
 ## What has been measured
 
