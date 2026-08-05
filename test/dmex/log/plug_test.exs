@@ -10,6 +10,10 @@ defmodule DMEx.Log.PlugTest do
 
   @moduletag :capture_log
 
+  # An absent `last-event-id` now means "from now on", so a test that wants
+  # history delivered has to ask for it.
+  @whole_log [{"last-event-id", "0"}]
+
   setup do
     start_supervised!(LogRegistry.child_spec(StubLog))
 
@@ -41,7 +45,7 @@ defmodule DMEx.Log.PlugTest do
       Stub.put_rows(opts, 1)
       {:ok, filter} = Fingerprint.build(["order_placed"])
 
-      conn = stream(opts, plug, [], path_info: [Fingerprint.encode(filter)])
+      conn = stream(opts, plug, @whole_log, path_info: [Fingerprint.encode(filter)])
 
       assert conn.status == 200
       assert get_header(conn, "dmex-matched-messages") == "1"
@@ -50,7 +54,7 @@ defmodule DMEx.Log.PlugTest do
     test "a whole-log stream sends no matched header", %{opts: opts, plug: plug} do
       Stub.put_rows(opts, 1)
 
-      conn = stream(opts, plug)
+      conn = stream(opts, plug, @whole_log)
 
       assert get_header(conn, "dmex-matched-messages") == nil
     end
@@ -99,7 +103,7 @@ defmodule DMEx.Log.PlugTest do
     test "a header DMEx does not define is ignored, not rejected", %{opts: opts, plug: plug} do
       Stub.put_rows(opts, 1)
 
-      conn = stream(opts, plug, [{"dmex-max-batch-size", "lots"}])
+      conn = stream(opts, plug, @whole_log ++ [{"dmex-max-batch-size", "lots"}])
 
       assert conn.status == 200
     end
@@ -148,7 +152,7 @@ defmodule DMEx.Log.PlugTest do
     end
 
     test "carries the ordinary SSE set", %{opts: opts, plug: plug} do
-      conn = stream(opts, plug)
+      conn = stream(opts, plug, @whole_log)
 
       assert conn.status == 200
       assert get_header(conn, "content-type") =~ "text/event-stream"
@@ -160,17 +164,17 @@ defmodule DMEx.Log.PlugTest do
     # healthy stream looks dead to both the consumer and the proxy's own idle
     # timeout. The header is ignored by everything else.
     test "tells nginx not to buffer", %{opts: opts, plug: plug} do
-      assert stream(opts, plug) |> get_header("x-accel-buffering") == "no"
+      assert stream(opts, plug, @whole_log) |> get_header("x-accel-buffering") == "no"
     end
 
     test "sets keep-alive on HTTP/1.1, where it means something", %{opts: opts, plug: plug} do
-      assert stream(opts, plug) |> get_header("connection") == "keep-alive"
+      assert stream(opts, plug, @whole_log) |> get_header("connection") == "keep-alive"
     end
 
     # There is no pacing echo, because there is no pacing request. A DMEx
     # consumer and a browser EventSource get byte-identical responses.
     test "carries no DMEx pacing headers", %{opts: opts, plug: plug} do
-      conn = stream(opts, plug)
+      conn = stream(opts, plug, @whole_log)
 
       assert get_header(conn, "dmex-batch-window") == nil
       assert get_header(conn, "dmex-max-batch-size") == nil
@@ -184,7 +188,7 @@ defmodule DMEx.Log.PlugTest do
     } do
       Stub.put_rows(opts, 1)
 
-      stream(opts, plug)
+      stream(opts, plug, @whole_log)
 
       # heartbeat_ms + one batch interval, because the loop's throttle runs after the
       # heartbeat branch — the sum is the real upper bound on silence. Both are
@@ -195,12 +199,12 @@ defmodule DMEx.Log.PlugTest do
     test "then sends the log as one frame per row", %{opts: opts, plug: plug} do
       Stub.put_rows(opts, 2)
 
-      stream(opts, plug)
+      stream(opts, plug, @whole_log)
 
       assert_received {:chunk, "retry: " <> _}
       assert_received {:chunk, write}
-      assert write =~ "id: 0/1\nevent: order_placed\n"
-      assert write =~ "id: 1/2\nevent: order_placed\n"
+      assert write =~ "id: 1\nevent: order_placed\n"
+      assert write =~ "id: 2\nevent: order_placed\n"
     end
 
     # The whole producer side of `metadata:`, over a real conn: the loop merges,
@@ -208,7 +212,7 @@ defmodule DMEx.Log.PlugTest do
     test "carries the columns the log lifts inside metadata", %{opts: opts, plug: plug} do
       Stub.put_rows(opts, [Stub.row(1, metadata: ~s({"trace_id":"abc"}))])
 
-      stream(opts, plug, [], config: [metadata: [:id, :inserted_at]])
+      stream(opts, plug, @whole_log, config: [metadata: [:id, :inserted_at]])
 
       assert_received {:chunk, "retry: " <> _}
       assert_received {:chunk, write}
@@ -250,10 +254,39 @@ defmodule DMEx.Log.PlugTest do
   end
 
   describe "resume position" do
-    test "absent means the whole log", %{opts: opts, plug: plug} do
+    # How a consumer that only cares about what happens next skips history: no
+    # header, no preflight request, and no tip token to define.
+    test "absent means from now on", %{opts: opts, plug: plug} do
+      Stub.put_rows(opts, 10)
+
+      pid = start_stream(opts, plug, [], chunks: 5)
+
+      assert_receive {:chunk, "retry: " <> _}
+      eventually(fn -> Stub.reads(opts) != [] end)
+
+      # The cursor is the tip, so the first read finds nothing and no data frame
+      # is ever sent for the ten rows of history.
+      assert [{10, _, :all} | _] = Stub.reads(opts)
+      refute_receive {:chunk, "id: " <> _}, 50
+
+      Process.exit(pid, :kill)
+    end
+
+    test "absent on an empty log is the whole log, because the tip is 0",
+         %{opts: opts, plug: plug} do
+      pid = start_stream(opts, plug, [], chunks: 5)
+
+      eventually(fn -> Stub.reads(opts) != [] end)
+
+      assert [{0, _, :all} | _] = Stub.reads(opts)
+
+      Process.exit(pid, :kill)
+    end
+
+    test "0 is the whole log", %{opts: opts, plug: plug} do
       Stub.put_rows(opts, 3)
 
-      stream(opts, plug)
+      stream(opts, plug, @whole_log)
 
       assert [{0, _, :all} | _] = Stub.reads(opts)
     end
@@ -266,57 +299,13 @@ defmodule DMEx.Log.PlugTest do
       assert [{3, _, :all} | _] = Stub.reads(opts)
     end
 
-    # This is how a consumer that only cares about what happens from now on
-    # skips history, with no preflight request and no second parameter.
-    test "an instant after the tip streams nothing yet", %{opts: opts, plug: plug} do
-      # Every stub row is stamped 2026-07-27 10:31:04.221Z, so this is "now" as
-      # far as the log is concerned — which is what `stream_from: :current` sends
-      # and why it needs no tip token of its own.
-      Stub.put_rows(opts, 10)
-
-      pid = start_stream(opts, plug, [{"last-event-id", "2026-07-27T11:00:00Z"}], chunks: 5)
-
-      assert_receive {:chunk, "retry: " <> _}
-      eventually(fn -> Stub.reads(opts) != [] end)
-
-      # Every row is before the instant, so the cursor is the tip: the first read
-      # finds nothing and no data frame is ever sent for the ten rows of history.
-      assert [{10, _, :all} | _] = Stub.reads(opts)
-      refute_receive {:chunk, "id: " <> _}, 50
-
-      Process.exit(pid, :kill)
-    end
-
-    test "an instant before the first row is the whole log", %{opts: opts, plug: plug} do
-      Stub.put_rows(opts, 10)
-
-      pid = start_stream(opts, plug, [{"last-event-id", "2026-07-27T10:00:00Z"}], chunks: 5)
-
-      eventually(fn -> Stub.reads(opts) != [] end)
-
-      assert [{0, _, :all} | _] = Stub.reads(opts)
-
-      Process.exit(pid, :kill)
-    end
-
-    test "an instant on an empty log is the same as from the beginning",
-         %{opts: opts, plug: plug} do
-      pid = start_stream(opts, plug, [{"last-event-id", "2026-07-27T11:00:00Z"}], chunks: 5)
-
-      eventually(fn -> Stub.reads(opts) != [] end)
-
-      assert [{0, _, :all} | _] = Stub.reads(opts)
-
-      Process.exit(pid, :kill)
-    end
-
     # Rather than falling back to 0, which would turn a momentary pool
-    # exhaustion into a whole-log replay — and every `stream_from: :current`
-    # subscription arrives on this path, so it is the default, not an exotic case.
+    # exhaustion into a whole-log replay — and every subscription with no cursor
+    # yet arrives on this path, so it is the default, not an exotic case.
     test "a storage failure is a 503, not a silent replay", %{opts: opts, plug: plug} do
-      Stub.fail_cursor_at(opts, :pool_timeout)
+      Stub.fail_max_id(opts, :pool_timeout)
 
-      conn = call(opts, plug, [{"last-event-id", "2026-07-27T11:00:00Z"}])
+      conn = call(opts, plug, [])
 
       assert conn.status == 503
       assert Stub.reads(opts) == []
@@ -328,20 +317,14 @@ defmodule DMEx.Log.PlugTest do
     # watcher reclaims a connection that never streamed — taking the next,
     # healthy stream on the same process with it.
     test "a 503 leaves nothing registered", %{opts: opts, plug: plug} do
-      Stub.fail_cursor_at(opts, :pool_timeout)
+      Stub.fail_max_id(opts, :pool_timeout)
       parent = self()
 
       pid =
         spawn(fn ->
           StubLog.install(opts)
 
-          conn =
-            LogPlug.call(
-              ClosingAdapter.conn(parent, 1,
-                req_headers: [{"last-event-id", "2026-07-27T11:00:00Z"}]
-              ),
-              plug
-            )
+          conn = LogPlug.call(ClosingAdapter.conn(parent, 1, req_headers: []), plug)
 
           send(parent, {:responded, conn.status})
 
@@ -371,7 +354,7 @@ defmodule DMEx.Log.PlugTest do
 
   # Runs the plug to completion — the connection closes after `chunks` writes —
   # and returns the conn, so response headers are assertable.
-  defp stream(opts, plug, req_headers \\ [], test_opts \\ []) do
+  defp stream(opts, plug, req_headers, test_opts \\ []) do
     start_stream(opts, plug, req_headers, test_opts)
 
     assert_receive {:done, conn}, 2_000

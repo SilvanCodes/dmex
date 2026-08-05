@@ -57,11 +57,10 @@ defmodule DMEx.Integration.SQLiteAppendOrderingTest do
   end
 
   describe "inserted_at ascends with id" do
-    # `c:DMEx.Storage.cursor_at/2` reads the last row *before* an instant, so a
-    # stamp that fell behind a later id would put the cut past a row belonging
-    # after it. The column default is evaluated by the INSERT that draws the
-    # rowid, inside the write transaction — SQLite has no transaction-start clock
-    # to reach for by mistake.
+    # `inserted_at` is observability, but a stamp that fell behind a later id
+    # would make it a lie. The column default is evaluated by the INSERT that
+    # draws the rowid, inside the write transaction — SQLite has no
+    # transaction-start clock to reach for by mistake.
     test "across appends that really commit" do
       for n <- 1..20, do: {:ok, _} = Log.append(%OrderPlaced{order_id: n})
 

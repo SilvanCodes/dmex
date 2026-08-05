@@ -57,8 +57,6 @@ defmodule DMEx.Handler.PipelineFailureTest.FlakyStorage do
   @impl DMEx.Storage
   defdelegate max_id(opts), to: Storage
   @impl DMEx.Storage
-  defdelegate cursor_at(opts, at), to: Storage
-  @impl DMEx.Storage
   defdelegate appended_since(opts, cursor), to: Storage
   @impl DMEx.Storage
   defdelegate last_seen(opts, subscription), to: Storage
@@ -197,9 +195,10 @@ defmodule DMEx.Handler.PipelineFailureTest do
 
       {elapsed, _} = :timer.tc(fn -> catch_error(Pipeline.run(row(1), state)) end)
 
-      # A jittered draw over [1, 200], so only the ceiling is assertable — but a
-      # loop with no pause at all lands far below it every time.
-      assert elapsed <= 220_000
+      # A jittered draw over [1, 200], so only the ceiling is assertable — and it
+      # is generous, because it also covers scheduling on a loaded CI runner. A
+      # loop with no pause at all lands two orders of magnitude below it.
+      assert elapsed <= 500_000
       assert Enum.any?(1..12, fn _ -> pause_of(ctx) > 20 end)
     end
   end

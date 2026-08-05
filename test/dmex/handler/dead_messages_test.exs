@@ -119,8 +119,7 @@ defmodule DMEx.Handler.DeadMessagesTest do
       assert {:ok, [row]} = DeadMessages.list(@handler, ctx.opts)
 
       # Exactly what read/3 returns and what the pipeline consumes.
-      assert Map.keys(row) |> Enum.sort() ==
-               [:data, :id, :inserted_at, :message_type, :metadata, :previous_id]
+      assert Map.keys(row) |> Enum.sort() == [:data, :id, :inserted_at, :message_type, :metadata]
     end
   end
 

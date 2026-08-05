@@ -70,10 +70,9 @@ defmodule DMEx.Integration.AppendOrderingTest do
     end
   end
 
-  # `c:DMEx.Storage.cursor_at/2` reads the last row *before* an instant, so it
-  # needs `inserted_at` to ascend with `id`. Across an inversion it would land
-  # past a lower id belonging after the cut — the same silent skip as above,
-  # arrived at from the other direction.
+  # Nothing in DMEx reads `inserted_at` — it is observability a log may lift
+  # into delivered metadata — but a column that does not ascend with `id` makes
+  # that signal a lie, and the fix is a column default rather than a query.
   describe "inserted_at ascends with id" do
     test "even when the transactions begin in the opposite order" do
       parent = self()

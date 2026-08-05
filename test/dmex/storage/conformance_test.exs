@@ -90,7 +90,7 @@ for {storage, repo, tag} <- [
         assert {:ok, [row]} = @storage.read(opts, id - 1, 1, @megabyte, :all)
 
         assert Map.keys(row) |> Enum.sort() ==
-                 [:data, :id, :inserted_at, :message_type, :metadata, :previous_id]
+                 [:data, :id, :inserted_at, :message_type, :metadata]
 
         assert row.id == id
         assert row.message_type == "MyApp.Messages.OrderPlaced"
@@ -154,34 +154,21 @@ for {storage, repo, tag} <- [
       end
     end
 
-    # Every row states the id of the row before it *in what this read returned*.
-    # It is what lets a consumer prove nothing went missing between two frames,
-    # and it cannot be `id - 1` — a selective read is sparse by design.
-    describe "read/5 predecessor chain" do
-      test "links each row to the one before it, back to the cursor", %{opts: opts} do
-        ids = for n <- 1..5, do: elem(append(opts, "A", %{n: n}), 1)
+    describe "read/5 across successive reads" do
+      test "walks the log without repeating or skipping", %{opts: opts} do
+        ids = for n <- 1..10, do: elem(append(opts, "A", %{n: n}), 1)
 
-        assert {:ok, rows} = @storage.read(opts, 0, 100, @megabyte, :all)
+        {:ok, first} = @storage.read(opts, 0, 4, @megabyte, :all)
+        last_id = List.last(first).id
+        {:ok, second} = @storage.read(opts, last_id, 4, @megabyte, :all)
 
-        assert Enum.map(rows, & &1.previous_id) == [0 | Enum.take(ids, 4)]
-        assert chained?(rows, 0)
+        assert Enum.map(first, & &1.id) == Enum.take(ids, 4)
+        assert Enum.map(second, & &1.id) == ids |> Enum.drop(4) |> Enum.take(4)
       end
 
-      test "the first row of a resumed read links back to the cursor it was given",
-           %{opts: opts} do
-        [_first, second, _third] = for n <- 1..3, do: elem(append(opts, "A", %{n: n}), 1)
-
-        assert {:ok, [row | _]} = @storage.read(opts, second, 100, @megabyte, :all)
-
-        # Not `row.id - 1`, and not the log's first id: exactly what was asked
-        # for, which is what proves the log resumed where the consumer said.
-        assert row.previous_id == second
-      end
-
-      # The case that makes a stated link necessary rather than merely convenient:
-      # the delivered rows are every other one, and every gap is deliberate.
-      test "a selective read chains over the delivered subsequence, not the id space",
-           %{opts: opts} do
+      # A selective read is sparse by design, so "walks the log" is about the
+      # delivered subsequence rather than the id space.
+      test "a selective read resumes within its own subsequence", %{opts: opts} do
         ids =
           for n <- 1..6 do
             type = if rem(n, 2) == 1, do: "A", else: "B"
@@ -189,38 +176,13 @@ for {storage, repo, tag} <- [
             id
           end
 
-        # The ids of the "A" rows, taken as assigned rather than assumed to be
-        # `1, 3, 5`: the sequence is shared with every other test in this file.
-        wanted = Enum.take_every(ids, 2)
+        [first, second, third] = Enum.take_every(ids, 2)
 
-        assert {:ok, rows} = @storage.read(opts, 0, 100, @megabyte, ["A"])
+        assert {:ok, [row]} = @storage.read(opts, first, 1, @megabyte, ["A"])
+        assert row.id == second
 
-        assert Enum.map(rows, & &1.id) == wanted
-        assert chained?(rows, 0)
-        # Each link skips the interleaved "B" row rather than pointing at it.
-        assert Enum.zip(rows, tl(rows)) |> Enum.all?(fn {a, b} -> b.id - a.id > 1 end)
-      end
-
-      test "a batch cut short by bytes is still contiguous", %{opts: opts} do
-        big = String.duplicate("x", 1_000)
-        for n <- 1..20, do: append(opts, "A", %{n: n, note: big})
-
-        assert {:ok, rows} = @storage.read(opts, 0, 100, 4_000, :all)
-
-        # Truncation only ever removes the tail, so what came back still chains.
-        assert length(rows) < 20
-        assert chained?(rows, 0)
-      end
-
-      test "successive reads chain across the boundary between them", %{opts: opts} do
-        for n <- 1..10, do: append(opts, "A", %{n: n})
-
-        {:ok, first} = @storage.read(opts, 0, 4, @megabyte, :all)
-        last_id = List.last(first).id
-        {:ok, second} = @storage.read(opts, last_id, 4, @megabyte, :all)
-
-        assert chained?(first, 0)
-        assert chained?(second, last_id)
+        assert {:ok, [row]} = @storage.read(opts, second, 1, @megabyte, ["A"])
+        assert row.id == third
       end
     end
 
@@ -325,6 +287,16 @@ for {storage, repo, tag} <- [
 
         assert {:ok, ^id} = @storage.max_id(opts)
       end
+
+      # What an absent `Last-Event-ID` resolves to: the tip is an *exclusive*
+      # cursor, so a read issued against it delivers nothing already appended.
+      test "is the cursor that delivers nothing yet", %{opts: opts} do
+        for n <- 1..3, do: append(opts, "A", %{n: n})
+
+        {:ok, tip} = @storage.max_id(opts)
+
+        assert {:ok, []} = @storage.read(opts, tip, 100, @megabyte, :all)
+      end
     end
 
     describe "appended_since/2" do
@@ -350,61 +322,8 @@ for {storage, repo, tag} <- [
       end
     end
 
-    # An instant names the *gap between* two messages, which is already what an
-    # exclusive cursor is — so every case here comes out of one expression, with
-    # no arithmetic and no branch.
-    describe "cursor_at/2" do
-      test "is 0 on an empty log", %{opts: opts} do
-        assert {:ok, 0} = @storage.cursor_at(opts, ~U[2026-08-03 10:00:00Z])
-      end
-
-      test "is 0 before the first row", %{opts: opts} do
-        {:ok, _} = append(opts, "A", %{n: 1})
-
-        assert {:ok, 0} = @storage.cursor_at(opts, ~U[2000-01-01 00:00:00Z])
-      end
-
-      # What `stream_from: :current` resolves to, and why the vocabulary needs no
-      # tip token: every row is before "now". A second out rather than
-      # `utc_now/0` because adapters stamp at different resolutions — SQLite to
-      # the millisecond — and "after the tip" should not mean "within the clock's
-      # granularity of it".
-      test "after the tip is the tip", %{opts: opts} do
-        {:ok, _} = append(opts, "A", %{n: 1})
-        {:ok, last} = append(opts, "A", %{n: 2})
-
-        assert {:ok, ^last} = @storage.cursor_at(opts, DateTime.add(DateTime.utc_now(), 1))
-      end
-
-      # The cursor is exclusive, so landing exactly on a row's `inserted_at` puts
-      # the cursor *below* it and that row is still delivered. This is what makes
-      # `stream_from:` inclusive of the instant it names.
-      #
-      # *Below*, not *immediately* below: where the stamp resolution cannot
-      # separate two appends they tie, and the cursor falls below both. Erring
-      # low re-delivers; erring high would skip, which a message log may never
-      # do. The exact predecessor is pinned per adapter, where the resolution is
-      # known.
-      test "exactly on a row's inserted_at still delivers that row", %{opts: opts} do
-        {:ok, _first} = append(opts, "A", %{n: 1})
-        {:ok, second} = append(opts, "A", %{n: 2})
-
-        assert {:ok, cursor} = @storage.cursor_at(opts, inserted_at(opts, second))
-        assert cursor < second
-      end
-
-      test "inserted_at ascends with id, which is what makes the cut sound",
-           %{opts: opts} do
-        ids = for n <- 1..5, do: elem(append(opts, "A", %{n: n}), 1)
-
-        stamps = Enum.map(ids, &inserted_at(opts, &1))
-
-        assert stamps == Enum.sort(stamps, &(DateTime.compare(&1, &2) != :gt))
-      end
-    end
-
     describe "last_seen/2 and advance/3" do
-      # nil, not 0. That distinction is what makes `stream_from:` apply exactly
+      # nil, not 0. That distinction is what makes `last_seen:` apply exactly
       # once: a subscription with no cursor resolves it, and one with a cursor —
       # even at 0 — ignores it entirely.
       test "is nil before anything has committed", %{opts: opts} do
@@ -465,7 +384,7 @@ for {storage, repo, tag} <- [
         assert {:ok, %{last_seen: 42, updated_at: %DateTime{}}} = @storage.cursor(opts, @some)
       end
 
-      # Distinct from advancing to 0: with no row at all, `stream_from:` applies
+      # Distinct from advancing to 0: with no row at all, `last_seen:` applies
       # again on the subscription's next start.
       test "delete_cursor/2 removes the row entirely", %{opts: opts} do
         :ok = @storage.advance(opts, @some, 42)
@@ -538,9 +457,8 @@ for {storage, repo, tag} <- [
         assert {:ok, [row]} = @storage.dead_messages(opts, @some)
 
         assert Map.keys(row) |> Enum.sort() ==
-                 [:data, :id, :inserted_at, :message_type, :metadata, :previous_id]
+                 [:data, :id, :inserted_at, :message_type, :metadata]
 
-        assert row.previous_id == nil
         assert is_binary(row.data)
         assert is_binary(row.metadata)
       end
@@ -585,17 +503,6 @@ for {storage, repo, tag} <- [
     end
 
     defp raw(%{repo: repo}, sql), do: SQL.query!(repo, sql, []).rows
-
-    defp inserted_at(opts, id), do: opts |> fetch!(id) |> Map.fetch!(:inserted_at)
-
-    # Every row claims the one before it, and the first claims `from`.
-    defp chained?(rows, from) do
-      rows
-      |> Enum.reduce_while(from, fn row, previous ->
-        if row.previous_id == previous, do: {:cont, row.id}, else: {:halt, :broken}
-      end)
-      |> Kernel.!=(:broken)
-    end
 
     # What the byte bound counts: payload plus the type.
     defp payload_bytes(rows) do

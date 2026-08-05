@@ -4,7 +4,7 @@ defmodule DMEx.Transport.SSE.Frame do
 
   Three slots carry the row and there is no envelope:
 
-      id: 1041/1042
+      id: 1042
       event: MyApp.Messages.OrderShipped
       data: {"data":{"order_id":7},"metadata":{"trace_id":"abc"}}
 
@@ -13,9 +13,9 @@ defmodule DMEx.Transport.SSE.Frame do
   `use DMEx.Log`, which happens before a row reaches here — see
   `DMEx.Log.merge_metadata/2`.
 
-  The column-to-slot table is in ARCHITECTURE.md's wire contract, along with why
-  `id:` is a `previous/current` link rather than a number. `DMEx.Log.Params`
-  validates the `Last-Event-ID` a client echoes it back as.
+  The column-to-slot table is in ARCHITECTURE.md's wire contract. `id:` is the
+  row's own id, which is exactly the resume position, so a client echoing it
+  back as `Last-Event-ID` — which `DMEx.Log.Params` validates — resumes after it.
 
   ## Encoding
 
@@ -64,15 +64,11 @@ defmodule DMEx.Transport.SSE.Frame do
 
   `:data` and `:metadata` are spliced verbatim and must therefore already be
   JSON text.
-
-  `id:` carries `previous_id/id`; a `nil` predecessor renders as `0`.
   """
   @spec encode_row(row()) :: iodata()
   def encode_row(row) do
     [
       "id: ",
-      Integer.to_string(row.previous_id || 0),
-      ?/,
       Integer.to_string(row.id),
       "\nevent: ",
       row.message_type,
@@ -114,8 +110,8 @@ defmodule DMEx.Transport.SSE.Frame do
   per the SSE specification an event is dispatched only when the data buffer is
   non-empty, and a producer is free to send comments and bare fields.
 
-  `id:` parses in both forms — `1041/1042` yields `"previous_id" => 1041`, a
-  bare `1042` yields `nil`, which a consumer refuses to accept.
+  `id:` is one integer; anything else leaves the block without an id, so it is
+  `:ignore`.
   """
   @spec parse(binary()) :: {:ok, parsed()} | {:error, error()}
   def parse(block) when is_binary(block) do
@@ -138,10 +134,10 @@ defmodule DMEx.Transport.SSE.Frame do
     end
   end
 
-  defp decode_row(payload, {previous_id, id}, event) do
+  defp decode_row(payload, id, event) do
     case JSON.decode(payload) do
       {:ok, %{"data" => _} = decoded} ->
-        row = %{"id" => id, "previous_id" => previous_id, "message_type" => event}
+        row = %{"id" => id, "message_type" => event}
 
         {:ok, {:message, Map.merge(decoded, row)}}
 
@@ -160,7 +156,7 @@ defmodule DMEx.Transport.SSE.Frame do
   defp collect_field(line, acc) do
     case parse_line(line) do
       {"data", value} -> Map.update!(acc, :data, &[value | &1])
-      {"id", value} -> put_id(acc, value)
+      {"id", value} -> put_integer(acc, :id, value)
       {"retry", value} -> put_integer(acc, :retry, value)
       {"event", value} -> Map.put(acc, :event, value)
       _other -> acc
@@ -178,26 +174,6 @@ defmodule DMEx.Transport.SSE.Frame do
       [field, " " <> value] -> {field, value}
       [field, value] -> {field, value}
       [field] -> {field, ""}
-    end
-  end
-
-  defp put_id(acc, value) do
-    case String.split(value, "/", parts: 2) do
-      [current] ->
-        put_pair(acc, nil, current)
-
-      [previous, current] ->
-        case Integer.parse(previous) do
-          {previous, ""} -> put_pair(acc, previous, current)
-          _ -> acc
-        end
-    end
-  end
-
-  defp put_pair(acc, previous, current) do
-    case Integer.parse(current) do
-      {id, ""} -> Map.put(acc, :id, {previous, id})
-      _ -> acc
     end
   end
 

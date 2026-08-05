@@ -95,7 +95,7 @@ defmodule DMEx.ConfigTest do
   describe "handler!/1" do
     test "returns the documented defaults when given nothing" do
       assert %{
-               stream_from: :current,
+               last_seen: nil,
                on_failure: :dead_message,
                max_attempts: 3,
                retry_backoff: 100,
@@ -124,47 +124,30 @@ defmodule DMEx.ConfigTest do
                )
     end
 
-    test "accepts every legal :stream_from value" do
-      assert Config.handler!(stream_from: :current).stream_from == :current
-      assert Config.handler!(stream_from: 1).stream_from == 1
-      assert Config.handler!(stream_from: 1042).stream_from == 1042
-
-      assert Config.handler!(stream_from: ~U[2026-08-03 10:00:00Z]).stream_from ==
-               ~U[2026-08-03 10:00:00Z]
+    test "accepts every legal :last_seen value" do
+      assert Config.handler!(last_seen: nil).last_seen == nil
+      assert Config.handler!(last_seen: 1042).last_seen == 1042
     end
 
-    # The one setting validation transforms rather than merely checks, so
-    # everything downstream sees one shape.
-    test "normalises an ISO-8601 string to a UTC DateTime" do
-      assert Config.handler!(stream_from: "2026-08-03T10:00:00Z").stream_from ==
-               ~U[2026-08-03 10:00:00Z]
-
-      assert Config.handler!(stream_from: "2026-08-03T12:00:00+02:00").stream_from ==
-               ~U[2026-08-03 10:00:00Z]
+    # A cursor, not a starting id: 0 is a position rather than a mistake, and it
+    # is the whole log.
+    test "accepts :last_seen 0, which is the whole log" do
+      assert Config.handler!(last_seen: 0).last_seen == 0
     end
 
-    # Its own message, because 0 is what someone reaches for meaning "from the
-    # start" and the fix is a different number rather than a different form.
-    test "raises on :stream_from 0, which names no message" do
-      assert_raise ArgumentError, ~r/ids start at 1/, fn ->
-        Config.handler!(stream_from: 0)
-      end
-    end
-
-    test "raises on an illegal :stream_from" do
-      for stream_from <- [:beginning, :latest, :tip, -1, nil] do
-        assert_raise ArgumentError, ~r/:stream_from must be :current/, fn ->
-          Config.handler!(stream_from: stream_from)
-        end
-      end
-    end
-
-    # A naive timestamp is ambiguous and a bare date is not an instant, both of
-    # which `DateTime.from_iso8601/1` already refuses.
-    test "raises on a string that is not an instant with an offset" do
-      for value <- ["2026-08-03T10:00:00", "2026-08-03", "yesterday", "42"] do
-        assert_raise ArgumentError, ~r/ISO-8601 timestamp with an explicit offset/, fn ->
-          Config.handler!(stream_from: value)
+    # A position is one cursor or nothing at all — no atoms, no timestamps.
+    test "raises on an illegal :last_seen" do
+      for last_seen <- [
+            :current,
+            :beginning,
+            :latest,
+            -1,
+            "42",
+            "2026-08-03T10:00:00Z",
+            ~U[2026-08-03 10:00:00Z]
+          ] do
+        assert_raise ArgumentError, ~r/:last_seen must be a non-negative/, fn ->
+          Config.handler!(last_seen: last_seen)
         end
       end
     end

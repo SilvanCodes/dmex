@@ -5,9 +5,10 @@ defmodule DMEx.Log.ParamsTest do
   alias DMEx.Log.Params
 
   describe "Last-Event-ID" do
-    test "absent means the whole log" do
-      # Which is also what a fresh browser EventSource sends.
-      assert {:ok, %Params{cursor: 0}} = Params.parse([], [])
+    test "absent means from now on" do
+      # Which is also what a fresh browser EventSource sends, and what the log
+      # resolves to its own tip.
+      assert {:ok, %Params{cursor: :now}} = Params.parse([], [])
     end
 
     test "an integer id resumes after it" do
@@ -21,29 +22,14 @@ defmodule DMEx.Log.ParamsTest do
       end
     end
 
-    test "an instant is tagged for the log to resolve" do
-      # Tagged, because the log has to reach storage for it where every other
-      # form is already a cursor.
-      assert {:ok, %Params{cursor: {:at, ~U[2026-08-03 10:00:00Z]}}} =
-               parse("last-event-id", "2026-08-03T10:00:00Z")
-    end
-
-    test "an instant with a non-zero offset is normalised to UTC" do
-      assert {:ok, %Params{cursor: {:at, at}}} =
-               parse("last-event-id", "2026-08-03T12:00:00+02:00")
-
-      assert at == ~U[2026-08-03 10:00:00Z]
-    end
-
-    # There is deliberately no tip token: a consumer wanting the tip sends the
-    # current instant, which resolves to it because every row is before it.
-    test "`latest` is no longer vocabulary" do
+    # There is deliberately no tip token: the header's absence is one already.
+    test "`latest` is not vocabulary" do
       assert {:error, {:invalid, "last-event-id", "latest"}} = parse("last-event-id", "latest")
     end
 
-    # A vocabulary of three forms plus absent is small enough to validate exactly,
-    # and a client sending something outside it has a bug worth hearing about
-    # rather than being handed an arbitrary slice of the log.
+    # One integer plus absent is small enough to validate exactly, and a client
+    # sending something outside it has a bug worth hearing about rather than
+    # being handed an arbitrary slice of the log.
     test "anything else is rejected" do
       rejected = [
         "-1",
@@ -59,10 +45,11 @@ defmodule DMEx.Log.ParamsTest do
         "42abc",
         "0x2a",
         "١٢٣",
-        # A naive timestamp is ambiguous, and a bare date is not an instant.
-        "2026-08-03T10:00:00",
+        # Timestamps are not vocabulary at all any more, nor is the old
+        # `previous/current` pair.
+        "2026-08-03T10:00:00Z",
         "2026-08-03",
-        "2026-08-03T25:00:00Z"
+        "1041/1042"
       ]
 
       for value <- rejected do
@@ -85,7 +72,7 @@ defmodule DMEx.Log.ParamsTest do
   # send byte-identical requests for the same subscription.
   describe "pacing is not in the request" do
     test "a stray pacing header is simply an unknown header, not an error" do
-      assert {:ok, %Params{cursor: 0, selection: :all}} =
+      assert {:ok, %Params{cursor: :now, selection: :all}} =
                Params.parse([], [{"dmex-batch-window", "nonsense"}])
     end
   end

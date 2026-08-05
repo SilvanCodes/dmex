@@ -93,7 +93,11 @@ defmodule DMEx.Integration.SelectionTest do
 
   describe "delivery" do
     test "only the selected types cross the wire", %{base: _base} do
-      {:ok, _} = DMEx.Supervisor.subscribe(Handlers.Echo, supervisor: TestSupervisor)
+      # `last_seen: 0` because the appends below follow the subscribe, and the
+      # default resolves to the log's tip at connect. The log is empty here, so
+      # the whole log is the same set of rows without racing that connect.
+      {:ok, _} =
+        DMEx.Supervisor.subscribe(Handlers.Echo, supervisor: TestSupervisor, last_seen: 0)
 
       {:ok, _} = Log.append(%OrderShipped{order_id: 1, carrier: "dhl"})
       {:ok, _} = Log.append(%OrderPlaced{order_id: 2})
@@ -125,8 +129,11 @@ defmodule DMEx.Integration.SelectionTest do
       # Not a partitioning: there is still one log and one id sequence, so a
       # selective subscription sees a sparse subset of the same ids rather than
       # a space of its own.
-      {:ok, _} = DMEx.Supervisor.subscribe(Handlers.Echo, supervisor: TestSupervisor)
-      {:ok, _} = DMEx.Supervisor.subscribe(Handlers.EchoAll, supervisor: TestSupervisor)
+      {:ok, _} =
+        DMEx.Supervisor.subscribe(Handlers.Echo, supervisor: TestSupervisor, last_seen: 0)
+
+      {:ok, _} =
+        DMEx.Supervisor.subscribe(Handlers.EchoAll, supervisor: TestSupervisor, last_seen: 0)
 
       {:ok, _} = Log.append(%OrderShipped{order_id: 1, carrier: "dhl"})
       {:ok, placed} = Log.append(%OrderPlaced{order_id: 2})
@@ -233,13 +240,22 @@ defmodule DMEx.Integration.SelectionTest do
 
   # Opens a stream and returns whatever it sends within a short window, which is
   # enough to see which message types made it onto the wire.
+  # `last-event-id: 0` because these read what was appended *before* the
+  # request: with the header absent the log answers with its tip and sends
+  # nothing at all.
   defp read_frames(url) do
     uri = URI.parse(url)
 
     {:ok, conn} = Mint.HTTP.connect(:http, uri.host, uri.port)
 
     {:ok, conn, ref} =
-      Mint.HTTP.request(conn, "GET", uri.path, [{"accept", "text/event-stream"}], nil)
+      Mint.HTTP.request(
+        conn,
+        "GET",
+        uri.path,
+        [{"accept", "text/event-stream"}, {"last-event-id", "0"}],
+        nil
+      )
 
     body = drain(conn, ref, "", System.monotonic_time(:millisecond))
 

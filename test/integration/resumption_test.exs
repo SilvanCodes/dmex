@@ -48,13 +48,12 @@ defmodule DMEx.Integration.ResumptionTest do
     # SlowCommit reports and then stalls before returning, which holds that
     # window open long enough to kill the process inside it deterministically.
     #
-    # `stream_from: 1` because the kill lands *before* the first commit, so the
-    # restart finds no durable cursor and resolves `stream_from` again. Under the
-    # default `:current` that second resolution takes a fresh `utc_now()` — past
-    # everything appended so far — and the redelivery this test is about would be
-    # skipped rather than repeated. That is the documented cost of freezing the
-    # instant per process rather than persisting it.
-    {:ok, [pid]} = subscribe(Handlers.SlowCommit, stream_from: 1)
+    # `last_seen: 0` because the kill lands *before* the first commit, so the
+    # restart finds no durable cursor and applies `last_seen` again. Under the
+    # default — unset — that second resolution asks the log for its tip, past
+    # everything appended so far, and the redelivery this test is about would be
+    # skipped rather than repeated.
+    {:ok, [pid]} = subscribe(Handlers.SlowCommit, last_seen: 0)
 
     for n <- 1..3, do: {:ok, _} = Log.append(%OrderPlaced{order_id: n})
 
@@ -134,10 +133,14 @@ defmodule DMEx.Integration.ResumptionTest do
 
   ## Helpers
 
+  # `last_seen: 0` throughout: these tests subscribe and then append, and the
+  # default — unset — resolves to the log's tip at *connect*, which races the
+  # appends. The log is empty at subscribe time, so the whole log is the same
+  # set of rows without the race.
   defp subscribe(handler, opts \\ []) do
     DMEx.Supervisor.subscribe(
       handler,
-      Keyword.merge([supervisor: TestSupervisor], opts)
+      Keyword.merge([supervisor: TestSupervisor, last_seen: 0], opts)
     )
   end
 

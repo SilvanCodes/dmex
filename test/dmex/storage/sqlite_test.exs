@@ -1,11 +1,9 @@
 defmodule DMEx.Storage.SQLiteTest do
   # The contract itself is pinned once for every adapter, in
   # `conformance_test.exs`. What is left here is SQLite and nothing else: the
-  # storage format's fidelity, the timestamp resolution, the query plan, and the
-  # options this adapter refuses.
+  # storage format's fidelity, the query plan, and the options this adapter
+  # refuses.
   use DMEx.Case, async: false, database: true, repo: DMEx.Test.SQLiteRepo
-
-  use ExUnitProperties
 
   alias DMEx.Storage.SQLite
   alias Ecto.Adapters.SQL
@@ -32,67 +30,6 @@ defmodule DMEx.Storage.SQLiteTest do
 
     test "a payload that is not JSON is refused by the column", %{opts: opts} do
       assert {:error, _reason} = SQLite.append(opts, "A", "not json", "{}")
-    end
-  end
-
-  describe "cursor_at/2 resolution" do
-    # SQLite stamps to the millisecond, so two appends inside one cannot be
-    # separated. Erring low re-delivers a message; erring high would skip one,
-    # which a log may never do — see `DMEx.Storage.SQLite`.
-    test "appends within one millisecond tie, and the cursor falls below both",
-         %{opts: opts} do
-      {:ok, first} = SQLite.append(opts, "A", ~s({"n":1}), "{}")
-      {:ok, second} = SQLite.append(opts, "A", ~s({"n":2}), "{}")
-
-      {:ok, [row]} = SQLite.read(opts, second - 1, 1, @megabyte, :all)
-
-      if inserted_at(opts, first) == row.inserted_at do
-        assert {:ok, cursor} = SQLite.cursor_at(opts, row.inserted_at)
-        assert cursor < first
-      end
-    end
-
-    test "a millisecond apart is enough to separate them", %{opts: opts} do
-      {:ok, first} = SQLite.append(opts, "A", ~s({"n":1}), "{}")
-      Process.sleep(2)
-      {:ok, second} = SQLite.append(opts, "A", ~s({"n":2}), "{}")
-
-      {:ok, [row]} = SQLite.read(opts, second - 1, 1, @megabyte, :all)
-
-      assert {:ok, ^first} = SQLite.cursor_at(opts, row.inserted_at)
-    end
-
-    # The trap the adapter's `iso8601_ms/1` exists for: the stored value is
-    # fixed-width to the millisecond, so a bound rendered by `to_iso8601/1`
-    # directly sorts wrong — ".607000Z" before ".607Z", and "…04Z" after every
-    # fractional value in that second. Whatever precision a caller's DateTime
-    # carries, the cut has to land where a comparison against the stored text
-    # says it does.
-    property "a bound at any precision cuts where the stored text says it does" do
-      opts = %{repo: Repo, lock: {0, 0}, prefix: nil}
-
-      {:ok, id} = SQLite.append(opts, "A", ~s({"n":1}), "{}")
-      {:ok, [row]} = SQLite.read(opts, id - 1, 1, @megabyte, :all)
-      stored = raw_inserted_at(opts, id)
-
-      check all(
-              precision <- integer(0..6),
-              offset <- integer(-2_000..2_000)
-            ) do
-        at =
-          row.inserted_at
-          |> DateTime.add(offset, :millisecond)
-          |> truncate(precision)
-
-        {:ok, cursor} = SQLite.cursor_at(opts, at)
-
-        # What the query would say about this row directly, in the column's own
-        # units: the row is below the cut exactly when its text is.
-        expected = if stored < rendered(at), do: id, else: 0
-
-        assert cursor == expected,
-               "at #{inspect(at)} (stored #{stored}) expected #{expected}, got #{cursor}"
-      end
     end
   end
 
@@ -165,37 +102,6 @@ defmodule DMEx.Storage.SQLiteTest do
   end
 
   ## Helpers
-
-  defp inserted_at(opts, id) do
-    {:ok, [row]} = SQLite.read(opts, id - 1, 1, @megabyte, :all)
-
-    row.inserted_at
-  end
-
-  defp raw_inserted_at(%{repo: repo}, id) do
-    %{rows: [[at]]} =
-      SQL.query!(repo, "SELECT inserted_at FROM dmex_messages WHERE id = ?1", [id])
-
-    at
-  end
-
-  # What the adapter must render a bound as, restated here rather than reused:
-  # a test that called the adapter's own private function would pass however
-  # wrong that function was.
-  defp rendered(%DateTime{} = at) do
-    at
-    |> DateTime.to_unix(:millisecond)
-    |> DateTime.from_unix!(:millisecond)
-    |> DateTime.to_iso8601()
-  end
-
-  defp truncate(at, 0), do: %{at | microsecond: {0, 0}}
-
-  defp truncate(%{microsecond: {value, _}} = at, precision) do
-    scale = trunc(:math.pow(10, 6 - precision))
-
-    %{at | microsecond: {div(value, scale) * scale, precision}}
-  end
 
   # EXPLAIN QUERY PLAN over the adapter's real statement. Reaches for the
   # private builder deliberately: what is under test is that statement, and no

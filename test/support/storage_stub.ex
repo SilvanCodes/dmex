@@ -20,7 +20,7 @@ defmodule DMEx.Test.Storage do
             cursors: %{},
             dead: [],
             fail: nil,
-            fail_cursor_at: nil,
+            fail_max_id: nil,
             hang: nil
 
   @doc """
@@ -46,9 +46,6 @@ defmodule DMEx.Test.Storage do
   def row(id, opts \\ []) do
     %{
       id: id,
-      # `read/5` overwrites this with the real predecessor in the delivered
-      # sequence; a row built directly is assumed to follow the one before it.
-      previous_id: Keyword.get(opts, :previous_id, id - 1),
       message_type: Keyword.get(opts, :message_type, "order_placed"),
       data: Keyword.get(opts, :data, ~s({"order_id":#{id}})),
       metadata: Keyword.get(opts, :metadata, "{}"),
@@ -88,14 +85,14 @@ defmodule DMEx.Test.Storage do
   def hang(opts), do: update(opts, &%{&1 | hang: true})
 
   @doc """
-  Makes `cursor_at/2` return `{:error, reason}`, for as long as it is set.
+  Makes `max_id/1` return `{:error, reason}`, for as long as it is set.
 
   Its own switch rather than a callback argument to `fail/2`: this one is about
-  the *connect* path, where the question is whether a failure to resolve a
-  position is fatal or silently becomes "from the beginning".
+  the *connect* path, where the question is whether a failure to resolve the tip
+  is fatal or silently becomes "from the beginning".
   """
-  @spec fail_cursor_at(DMEx.Storage.opts(), term()) :: :ok
-  def fail_cursor_at(opts, reason \\ :boom), do: update(opts, &%{&1 | fail_cursor_at: reason})
+  @spec fail_max_id(DMEx.Storage.opts(), term()) :: :ok
+  def fail_max_id(opts, reason \\ :boom), do: update(opts, &%{&1 | fail_max_id: reason})
 
   ## DMEx.Storage
 
@@ -135,21 +132,8 @@ defmodule DMEx.Test.Storage do
       |> Enum.filter(&(&1.id > cursor and selected?(&1, types)))
       |> Enum.take(limit)
       |> cap_bytes(max_bytes)
-      |> chain(cursor)
 
     {{:ok, rows}, state}
-  end
-
-  # What the adapter's `lag(id, 1, cursor)` does: each row states the id of the
-  # row before it *in what this read returned*, and the first links back to the
-  # cursor. Selective reads therefore chain over the delivered subsequence
-  # rather than over the log's id space.
-  defp chain(rows, cursor) do
-    rows
-    |> Enum.map_reduce(cursor, fn row, previous ->
-      {%{row | previous_id: previous}, row.id}
-    end)
-    |> elem(0)
   end
 
   # The real adapter enforces this inside the query; a stub over a list does it
@@ -176,35 +160,10 @@ defmodule DMEx.Test.Storage do
 
   @impl DMEx.Storage
   def max_id(opts) do
-    Agent.get(store(opts), fn state -> {:ok, max_id_of(state.rows)} end)
-  end
-
-  # The adapter's ordered `LIMIT 1` over `inserted_at < $1`, spelled as a fold:
-  # the last row before the instant wins, ties broken by the higher id, and no
-  # match at all is cursor 0. Sorting rather than trusting id order, because the
-  # rows a test hands `new/1` need not be monotonic — which is the whole thing
-  # this callback's contract is about.
-  @impl DMEx.Storage
-  def cursor_at(opts, %DateTime{} = at) do
     Agent.get(store(opts), fn
-      %{fail_cursor_at: reason} when reason != nil ->
-        {:error, reason}
-
-      state ->
-        {:ok, last_before(state.rows, at)}
+      %{fail_max_id: reason} when reason != nil -> {:error, reason}
+      state -> {:ok, max_id_of(state.rows)}
     end)
-  end
-
-  defp last_before(rows, at) do
-    case Enum.filter(rows, &(DateTime.compare(&1.inserted_at, at) == :lt)) do
-      [] ->
-        0
-
-      before ->
-        before
-        |> Enum.max_by(&{DateTime.to_unix(&1.inserted_at, :microsecond), &1.id})
-        |> Map.fetch!(:id)
-    end
   end
 
   @impl DMEx.Storage
@@ -261,14 +220,7 @@ defmodule DMEx.Test.Storage do
         state.dead
         |> Enum.reverse()
         |> Enum.filter(&(&1.subscription == subscription))
-        |> Enum.map(fn attrs ->
-          attrs
-          |> Map.take([:id, :message_type, :data, :metadata, :inserted_at])
-          # A dead row has no delivered sequence to chain over, exactly as in
-          # the real adapter, so its predecessor is nil rather than missing:
-          # `t:DMEx.Storage.row/0` requires the key either way.
-          |> Map.put(:previous_id, nil)
-        end)
+        |> Enum.map(&Map.take(&1, [:id, :message_type, :data, :metadata, :inserted_at]))
 
       {:ok, rows}
     end)

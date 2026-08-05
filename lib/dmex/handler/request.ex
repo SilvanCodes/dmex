@@ -8,25 +8,22 @@ defmodule DMEx.Handler.Request do
   `position/2` is the one part `DMEx.Transport.Local` shares.
 
   The only header DMEx contributes is `last-event-id`, alongside the `accept`
-  every SSE client sends.
+  every SSE client sends. It carries one non-negative integer — the exclusive
+  cursor to resume after — or it is absent, which asks the log for its tip.
 
-  `stream_from:` reaches here already resolved by `DMEx.Handler.Stream`'s `init/1`,
-  so it is a positive id or a `DateTime` and never `:current`. The two are the
-  same request in different units, and only one of them needs arithmetic:
-
-    * an **id names a message**, so `stream_from: 42` must deliver 42 — the
-      exclusive cursor `41`. This is the only place in DMEx that conversion
-      happens, and it needs no clamp because `DMEx.Config` has already rejected
-      anything below 1.
-    * an **instant names the gap between two messages**, which is what an
-      exclusive cursor already is, so it goes on the wire as-is and the log
-      resolves it against its own rows.
+  **Nothing here converts anything.** A durable cursor, a configured
+  `last_seen:` and the header are one domain in one unit: exclusive, delivery
+  starting above it. `position/2` is a choice between two of them and no
+  arithmetic at all.
   """
 
   alias DMEx.Config
 
   @typedoc "A durable cursor, or `:none` when this handler has never committed one."
   @type cursor :: non_neg_integer() | :none
+
+  @typedoc "An exclusive cursor, or `:now` for the log's tip at connect."
+  @type position :: non_neg_integer() | :now
 
   @doc "The request headers for a connect at `cursor`."
   @spec headers(cursor(), Config.handler()) :: [{String.t(), String.t()}]
@@ -35,33 +32,32 @@ defmodule DMEx.Handler.Request do
   end
 
   @doc """
-  Builds the `last-event-id` header for a cursor.
+  Builds the `last-event-id` header for a cursor, or none at all.
 
-  Exposed separately because the vocabulary — an integer or an instant — is
-  worth reading in one place.
+  An empty list is the whole of "from now on": the header's absence is what says
+  it, so there is no token to define and a browser `EventSource` that has never
+  received a frame asks for the same thing.
   """
   @spec last_event_id(cursor(), Config.handler()) :: [{String.t(), String.t()}]
   def last_event_id(cursor, config) do
-    [{"last-event-id", encode(position(cursor, config))}]
+    case position(cursor, config) do
+      :now -> []
+      cursor -> [{"last-event-id", Integer.to_string(cursor)}]
+    end
   end
 
   @doc """
-  Where this subscription is asking to start, as the wire will express it.
+  Where this subscription is asking to start.
 
-  A durable cursor wins over `stream_from:` whenever there is one — that is the
-  whole of resumption. `DMEx.Transport.SSE` needs the same answer for its
-  predecessor check as the header carries, and `DMEx.Transport.Local` resolves
-  the same two forms against the log directly — so the id form's `- 1` is
-  computed here and nowhere else. It is the only function in this module a
-  transport with no wire has any use for.
+  A durable cursor wins over `last_seen:` whenever there is one — that is the
+  whole of resumption. `DMEx.Transport.Local` resolves the same two answers
+  against the log directly rather than over a wire, which is why this is the one
+  function in this module a transport with no wire has any use for.
   """
-  @spec position(cursor(), Config.handler()) :: non_neg_integer() | DateTime.t()
-  def position(:none, %{stream_from: %DateTime{} = at}), do: at
-  def position(:none, %{stream_from: id}) when is_integer(id), do: id - 1
+  @spec position(cursor(), Config.handler()) :: position()
+  def position(:none, %{last_seen: nil}), do: :now
+  def position(:none, %{last_seen: cursor}) when is_integer(cursor), do: cursor
   def position(cursor, _config) when is_integer(cursor), do: cursor
-
-  defp encode(%DateTime{} = at), do: DateTime.to_iso8601(at)
-  defp encode(cursor) when is_integer(cursor), do: Integer.to_string(cursor)
 
   @doc """
   Builds the path to request: the log's stream URL, plus the selection segment.

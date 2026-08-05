@@ -68,31 +68,6 @@ defmodule DMEx.Storage.PostgresTest do
     end
   end
 
-  describe "cursor_at/2" do
-    # Microsecond stamps separate any two appends, so the cursor is not merely
-    # below the row whose instant was named — it is the row immediately below.
-    test "lands on the immediate predecessor", %{opts: opts} do
-      {:ok, first} = append(opts, "A", %{n: 1})
-      {:ok, second} = append(opts, "A", %{n: 2})
-
-      {:ok, [row]} = Postgres.read(opts, second - 1, 1, 1_048_576, :all)
-
-      assert {:ok, ^first} = Postgres.cursor_at(opts, row.inserted_at)
-    end
-
-    # clock_timestamp() is microsecond-resolution and appends are serialised, so
-    # a tie needs writing by hand. The `id DESC` tie-break is what decides it.
-    test "ties are broken by the higher id", %{opts: opts} do
-      {:ok, _} = append(opts, "A", %{n: 1})
-      {:ok, second} = append(opts, "A", %{n: 2})
-
-      at = ~U[2026-08-03 10:00:00Z]
-      SQL.query!(opts.repo, "UPDATE dmex_messages SET inserted_at = $1", [at])
-
-      assert {:ok, ^second} = Postgres.cursor_at(opts, DateTime.add(at, 1, :second))
-    end
-  end
-
   describe "dead_message/2" do
     # The error term is the driver's, not DMEx's — the behaviour promises
     # `{:error, term()}` and nothing about its shape.

@@ -53,9 +53,8 @@ defmodule DMEx.Transport.Local do
   @impl DMEx.Transport
   def heartbeat(sink), do: {:ok, sink}
 
-  # The pipeline reads `id`, `message_type`, `data` and `metadata`. There is no
-  # wire, so there is no `previous_id` chain for it to check, which is the one
-  # place the two transports hand it different shapes.
+  # The pipeline reads `id`, `message_type`, `data` and `metadata` — the same
+  # shape a parsed frame has, minus the trip through JSON text.
   defp row(row) do
     %{
       "id" => row.id,
@@ -134,21 +133,15 @@ defmodule DMEx.Transport.Local do
   # and `DMEx.Log.Plug` resolves back out, without the round trip — and from the
   # same function, so the id form's `- 1` lives in exactly one place.
   #
-  # `stream_from: :current` costs an index descent here that a direct `max(id)`
-  # would not, since it arrives already resolved to an instant. Worth it to keep
-  # one resolution path across both transports: the alternative is the atom
-  # surviving into the transport layer, and with it a `:current` that re-reads
-  # the clock on every reconnect for local subscriptions only.
-  #
   # An error ends the connect rather than falling back to 0, which would turn a
   # momentary pool exhaustion into a whole-log replay. The subscription retries
   # on its own jittered schedule; the log's plug answers the same case with 503.
   defp resolve_cursor(log, cursor, config) do
     case Request.position(cursor, config) do
-      %DateTime{} = at ->
+      :now ->
         %{storage: storage, storage_opts: storage_opts} = log.__dmex__()
 
-        storage.cursor_at(storage_opts, at)
+        storage.max_id(storage_opts)
 
       cursor ->
         {:ok, cursor}

@@ -14,7 +14,7 @@ defmodule DMEx.Storage do
   log and every subscription in an application without any of them sharing
   anything.
 
-  ## Four contracts that are correctness, not style
+  ## Three contracts that are correctness, not style
 
   Each is easy to implement *almost* right, and each has a test pinning it.
 
@@ -28,19 +28,6 @@ defmodule DMEx.Storage do
   a lock — SQLite has one writer database-wide, so the second cannot draw a
   rowid until the first has committed.
 
-  **`inserted_at` must be stamped in that same serialized region.** By the same
-  INSERT that draws the id, so the column ascends with `id`. A transaction-start
-  clock (Postgres's `now()`) is read before the lock is acquired — and long
-  before it, when a caller wraps the append in a transaction of its own — so it
-  says nothing about the order ids were assigned in. `c:cursor_at/2` reads the
-  last row *before* an instant, and across such an inversion that lands past a
-  lower id belonging after the cut: the same silent skip, arrived at from the
-  other direction.
-
-  Resolution is the engine's, not DMEx's: Postgres stamps microseconds and
-  SQLite milliseconds, so two appends may tie. A tie must put the cursor *below*
-  both — erring low re-delivers a message, erring high skips one.
-
   **`c:read/5` must return `data` and `metadata` as JSON *text*.**
   `DMEx.Transport.SSE.Frame.encode_row/1` splices those columns into the wire
   frame byte-for-byte, so any cast belongs in the query (`data::text`), not in
@@ -52,7 +39,7 @@ defmodule DMEx.Storage do
 
   **`c:last_seen/2` must distinguish "no cursor" from "cursor at 0".** It
   returns `nil`, not `0`, when a subscription has never committed anything,
-  which is what makes `stream_from:` apply exactly once.
+  which is what makes the `last_seen:` option apply exactly once.
   """
 
   @typedoc """
@@ -78,10 +65,6 @@ defmodule DMEx.Storage do
   @typedoc """
   One row of a log, as `c:read/5` returns it.
 
-  `:previous_id` is not a column — it is the id of the row before this one in
-  the *delivered* sequence, which only the read knows. `nil` where there is no
-  sequence to speak of, as when replaying a dead message.
-
   `:data` and `:metadata` are JSON text as **binaries**: a transport that puts
   them on a wire splices them verbatim into its own iodata, and one that hands
   them to a pipeline passes them straight to `JSON.decode!/1`. Iodata belongs to
@@ -90,7 +73,6 @@ defmodule DMEx.Storage do
   """
   @type row :: %{
           required(:id) => pos_integer(),
-          required(:previous_id) => non_neg_integer() | nil,
           required(:message_type) => String.t(),
           required(:data) => binary(),
           required(:metadata) => binary(),
@@ -133,13 +115,6 @@ defmodule DMEx.Storage do
       back, even one larger than the whole budget on its own, since refusing it
       would wedge the subscription forever.
 
-    * **Every row states its predecessor.** `:previous_id` is the id of the row
-      before it *in this delivered sequence*, with the first row of a read
-      carrying `cursor` itself. It cannot be inferred as `id - 1`, because a
-      selective read returns a sparse subset of the id space and only the log
-      knows which gaps it made on purpose. Truncating a batch cannot break the
-      chain: both bounds cut the tail.
-
     * **`types` is two statements, not one.** `:all` for a whole-log
       subscription, or a list already expanded by `DMEx.Log.Plug`. A
       `($4 IS NULL OR message_type = ANY($4))` shape is a correct query and a
@@ -165,43 +140,12 @@ defmodule DMEx.Storage do
   @doc """
   The log's current highest id, or `0` when the log is empty.
 
-  For `DMEx.Log.Dispatcher`, which seeds its poll from the tip so a stream that
-  connects to a busy log is not woken for everything already behind it.
+  Two callers, both wanting the tip as an exclusive cursor: `DMEx.Log.Dispatcher`
+  seeds its poll from it, so a stream connecting to a busy log is not woken for
+  everything already behind it; and the connect path resolves an absent
+  `Last-Event-ID` with it, which is the whole of "from now on".
   """
   @callback max_id(opts()) :: {:ok, non_neg_integer()} | {:error, term()}
-
-  @doc """
-  The **exclusive cursor** that starts delivery at `at`: the last row appended
-  before that instant, or `0` when there is none.
-
-  A cursor, not an id, and that is the whole point. An id names a message, so
-  positioning by one needs a `- 1` somewhere; an instant names the *gap between*
-  two messages, which is already what an exclusive cursor is. So every case
-  falls out of one expression, with no arithmetic and no branch:
-
-  | `at` | cursor | effect |
-  | --- | --- | --- |
-  | after the tip | the tip | deliver nothing yet — this is `stream_from: :current` |
-  | between rows N and N+1 | N | deliver N+1 onward |
-  | exactly row N's `inserted_at` | N-1 | deliver N onward, so the instant is *included* |
-  | before the first row, or an empty log | 0 | the whole log |
-
-  **This requires `inserted_at` to ascend with `id`**, which is why
-  `DMEx.Storage.Postgres.Migration` defaults it to `clock_timestamp()` rather than
-  `now()`, and `DMEx.Storage.SQLite.Migration` to a statement-time `strftime` — see
-  the second contract in the module documentation. Across an inversion, "the
-  last row before `at`" can land past a lower id that belongs *after* the cut,
-  and a cursor set too high skips it permanently. The interleaving-proof
-  alternative is the forward `min(id) WHERE inserted_at >= $1` minus one, which
-  scans the whole matching tail on the connect path and puts the `- 1` back.
-
-  An adapter should express it as an ordered `LIMIT 1`, not `max(id)`: the
-  planner has no way to know the two columns ascend together, so the aggregate
-  visits every row before the instant where the ordered form is one index
-  descent.
-  """
-  @callback cursor_at(opts(), at :: DateTime.t()) ::
-              {:ok, non_neg_integer()} | {:error, term()}
 
   @doc """
   Returns the new highest id since `cursor` and the distinct types among those
@@ -294,7 +238,7 @@ defmodule DMEx.Storage do
   Removes a subscription's cursor entirely.
 
   Distinct from advancing it to 0: with no row at all the subscription's
-  `stream_from:` option applies again on its next start.
+  `last_seen:` option applies again on its next start.
   """
   @callback delete_cursor(opts(), subscription :: String.t()) :: :ok | {:error, term()}
 

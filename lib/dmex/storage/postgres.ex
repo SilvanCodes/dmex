@@ -70,11 +70,9 @@ defmodule DMEx.Storage.Postgres do
   #
   # **`sized`** gives each row its byte count, off the already-cast columns.
   #
-  # **`measured`** adds two things over the same ordering. The *exclusive*
-  # prefix sum — bytes of the rows strictly before this one; `sum()` over an
-  # empty frame is NULL, hence the coalesce, and that NULL-to-zero is exactly
-  # the first row. And `previous_id` via `lag/3`, defaulting to the cursor so
-  # the first row of a page links back to what the caller asked to resume after.
+  # **`measured`** adds the *exclusive* prefix sum over the same ordering —
+  # bytes of the rows strictly before this one; `sum()` over an empty frame is
+  # NULL, hence the coalesce, and that NULL-to-zero is exactly the first row.
   #
   # **The outer filter** applies the byte bound — inclusive, plus
   # `prefix_bytes = 0` so one oversized row cannot wedge the subscription. That
@@ -87,10 +85,9 @@ defmodule DMEx.Storage.Postgres do
   # guarantee.
   defp read_sql(opts, predicate) do
     """
-    SELECT id, previous_id, message_type, data, metadata, inserted_at
+    SELECT id, message_type, data, metadata, inserted_at
       FROM (
         SELECT id, message_type, data, metadata, inserted_at, bytes,
-               lag(id, 1, $1) OVER (ORDER BY id) AS previous_id,
                coalesce(
                  sum(bytes) OVER (ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),
                  0
@@ -128,32 +125,6 @@ defmodule DMEx.Storage.Postgres do
 
     case SQL.query(repo, sql, []) do
       {:ok, %{rows: [[max_id]]}} -> {:ok, max_id}
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  @impl DMEx.Storage
-  def cursor_at(opts, %DateTime{} = at) do
-    repo = Map.fetch!(opts, :repo)
-
-    # An ordered LIMIT 1, not `max(id)`: the planner cannot know `inserted_at`
-    # ascends with `id`, so the aggregate visits every row before the instant
-    # where this is a backward scan of `(inserted_at, id)` — one descent. The
-    # two agree only because `clock_timestamp()` makes the columns monotonic
-    # together; see `c:DMEx.Storage.cursor_at/2`.
-    #
-    # The coalesce is the whole of the empty case: no row before the instant
-    # means cursor 0, which is the whole log.
-    sql = """
-    SELECT coalesce((SELECT id
-                       FROM #{table(opts, @messages)}
-                      WHERE inserted_at < $1
-                      ORDER BY inserted_at DESC, id DESC
-                      LIMIT 1), 0)
-    """
-
-    case SQL.query(repo, sql, [at]) do
-      {:ok, %{rows: [[cursor]]}} -> {:ok, cursor}
       {:error, reason} -> {:error, reason}
     end
   end
@@ -273,8 +244,6 @@ defmodule DMEx.Storage.Postgres do
 
   @impl DMEx.Storage
   def dead_messages(opts, subscription) when is_binary(subscription) do
-    # `read/5`'s columns minus `previous_id`, which a dead row has no delivered
-    # sequence for.
     sql = """
     SELECT id, message_type, data::text, metadata::text, inserted_at
       FROM #{table(opts, @dead_messages)}
@@ -327,22 +296,14 @@ defmodule DMEx.Storage.Postgres do
 
   ## Row shaping
 
-  defp to_row([id, previous_id, message_type, data, metadata, inserted_at]) do
+  defp to_row([id, message_type, data, metadata, inserted_at]) do
     %{
       id: id,
-      previous_id: previous_id,
       message_type: message_type,
       data: data,
       metadata: metadata,
       inserted_at: inserted_at
     }
-  end
-
-  # `dead_messages/2` reads a table with no delivered sequence to chain over —
-  # a replayed row goes straight to a handler, never framed — so it gets a nil
-  # predecessor rather than a meaningless one.
-  defp to_row([id, message_type, data, metadata, inserted_at]) do
-    to_row([id, nil, message_type, data, metadata, inserted_at])
   end
 
   ## Naming

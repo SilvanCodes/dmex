@@ -106,6 +106,7 @@ defmodule DMEx.Integration.UnknownTypeTest do
     {:ok, _} =
       DMEx.Supervisor.subscribe(Handlers.EchoWholeLog,
         supervisor: TestSupervisor,
+        last_seen: 0,
         checkpoint_interval: 600_000
       )
 
@@ -136,8 +137,10 @@ defmodule DMEx.Integration.UnknownTypeTest do
 
   # The message set is part of the module now, so "the same handler with a
   # different list" is a different module.
+  # `last_seen: 0`: these tests append after subscribing, and the default
+  # resolves to the tip at connect, which would race them.
   defp subscribe(handler) do
-    {:ok, _} = DMEx.Supervisor.subscribe(handler, supervisor: TestSupervisor)
+    {:ok, _} = DMEx.Supervisor.subscribe(handler, supervisor: TestSupervisor, last_seen: 0)
   end
 
   defp cursor(subscription \\ "test/echo") do

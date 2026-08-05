@@ -29,7 +29,7 @@ defmodule DMEx.Integration.CatchupTest do
     ref = :telemetry_test.attach_event_handlers(self(), [[:dmex, :stream, :write]])
 
     {:ok, _} =
-      DMEx.Supervisor.subscribe(Handlers.Echo, supervisor: TestSupervisor, stream_from: 1)
+      DMEx.Supervisor.subscribe(Handlers.Echo, supervisor: TestSupervisor, last_seen: 0)
 
     ids =
       for _ <- 1..@backlog do
@@ -60,7 +60,7 @@ defmodule DMEx.Integration.CatchupTest do
     seed_large(200, 8_192)
 
     {:ok, _} =
-      DMEx.Supervisor.subscribe(Handlers.Echo, supervisor: TestSupervisor, stream_from: 1)
+      DMEx.Supervisor.subscribe(Handlers.Echo, supervisor: TestSupervisor, last_seen: 0)
 
     # Drain the small backlog and then the large rows behind it.
     for _ <- 1..(@backlog + 200), do: assert_receive({:handled, %OrderPlaced{}, _}, 30_000)

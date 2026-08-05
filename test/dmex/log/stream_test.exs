@@ -57,8 +57,7 @@ defmodule DMEx.Log.StreamTest do
 
       # Storage rows, not frames: framing is the transport's business and the
       # loop never sees a byte.
-      assert %{id: 1, message_type: _, data: _, metadata: _, inserted_at: _, previous_id: _} =
-               hd(rows)
+      assert %{id: 1, message_type: _, data: _, metadata: _, inserted_at: _} = hd(rows)
     end
 
     # The one edit the loop makes to a row, and the reason it is here rather than
@@ -173,18 +172,6 @@ defmodule DMEx.Log.StreamTest do
       assert ids(write) == [1, 2, 3]
     end
 
-    # The link a consumer checks to notice a frame that never arrived. The first
-    # of a read points at the cursor it was issued against, so the chain also
-    # proves the log resumed where it was asked to.
-    test "each frame states its predecessor, back to the cursor", %{opts: opts} do
-      Stub.put_rows(opts, 3)
-
-      run(opts, chunks: 1, cursor: 0)
-
-      assert_received {:chunk, write}
-      assert previous_ids(write) == [0, 1, 2]
-    end
-
     test "the message type is the event name", %{opts: opts} do
       Stub.put_rows(opts, 1)
 
@@ -224,9 +211,6 @@ defmodule DMEx.Log.StreamTest do
       assert [{6, _limit, :all}] = Stub.reads(opts)
       assert_received {:chunk, write}
       assert hd(ids(write)) == 7
-
-      # ...and links back to that cursor rather than to id 6, which it never sent.
-      assert hd(previous_ids(write)) == 6
     end
   end
 
@@ -507,12 +491,7 @@ defmodule DMEx.Log.StreamTest do
 
   # The ids of every frame in one write, in order.
   defp ids(write) do
-    Regex.scan(~r{^id: \d+/(\d+)$}m, write) |> Enum.map(fn [_, id] -> String.to_integer(id) end)
-  end
-
-  # Each frame's stated predecessor, in order.
-  defp previous_ids(write) do
-    Regex.scan(~r{^id: (\d+)/\d+$}m, write) |> Enum.map(fn [_, id] -> String.to_integer(id) end)
+    Regex.scan(~r{^id: (\d+)$}m, write) |> Enum.map(fn [_, id] -> String.to_integer(id) end)
   end
 
   # The loop only returns when the connection closes, and an idle stream never

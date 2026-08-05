@@ -36,11 +36,9 @@ defmodule DMEx.Storage.SQLite.Migration do
 
   `strftime('%f')` is documented as `SS.SSS` — always three digits — so every
   value is exactly 24 bytes and lexicographic comparison *is* chronological
-  comparison, which is what the `(inserted_at, id)` index and
-  `c:DMEx.Storage.cursor_at/2` both rest on. The default is evaluated during the
-  INSERT, inside the write transaction that draws the rowid, so the column
-  ascends with `id` — SQLite has no transaction-start clock to reach for by
-  mistake.
+  comparison. The default is evaluated during the INSERT, inside the write
+  transaction that draws the rowid, so the column ascends with `id` — SQLite has
+  no transaction-start clock to reach for by mistake.
 
   ## The `message_type` CHECK, in GLOB
 
@@ -110,16 +108,11 @@ defmodule DMEx.Storage.SQLite.Migration do
     )
     """)
 
-    # The same two the Postgres migration creates, for the same two queries —
-    # see `DMEx.Storage.Migration` for when each earns its per-append cost.
+    # The same one the Postgres migration creates, for the same query — see
+    # `DMEx.Storage.Migration` for when it earns its per-append cost.
     execute("""
     CREATE INDEX IF NOT EXISTS dmex_messages_message_type_id_index
         ON dmex_messages (message_type, id)
-    """)
-
-    execute("""
-    CREATE INDEX IF NOT EXISTS dmex_messages_inserted_at_id_index
-        ON dmex_messages (inserted_at, id)
     """)
 
     :ok

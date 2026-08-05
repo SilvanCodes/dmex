@@ -8,7 +8,6 @@ defmodule DMEx.Log.MetadataTest do
   defp row(opts) do
     %{
       id: 1042,
-      previous_id: 1041,
       message_type: "MyApp.Messages.OrderPlaced",
       data: ~s({"order_id":7}),
       metadata: Keyword.get(opts, :metadata, "{}"),
