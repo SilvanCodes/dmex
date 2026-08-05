@@ -207,8 +207,8 @@ defmodule DMEx.Log.PlugTest do
       assert write =~ "id: 2\nevent: order_placed\n"
     end
 
-    # The publisher's metadata reaches the socket byte for byte: the producer
-    # side lifts nothing.
+    # The publisher's metadata reaches the socket byte for byte: nothing DMEx
+    # knows is merged into it anywhere.
     test "splices metadata exactly as stored", %{opts: opts, plug: plug} do
       Stub.put_rows(opts, [Stub.row(1, metadata: ~s({"trace_id":"abc"}))])
 

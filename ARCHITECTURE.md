@@ -59,10 +59,9 @@ CREATE INDEX ON dmex_messages (message_type, id);
 - `message_type` is the string the appending module declared as its `type:`,
   independent of what that module is called, so a producer can reorganise its
   message modules without any of it reaching this column.
-- `metadata` is entirely publisher-owned; DMEx writes nothing into this column
-  and nothing into what goes on the wire. A subscription may have its pipeline
-  lift the row's id into the map its handler sees with `metadata: [:id]`, which
-  reserves that name there and nothing here.
+- `metadata` is entirely publisher-owned; DMEx writes nothing into this column,
+  nothing into what goes on the wire, and nothing into the map a handler
+  receives.
 - `inserted_at` is never an ordering key — `id` is, and nothing in DMEx reads
   this column. It is observability, never delivered. `clock_timestamp()` rather than
   `now()` so it still ascends with `id`: `now()` is the transaction's start
@@ -257,10 +256,9 @@ bytes.** The send loop in `DMEx.Log.Stream` holds at most the rows it is
 writing; there is no accumulator. Two bounds because a row costs heap two ways:
 its payload, which `max_batch_bytes` counts, and a fixed ~1 KB for the map, the
 `%DateTime{}` and the frame's iodata cells — which no budget in database octets
-can see. A log lifting `:inserted_at` into its metadata adds a timestamp binary
-and a copy of the metadata field to that; one lifting nothing adds neither. At a 1 KB payload the byte bound binds; at a
-50-byte payload the same 1 MiB budget admits ~21 000 rows whose fixed cost alone
-is ~22 MB, and `max_batch_size` closes that end.
+can see. At a 1 KB payload the byte bound binds; at a 50-byte payload the same
+1 MiB budget admits ~21 000 rows whose fixed cost alone is ~22 MB, and
+`max_batch_size` closes that end.
 
 Both bounds are applied **inside the query** (`c:DMEx.Storage.read/5`): a read
 that returns `max_batch_size` rows and lets the caller trim them has already
@@ -330,11 +328,10 @@ plain run of one-row frames and runs each through `DMEx.Handler.Pipeline`
 separately — its own transaction, handler call, cursor advance and failure
 handling. A mid-batch failure rolls back exactly one message.
 
-**11. The handler sees its message and a metadata map, nothing else.** No frame
-and no `message_type`; the map is the publisher's, plus the row's id when the
-subscription asked for it with `metadata: [:id]`. A handler stays a plain
-function of its domain data plus context, testable by constructing a struct and a
-map — the lift changes what is in the map, never the shape of the callback.
+**11. The handler sees its message and a metadata map, nothing else.** No frame,
+no id, no `message_type` — the map is the publisher's, byte for byte. A handler
+stays a plain function of its domain data plus context, testable by constructing
+a struct and a map.
 
 **12. An identity is its declaration, not its module name.** The `"log/id"` pair
 in `use DMEx.Handler` keys the cursor and the `type:` in `use DMEx.Message` keys
@@ -406,9 +403,9 @@ What follows for handler authors: **side effects through the consumer's own repo
 are exactly-once for free**, because they roll back with the transaction that
 would have recorded them. Effects that leave it — an HTTP call, a write to
 another database — must be idempotent on something in the message or its
-metadata — the log id reaches a handler only when the subscription lifts it with
-`metadata: [:id]`. A local write plus a separate outbox is the pattern that stays
-correct.
+metadata — the log id does not reach a handler at all, so idempotency has to
+rest on something the publisher put there. A local write plus a separate outbox
+is the pattern that stays correct.
 
 **No-loss rests on the producer.** The consumer cannot verify it: a position is
 one id, so a row lost *between* two that arrived is indistinguishable from a

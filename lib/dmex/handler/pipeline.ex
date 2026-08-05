@@ -211,7 +211,7 @@ defmodule DMEx.Handler.Pipeline do
   def deliver(state, row, commit) do
     id = Map.fetch!(row, "id")
     type = Map.fetch!(row, "message_type")
-    metadata = lift(Map.get(row, "metadata") || %{}, id, state.config.metadata)
+    metadata = Map.get(row, "metadata") || %{}
 
     case state.handler.__dmex_cast__(type, Map.fetch!(row, "data"), metadata) do
       nil ->
@@ -225,18 +225,6 @@ defmodule DMEx.Handler.Pipeline do
           1
         )
     end
-  end
-
-  # Opt-in, per subscription, with `metadata: [:id]` or `metadata: [id: :key]`,
-  # and here rather than on the producing side so every transport gets it from
-  # one place. `DMEx.Config` resolved both spellings to `column: key` with the
-  # key already a string, so this is a `Map.put/3` and no more.
-  #
-  # Before the cast, so a clause matching on metadata sees it too, and over
-  # anything the publisher wrote under that key — which is what reserves the key
-  # for a subscription that asked, and nothing at all for one that did not.
-  defp lift(metadata, id, fields) do
-    Enum.reduce(fields, metadata, fn {:id, key}, acc -> Map.put(acc, key, id) end)
   end
 
   @doc """

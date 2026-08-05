@@ -85,8 +85,7 @@ defmodule DMEx.ConfigTest do
                reconnect_backoff: 500,
                reconnect_backoff_max: 30_000,
                max_frame_bytes: 4_194_304,
-               missed_heartbeats: 3,
-               metadata: []
+               missed_heartbeats: 3
              } = Config.handler!([])
     end
 
@@ -133,28 +132,6 @@ defmodule DMEx.ConfigTest do
           Config.handler!(last_seen: last_seen)
         end
       end
-    end
-
-    # A column, not a free-form key: the id is the only thing the row carries
-    # that the publisher's map does not, so anything else is a mistake.
-    test "takes only liftable columns for :metadata" do
-      for value <- [[:inserted_at], [:message_type], [:data], [:id, :oops], [oops: :id]] do
-        assert_raise ArgumentError, ~r/:metadata may only lift/, fn ->
-          Config.handler!(metadata: value)
-        end
-      end
-
-      assert_raise ArgumentError, ~r/:metadata must be a list of columns/, fn ->
-        Config.handler!(metadata: :id)
-      end
-    end
-
-    # Both spellings resolve to the same `column: key` pair, with the key a
-    # string, because that is what a key in a metadata map is.
-    test "resolves :metadata to the key each column lands under" do
-      assert Config.handler!(metadata: [:id]).metadata == [id: "id"]
-      assert Config.handler!(metadata: [id: :message_id]).metadata == [id: "message_id"]
-      assert Config.handler!(metadata: [id: "message_id"]).metadata == [id: "message_id"]
     end
 
     test "raises on an illegal :on_failure" do

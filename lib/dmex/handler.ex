@@ -129,12 +129,9 @@ defmodule DMEx.Handler do
   @doc """
   Handles one message.
 
-  Receives the decoded struct and the `metadata` map — the publisher's alone,
-  unless this subscription asked for the row's id with `metadata: [:id]`, or
-  under a name of its own with `metadata: [id: :message_id]`. That is the only
-  way an id reaches a handler, and it reserves whichever key it lands under: a
-  publisher key of the same name is overwritten. The return value is ignored;
-  raise to signal failure.
+  Receives the decoded struct and the publisher's `metadata` map, which DMEx
+  writes nothing into — no id, no `message_type`, nothing about the row. The
+  return value is ignored; raise to signal failure.
 
   **The first argument must be a struct pattern.** That is what declares which
   message types this subscription consumes — see the module documentation.

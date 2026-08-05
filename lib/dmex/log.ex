@@ -31,9 +31,8 @@ defmodule DMEx.Log do
     * The wire type comes from the message's **own module**
       (`c:DMEx.Message.type/0`), never from a call argument, so it cannot
       disagree with the struct it describes.
-    * `metadata` passes through **untouched**. A subscription that wants the
-      row's id in the map its handler sees asks for it with `metadata: [:id]` on
-      its own side; nothing is written into the stored column.
+    * `metadata` passes through **untouched**, all the way to the handler that
+      receives it. Nothing DMEx knows is ever written into it.
     * Nothing records which log appended the message. `message_type` is fully
       qualified, so it already identifies the appending application.
 

@@ -46,7 +46,6 @@ defmodule DMEx.Config do
   | `reconnect_backoff_max` | `30_000` | ms; cap on that schedule. |
   | `max_frame_bytes` | `4_194_304` | bytes; the largest unterminated frame the decoder buffers. A frame is **one row**, so this has to exceed the largest single message any log sends, not its whole batch. Exceeding it drops the connection, which costs only a re-read. |
   | `missed_heartbeats` | `3` | silences of the log's advertised interval before giving up — long enough that one GC pause on the log is not a disconnect. |
-  | `metadata` | `[]` | which of the row's own columns are lifted into the metadata a handler sees — only `:id`. Empty by default, so the map is exactly what the publisher wrote; `metadata: [:id]` reserves that name for this subscription, and `metadata: [id: :message_id]` reserves one of its choosing instead. Resolved to `column: key` with the key as a string, which is what a metadata key is. See `c:DMEx.Handler.handle_message/2`. |
 
   `retry_backoff`/`retry_backoff_max` and
   `reconnect_backoff`/`reconnect_backoff_max` are validated independently and
@@ -96,13 +95,8 @@ defmodule DMEx.Config do
     reconnect_backoff: 500,
     reconnect_backoff_max: 30_000,
     max_frame_bytes: 4_194_304,
-    missed_heartbeats: 3,
-    metadata: []
+    missed_heartbeats: 3
   ]
-
-  # A column, not a free-form key: lifting surfaces what the row already carries,
-  # and its id is the only part of it a handler cannot otherwise see.
-  @liftable [:id]
 
   @typedoc "A log's resolved configuration."
   @type log :: %{
@@ -126,8 +120,7 @@ defmodule DMEx.Config do
           reconnect_backoff: pos_integer(),
           reconnect_backoff_max: pos_integer(),
           max_frame_bytes: pos_integer(),
-          missed_heartbeats: pos_integer(),
-          metadata: [{:id, String.t()}]
+          missed_heartbeats: pos_integer()
         }
 
   @doc """
@@ -250,10 +243,7 @@ defmodule DMEx.Config do
 
     validate_last_seen!(config.last_seen)
 
-    # The one setting resolved rather than only checked: both spellings collapse
-    # to `column: key` here, once per subscription, so the pipeline never sees
-    # the shorthand and never converts a key per row.
-    %{config | metadata: metadata!(config.metadata)}
+    config
   end
 
   # The one setting that may be switched off rather than tuned: a log whose
@@ -297,28 +287,6 @@ defmodule DMEx.Config do
   defp validate_last_seen!(value) do
     raise ArgumentError,
           ":last_seen must be a non-negative integer cursor or nil, got: #{inspect(value)}"
-  end
-
-  defp metadata!(fields) when is_list(fields), do: Enum.map(fields, &lifted!/1)
-
-  defp metadata!(value) do
-    raise ArgumentError, ":metadata must be a list of columns, got: #{inspect(value)}"
-  end
-
-  # A bare column lands under its own name; `column: key` renames it, for a
-  # subscription whose publishers already use `"id"` for something of their own.
-  defp lifted!(column) when column in @liftable, do: {column, Atom.to_string(column)}
-
-  defp lifted!({column, key}) when column in @liftable and is_binary(key), do: {column, key}
-
-  defp lifted!({column, key}) when column in @liftable and is_atom(key) and not is_nil(key) do
-    {column, Atom.to_string(key)}
-  end
-
-  defp lifted!(field) do
-    raise ArgumentError,
-          ":metadata may only lift #{inspect(@liftable)}, each on its own or as " <>
-            "`column: key` to rename it, got: #{inspect(field)}"
   end
 
   defp validate_inclusion!(field, value, allowed) do
