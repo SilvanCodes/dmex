@@ -1,10 +1,11 @@
 defmodule DMEx.Handler.StalenessTest do
   @moduledoc """
-  A handler caches its message set as strings, and depends on the modules those
-  strings came from by *export* — so editing a `type:` recompiles the message
-  module and not the handler. Reproduced here by redefining a message module
-  after a handler has compiled against it, which is exactly what an incremental
-  `mix compile` leaves behind.
+  A handler caches its message set as strings, and a compile-time edge on the
+  modules those strings came from is what keeps the two in step — so no
+  `mix compile` can produce a stale handler. What can is a module replaced
+  without one, which is what redefining a message module here is: the same thing
+  `Code.eval_string/2`, a partial hot load, or a release assembled from two
+  builds does to a running node.
   """
 
   use DMEx.Case, async: false
@@ -83,17 +84,7 @@ defmodule DMEx.Handler.StalenessTest do
     end
   end
 
-  describe "the check at the sites a subscription starts" do
-    test "subscribe/2 refuses a stale handler" do
-      define_message!("staleness_before")
-      handler = define_handler!()
-      define_message!("staleness_after")
-
-      assert_raise ArgumentError, ~r/is stale/, fn ->
-        DMEx.Supervisor.subscribe(handler, supervisor: NoSuchSupervisor)
-      end
-    end
-
+  describe "the check at boot" do
     test "the boot check refuses one before any child starts" do
       define_message!("staleness_before")
       handler = define_handler!()
@@ -114,7 +105,7 @@ defmodule DMEx.Handler.StalenessTest do
       end
     end
 
-    test "a fresh handler passes both" do
+    test "a fresh handler passes" do
       define_message!("staleness_before")
       handler = define_handler!()
 
@@ -125,6 +116,22 @@ defmodule DMEx.Handler.StalenessTest do
                DMEx.Supervisor.__startable__!([handler], %{
                  "test" => "http://127.0.0.1:1/stream"
                })
+    end
+
+    # Deliberately once per boot, so this pins the absence rather than leaving it
+    # to be re-added as an obvious improvement: `subscribe/2` still fails here,
+    # for want of a supervisor, and says nothing about staleness.
+    test "subscribe/2 does not repeat the check" do
+      define_message!("staleness_before")
+      handler = define_handler!()
+      define_message!("staleness_after")
+
+      error =
+        assert_raise ArgumentError, fn ->
+          DMEx.Supervisor.subscribe(handler, supervisor: NoSuchSupervisor)
+        end
+
+      refute error.message =~ "is stale"
     end
   end
 

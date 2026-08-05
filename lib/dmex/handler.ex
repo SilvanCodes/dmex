@@ -170,6 +170,8 @@ defmodule DMEx.Handler do
     match = matcher(env, declaration.messages)
 
     quote do
+      unquote(compile_edges(declaration.messages))
+
       @doc """
       This handler's resolved declaration.
       """
@@ -177,6 +179,31 @@ defmodule DMEx.Handler do
       def __dmex__, do: unquote(Macro.escape(declaration))
 
       unquote(match)
+    end
+  end
+
+  # One call per message module, emitted into the handler's own body, which is
+  # what makes the handler→message edge a **compile** dependency: recompiling a
+  # message recompiles every handler that baked its `type/0` in. Without it the
+  # edge is `export` only — and a `type:` is a function body, which an export
+  # digest does not cover, so editing one recompiled the message alone and left
+  # the fingerprint and the cast clauses naming a type nothing appends.
+  #
+  # `__declaration__/1` already calls every `type/0`, and cannot do this job: it
+  # calls through a variable, from inside this module's compiled code, where no
+  # tracer can see it. Only a literal module in the handler's own AST records an
+  # edge, and only at the top level — the same call inside a `def` would be a
+  # runtime dependency and track nothing.
+  #
+  # Evaluated at compile time and discarded, so it costs one call per message per
+  # compile and leaves nothing in the BEAM. What it does cost is recompilation:
+  # a message module's consumers are now rebuilt with it, which is the honest
+  # price of them containing a copy of its type.
+  defp compile_edges(messages) do
+    for module <- messages do
+      quote do
+        _ = unquote(module).type()
+      end
     end
   end
 
@@ -365,12 +392,19 @@ defmodule DMEx.Handler do
 
   A declaration caches its message set **as strings** in `:types`, and builds
   everything else from that one list: the fingerprint it requests, and one
-  `__dmex_cast__/3` clause per type. The handler depends on its message modules
-  by *export* (see `message!/2`), and `c:DMEx.Message.type/0` is a function body
-  — so editing a `type:` recompiles the message module and **not** the handler,
-  leaving every one of those artifacts naming a type nothing appends. The
-  subscription then selects no rows and skips the ones it does get: silent
-  message loss, which is what this turns into a boot failure.
+  `__dmex_cast__/3` clause per type. If a `type:` changes underneath them, every
+  one of those names a type nothing appends — the subscription selects no rows
+  and skips the ones it does get, which is silent message loss.
+
+  **Compiling cannot leave that behind.** `compile_edges/1` makes a handler
+  depend on its message modules at compile time, so recompiling one recompiles
+  the other, across a dependency as well as within a project. What remains is
+  everything that replaces a module without compiling the handler: one defined
+  at runtime with `Code.eval_string/2` and friends, a partially hot-loaded
+  release, a build assembled from two compilations. Hence one check, at startup,
+  in `DMEx.Supervisor.init/1` — before any child is started, since a stale
+  declaration is a subscription that connects, advances its cursor and delivers
+  nothing.
 
   Re-deriving the list from the loaded modules is exact rather than heuristic,
   and it is the *list* that is compared rather than the fingerprint built from
@@ -393,12 +427,14 @@ defmodule DMEx.Handler do
     It was compiled against:         #{inspect(declaration.types)}
     Its message modules now declare: #{inspect(types)}
 
-    A handler bakes its message set into its selection fingerprint and its decode clauses at \
-    compile time, and depends on the message modules by export — so editing a `type:` \
-    recompiles the message and not the handler. Running it as compiled would ask the log for \
-    types nothing appends and skip every row that arrived anyway.
+    A handler bakes its message set into its selection fingerprint and its decode clauses, so \
+    running it as compiled would ask the log for types nothing appends and skip every row that \
+    arrived anyway.
 
-    Recompile it:
+    Compiling cannot cause this: a handler depends on its message modules at compile time, so \
+    editing a `type:` rebuilds both. Something replaced a module without that — a module \
+    defined at runtime, a partially hot-loaded release, or a build assembled from two \
+    compilations. Rebuild from clean:
 
         mix compile --force
     """
@@ -522,9 +558,9 @@ defmodule DMEx.Handler do
     # Not the cheaper `Code.ensure_loaded?/1`: expanding `%module{}` in a clause
     # head resolves the struct through the parallel compiler *without* putting
     # the module in the code server, so `type/0` is not callable yet. Only this
-    # blocks until the module is genuinely compiled, and it costs no dependency
-    # — the handler→message edge stays an export dependency, and
-    # `mix xref graph --label compile` shows no edge between them.
+    # blocks until the module is genuinely compiled. It records no dependency of
+    # its own — the compile edge is `compile_edges/1`'s doing, so what creates it
+    # is one visible line rather than a side effect of a readiness check.
     #
     # The bang matters: `Code.ensure_compiled/1` answers
     # `{:error, :unavailable}` for a module caught in a compiler deadlock, which

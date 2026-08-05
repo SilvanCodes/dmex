@@ -210,10 +210,6 @@ defmodule DMEx.Supervisor do
     # caller rejects a non-handler identically.
     declaration = Handler.declaration!(handler)
 
-    # Before anything is started, because a stale declaration is a subscription
-    # that connects, advances its cursor and delivers nothing.
-    :ok = Handler.verify_fresh!(declaration)
-
     validate_keys!(opts)
     bound = resolve_logs!(opts, supervisor)
     storage = Map.to_list(resolve_storage!(opts, supervisor))
@@ -339,9 +335,13 @@ defmodule DMEx.Supervisor do
     handlers
   end
 
-  # Also here and not only in `subscribe/2`: a discovered handler is subscribed
-  # from the starter, where a raise is a restart loop rather than a refusal to
-  # boot.
+  # The only place freshness is asked, and asked here because this runs in
+  # `init/1`: a raise is a refusal to boot, where the same raise from the starter
+  # — which subscribes every discovered handler after `init/1` has returned —
+  # would be a restart loop. `subscribe/2` does not repeat it. Staleness now
+  # needs a module replaced without a compile (see `DMEx.Handler.verify_fresh!/1`),
+  # which is a property of the node rather than of one subscription, so once per
+  # boot is once per occasion it can change.
   defp reject_stale!(handlers) do
     for handler <- handlers,
         do: :ok = handler |> Handler.declaration!() |> Handler.verify_fresh!()
