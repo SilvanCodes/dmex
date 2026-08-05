@@ -95,7 +95,7 @@ defmodule DMEx.ConfigTest do
   describe "handler!/1" do
     test "returns the documented defaults when given nothing" do
       assert %{
-               stream_from: :current,
+               stream_from: nil,
                on_failure: :dead_message,
                max_attempts: 3,
                retry_backoff: 100,
@@ -125,22 +125,9 @@ defmodule DMEx.ConfigTest do
     end
 
     test "accepts every legal :stream_from value" do
-      assert Config.handler!(stream_from: :current).stream_from == :current
+      assert Config.handler!(stream_from: nil).stream_from == nil
       assert Config.handler!(stream_from: 1).stream_from == 1
       assert Config.handler!(stream_from: 1042).stream_from == 1042
-
-      assert Config.handler!(stream_from: ~U[2026-08-03 10:00:00Z]).stream_from ==
-               ~U[2026-08-03 10:00:00Z]
-    end
-
-    # The one setting validation transforms rather than merely checks, so
-    # everything downstream sees one shape.
-    test "normalises an ISO-8601 string to a UTC DateTime" do
-      assert Config.handler!(stream_from: "2026-08-03T10:00:00Z").stream_from ==
-               ~U[2026-08-03 10:00:00Z]
-
-      assert Config.handler!(stream_from: "2026-08-03T12:00:00+02:00").stream_from ==
-               ~U[2026-08-03 10:00:00Z]
     end
 
     # Its own message, because 0 is what someone reaches for meaning "from the
@@ -151,20 +138,20 @@ defmodule DMEx.ConfigTest do
       end
     end
 
+    # Timestamps and `:current` were both dropped from the wire contract, so a
+    # position is one id or nothing at all.
     test "raises on an illegal :stream_from" do
-      for stream_from <- [:beginning, :latest, :tip, -1, nil] do
-        assert_raise ArgumentError, ~r/:stream_from must be :current/, fn ->
+      for stream_from <- [
+            :current,
+            :beginning,
+            :latest,
+            -1,
+            "42",
+            "2026-08-03T10:00:00Z",
+            ~U[2026-08-03 10:00:00Z]
+          ] do
+        assert_raise ArgumentError, ~r/:stream_from must be a positive integer id or nil/, fn ->
           Config.handler!(stream_from: stream_from)
-        end
-      end
-    end
-
-    # A naive timestamp is ambiguous and a bare date is not an instant, both of
-    # which `DateTime.from_iso8601/1` already refuses.
-    test "raises on a string that is not an instant with an offset" do
-      for value <- ["2026-08-03T10:00:00", "2026-08-03", "yesterday", "42"] do
-        assert_raise ArgumentError, ~r/ISO-8601 timestamp with an explicit offset/, fn ->
-          Config.handler!(stream_from: value)
         end
       end
     end

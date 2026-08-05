@@ -69,15 +69,12 @@ defmodule DMEx.Storage.Postgres.Migration do
       # time, frozen before `pg_advisory_xact_lock` was ever acquired — and
       # arbitrarily long before, when a caller wraps `append/2` in a transaction
       # of its own. `clock_timestamp()` is evaluated during the INSERT, inside
-      # the lock's serialised region, by the same statement that draws `nextval`.
-      # That is what makes this column ascend with `id`, which
-      # `c:DMEx.Storage.cursor_at/2` requires: it reads the *last row before* an
-      # instant, and across an inversion that lands past a lower id belonging
-      # after the cut — a silently skipped message.
+      # the lock's serialised region, by the same statement that draws `nextval`,
+      # so the column ascends with `id` rather than with transaction starts.
       #
-      # Still not an ordering key. `id` is. This column locates a *starting*
-      # id once, at connect, and a backwards NTP step (rather than the slew
-      # chrony does by default) can still invert a pair.
+      # Never an ordering key. `id` is. This column is observability: a log
+      # lifts it into delivered metadata with `metadata: [:inserted_at]`, and
+      # nothing in DMEx reads it.
       add(:inserted_at, :timestamptz, null: false, default: fragment("clock_timestamp()"))
     end
 
@@ -86,12 +83,6 @@ defmodule DMEx.Storage.Postgres.Migration do
     # `DMEx.Storage.Postgres.read/5`): folding both into one query with a
     # nullable predicate would defeat this index and the primary key at once.
     create_if_not_exists(index(:dmex_messages, [:message_type, :id], prefix: prefix))
-
-    # For `c:DMEx.Storage.cursor_at/2`, and nothing else. Both columns, so its
-    # `ORDER BY inserted_at DESC, id DESC LIMIT 1` is a backward scan of this
-    # index alone — one descent rather than an aggregate over everything before
-    # the instant. Read once per connect, never per row.
-    create_if_not_exists(index(:dmex_messages, [:inserted_at, :id], prefix: prefix))
 
     # Written out rather than through `constraint/3`, because Ecto has no
     # `create_if_not_exists` for constraints and Postgres has no

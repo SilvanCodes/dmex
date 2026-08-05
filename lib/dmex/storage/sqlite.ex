@@ -41,10 +41,8 @@ defmodule DMEx.Storage.SQLite do
   ## Timestamps are millisecond text
 
   `inserted_at` is fixed-width ISO-8601 to the millisecond, so byte order is
-  time order. A `DateTime` bound against it has to be rendered the same way —
-  `DateTime.to_iso8601/1` alone is wrong in both directions — which is what
-  `iso8601_ms/1` below is for. The consequence is that `c:DMEx.Storage.cursor_at/2` resolves
-  to the millisecond here and to the microsecond on Postgres.
+  time order, and `datetime!/1` turns it back into the `%DateTime{}`
+  `t:DMEx.Storage.row/0` promises.
 
   ## No `:prefix`
 
@@ -191,10 +189,9 @@ defmodule DMEx.Storage.SQLite do
   # Postgres adapter's.
   defp read_sql(predicate) do
     """
-    SELECT id, previous_id, message_type, data, metadata, inserted_at
+    SELECT id, message_type, data, metadata, inserted_at
       FROM (
         SELECT id, message_type, data, metadata, inserted_at, bytes,
-               lag(id, 1, ?1) OVER (ORDER BY id) AS previous_id,
                coalesce(
                  sum(bytes) OVER (ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),
                  0
@@ -229,22 +226,6 @@ defmodule DMEx.Storage.SQLite do
   def max_id(opts) do
     case SQL.query(Map.fetch!(opts, :repo), "SELECT coalesce(max(id), 0) FROM #{@messages}", []) do
       {:ok, %{rows: [[max_id]]}} -> {:ok, max_id}
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  @impl DMEx.Storage
-  def cursor_at(opts, %DateTime{} = at) do
-    sql = """
-    SELECT coalesce((SELECT id
-                       FROM #{@messages}
-                      WHERE inserted_at < ?1
-                      ORDER BY inserted_at DESC, id DESC
-                      LIMIT 1), 0)
-    """
-
-    case SQL.query(Map.fetch!(opts, :repo), sql, [iso8601_ms(at)]) do
-      {:ok, %{rows: [[cursor]]}} -> {:ok, cursor}
       {:error, reason} -> {:error, reason}
     end
   end
@@ -379,22 +360,14 @@ defmodule DMEx.Storage.SQLite do
 
   ## Row shaping
 
-  defp to_row([id, previous_id, message_type, data, metadata, inserted_at]) do
+  defp to_row([id, message_type, data, metadata, inserted_at]) do
     %{
       id: id,
-      previous_id: previous_id,
       message_type: message_type,
       data: data,
       metadata: metadata,
       inserted_at: datetime!(inserted_at)
     }
-  end
-
-  # `dead_messages/2` reads a table with no delivered sequence to chain over — a
-  # replayed row goes straight to a handler, never framed — so it gets a nil
-  # predecessor rather than a meaningless one.
-  defp to_row([id, message_type, data, metadata, inserted_at]) do
-    to_row([id, nil, message_type, data, metadata, inserted_at])
   end
 
   ## Timestamps
@@ -405,23 +378,5 @@ defmodule DMEx.Storage.SQLite do
     {:ok, at, 0} = DateTime.from_iso8601(text)
 
     at
-  end
-
-  # The stored format is fixed-width to the millisecond, and a bound parameter
-  # only compares correctly against it if it is rendered identically.
-  # `DateTime.to_iso8601/1` is wrong in both directions: on a microsecond
-  # DateTime it yields ".607000Z", which sorts *before* ".607Z", and on a
-  # second-precision one "…04Z", which sorts *after* every fractional value in
-  # that second. `DateTime.truncate/2` does not fix it either — it can only
-  # lower precision, so a `{0, 0}` DateTime still renders with no fraction.
-  #
-  # The unix round trip normalizes zone and precision in one step, with no time
-  # zone database involved, and floors — the right direction for an exclusive
-  # `<` bound.
-  defp iso8601_ms(%DateTime{} = at) do
-    at
-    |> DateTime.to_unix(:millisecond)
-    |> DateTime.from_unix!(:millisecond)
-    |> DateTime.to_iso8601()
   end
 end

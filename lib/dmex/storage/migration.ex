@@ -29,7 +29,7 @@ defmodule DMEx.Storage.Migration do
     * `:prefix` — a Postgres schema to create the tables in, created if absent.
       SQLite has no schemas and raises on it.
 
-  ## The three indexes
+  ## The two indexes
 
   **The primary key on `id`** serves every whole-log read directly: those are
   `id > cursor` range scans and nothing else. **`(message_type, id)`** serves a
@@ -39,12 +39,6 @@ defmodule DMEx.Storage.Migration do
   genuinely cheaper there. It costs one index entry per append, paid whether or
   not anyone selects against it, because the alternative is that server-side
   selection saves bandwidth and no database work at all.
-
-  **`(inserted_at, id)`** serves `c:DMEx.Storage.cursor_at/2`, which resolves a
-  `stream_from:` instant to a cursor once per connect. Also one entry per append,
-  and this one is paid by every log whether or not anyone ever connects with a
-  timestamp — but `stream_from: :current` is the default, so in practice every
-  subscription reads it exactly once at startup.
 
   ## The `message_type` CHECK
 

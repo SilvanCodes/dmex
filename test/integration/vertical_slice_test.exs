@@ -271,7 +271,7 @@ defmodule DMEx.Integration.VerticalSliceTest do
   end
 
   # `stream_from: 1` throughout: these tests append first and subscribe after,
-  # which is the backlog they are about. The default `:current` would correctly
+  # which is the backlog they are about. The default — unset — would correctly
   # skip all of it.
   defp subscribe(handler, opts \\ [stream_from: 1]) do
     {:ok, _} = DMEx.Supervisor.subscribe(handler, [supervisor: TestSupervisor] ++ opts)

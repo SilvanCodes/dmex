@@ -116,12 +116,9 @@ defmodule DMEx.Telemetry do
   `:reason` distinguishes a log restart from a poison message crash-looping from
   a stream dropped for silence.
 
-  **Two reasons deserve an alert of their own.** `{:sequence_gap, expected,
-  got}` means a frame named a predecessor this subscription never received — a
-  message went missing on the wire, and the connection was dropped rather than
-  allowed to step over it. It repairs itself if the cause was transport damage;
-  a steady rate means the log is genuinely skipping rows.
-  `{:unchained_frame, id}` means a frame arrived with no predecessor at all, so
-  the stream cannot be checked for gaps and is refused rather than trusted.
+  **One reason deserves an alert of its own.** `{:no_matching_types, url}` means
+  the log answered `404`: the subscription's message types match nothing that
+  log knows about. It clears itself when the log deploys those types, so a
+  steady rate is a subscription pointed at the wrong log.
   """
 end

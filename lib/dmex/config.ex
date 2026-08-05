@@ -37,7 +37,7 @@ defmodule DMEx.Config do
 
   | setting | default | why |
   | --- | --- | --- |
-  | `stream_from` | `:current` | where a subscription begins when it has no cursor yet. Ignored once one exists. |
+  | `stream_from` | `nil` | where a subscription begins when it has no cursor yet. Ignored once one exists. |
   | `checkpoint_interval` | `1_000` | ms; the longest a coalesced run of *skipped* rows may go unpersisted. Skips run no handler, so this bounds only how much re-skipping a crash costs. A handled message commits its own advance immediately. |
   | `on_failure` | `:dead_message` | what happens after local retries are exhausted. Recording the message and moving on keeps one poison message from wedging a subscription, and from vanishing; `:crash` is there when a stuck subscription is the better failure. |
   | `max_attempts` | `3` | total attempts — enough to ride out a transient deadlock, few enough that a poison message reaches its terminal action in under a second of backoff. |
@@ -50,26 +50,21 @@ defmodule DMEx.Config do
 
   ### `stream_from`
 
-  Three forms, all meaning *deliver from this point onward, inclusive*. They
-  differ only in what a point is, and that difference is the whole of the
-  arithmetic:
+  Two forms:
 
-    * **a positive id** — an id names a *message*, so `stream_from: 42` delivers
-      42 itself. `DMEx.Handler.Request` turns it into the exclusive cursor `41`,
-      which is the only such conversion anywhere. `0` is rejected rather than
-      clamped: ids start at 1, so it names no message, and accepting it would
-      leave `0` and `1` as two spellings of one position.
-    * **a `DateTime` or an ISO-8601 string** — an instant names the *gap between*
-      two messages, which is already what an exclusive cursor is, so it needs no
-      conversion at all. A message stamped exactly at the instant is delivered,
-      since it is not before it. An explicit offset is required (a naive
-      timestamp is ambiguous) and any offset is normalised to UTC here, once.
-    * **`:current`** — the tip. Resolved to `DateTime.utc_now()` once in
-      `DMEx.Handler.Stream`'s `init/1` and reused across every reconnect, so a
-      subscription that has not yet handled its first message does not skip what
-      arrives while it is disconnected. The atom exists because there is no
-      static spelling of "now": `DateTime.utc_now()` written here would freeze at
-      DMEx's build time, and at a `use` site at the handler's compilation.
+    * **a positive id** — *deliver from this id onward, inclusive*. An id names a
+      *message*, so `stream_from: 42` delivers 42 itself. `DMEx.Handler.Request`
+      turns it into the exclusive cursor `41`, which is the only such conversion
+      anywhere. `0` is rejected rather than clamped: ids start at 1, so it names
+      no message, and accepting it would leave `0` and `1` as two spellings of
+      one position. `stream_from: 1` is the whole log.
+    * **`nil`** — unset, and the default: from now on. The subscription sends no
+      `last-event-id`, and the log answers an absent one with its tip, so
+      nothing already appended is delivered. "Now" is the log's, resolved on
+      every connect until the first message is handled — so a subscription that
+      reconnects before handling anything does not see what was appended while
+      it was down. That is what "from now on" means with no cursor; a
+      subscription that must not miss those names an id instead.
 
   Whether these are right *under real load* is still open: most have only been
   exercised against benchmarks and a deliberately slow test handler.
@@ -87,7 +82,7 @@ defmodule DMEx.Config do
   ]
 
   @handler_defaults [
-    stream_from: :current,
+    stream_from: nil,
     checkpoint_interval: 1_000,
     on_failure: :dead_message,
     max_attempts: 3,
@@ -113,7 +108,7 @@ defmodule DMEx.Config do
 
   @typedoc "A subscription's resolved configuration."
   @type handler :: %{
-          stream_from: pos_integer() | :current | DateTime.t(),
+          stream_from: pos_integer() | nil,
           checkpoint_interval: pos_integer(),
           on_failure: :crash | :skip | :dead_message,
           max_attempts: pos_integer(),
@@ -244,9 +239,9 @@ defmodule DMEx.Config do
 
     validate_inclusion!(:on_failure, config.on_failure, [:crash, :skip, :dead_message])
 
-    # The one setting validation *transforms*: a string is parsed here so
-    # everything downstream sees exactly one shape.
-    %{config | stream_from: validate_stream_from!(config.stream_from)}
+    validate_stream_from!(config.stream_from)
+
+    config
   end
 
   # The one setting that may be switched off rather than tuned: a log whose
@@ -302,10 +297,7 @@ defmodule DMEx.Config do
     end
   end
 
-  defp validate_stream_from!(:current), do: :current
-  # Shifted, so the string form and the struct form normalise identically —
-  # otherwise only the parsed one is UTC and the doc's "once, here" is a lie.
-  defp validate_stream_from!(%DateTime{} = at), do: DateTime.shift_zone!(at, "Etc/UTC")
+  defp validate_stream_from!(nil), do: nil
   defp validate_stream_from!(id) when is_integer(id) and id > 0, do: id
 
   # Worth its own message: 0 is the value someone reaches for meaning "from the
@@ -316,25 +308,9 @@ defmodule DMEx.Config do
             "Use :stream_from 1 to start from the first one."
   end
 
-  # `DateTime.from_iso8601/1` already rejects a naive string (`:missing_offset`)
-  # and a bare date (`:invalid_format`), and shifts any offset to UTC — so the
-  # strictness this setting wants is the parser's default.
-  defp validate_stream_from!(value) when is_binary(value) do
-    case DateTime.from_iso8601(value) do
-      {:ok, at, _offset} ->
-        at
-
-      {:error, reason} ->
-        raise ArgumentError,
-              ":stream_from must be an ISO-8601 timestamp with an explicit offset, " <>
-                "got: #{inspect(value)} (#{inspect(reason)})"
-    end
-  end
-
   defp validate_stream_from!(value) do
     raise ArgumentError,
-          ":stream_from must be :current, a positive integer id, a DateTime, or an " <>
-            "ISO-8601 string, got: #{inspect(value)}"
+          ":stream_from must be a positive integer id or nil, got: #{inspect(value)}"
   end
 
   defp validate_inclusion!(field, value, allowed) do

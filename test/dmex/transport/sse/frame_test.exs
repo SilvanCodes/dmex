@@ -9,7 +9,6 @@ defmodule DMEx.Transport.SSE.FrameTest do
   defp row(id, opts \\ []) do
     %{
       id: id,
-      previous_id: Keyword.get(opts, :previous_id, id - 1),
       message_type: Keyword.get(opts, :message_type, "MyApp.Messages.OrderPlaced"),
       data: Keyword.get(opts, :data, ~s({"order_id":7})),
       metadata: Keyword.get(opts, :metadata, "{}"),
@@ -22,7 +21,7 @@ defmodule DMEx.Transport.SSE.FrameTest do
   describe "encode_row/1" do
     test "produces exactly the documented wire shape" do
       assert encode(row(1042)) ==
-               "id: 1041/1042\n" <>
+               "id: 1042\n" <>
                  "event: MyApp.Messages.OrderPlaced\n" <>
                  ~s(data: {"data":{"order_id":7},"metadata":{}}\n\n)
     end
@@ -33,8 +32,7 @@ defmodule DMEx.Transport.SSE.FrameTest do
     test "carries the payload and the metadata, and nothing else" do
       assert {:message, message} = reparse(encode(row(1042)))
 
-      assert Map.keys(message) |> Enum.sort() ==
-               ~w(data id message_type metadata previous_id)
+      assert Map.keys(message) |> Enum.sort() == ~w(data id message_type metadata)
     end
 
     # Three slots carry the row and two of them are SSE's own — which is what
@@ -45,21 +43,6 @@ defmodule DMEx.Transport.SSE.FrameTest do
 
       assert message["id"] == 1042
       assert message["message_type"] == "MyApp.Messages.OrderPlaced"
-    end
-
-    # The link is what makes a *missing* frame detectable: a consumer that holds
-    # the last id it saw can refuse a frame that does not claim it.
-    test "the id states its predecessor, which need not be id - 1" do
-      # A selective stream's ids are legitimately sparse, so the predecessor is
-      # stated rather than inferred.
-      assert encode(row(1042, previous_id: 7)) =~ "id: 7/1042\n"
-
-      assert {:message, %{"previous_id" => 7, "id" => 1042}} =
-               reparse(encode(row(1042, previous_id: 7)))
-    end
-
-    test "a nil predecessor renders as 0, the same thing a fresh log says" do
-      assert encode(row(1, previous_id: nil)) =~ "id: 0/1\n"
     end
 
     test "splices row data verbatim rather than re-encoding it" do
@@ -130,30 +113,30 @@ defmodule DMEx.Transport.SSE.FrameTest do
     end
 
     test "tolerates CRLF and CR line terminators" do
-      crlf = ~s(id: 4/5\r\nevent: T\r\ndata: {"data":{}})
-      cr = ~s(id: 4/5\revent: T\rdata: {"data":{}})
+      crlf = ~s(id: 5\r\nevent: T\r\ndata: {"data":{}})
+      cr = ~s(id: 5\revent: T\rdata: {"data":{}})
 
       assert {:ok, {:message, %{"id" => 5, "message_type" => "T"}}} = Frame.parse(crlf)
       assert {:ok, {:message, %{"id" => 5, "message_type" => "T"}}} = Frame.parse(cr)
     end
 
     test "joins consecutive data: lines with LF, as the SSE spec requires" do
-      block = ~s(id: 4/5\nevent: T\ndata: {"data":\ndata: {"a":1}})
+      block = ~s(id: 5\nevent: T\ndata: {"data":\ndata: {"a":1}})
 
       assert {:ok, {:message, %{"data" => %{"a" => 1}}}} = Frame.parse(block)
     end
 
     test "accepts a field with no space after the colon" do
-      assert {:ok, {:message, %{"id" => 5}}} = Frame.parse(~s(id:4/5\nevent:T\ndata:{"data":{}}))
+      assert {:ok, {:message, %{"id" => 5}}} = Frame.parse(~s(id:5\nevent:T\ndata:{"data":{}}))
     end
 
     test "preserves further leading spaces, stripping only the first" do
       assert {:ok, {:message, %{"message_type" => " padded"}}} =
-               Frame.parse(~s(id: 0/1\nevent:  padded\ndata: {"data":{}}))
+               Frame.parse(~s(id: 1\nevent:  padded\ndata: {"data":{}}))
     end
 
     test "ignores comment lines and unknown fields" do
-      block = ~s(: a comment\nid: 4/5\nevent: T\nunknown: whatever\ndata: {"data":{}})
+      block = ~s(: a comment\nid: 5\nevent: T\nunknown: whatever\ndata: {"data":{}})
 
       assert {:ok, {:message, %{"id" => 5}}} = Frame.parse(block)
     end
@@ -164,34 +147,28 @@ defmodule DMEx.Transport.SSE.FrameTest do
     # likes.
     test "a block short of id, event or data is ignored rather than rejected" do
       assert {:ok, :ignore} = Frame.parse(~s(event: T\ndata: {"data":{}}))
-      assert {:ok, :ignore} = Frame.parse(~s(id: 4/5\ndata: {"data":{}}))
-      assert {:ok, :ignore} = Frame.parse(~s(id: 4/5\nevent: T))
+      assert {:ok, :ignore} = Frame.parse(~s(id: 5\ndata: {"data":{}}))
+      assert {:ok, :ignore} = Frame.parse(~s(id: 5\nevent: T))
       assert {:ok, :ignore} = Frame.parse("")
     end
 
+    # Including the `previous/current` pair the wire used to carry: a position
+    # is one integer now, so the old spelling is simply not an id.
     test "a non-integer id is not an id, so the block is not a message" do
       assert {:ok, :ignore} = Frame.parse(~s(id: abc\nevent: T\ndata: {"data":{}}))
-      assert {:ok, :ignore} = Frame.parse(~s(id: 4/abc\nevent: T\ndata: {"data":{}}))
-      assert {:ok, :ignore} = Frame.parse(~s(id: abc/5\nevent: T\ndata: {"data":{}}))
-    end
-
-    # What a log predating the chain sends, and what a DMEx consumer
-    # refuses — but parsing it is the generic SSE behaviour.
-    test "a bare id parses with no predecessor" do
-      assert {:ok, {:message, %{"id" => 5, "previous_id" => nil}}} =
-               Frame.parse(~s(id: 5\nevent: T\ndata: {"data":{}}))
+      assert {:ok, :ignore} = Frame.parse(~s(id: 4/5\nevent: T\ndata: {"data":{}}))
     end
 
     test "rejects malformed JSON" do
-      assert {:error, {:invalid_json, _}} = Frame.parse(~s(id: 0/1\nevent: T\ndata: {not json}))
+      assert {:error, {:invalid_json, _}} = Frame.parse(~s(id: 1\nevent: T\ndata: {not json}))
     end
 
     test "rejects a data payload that does not carry the row's data" do
       assert {:error, {:invalid_data_shape, _}} =
-               Frame.parse(~s(id: 0/1\nevent: T\ndata: [1,2,3]))
+               Frame.parse(~s(id: 1\nevent: T\ndata: [1,2,3]))
 
       assert {:error, {:invalid_data_shape, _}} =
-               Frame.parse(~s(id: 0/1\nevent: T\ndata: {"metadata":{}}))
+               Frame.parse(~s(id: 1\nevent: T\ndata: {"metadata":{}}))
     end
   end
 
@@ -213,7 +190,6 @@ defmodule DMEx.Transport.SSE.FrameTest do
         assert {:ok, {:message, message}} = Frame.parse(block(encode(row)))
 
         assert message["id"] == id
-        assert message["previous_id"] == id - 1
         assert message["message_type"] == "T" <> type
         assert message["data"] == payload
         assert message["metadata"] == metadata

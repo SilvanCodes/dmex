@@ -36,6 +36,12 @@ defmodule DMEx.Handler.RequestTest do
 
       assert names == ["accept", "last-event-id"]
     end
+
+    test "with nothing to resume from, only accept" do
+      names = Request.headers(:none, config()) |> Enum.map(&elem(&1, 0))
+
+      assert names == ["accept"]
+    end
   end
 
   describe "the resume position" do
@@ -49,7 +55,7 @@ defmodule DMEx.Handler.RequestTest do
     end
 
     test "the durable cursor wins over stream_from:, whatever it says" do
-      for stream_from <- [1, 99, ~U[2026-08-03 10:00:00Z]] do
+      for stream_from <- [nil, 1, 99] do
         assert Request.last_event_id(7, config(stream_from: stream_from)) ==
                  [{"last-event-id", "7"}]
       end
@@ -67,19 +73,11 @@ defmodule DMEx.Handler.RequestTest do
       assert Request.last_event_id(:none, config(stream_from: 1)) == [{"last-event-id", "0"}]
     end
 
-    # An instant names the gap between two messages, which is what an exclusive
-    # cursor already is — so it goes over as-is, for the log to resolve.
-    test "stream_from: an instant with no cursor sends it as ISO-8601" do
-      assert Request.last_event_id(:none, config(stream_from: ~U[2026-08-03 10:00:00Z])) ==
-               [{"last-event-id", "2026-08-03T10:00:00Z"}]
-    end
-
-    # `:current` is resolved to an instant in DMEx.Handler.Stream.init/1 and
-    # never reaches this module.
-    test "the atom never gets here" do
-      assert_raise FunctionClauseError, fn ->
-        Request.last_event_id(:none, config(stream_from: :current))
-      end
+    # The absence of the header is the whole of "from now on" — there is no
+    # token, so an unset `stream_from` sends nothing at all.
+    test "stream_from: unset with no cursor sends no header" do
+      assert Request.last_event_id(:none, config()) == []
+      assert Request.position(:none, config()) == :now
     end
 
     test "headers/2 carries it through" do
@@ -125,10 +123,10 @@ defmodule DMEx.Handler.RequestTest do
       assert {:ok, %{cursor: 41}} = Params.parse([], headers)
     end
 
-    test "stream_from: an instant round-trips as something for the log to resolve" do
-      headers = Request.headers(:none, config(stream_from: ~U[2026-08-03 10:00:00Z]))
+    test "stream_from: unset round-trips as the log's tip" do
+      headers = Request.headers(:none, config())
 
-      assert {:ok, %{cursor: {:at, ~U[2026-08-03 10:00:00Z]}}} = Params.parse([], headers)
+      assert {:ok, %{cursor: :now}} = Params.parse([], headers)
     end
   end
 end

@@ -57,8 +57,6 @@ defmodule DMEx.Handler.PipelineFailureTest.FlakyStorage do
   @impl DMEx.Storage
   defdelegate max_id(opts), to: Storage
   @impl DMEx.Storage
-  defdelegate cursor_at(opts, at), to: Storage
-  @impl DMEx.Storage
   defdelegate appended_since(opts, cursor), to: Storage
   @impl DMEx.Storage
   defdelegate last_seen(opts, subscription), to: Storage

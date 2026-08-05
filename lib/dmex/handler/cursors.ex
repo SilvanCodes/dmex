@@ -44,7 +44,7 @@ defmodule DMEx.Handler.Cursors do
   Returns where `handler`'s subscription has got to, and when it last moved.
 
   `nil` if it has never committed a position — the normal state for a
-  subscription started with `stream_from: :current` on a quiet log, since
+  subscription started with the default `stream_from:` on a quiet log, since
   nothing writes a cursor until it has consumed something.
   """
   @spec inspect(module(), keyword()) ::

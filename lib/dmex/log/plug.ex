@@ -72,8 +72,8 @@ defmodule DMEx.Log.Plug do
   A `400` for a malformed `Last-Event-ID` or a path segment that is not a
   decodable filter. A `404` for a filter matching none of the application's
   message types. A `405` with `allow: GET` for any other method. A `503` when the
-  connect cursor cannot be resolved — a `Last-Event-ID` instant whose
-  `c:DMEx.Storage.cursor_at/2` query fails.
+  connect cursor cannot be resolved — an absent `Last-Event-ID` whose
+  `c:DMEx.Storage.max_id/1` query fails.
 
   There is no `503`/`Retry-After` *admission control* — see `ROADMAP.md`.
   """
@@ -179,8 +179,9 @@ defmodule DMEx.Log.Plug do
   end
 
   defp open(conn, log, config, selection, status, cursor) do
-    # Re-armed because `resolve_cursor/2` above can query — an instant costs a
-    # `cursor_at`, which takes a pool checkout like any other read. The
+    # Re-armed because `resolve_cursor/2` above can query — an absent
+    # `Last-Event-ID` costs a `max_id`, which takes a pool checkout like any
+    # other read. The
     # registration's arm covers that query; this one gives the header write
     # that follows its own full budget rather than what the query left of it.
     Status.arm(status, config.stall_timeout)
@@ -213,17 +214,17 @@ defmodule DMEx.Log.Plug do
     end
   end
 
-  # The only cursor needing a query on the connect path, and what lets a
-  # consumer position itself in time without a preflight request.
+  # The only cursor needing a query on the connect path: an absent
+  # `Last-Event-ID` means "from now on", and the tip is the log's to name.
   #
   # An error is fatal to the connect rather than a fallback to 0. Falling back
   # would turn a pool timeout into a whole-log replay — and since every
-  # `stream_from: :current` subscription arrives here, that is the default path,
-  # not an exotic one. A 503 costs the consumer one jittered reconnect.
-  defp resolve_cursor(log, {:at, at}) do
+  # subscription with no cursor yet arrives here, that is the default path, not
+  # an exotic one. A 503 costs the consumer one jittered reconnect.
+  defp resolve_cursor(log, :now) do
     %{storage: storage, storage_opts: opts} = log.__dmex__()
 
-    storage.cursor_at(opts, at)
+    storage.max_id(opts)
   end
 
   defp resolve_cursor(_log, cursor) when is_integer(cursor), do: {:ok, cursor}

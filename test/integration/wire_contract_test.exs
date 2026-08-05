@@ -75,8 +75,17 @@ defmodule DMEx.Integration.WireContractTest do
       ctx
     end
 
-    test "no header streams the whole log", ctx do
+    test "no header skips history entirely", ctx do
       {200, _, body} = request(ctx, [])
+
+      # A consumer that only cares about what happens from now on, with no
+      # preflight request and no tip token — the header's absence is the token.
+      refute body =~ "event: "
+      assert body =~ "retry: "
+    end
+
+    test "0 streams the whole log", ctx do
+      {200, _, body} = request(ctx, [{"last-event-id", "0"}])
 
       assert body =~ ~r/"order_id":\s*1\b/
       assert body =~ ~r/"order_id":\s*5\b/
@@ -95,7 +104,7 @@ defmodule DMEx.Integration.WireContractTest do
     # bytes the publisher encoded. Key order is not preserved and whitespace
     # differs, so nothing may hash or sign a payload end to end.
     test "payloads arrive as jsonb normalized them, not as the publisher encoded them", ctx do
-      {200, _, body} = request(ctx, [])
+      {200, _, body} = request(ctx, [{"last-event-id", "0"}])
 
       # JSON.encode! would have produced compact, struct-ordered output.
       assert body =~ ~s("order_id": )
@@ -113,29 +122,24 @@ defmodule DMEx.Integration.WireContractTest do
       assert order_ids == [1, 2, 3, 4, 5]
     end
 
-    test "an instant now skips history entirely", ctx do
-      {200, _, body} =
-        request(ctx, [{"last-event-id", DateTime.to_iso8601(DateTime.utc_now())}])
-
-      # A consumer that only cares about what happens from now on, with no
-      # preflight request and no second parameter — and no tip token either,
-      # because every row is before "now".
-      refute body =~ "event: "
-      assert body =~ "retry: "
-    end
-
-    test "an instant before the log is the whole log", ctx do
-      {200, _, body} = request(ctx, [{"last-event-id", "2000-01-01T00:00:00Z"}])
-
-      assert body =~ "event: "
-    end
   end
 
   describe "a malformed request is a 400" do
     test "a Last-Event-ID outside the vocabulary", ctx do
-      # `latest` among them: with a consumer sending its own instant there is
-      # nothing left for a tip token to express.
-      for value <- ["-1", "1.0", "abc", "LATEST", "latest", "", "42abc", "2026-08-03"] do
+      # `latest` among them: the header's absence already means the tip, and an
+      # instant is not vocabulary at all any more.
+      for value <- [
+            "-1",
+            "1.0",
+            "abc",
+            "LATEST",
+            "latest",
+            "",
+            "42abc",
+            "2026-08-03",
+            "2026-08-03T10:00:00Z",
+            "4/5"
+          ] do
         assert {400, _headers, body} = request(ctx, [{"last-event-id", value}]),
                "expected #{inspect(value)} to be rejected"
 

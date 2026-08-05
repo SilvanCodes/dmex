@@ -12,7 +12,7 @@ defmodule DMEx.Handler.Stream do
   `last_seen` and hands it to the transport. It never resumes from the last row
   it saw and never trusts anything in memory, which is what makes a dropped
   connection a non-event. `stream_from:` applies only when there is no cursor at
-  all, and is resolved once in `init/1` so every connect until then agrees.
+  all.
 
   ## Reconnects are jittered
 
@@ -98,7 +98,7 @@ defmodule DMEx.Handler.Stream do
           # Where the rows come from, for the operator: a URL, or the module of
           # a log this application owns.
           origin: Keyword.fetch!(opts, :origin),
-          config: resolve_stream_from(Keyword.fetch!(opts, :config)),
+          config: Keyword.fetch!(opts, :config),
           pipeline: Pipeline.build(opts),
           storage: Keyword.fetch!(opts, :storage),
           storage_opts: Keyword.fetch!(opts, :storage_opts),
@@ -204,25 +204,6 @@ defmodule DMEx.Handler.Stream do
 
   ## Connecting
 
-  # Once per process, not once per connect. `stream_from` applies only until the
-  # first message is handled, and on a quiet log that window is days — so
-  # re-reading the clock on every reconnect would silently skip whatever arrived
-  # while this stream was down. Freezing it here means a reconnect resolves to
-  # the same position the first connect did.
-  #
-  # It also empties the atom out of everything downstream: past this line a
-  # transport sees `pos_integer() | DateTime.t()` and nothing else.
-  #
-  # A process *restart* does re-read the clock. Closing that too would mean
-  # persisting the resolved position before any message is handled, which
-  # `dmex_cursors.last_seen` has nowhere to put and the SSE consumer could not
-  # compute anyway — the log resolves it, and the wire carries no `max_id`.
-  defp resolve_stream_from(%{stream_from: :current} = config) do
-    %{config | stream_from: DateTime.utc_now()}
-  end
-
-  defp resolve_stream_from(config), do: config
-
   defp connect(state) do
     with {:ok, cursor} <- durable_cursor(state),
          {:ok, source} <- state.transport.connect(connect_opts(state, cursor)) do
@@ -246,11 +227,7 @@ defmodule DMEx.Handler.Stream do
   # The whole option list plus where to resume: a transport takes what it needs
   # and ignores the rest, so adding one costs no plumbing here.
   defp connect_opts(state, cursor) do
-    # `config:` is overridden rather than taken from `opts`, which still holds
-    # the declared one: `stream_from: :current` was resolved to an instant in
-    # `init/1`, and a transport reading around that would re-read the clock on
-    # every reconnect.
-    Keyword.merge(state.opts, cursor: cursor, owner: self(), config: state.config)
+    Keyword.merge(state.opts, cursor: cursor, owner: self())
   end
 
   # The transport is handed the cursor raw, `:none` included, because that is

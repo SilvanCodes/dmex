@@ -15,7 +15,6 @@ defmodule DMEx.Transport.SSE do
     * the request contract (`DMEx.Handler.Request`)
     * HTTP status policy: `2xx` proceeds, `404` retries, other `4xx` is fatal,
       everything else reconnects
-    * the id chain, which catches a row lost *between* two that arrived
     * liveness, `missed_heartbeats` × the interval the log advertises as `retry:`
 
   **Backpressure.** Mint re-arms `active: :once` only when the owner returns, so
@@ -73,8 +72,6 @@ defmodule DMEx.Transport.SSE do
          subscription: subscription,
          config: config,
          decoder: Decoder.new(config.max_frame_bytes),
-         # The id the next frame must claim as its predecessor.
-         expected_previous: expected_previous(config, cursor),
          # Responses from one socket message not acted on yet — see
          # `responses/3`.
          pending: []
@@ -136,10 +133,9 @@ defmodule DMEx.Transport.SSE do
   # `chunk/2` on the other end produced.
   #
   # A terminal response among them does **not** discard the rows ahead of it:
-  # those are verified, complete and decoded, and a log ending its response
-  # right after a gap would otherwise leave the subscription unable to progress
-  # past the last good row, forever. So rows are returned first and the terminal
-  # is parked in `:pending`, collected with `:continue`.
+  # those are complete and decoded, and dropping them costs a re-read of rows
+  # the subscription already has in hand. So rows are returned first and the
+  # terminal is parked in `:pending`, collected with `:continue`.
   defp responses([], source, rows), do: yield(rows, source)
 
   defp responses([event | rest] = remaining, source, rows) do
@@ -182,14 +178,7 @@ defmodule DMEx.Transport.SSE do
   defp response({:data, ref, chunk}, %{ref: ref} = source) do
     case Decoder.push(source.decoder, chunk) do
       {:ok, decoded, decoder} ->
-        source = %{source | decoder: decoder}
-
-        # Before anything is handed over, so a break is caught while the rows in
-        # *this* push are still just rows and none has run.
-        case verify_chain(decoded, source) do
-          {:ok, source} -> {:rows, decoded, source}
-          {:error, reason} -> {:halt, {:disconnect, reason, source}}
-        end
+        {:rows, decoded, %{source | decoder: decoder}}
 
       {:error, reason, _decoder} ->
         # Reconnecting from the durable cursor costs only a re-read.
@@ -204,59 +193,4 @@ defmodule DMEx.Transport.SSE do
   end
 
   defp response(_other, source), do: {:cont, source}
-
-  ## The id chain
-
-  # An instant is resolved to a cursor on the *log*, and that number never comes
-  # back over the wire, so the first frame's claim has nothing to be checked
-  # against. Every other resume position is one this end chose, and comes from
-  # the same function that built the header — recomputing the `- 1` here is
-  # exactly the drift worth designing out.
-  defp expected_previous(config, cursor) do
-    case Request.position(cursor, config) do
-      %DateTime{} -> :unknown
-      cursor -> cursor
-    end
-  end
-
-  defp verify_chain(rows, source) do
-    Enum.reduce_while(rows, {:ok, source}, fn row, {:ok, source} ->
-      case check_link(row, source.expected_previous) do
-        :ok ->
-          {:cont, {:ok, %{source | expected_previous: Map.fetch!(row, "id")}}}
-
-        {:error, reason} ->
-          log_gap(source, reason)
-
-          {:halt, {:error, reason}}
-      end
-    end)
-  end
-
-  defp check_link(row, expected) do
-    case Map.get(row, "previous_id") do
-      nil -> {:error, {:unchained_frame, Map.fetch!(row, "id")}}
-      _previous when expected == :unknown -> :ok
-      ^expected -> :ok
-      previous -> {:error, {:sequence_gap, expected, previous}}
-    end
-  end
-
-  defp log_gap(source, {:sequence_gap, expected, got}) do
-    Logger.error(
-      "DMEx #{source.subscription} (#{inspect(source.handler)}) saw a gap in #{source.url}: " <>
-        "the next frame claims #{got} as its predecessor, but the last row this subscription " <>
-        "received was #{expected}. A message went missing between them. Dropping the " <>
-        "connection and re-reading from the durable cursor; if this repeats, the log is " <>
-        "skipping rows rather than the transport losing them."
-    )
-  end
-
-  defp log_gap(source, {:unchained_frame, id}) do
-    Logger.error(
-      "DMEx #{source.subscription} (#{inspect(source.handler)}) received frame #{id} from " <>
-        "#{source.url} with no predecessor in its `id:` field. A stream whose frames cannot be " <>
-        "linked cannot be checked for gaps, so it is refused rather than trusted."
-    )
-  end
 end

@@ -45,7 +45,6 @@ CREATE TABLE dmex_messages (
 );
 
 CREATE INDEX ON dmex_messages (message_type, id);
-CREATE INDEX ON dmex_messages (inserted_at, id);
 ```
 
 - `id` is the offset and the only ordering and resumption mechanism. `bigint`
@@ -57,24 +56,19 @@ CREATE INDEX ON dmex_messages (inserted_at, id);
   column. A log may merge its own columns into the metadata it *delivers* with
   `metadata: [:id, :inserted_at]`, which reserves those names on the way out and
   nothing here.
-- `inserted_at` is never an ordering key — `id` is. It does locate a *starting*
-  id, once, at connect: `stream_from:` accepts an instant, and the log resolves
-  it to the last row appended before that moment. Nothing reads it per row.
-  `clock_timestamp()` rather than `now()` because that resolution requires the
-  column to ascend with `id`: `now()` is the transaction's start time, taken
-  before the advisory lock was acquired, so it says nothing about the order ids
-  were assigned in. `clock_timestamp()` is evaluated by the same INSERT that
-  draws `nextval`, inside the lock's region. A backwards NTP step can still
-  invert a pair, as can a row inserted outside `append/2`.
+- `inserted_at` is never an ordering key — `id` is, and nothing in DMEx reads
+  this column. It is observability, delivered only to a subscription whose log
+  lifts it with `metadata: [:inserted_at]`. `clock_timestamp()` rather than
+  `now()` so it still ascends with `id`: `now()` is the transaction's start
+  time, taken before the advisory lock was acquired, so it says nothing about
+  the order ids were assigned in.
 - `message_type` is constrained to `[A-Za-z0-9_.]+` because it goes on an SSE
   `event:` line, and SSE field lines have no escaping. Dots survive so a
   declared type can namespace itself.
 
-**Three indexes, one per read shape.** The primary key serves a whole-log
+**Two indexes, one per read shape.** The primary key serves a whole-log
 `id > cursor` range scan; `(message_type, id)` serves a selective one, and the
 planner takes whichever is cheaper (see *What has been measured*).
-`(inserted_at, id)` serves `c:DMEx.Storage.cursor_at/2`, read once per connect
-to resolve a `stream_from:` instant and never per row.
 
 **A row says what a message *is*, never who might want it.** A grouping stamped
 in at append time would be immutable with the table: fixed message by message,
@@ -158,7 +152,7 @@ resource as the bare mount. Any method other than `GET` is a `405` with an
 
 | header | meaning |
 | --- | --- |
-| `Last-Event-ID` | resume position: `previous/current` as echoed from a frame's `id:`, a bare integer id, an ISO-8601 instant with an explicit offset (resume after the last row appended before it), or absent (the whole log). Anything else is a `400`. Only `current` is used — the predecessor is a consumer-side check. There is no tip token: a consumer wanting the tip sends the current instant, which resolves to it because every row is before it. |
+| `Last-Event-ID` | resume position: one non-negative integer, delivery starting after it — which is exactly a frame's `id:` echoed back. `0` is the whole log. Absent means from the log's tip at connect, so a consumer with nothing to resume from sees only what is appended next. Anything else is a `400`. There is no tip token, because the header's absence is one. |
 
 **That is the whole list. DMEx defines no request headers of its own.** Pacing
 is producer configuration, so there is nothing for a consumer to ask for, clamp,
@@ -191,7 +185,7 @@ silence.
 **Frames.** One frame per log row, in three slots, with no envelope:
 
 ```
-id: 1041/1042
+id: 1042
 event: MyApp.Messages.OrderShipped
 data: {"data":{"order_id":7},"metadata":{"trace_id":"abc"}}
 
@@ -199,7 +193,7 @@ data: {"data":{"order_id":7},"metadata":{"trace_id":"abc"}}
 
 | column | goes to | why there |
 | --- | --- | --- |
-| `id` | `id:`, as `previous/current` | it *is* the resume position, so a generic client's `Last-Event-ID` works with no DMEx knowledge — and the predecessor makes a *missing* frame detectable |
+| `id` | `id:` | it *is* the resume position, so a generic client's `Last-Event-ID` works with no DMEx knowledge |
 | `message_type` | `event:` | it *is* the event name, so `addEventListener("order_shipped", …)` works in a browser |
 | `data` | inside `data:` | the publisher's payload, verbatim |
 | `metadata` | inside `data:` | the publisher's metadata, verbatim, plus whichever columns this log's `metadata:` lifts |
@@ -209,6 +203,10 @@ data: {"data":{"order_id":7},"metadata":{"trace_id":"abc"}}
   construct, so nothing on the consumer side has to know it happened. That lets
   `id:` be the row's own id, and makes a frame mean the same thing whether one
   row or five hundred went out together.
+- **`id:` is a number and the position vocabulary is one number.** A frame's
+  `id:`, a `Last-Event-ID`, and a cursor are the same thing in the same units,
+  so the round trip is an echo with no parsing, no arithmetic and no second
+  spelling of any position.
 - **`data:` is one line**, so the payload is exactly a JSON document a client
   hands to its parser. JSON's grammar forbids raw control characters inside
   strings, which is what makes it safe to splice stored `jsonb` text in with no
@@ -218,20 +216,8 @@ data: {"data":{"order_id":7},"metadata":{"trace_id":"abc"}}
   subtract from — so a subscription that wants it has the log lift the column
   with `metadata: [:inserted_at]`, and no other stream pays for the field. It
   compares two machines' clocks, so it is an NTP-accurate seconds-scale signal
-  and not a finer one.
-
-  The same two clocks meet in `Last-Event-ID` when a consumer sends an instant,
-  including the `utc_now()` that `stream_from: :current` resolves to. Skew there
-  only errs in the safe direction: a consumer running fast sends a timestamp in
-  the producer's future, every row is before it, and the cursor is the tip; a
-  consumer running slow re-delivers a few seconds of history. Duplicates, never
-  gaps — which is what the id-based suppression in the pipeline already absorbs.
-- **`id:` is a link, not a number.** `1041/1042` reads "the row before me was
-  1041, I am 1042", and a consumer refuses a frame that does not claim the row
-  it last saw. It cannot be inferred as `id - 1`, because a selective stream's
-  ids are legitimately sparse and only the producer knows which gaps it made on
-  purpose. The first frame links back to the cursor the read was issued against,
-  so the chain also proves the producer resumed where it was asked to.
+  and not a finer one. No clock is on the wire anywhere else: a position is an
+  id, and only the producer's ids order the log.
 
 The cost of putting the type on `event:` is that `EventSource.onmessage` stops
 firing — named events need `addEventListener`, which is the ordinary way to
@@ -347,22 +333,7 @@ with `metadata:`. A handler stays a plain function of its domain data plus
 context, testable by constructing a struct and a map — the lift changes what is
 in the map, never the shape of the callback.
 
-**12. A gap in delivery is detected, never stepped over.** Every frame states
-its predecessor and `DMEx.Transport.SSE` refuses one that does not claim the row
-it last saw, before duplicate suppression can hide it. Without this the cursor
-model has a hole it cannot see: the cursor is the only record of what was
-processed, so a message lost between two that arrived would have its id put
-permanently behind the cursor by the next row's advance.
-
-TCP does not silently drop bytes mid-stream, so what this defends against is a
-mangling intermediary, a third-party producer whose read skips rows, and
-`DMEx.Transport.SSE.Frame.parse/1`, which discards any block missing `id:`,
-`event:` or `data:`.
-A break drops the connection and re-reads from the durable cursor: transport
-damage repairs itself, and a producer that really does skip rows becomes a
-visible reconnect loop making no progress.
-
-**13. An identity is its declaration, not its module name.** The `"log/id"` pair
+**12. An identity is its declaration, not its module name.** The `"log/id"` pair
 in `use DMEx.Handler` keys the cursor and the `type:` in `use DMEx.Message` keys
 the row, so renaming either module is free and only changing the declaration
 costs anything — a migration for a cursor (`DMEx.Handler.Cursors`), and for a
@@ -436,11 +407,12 @@ metadata — the log id reaches a handler only when that log lifts it with
 `metadata: [:id]`, so a consumer cannot count on it. A local write plus a
 separate outbox is the pattern that stays correct.
 
-**No-loss is checked, not assumed.** At-least-once is only meaningful if it is
-verifiable, and the cursor cannot verify it. So each frame states its
-predecessor and the consumer refuses a stream that skips one (invariant 12).
-That converts the one silent, permanent loss in the design into a loud reconnect
-loop.
+**No-loss rests on the producer.** The consumer cannot verify it: a position is
+one id, so a row lost *between* two that arrived is indistinguishable from a
+selective stream's legitimate sparseness, and the next row's advance puts the
+missing id permanently behind the cursor. What defends against it is on the
+producer's side — id assignment order equal to commit order (invariant 1), and
+one read per connection issued against the cursor it was handed.
 
 **Ordering** holds within one app's stream and never across streams.
 **Retention** is unbounded: nothing is deleted as a side effect of consumption.
