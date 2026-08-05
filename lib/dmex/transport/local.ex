@@ -109,12 +109,9 @@ defmodule DMEx.Transport.Local do
     {:disconnect, reason, source}
   end
 
+  # Catches `:continue` too: nothing is ever parked, because rows arrive one
+  # batch per `write/2` call and carry no terminal alongside them.
   def handle_message(_message, _source), do: :unknown
-
-  # Nothing is ever parked: rows arrive one batch per `write/2` call and carry
-  # no terminal alongside them.
-  @impl DMEx.Transport
-  def drain(_source), do: :unknown
 
   @impl DMEx.Transport
   def close(%{reader: reader}) do

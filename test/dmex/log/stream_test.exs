@@ -41,8 +41,6 @@ defmodule DMEx.Log.StreamTest do
     @impl DMEx.Transport
     def handle_message(_message, _source), do: :unknown
     @impl DMEx.Transport
-    def drain(_source), do: :unknown
-    @impl DMEx.Transport
     def close(_source), do: :ok
     @impl DMEx.Transport
     def liveness(_source), do: :infinity

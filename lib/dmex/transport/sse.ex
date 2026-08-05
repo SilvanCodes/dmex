@@ -105,17 +105,16 @@ defmodule DMEx.Transport.SSE do
     source.config.missed_heartbeats * interval
   end
 
-  # Nothing parked is `:unknown`, which is what `c:DMEx.Transport.drain/1`
+  # Nothing parked is `:unknown`, which is what `c:DMEx.Transport.handle_message/2`
   # specifies and what `DMEx.Transport.Local` answers — otherwise the stream
   # re-arms its liveness timer once per batch for nothing.
   @impl DMEx.Transport
-  def drain(%{pending: []}), do: :unknown
+  def handle_message(:continue, %{pending: []}), do: :unknown
 
-  def drain(source) do
+  def handle_message(:continue, source) do
     responses(source.pending, %{source | pending: []}, [])
   end
 
-  @impl DMEx.Transport
   def handle_message(message, source) do
     case Mint.HTTP.stream(source.conn, message) do
       :unknown ->
@@ -136,39 +135,20 @@ defmodule DMEx.Transport.SSE do
   # A terminal response among them does **not** discard the rows ahead of it:
   # those are complete and decoded, and dropping them costs a re-read of rows
   # the subscription already has in hand. So rows are returned first and the
-  # terminal is parked in `:pending`, collected by `drain/1`.
-  #
-  # What is parked is the *decided* terminal, not the event that produced it.
-  # Parking the raw event instead would replay it against a source that has not
-  # seen it — pushing the same bytes into the same decoder and decoding the same
-  # rows a second time. Everything after the terminal is dropped with it: a
-  # replay would halt on the terminal before reaching any of it anyway.
+  # terminal is parked in `:pending`, collected with `:continue`.
   defp responses([], source, rows), do: yield(rows, source)
 
-  defp responses([event | rest], source, rows) do
+  defp responses([event | rest] = remaining, source, rows) do
     case response(event, source) do
       {:cont, source} -> responses(rest, source, rows)
       {:rows, decoded, source} -> responses(rest, source, Enum.reverse(decoded, rows))
       {:halt, terminal} when rows == [] -> terminal
-      {:halt, terminal} -> yield(rows, park(terminal, source))
+      {:halt, _terminal} -> yield(rows, %{source | pending: remaining})
     end
   end
 
-  # The terminal carries the source it was decided against, and that is the one
-  # to keep: it holds the decoder advance the halting event already computed.
-  # `{:stop, _}` carries none — it ends the subscription rather than the
-  # connection — so the source is only a vehicle for the parked terminal there.
-  defp park({:disconnect, _reason, source} = terminal, _outer), do: parked(terminal, source)
-  defp park({:stop, _reason} = terminal, source), do: parked(terminal, source)
-
-  defp parked(terminal, source), do: %{source | pending: [{:parked, terminal}]}
-
   defp yield([], source), do: {:noreply, source}
   defp yield(rows, source), do: {:rows, Enum.reverse(rows), source}
-
-  # A terminal `responses/3` already decided, handed back untouched — see the
-  # parking note above.
-  defp response({:parked, terminal}, _source), do: {:halt, terminal}
 
   defp response({:status, ref, status}, %{ref: ref} = source) do
     cond do

@@ -88,27 +88,20 @@ defmodule DMEx.Transport do
   @callback connect(keyword()) :: {:ok, source()} | {:error, term()}
 
   @doc """
-  Interprets one process message, and nothing else.
+  Interprets one process message.
 
   The message is whatever landed in `DMEx.Handler.Stream`'s mailbox — a socket
   message, a linked reader's exit, anything. `:unknown` means it was not this
-  transport's, including when it happens to be an atom this transport uses
-  elsewhere.
+  transport's.
+
+  After running rows the stream calls this again with **`:continue`**, asking
+  whether one message carried anything beyond them. A transport that can produce
+  rows *and* a terminal event from a single message — an HTTP response ending
+  right after its last chunk — parks the terminal and returns it then, so it
+  never discards rows already verified. One with nothing to park answers
+  `:unknown`.
   """
   @callback handle_message(message :: term(), source()) :: action()
-
-  @doc """
-  Whatever the last `c:handle_message/2` parked beyond the rows it returned.
-
-  Asked once after each batch of rows has run. A transport that can produce rows
-  *and* a terminal event from a single message — an HTTP response ending right
-  after its last chunk — parks the terminal and returns it here, so it never
-  discards rows already verified. One with nothing to park answers `:unknown`.
-
-  Separate from `c:handle_message/2` because it is a separate question: that one
-  is asked *of a message*, this one is asked of the transport itself.
-  """
-  @callback drain(source()) :: action()
 
   @doc "Releases whatever `c:connect/1` opened."
   @callback close(source()) :: :ok
