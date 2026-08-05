@@ -10,9 +10,10 @@ defmodule DMEx.Integration.UnknownTypeTest do
   Both halves are tested here, because **the skip path is still load-bearing**.
   Filter inclusion is heuristic: there are no false negatives, but a false
   positive admits one extra type for the life of a connection, and a handler
-  declared `selective: false` asks for the whole log deliberately. A row the consumer has no module
-  for must still advance the cursor and invoke nothing, or a consumer would
-  wedge on the first one.
+  with a clause naming no type asks for the whole log deliberately. That handler
+  decodes every type its own application knows, named or not — so what it still
+  skips is a type *no* module here declares, and such a row must advance the
+  cursor and invoke nothing or a consumer would wedge on the first one.
   """
 
   use DMEx.IntegrationCase
@@ -22,6 +23,8 @@ defmodule DMEx.Integration.UnknownTypeTest do
   alias DMEx.Test.IntegrationLog, as: Log
   alias DMEx.Test.Messages.OrderPlaced
   alias DMEx.Test.Messages.OrderShipped
+
+  @undecodable "nothing.declares.this"
 
   setup do
     start_stack!()
@@ -74,7 +77,7 @@ defmodule DMEx.Integration.UnknownTypeTest do
     eventually(fn -> cursor() == {:ok, placed} end)
   end
 
-  test "the whole log still arrives, and still skips, with selective: false", _ctx do
+  test "the whole log still arrives, and still skips, for a whole-log handler", _ctx do
     # The escape hatch, and the reason the skip path cannot be deleted: this is
     # v1's delivery model, on demand, for telling "pointed at the wrong
     # log" apart from "log has appended nothing".
@@ -82,17 +85,28 @@ defmodule DMEx.Integration.UnknownTypeTest do
 
     subscribe(Handlers.EchoWholeLog)
 
-    {:ok, _} = Log.append(%OrderShipped{order_id: 1, carrier: "dhl"})
+    {:ok, _} = append_undecodable!()
     {:ok, id} = Log.append(%OrderPlaced{order_id: 2})
 
     # The undecodable row crossed the wire, invoked nothing, and did not wedge
     # the stream behind it.
     assert_receive {[:dmex, :handler, :skip], ^ref, _measurements, metadata}, 5_000
-    assert metadata.message_type == "order_shipped"
+    assert metadata.message_type == @undecodable
     assert metadata.handler == Handlers.EchoWholeLog
 
     assert_receive {:handled, %OrderPlaced{order_id: 2}, _}, 5_000
     eventually(fn -> cursor("test/echo_whole_log") == {:ok, id} end)
+  end
+
+  # The other half of asking for the whole log: a type this handler never named
+  # still resolves, through the modules its own application knows, and reaches
+  # the clause that named no type.
+  test "a whole-log handler decodes a type it never named", _ctx do
+    subscribe(Handlers.EchoWholeLog)
+
+    {:ok, _} = Log.append(%OrderShipped{order_id: 1, carrier: "dhl"})
+
+    assert_receive {:caught, OrderShipped, %OrderShipped{order_id: 1, carrier: "dhl"}, _}, 5_000
   end
 
   # A clean stop must settle the run of skips it is holding, or the next start
@@ -112,7 +126,7 @@ defmodule DMEx.Integration.UnknownTypeTest do
 
     ref = :telemetry_test.attach_event_handlers(self(), [[:dmex, :handler, :skip]])
 
-    {:ok, id} = Log.append(%OrderShipped{order_id: 1, carrier: "dhl"})
+    {:ok, id} = append_undecodable!()
 
     assert_receive {[:dmex, :handler, :skip], ^ref, _measurements, _metadata}, 5_000
     assert cursor("test/echo_whole_log") == {:ok, nil}
@@ -141,6 +155,17 @@ defmodule DMEx.Integration.UnknownTypeTest do
   # resolves to the tip at connect, which would race them.
   defp subscribe(handler) do
     {:ok, _} = DMEx.Supervisor.subscribe(handler, supervisor: TestSupervisor, last_seen: 0)
+  end
+
+  # A row whose `message_type` no compiled module declares — the only thing a
+  # whole-log handler skips now that it resolves everything its application
+  # knows. Appended through the storage adapter, because `Log.append/2` takes the
+  # type off a message module and a module is exactly what this row must not
+  # have. No `NOTIFY` either, so it arrives on the dispatcher's next poll.
+  defp append_undecodable! do
+    %{storage: storage, storage_opts: opts} = Log.__dmex__()
+
+    storage.append(opts, @undecodable, JSON.encode!(%{"order_id" => 1}), "{}")
   end
 
   defp cursor(subscription \\ "test/echo") do

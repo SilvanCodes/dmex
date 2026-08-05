@@ -61,7 +61,8 @@ defmodule DMEx.Log.Selection do
   for why this set is exact and that one is not.
 
   Which of the two a subscription gets is decided by the same value on both
-  transports: a `nil` fingerprint *is* `selective: false` — a
+  transports: a `nil` fingerprint is a handler with a clause that named no type
+  — one is enough, whatever the others name, and a
   `t:DMEx.Handler.declaration/0` carries no separate field — and it means the
   same thing here as it does on the wire, the whole log.
   """

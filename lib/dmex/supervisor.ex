@@ -49,8 +49,8 @@ defmodule DMEx.Supervisor do
   A URL is not verifiable against reality: pointing an entry at the wrong host
   yields a subscription that looks perfectly healthy — connected, cursor
   advancing, every row skipped as an unknown type — while reading the wrong log.
-  A selective subscription usually gets a `404` and says so; one declared
-  `selective: false` gets a stream of skips.
+  A selective subscription usually gets a `404` and says so; one whose clauses
+  ask for the whole log gets a stream of skips.
 
   `repo:` (and optionally `storage:` / `prefix:`) is the default for every
   subscription under this supervisor. A `subscribe/2` call may override it, or
@@ -330,23 +330,8 @@ defmodule DMEx.Supervisor do
   def __startable__!(handlers, logs) do
     reject_duplicate_ids!(handlers)
     reject_unbound_logs!(handlers, logs)
-    reject_stale!(handlers)
 
     handlers
-  end
-
-  # The only place freshness is asked, and asked here because this runs in
-  # `init/1`: a raise is a refusal to boot, where the same raise from the starter
-  # — which subscribes every discovered handler after `init/1` has returned —
-  # would be a restart loop. `subscribe/2` does not repeat it. Staleness now
-  # needs a module replaced without a compile (see `DMEx.Handler.verify_fresh!/1`),
-  # which is a property of the node rather than of one subscription, so once per
-  # boot is once per occasion it can change.
-  defp reject_stale!(handlers) do
-    for handler <- handlers,
-        do: :ok = handler |> Handler.declaration!() |> Handler.verify_fresh!()
-
-    :ok
   end
 
   # Names both modules, because "duplicate subscription id" without them is a
@@ -572,7 +557,8 @@ defmodule DMEx.Supervisor do
       @subscription_opts ++ @storage_opts ++ Config.handler_keys(),
       "`DMEx.Supervisor.subscribe/2`",
       " Note there is no filter or selection option here: the logs, the id, the " <>
-        "message types and `selective:` all belong to the handler module, not here."
+        "message types and whether the log narrows the stream all belong to the " <>
+        "handler module, not here."
     )
   end
 end

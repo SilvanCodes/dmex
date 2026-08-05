@@ -18,12 +18,13 @@ defmodule DMEx.Handler.Pipeline do
 
   ## 2. A message no clause matches is skipped, not an error
 
-  Two rows land here. One whose `message_type` names no declared module: a
-  filter false positive admits one, and a handler declared `selective: false`
-  asks for the whole log outright. And one whose type *is* declared but whose
-  value no clause head accepts, because selection is by type while a clause may
-  narrow further — `%OrderPlaced{status: "paid"}` declares `OrderPlaced` and the
-  log has no way to send only the paid ones.
+  Two rows land here. One whose `message_type` resolves to no module at all: a
+  filter false positive admits one, and a whole-log handler is sent every type
+  its log holds, including those its application has never heard of. And one
+  whose type *does* resolve but whose value no clause head accepts, because
+  selection is by type while a clause may narrow further —
+  `%OrderPlaced{status: "paid"}` declares `OrderPlaced` and the log has no way to
+  send only the paid ones.
 
   Neither is a fault. Both advance the cursor exactly as a handled row does —
   they must, or a handler would wedge forever on the first row it does not want

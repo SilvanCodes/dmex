@@ -233,14 +233,51 @@ defmodule DMEx do
   """
   @spec refresh_message_types(atom() | nil) :: MapSet.t(String.t())
   def refresh_message_types(otp_app \\ nil) do
-    types = otp_app |> DMEx.Message.discover() |> DMEx.Message.types!()
+    index = otp_app |> DMEx.Message.discover() |> DMEx.Message.index!()
+    types = index |> Map.keys() |> MapSet.new()
 
+    # Two entries, one scan and one collision check: the set is what a filter is
+    # expanded against, the index is what a whole-log handler resolves a type
+    # through, and writing them together is what stops them disagreeing.
+    :persistent_term.put(message_index_key(otp_app), index)
     :persistent_term.put(message_types_key(otp_app), types)
 
     types
   end
 
+  @doc """
+  The message module declaring `type`, as the application owning `module` sees
+  it, or `nil`.
+
+  How a handler decodes a type it never named: `DMEx.Handler` compiles a clause
+  per type its callback did name, and — for a handler with a clause that names
+  none, which asks for the whole log — a fallback that comes here. A **lookup, never `String.to_atom/1`** — the key is a string
+  a log sent, so resolving it through anything that creates atoms would make an
+  unbounded atom table out of attacker-controlled input.
+
+  Same cache, same scan and same collision check as `message_types/1`; see there
+  for why the modules rather than the log's contents, and why the key is the
+  application rather than the log.
+  """
+  @spec message_module(module(), String.t()) :: module() | nil
+  def message_module(module, type) when is_atom(module) and is_binary(type) do
+    otp_app = owning_app(module)
+
+    index =
+      case :persistent_term.get(message_index_key(otp_app), nil) do
+        nil ->
+          _ = refresh_message_types(otp_app)
+          :persistent_term.get(message_index_key(otp_app), %{})
+
+        index ->
+          index
+      end
+
+    Map.get(index, type)
+  end
+
   defp message_types_key(otp_app), do: {__MODULE__, :message_types, otp_app}
+  defp message_index_key(otp_app), do: {__MODULE__, :message_index, otp_app}
 
   @doc false
   @spec owning_app(module()) :: atom() | nil

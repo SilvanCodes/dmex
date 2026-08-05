@@ -60,11 +60,17 @@ defmodule DMEx.Test.Handlers do
     @moduledoc """
     `Echo` with server-side selection turned off.
 
-    A second module rather than a `subscribe/2` option, for the same reason the
-    message set is: the handler module is the complete declaration of what the
-    subscription *is*, and a call site that could vary it could disagree with it.
+    The catch-all clause is the whole of that: it names no type, so no
+    fingerprint is built, the subscription reads the log entire, and every type
+    this application has a module for is decoded rather than only the one named
+    above. A second module rather than a `subscribe/2` option, for the same
+    reason the message set is one — the handler module is the complete
+    declaration of what the subscription *is*, and a call site that could vary it
+    could disagree with it.
+
+    Both clauses report, so a test can tell which one a row reached.
     """
-    use DMEx.Handler, logs: [:test], id: :echo_whole_log, selective: false
+    use DMEx.Handler, logs: [:test], id: :echo_whole_log
 
     alias DMEx.Test.Handlers
     alias DMEx.Test.Messages.OrderPlaced
@@ -72,6 +78,61 @@ defmodule DMEx.Test.Handlers do
     @impl true
     def handle_message(%OrderPlaced{} = message, metadata) do
       send(Handlers.owner(), {:handled, message, metadata})
+
+      :ok
+    end
+
+    def handle_message(%module{} = message, metadata) do
+      send(Handlers.owner(), {:caught, module, message, metadata})
+
+      :ok
+    end
+  end
+
+  defmodule Sink do
+    @moduledoc """
+    A handler that names no type at all.
+
+    Legal, and the diagnostic shape: it reads the whole log, decodes whatever
+    this application has a module for, and skips the rest — so what it reports
+    and what `[:dmex, :handler, :skip]` says together describe everything the log
+    is emitting.
+    """
+    use DMEx.Handler, logs: [:test], id: :sink
+
+    alias DMEx.Test.Handlers
+
+    @impl true
+    def handle_message(%module{} = message, metadata) do
+      send(Handlers.owner(), {:caught, module, message, metadata})
+
+      :ok
+    end
+  end
+
+  defmodule WholeLogNarrowed do
+    @moduledoc """
+    Asks for the whole log, and still turns messages down.
+
+    Its second clause names no type — so there is no fingerprint — but narrows on
+    the *metadata*. Naming no type is a property of the first argument alone,
+    where accepting a message is the whole head, so a whole-log cast still has to
+    ask whether some clause wants this one.
+    """
+    use DMEx.Handler, logs: [:test], id: :whole_log_narrowed
+
+    alias DMEx.Test.Handlers
+    alias DMEx.Test.Messages.OrderPlaced
+
+    @impl true
+    def handle_message(%OrderPlaced{} = message, metadata) do
+      send(Handlers.owner(), {:handled, message, metadata})
+
+      :ok
+    end
+
+    def handle_message(%module{} = message, %{"replay" => true} = metadata) do
+      send(Handlers.owner(), {:caught, module, message, metadata})
 
       :ok
     end

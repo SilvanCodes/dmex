@@ -9,7 +9,7 @@
 #       plus the wire, with no consumer cost at all.
 #   (b) **end to end, no-op handler**: adds decode, cast, and the consumer's
 #       per-row transaction.
-#   (c) **end to end, every row skipped**: `selective: false`, so rows arrive,
+#   (c) **end to end, every row skipped**: a whole-log handler, so rows arrive,
 #       no handler runs, and their advances coalesce into one cursor write per
 #       `checkpoint_interval`.
 #
@@ -211,17 +211,19 @@ defmodule Bench.SkippingHandler do
   # Matches a type the log does not contain, so every row is a skip: a lookup,
   # a cursor write and a commit, with no handler.
   #
-  # `selective: false` is load-bearing twice over. It is what makes "every row
-  # skipped" true at all — a selective stream would carry none of these rows, so
-  # there would be nothing to skip. And a selective fingerprint here could not
-  # match anything: `Bench.UnusedMessage` is defined at runtime in this script,
-  # while the producer expands filters over *compiled* application modules
-  # (`DMEx.message_types/1`), so the filter would match zero types, the connect
-  # would 404, and this stage would retry forever.
-  use DMEx.Handler, logs: [:bench], id: :skipping, selective: false
+  # The catch-all clause — which names no type, so no fingerprint is built — is
+  # load-bearing twice over. It is what makes "every row skipped" true at all: a
+  # selective stream would carry none of these rows, so there would be nothing
+  # to skip. And a selective fingerprint here could not match anything, since
+  # `Bench.UnusedMessage` is defined at runtime in this script while the producer
+  # expands filters over *compiled* application modules (`DMEx.message_types/1`)
+  # — the filter would match zero types, the connect would 404, and this stage
+  # would retry forever.
+  use DMEx.Handler, logs: [:bench], id: :skipping
 
   @impl true
   def handle_message(%Bench.UnusedMessage{}, _metadata), do: :ok
+  def handle_message(_message, _metadata), do: :ok
 end
 
 skips = :counters.new(1, [:write_concurrency])

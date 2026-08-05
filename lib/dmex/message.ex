@@ -300,7 +300,15 @@ defmodule DMEx.Message do
     modules |> index!() |> Map.keys() |> MapSet.new()
   end
 
-  defp index!(modules) do
+  @doc """
+  `modules` keyed by the type each declares, raising if two of them declare one.
+
+  What turns a `message_type` off the wire back into a module without
+  `String.to_atom/1`. `types!/1` is this with the values thrown away, so the two
+  cannot disagree about what collides.
+  """
+  @spec index!([module()]) :: %{String.t() => module()}
+  def index!(modules) when is_list(modules) do
     Enum.reduce(modules, %{}, fn module, acc ->
       type = module.type()
 

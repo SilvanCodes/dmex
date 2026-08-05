@@ -104,6 +104,36 @@ false negatives, so every selected type is delivered. A false positive admits
 one extra type, which the consumer's ordinary skip path drops — so the skip path
 is a defence rather than dead code.
 
+**A compile-time edge is what keeps the baked set honest.** A handler embeds its
+types twice over — the fingerprint it requests and its `__dmex_cast__/3` clauses
+both come from one compile-time read of `c:DMEx.Message.type/0` — so a `type:`
+that changed underneath them would leave a subscription selecting nothing and
+skipping whatever arrived anyway. Matching on a struct is only an *export*
+dependency, and a `type:` is a function body, which an export digest does not
+cover. `DMEx.Handler` therefore emits a call per message module into the
+handler's own body, making the dependency a compile one: editing a `type:`
+recompiles every handler that named it, within a project and across a dependency
+alike. Nothing re-checks at runtime, because after that edge only three things
+can desynchronise the two, and none of them is a compile:
+
+  * **A module replaced without one** — defined or reloaded through
+    `Code.eval_string/2` and friends, a partially hot-loaded release, or a build
+    assembled from two compilations. Rebuilding from clean is the fix.
+  * **Skew between deployments** — a producer renamed a type while a consumer
+    built earlier is still running. No check inside one VM can see this: the
+    consumer's own modules and its own baked fingerprint agree with each other.
+    If *every* declared type went missing it is the `404` above; if only some
+    did, those rows are simply not delivered until the consumer is rebuilt.
+  * **The rollout window of such a rename**, where both versions are live at
+    once and each is internally consistent.
+
+The last two are why changing a `type:` is a **migration, not a rename**: rows
+already appended keep the old string forever, so a consumer resuming from an old
+cursor cannot select its own history either, and dead messages recorded under it
+can never be replayed. The safe path is expand-contract — add a module for the
+new type, have handlers declare both, cut producers over, and drop the old
+module a deploy later.
+
 **The producer resolves it against its own compiled modules**, not against what
 its log contains. `SELECT DISTINCT message_type` goes stale silently: a producer
 can know a type it has not yet emitted, and first emission involves no restart
@@ -124,13 +154,17 @@ the same price whether the next matching row is one id away or ten million.
 **Selection does not reach the append path.** A publisher does not know, and
 does not need to know, who selects its types.
 
-**The escape hatch is on the handler.** `selective: false` requests the whole
-log and filters locally. It exists to tell two failures apart when a
-subscription receives nothing — a producer or encoding mismatch, which whole-log
-delivery fixes immediately, from a producer that has appended nothing, which it
-does not. It lives on the module for the same reason the producer, the id and
-the message set do: the module is the complete declaration of what a
-subscription *is*.
+**The escape hatch is a clause.** A `handle_message/2` clause whose first
+argument names no type — a plain variable, or `%module{}` — builds no
+fingerprint, so the subscription requests the whole log and filters locally. It
+also decodes more than it declared: a type no clause named resolves through the
+message modules the consumer's application knows, so such a handler receives
+everything it *could* decode and skips only what nothing here can. It exists to tell two
+failures apart when a subscription receives nothing — a producer or encoding
+mismatch, which whole-log delivery fixes immediately, from a producer that has
+appended nothing, which it does not. There is no option for it, for the same
+reason there is none for the message set: the clauses are the declaration, and a
+second place to say it could disagree with them.
 
 **A filter matching nothing is a `404`.** An empty expansion is
 indistinguishable on the wire from a healthy stream on a quiet log, so the

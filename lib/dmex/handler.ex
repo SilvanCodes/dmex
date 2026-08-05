@@ -45,10 +45,40 @@ defmodule DMEx.Handler do
   same answer. The pipeline asks it before it opens a transaction, so a row no
   clause wants costs a struct match.
 
-  Rejected at compile time: a clause whose first argument is not a struct
-  pattern (a bare variable declares nothing, and cannot serve as a fallback
-  since the pipeline only delivers the declared types); a struct that is not a
-  `DMEx.Message`; and no `c:handle_message/2` at all.
+  ## A clause that names no type asks for the whole log
+
+  A first argument that names no type declares nothing, and a handler with one
+  gets **no fingerprint**: it requests the whole log and filters locally. There
+  is no option for that either — the clauses say it, the same way they say
+  everything else about the message set:
+
+      def handle_message(%MyApp.Messages.OrderPlaced{} = message, _metadata), do: :ok
+      def handle_message(%module{} = message, _metadata), do: :ok
+
+  A plain variable says the same thing and is exactly as wide: every message is
+  a struct, so `%module{}` admits precisely what `_message` does, while binding
+  the module a catch-all usually wants to report.
+
+  It is the escape hatch for telling a log or encoding mismatch apart from a log
+  that has genuinely appended nothing, and it costs every row the log holds
+  rather than the ones this handler wants.
+
+  It also widens what can be **decoded**. A type no clause named still resolves
+  to a module, through the ones the consumer's own application knows
+  (`DMEx.message_module/2`), so a catch-all receives everything this application
+  can turn back into a struct. A type *no* module declares is still skipped —
+  there is nothing to decode it into — which is what makes such a handler a
+  usable diagnostic: every row arrives, and `[:dmex, :handler, :skip]` names the
+  types nothing here understands.
+
+  This is the one place a subscription's set is not exactly its clauses. It is
+  sound because the selection is already the whole log: what the application
+  happens to know changes what is *handled*, never what is delivered, and a
+  module it does not have was being skipped anyway.
+
+  Rejected at compile time: a first argument matching something no message can
+  be; a struct that is not a `DMEx.Message`; and no `c:handle_message/2` at
+  all.
 
   ## Options
 
@@ -57,10 +87,6 @@ defmodule DMEx.Handler do
       accepted for the single-log case.
     * `:id` — required; this handler's own name. The same for every log, since
       the log name is the other half of each subscription's identity.
-    * `:selective` — whether the log narrows the stream to this handler's
-      message types. Defaults to `true`. `false` requests the whole log and
-      filters locally: an escape hatch for telling a log or encoding mismatch
-      apart from a log that has genuinely appended nothing.
     * any `DMEx.Config` handler setting — validated here at compile time;
       `DMEx.Supervisor.subscribe/2` may override one per subscription.
 
@@ -93,24 +119,24 @@ defmodule DMEx.Handler do
   alias DMEx.Config
   alias DMEx.Handler.Fingerprint
 
-  @handler_opts [:logs, :id, :selective]
+  @handler_opts [:logs, :id]
 
   @typedoc """
   A handler's compile-time declaration, as returned by its `__dmex__/0`.
 
-  `:types` is the message set **as it read at compile time** — the strings the
-  modules in `:messages` reported then, sorted. It is the one cached copy of
-  that set: the fingerprint and the `__dmex_cast__/3` clauses are both built
-  from this list. It does not restate `:messages`, which is the *live* set of
-  modules — the two drifting apart is the whole subject of `verify_fresh!/1`.
+  `:messages` is the module set the clauses named, and the only copy of it: the
+  type *strings* are read off those modules — at compile time to build the
+  fingerprint and the `__dmex_cast__/3` clauses, and live wherever else they are
+  wanted. Caching them here as well would be a snapshot to keep in step with the
+  modules for no reader's benefit.
 
-  `:fingerprint` is the path segment this subscription requests — `:types`
-  encoded — or `nil` when `selective: false` asked for the whole log. It is
-  carried rather than derived at boot because the request path wants a
-  compile-time constant and an unencodable set has to be a compile error; being
-  a pure function of `:types`, it cannot disagree with it. There is no separate
-  `:selective` field: a `nil` fingerprint is that answer, and carrying both
-  would be two values that can disagree.
+  `:fingerprint` is the path segment this subscription requests — those types
+  encoded — or `nil` when a clause named no type, which asks for the whole log.
+  It is the one thing that *is* cached, because the request path wants a
+  compile-time constant and an unencodable set has to be a compile error rather
+  than a boot failure. `compile_edges/1` is what keeps it in step with the
+  modules it was built from. A `nil` fingerprint is also the only statement of
+  "whole log" anywhere: a second field could only disagree with it.
 
   `:config` is only what this module declared, not a resolved config: resolving
   at compile time would freeze DMEx's defaults into the handler's BEAM file, and
@@ -121,7 +147,6 @@ defmodule DMEx.Handler do
           logs: [String.t()],
           id: String.t(),
           messages: MapSet.t(module()),
-          types: [String.t()],
           fingerprint: String.t() | nil,
           config: keyword()
         }
@@ -133,8 +158,10 @@ defmodule DMEx.Handler do
   writes nothing into — no id, no `message_type`, nothing about the row. The
   return value is ignored; raise to signal failure.
 
-  **The first argument must be a struct pattern.** That is what declares which
-  message types this subscription consumes — see the module documentation.
+  **The first argument declares what this subscription consumes.** A named
+  struct adds its type to the set; one that names none — `%module{}` or a plain
+  variable — asks for the whole log, and receives every type this application
+  has a module for. See the module documentation.
   """
   @callback handle_message(message :: struct(), metadata :: map()) :: any()
 
@@ -167,7 +194,7 @@ defmodule DMEx.Handler do
   @doc false
   defmacro __before_compile__(env) do
     declaration = __declaration__(env)
-    match = matcher(env, declaration.messages)
+    match = matcher(env, declaration)
 
     quote do
       unquote(compile_edges(declaration.messages))
@@ -211,7 +238,6 @@ defmodule DMEx.Handler do
   @spec __declared__(module(), keyword()) :: %{
           logs: [String.t()],
           id: String.t(),
-          selective: boolean(),
           config: keyword()
         }
   def __declared__(module, opts) do
@@ -220,7 +246,6 @@ defmodule DMEx.Handler do
     %{
       logs: logs!(module, opts),
       id: fetch_identifier!(module, opts, :id),
-      selective: selective!(module, opts),
       config: config!(module, opts)
     }
   end
@@ -228,32 +253,25 @@ defmodule DMEx.Handler do
   @doc false
   @spec __declaration__(Macro.Env.t()) :: declaration()
   def __declaration__(env) do
-    %{logs: logs, id: id, selective: selective, config: config} =
-      Module.get_attribute(env.module, :dmex_declared)
+    %{logs: logs, id: id, config: config} = Module.get_attribute(env.module, :dmex_declared)
 
-    messages = messages!(env)
-    types = types(messages)
+    {messages, selective?} = messages!(env)
 
     %{
       handler: env.module,
       logs: logs,
       id: id,
       messages: messages,
-      # The snapshot everything else cached about the set is built from, and
-      # therefore the only thing `verify_fresh!/1` has to compare.
-      types: types,
       config: config,
-      # `selective:` is not carried through — a `nil` fingerprint *is* the
-      # answer, and the two together could only disagree. A non-selective
-      # handler therefore also never risks the compile error an unbuildable
-      # fingerprint would raise.
-      fingerprint: if(selective, do: fingerprint!(env, types))
+      # Whether the clauses named a type for every case they handle, which is the
+      # whole of the question — so a handler asking for the whole log also never
+      # risks the compile error an unbuildable fingerprint would raise.
+      fingerprint: if(selective?, do: fingerprint!(env, types(messages)))
     }
   end
 
-  # The one derivation of the cached set from the live modules, run at compile
-  # time to take the snapshot and at boot to compare against it. Sorted, so the
-  # list carries no more information than the set does.
+  # Sorted, so the fingerprint is a function of the set and not of clause order —
+  # which is the same reason `:messages` is a `MapSet`.
   defp types(messages), do: messages |> Enum.map(& &1.type()) |> Enum.sort()
 
   @doc """
@@ -387,59 +405,6 @@ defmodule DMEx.Handler do
     end
   end
 
-  @doc """
-  Raises if `declaration` was compiled against message types that have since changed.
-
-  A declaration caches its message set **as strings** in `:types`, and builds
-  everything else from that one list: the fingerprint it requests, and one
-  `__dmex_cast__/3` clause per type. If a `type:` changes underneath them, every
-  one of those names a type nothing appends — the subscription selects no rows
-  and skips the ones it does get, which is silent message loss.
-
-  **Compiling cannot leave that behind.** `compile_edges/1` makes a handler
-  depend on its message modules at compile time, so recompiling one recompiles
-  the other, across a dependency as well as within a project. What remains is
-  everything that replaces a module without compiling the handler: one defined
-  at runtime with `Code.eval_string/2` and friends, a partially hot-loaded
-  release, a build assembled from two compilations. Hence one check, at startup,
-  in `DMEx.Supervisor.init/1` — before any child is started, since a stale
-  declaration is a subscription that connects, advances its cursor and delivers
-  nothing.
-
-  Re-deriving the list from the loaded modules is exact rather than heuristic,
-  and it is the *list* that is compared rather than the fingerprint built from
-  it. That is one check for both kinds of handler: `selective: false` caches no
-  fingerprint but caches the same cast clauses, and encoding would only add a
-  step that cannot change the answer.
-  """
-  @spec verify_fresh!(declaration()) :: :ok
-  def verify_fresh!(declaration) do
-    live = types(declaration.messages)
-
-    if live == declaration.types, do: :ok, else: raise_stale(declaration, live)
-  end
-
-  defp raise_stale(declaration, types) do
-    raise ArgumentError, """
-    #{inspect(declaration.handler)} is stale: it was compiled against message types that have \
-    since changed.
-
-    It was compiled against:         #{inspect(declaration.types)}
-    Its message modules now declare: #{inspect(types)}
-
-    A handler bakes its message set into its selection fingerprint and its decode clauses, so \
-    running it as compiled would ask the log for types nothing appends and skip every row that \
-    arrived anyway.
-
-    Compiling cannot cause this: a handler depends on its message modules at compile time, so \
-    editing a `type:` rebuilds both. Something replaced a module without that — a module \
-    defined at runtime, a partially hot-loaded release, or a build assembled from two \
-    compilations. Rebuild from clean:
-
-        mix compile --force
-    """
-  end
-
   ## Asking whether a clause wants a message
 
   # Selection is by type, so a clause narrowed below its type —
@@ -452,7 +417,7 @@ defmodule DMEx.Handler do
   # It is one function because it is one question. A row a consumer has no
   # module for and a row no clause head accepts are the same answer — `nil` —
   # and a caller cannot decode without asking, or ask without decoding.
-  defp matcher(env, messages) do
+  defp matcher(env, %{messages: messages} = declaration) do
     heads = Enum.reverse(Module.get_attribute(env.module, :dmex_heads))
     {:v1, :def, _meta, clauses} = Module.get_definition(env.module, {:handle_message, 2})
 
@@ -461,10 +426,13 @@ defmodule DMEx.Handler do
     accepts = Enum.map(heads, &matcher_clause/1)
     casts = Enum.map(messages, &cast_clause/1)
 
-    # What turns a narrowed-away value down. Marked generated because a handler
-    # narrowing nothing has heads covering every struct its own cast can return,
-    # so this reads as unreachable to anything checking — in a user's dialyzer
-    # run, say, where every call site is now visible.
+    # What turns a narrowed-away value down, including on a whole-log handler:
+    # a clause naming no type still narrows if it patterns on the metadata or
+    # carries a guard, and without this the test would raise rather than answer.
+    # Marked generated because a handler narrowing nothing has heads covering
+    # every struct its own cast can return, so this reads as unreachable to
+    # anything checking — in a user's dialyzer run, say, where every call site is
+    # now visible.
     turn_down =
       quote generated: true do
         defp __dmex_match__(_message, _metadata), do: false
@@ -474,10 +442,49 @@ defmodule DMEx.Handler do
       @doc false
       @spec __dmex_cast__(String.t(), term(), map()) :: struct() | nil
       unquote_splicing(casts)
-      def __dmex_cast__(_message_type, _data, _metadata), do: nil
+      unquote(last_cast_clause(declaration))
 
       unquote_splicing(accepts)
       unquote(turn_down)
+    end
+  end
+
+  # What a type no clause named falls to, and the whole difference between the
+  # two kinds of handler.
+  #
+  # A selective one requested its types and nothing else, so anything else is a
+  # filter false positive: `nil`, and the pipeline skips it.
+  #
+  # A whole-log one asked for every row, so a type it never mentioned still
+  # resolves, through the application's own index of message modules. Not
+  # `String.to_atom/1` on what a log sent: `DMEx.message_module/2` is a lookup in
+  # a map built at boot from compiled modules, so a type nothing declares stays a
+  # skip rather than an atom.
+  #
+  # It still asks `__dmex_match__/2`. Naming no type is a property of the *first
+  # argument*, where accepting a message is the whole head — a clause naming no
+  # type can still narrow on the metadata or carry a guard, and delivering a
+  # message no head wants would raise `FunctionClauseError` from the handler:
+  # a failure, retried and dead-lettered, for a message nothing asked for.
+  defp last_cast_clause(%{fingerprint: nil}) do
+    quote do
+      def __dmex_cast__(message_type, data, metadata) do
+        case DMEx.message_module(__MODULE__, message_type) do
+          nil ->
+            nil
+
+          module ->
+            message = module.cast(data)
+
+            if __dmex_match__(message, metadata), do: message
+        end
+      end
+    end
+  end
+
+  defp last_cast_clause(_declaration) do
+    quote do
+      def __dmex_cast__(_message_type, _data, _metadata), do: nil
     end
   end
 
@@ -546,15 +553,29 @@ defmodule DMEx.Handler do
 
     {:v1, :def, _meta, clauses} = Module.get_definition(env.module, {:handle_message, 2})
 
-    # Every clause is checked, including the second one matching a struct an
+    # Every clause is visited, including the second one matching a struct an
     # earlier clause already named — the set collapses the duplicate, but only
-    # after `message!/2` has had its say about it.
-    MapSet.new(clauses, &message!(env, &1))
+    # after `message!/2` has had its say about it. `:any` is a clause that named
+    # no type, and one of those is enough to make the subscription whole-log:
+    # there is no fingerprint that could admit what it is willing to accept.
+    {messages, selective?} =
+      Enum.reduce(clauses, {MapSet.new(), true}, fn clause, {messages, selective?} ->
+        case message!(env, clause) do
+          {:type, module} -> {MapSet.put(messages, module), selective?}
+          :any -> {messages, false}
+        end
+      end)
+
+    {messages, selective?}
   end
 
   defp message!(env, {meta, [pattern | _rest], _guards, _body}) do
-    module = struct!(env, meta, pattern)
+    with module when module != :any <- struct!(env, meta, pattern) do
+      {:type, message_module!(env, meta, module)}
+    end
+  end
 
+  defp message_module!(env, meta, module) do
     # Not the cheaper `Code.ensure_loaded?/1`: expanding `%module{}` in a clause
     # head resolves the struct through the parallel compiler *without* putting
     # the module in the code server, so `type/0` is not callable yet. Only this
@@ -580,11 +601,26 @@ defmodule DMEx.Handler do
     case {left, right} do
       {{:%, _, [module, _]}, _} when is_atom(module) -> module
       {_, {:%, _, [module, _]}} when is_atom(module) -> module
-      _ -> raise_not_a_struct(env, meta)
+      # Both halves, so `%module{} = message` is the whole log while `x = 5` —
+      # which no message can match — is still the mistake it was.
+      _ -> if unnamed?(left) and unnamed?(right), do: :any, else: raise_bad_pattern(env, meta)
     end
   end
 
-  defp struct!(env, meta, _pattern), do: raise_not_a_struct(env, meta)
+  defp struct!(env, meta, pattern) do
+    if unnamed?(pattern), do: :any, else: raise_bad_pattern(env, meta)
+  end
+
+  # The patterns that name no type, which is how a handler asks for the whole
+  # log. Two spellings, equally wide: every message is a struct, so `%module{}`
+  # admits exactly what a plain variable does — while binding the module a
+  # catch-all usually wants to report.
+  defp unnamed?({:%, _, [{name, _, context}, _fields]}) when is_atom(name) and is_atom(context) do
+    true
+  end
+
+  defp unnamed?({name, _meta, context}) when is_atom(name) and is_atom(context), do: true
+  defp unnamed?(_pattern), do: false
 
   defp raise_not_a_message(env, meta, module) do
     raise ArgumentError,
@@ -594,18 +630,23 @@ defmodule DMEx.Handler do
             "`use DMEx.Message`."
   end
 
-  defp raise_not_a_struct(env, meta) do
+  defp raise_bad_pattern(env, meta) do
     raise ArgumentError, """
-    #{at(env, meta)}: this handle_message/2 clause does not match on a struct.
+    #{at(env, meta)}: this handle_message/2 clause matches something no message can be.
 
     A handler's clauses are what declare the message types its subscription
-    consumes, so each one has to name its type:
+    consumes, so a clause either names its type:
 
         def handle_message(%MyApp.Messages.OrderPlaced{} = message, _metadata), do: :ok
 
-    A catch-all clause cannot serve as a fallback here — it declares no type,
-    and the pipeline only ever delivers declared ones. A message a narrower
-    clause does not match is skipped, so there is nothing for it to catch.
+    or names none, which asks for the whole log — `%module{}` and a plain
+    variable being the same width, since every message is a struct:
+
+        def handle_message(%module{} = message, _metadata), do: :ok
+        def handle_message(_message, _metadata), do: :ok
+
+    What arrives is always a struct built by `DMEx.Message.cast/1`, so no other
+    pattern could match one.
     """
   end
 
@@ -694,19 +735,6 @@ defmodule DMEx.Handler do
     raise ArgumentError,
           "`use DMEx.Handler` requires #{inspect(key)} in #{inspect(module)}, e.g. " <>
             "`use DMEx.Handler, logs: [:orders], id: :order_projection`"
-  end
-
-  defp selective!(module, opts) do
-    case Keyword.get(opts, :selective, true) do
-      value when is_boolean(value) ->
-        value
-
-      other ->
-        raise ArgumentError,
-              ":selective in #{inspect(module)} must be true (the default — this " <>
-                "subscription's message types are selected server-side) or false (the " <>
-                "log's whole log, narrowed locally), got: #{inspect(other)}"
-    end
   end
 
   defp raise_identifier(module, key, value) do

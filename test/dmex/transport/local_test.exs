@@ -66,7 +66,7 @@ defmodule DMEx.Transport.LocalTest do
       refute_received {:handled, %OrderShipped{}, _}
     end
 
-    test "a handler declared selective: false reads the whole log" do
+    test "a handler with a clause naming no type reads the whole log" do
       {:ok, _} = Log.append(%OrderPlaced{order_id: 1})
 
       subscribe(Handlers.EchoWholeLog)

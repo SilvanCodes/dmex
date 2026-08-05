@@ -39,26 +39,23 @@ defmodule DMEx.HandlerTest do
       assert messages == MapSet.new([OrderPlaced, OrderShipped])
     end
 
-    # The cached copy of the set, and the only one: the fingerprint and the
-    # decode clauses are both built from it, which is what leaves
-    # `verify_fresh!/1` a single list to compare.
-    test "carries the message set as the type strings it read at compile time" do
-      assert %{types: types} = Handlers.EchoAll.__dmex__()
-
-      assert types == Enum.sort([OrderPlaced.type(), OrderShipped.type()])
+    # The modules are the only copy of the set: the strings are read off them,
+    # here as everywhere else, rather than cached beside them.
+    test "carries no type strings of its own" do
+      refute Map.has_key?(Handlers.EchoAll.__dmex__(), :types)
     end
 
-    test "the fingerprint is those types encoded, so the two cannot disagree" do
-      %{types: types, fingerprint: fingerprint} = Handlers.EchoAll.__dmex__()
+    test "the fingerprint is those modules' types encoded, so the two cannot disagree" do
+      %{messages: messages, fingerprint: fingerprint} = Handlers.EchoAll.__dmex__()
 
-      assert {:ok, built} = Fingerprint.build(types)
+      assert {:ok, built} = messages |> Enum.map(& &1.type()) |> Enum.sort() |> Fingerprint.build()
       assert Fingerprint.encode(built) == fingerprint
     end
 
-    test "a non-selective handler caches the same types, with no fingerprint" do
-      assert %{types: types, fingerprint: nil} = Handlers.EchoWholeLog.__dmex__()
+    test "a whole-log handler declares the same set, with no fingerprint" do
+      assert %{messages: messages, fingerprint: nil} = Handlers.EchoWholeLog.__dmex__()
 
-      assert types == [OrderPlaced.type()]
+      assert messages == MapSet.new([OrderPlaced])
     end
 
     # The message set's second job. Built here rather than at connect because
@@ -83,23 +80,31 @@ defmodule DMEx.HandlerTest do
       assert is_binary(fingerprint)
     end
 
-    test "`selective: false` is carried as a nil fingerprint" do
-      # No separate boolean: a nil fingerprint *is* that answer, and two fields
-      # saying the same thing could only ever disagree. `DMEx.Supervisor` passes
-      # whatever is here with no decision of its own.
-      declaration = Handlers.EchoWholeLog.__dmex__()
-
-      assert declaration.fingerprint == nil
+    # No separate boolean: a nil fingerprint *is* that answer, and two fields
+    # saying the same thing could only ever disagree. `DMEx.Supervisor` passes
+    # whatever is here with no decision of its own.
+    test "a clause naming no type is carried as a nil fingerprint" do
+      assert Handlers.EchoWholeLog.__dmex__().fingerprint == nil
     end
 
-    test "`selective:` must be a boolean" do
-      assert_raise ArgumentError, ~r/:selective in .* must be true .* or false/s, fn ->
-        defmodule NotABoolean do
-          @moduledoc false
-          use Handler, logs: [:test], id: :not_a_boolean, selective: :sometimes
+    test "a clause naming no type is what turns selection off, wherever it sits" do
+      assert %{fingerprint: nil, messages: %MapSet{}} =
+               declaration_of("""
+               def handle_message(_message, _metadata), do: :ok
+               def handle_message(%DMEx.Test.Messages.OrderPlaced{}, _metadata), do: :ok
+               """)
+    end
 
-          def handle_message(%OrderPlaced{}, _metadata), do: :ok
-        end
+    # `%module{}` matches every struct and every message is one, so it names no
+    # type in exactly the way a bare variable does — and binds the module, which
+    # is what a catch-all usually wants.
+    test "a variable struct pattern names no type either" do
+      for pattern <- ["%module{}", "%module{} = message", "message = %module{}"] do
+        assert %{fingerprint: nil, messages: %MapSet{}} =
+                 declaration_of("""
+                 def handle_message(%DMEx.Test.Messages.OrderPlaced{}, _metadata), do: :ok
+                 def handle_message(#{pattern}, _metadata), do: {:other, module}
+                 """)
       end
     end
   end
@@ -235,26 +240,17 @@ defmodule DMEx.HandlerTest do
     # A bare variable declares no type at all. Deriving an empty list from it
     # would give a handler that compiles, subscribes, advances its cursor over
     # everything and invokes nothing.
-    test "rejects a clause that does not match on a struct" do
-      assert_raise ArgumentError, ~r/does not match on a struct/, fn ->
-        compile("def handle_message(_message, _metadata), do: :ok")
-      end
-    end
-
-    # And it cannot be a fallback either: only declared types are ever
-    # delivered, so a catch-all after the struct clauses is unreachable.
-    test "rejects a catch-all sitting behind a struct clause" do
-      assert_raise ArgumentError, ~r/cannot serve as a fallback/, fn ->
-        compile("""
-        def handle_message(%DMEx.Test.Messages.OrderPlaced{}, _metadata), do: :ok
-        def handle_message(_message, _metadata), do: :ignored
-        """)
+    test "rejects a pattern no message could match" do
+      for pattern <- [~s|%{"id" => id}|, ~s|"literal"|, "x = 5", "[_ | _]"] do
+        assert_raise ArgumentError, ~r/matches something no message can be/, fn ->
+          compile("def handle_message(#{pattern}, _metadata), do: :ok")
+        end
       end
     end
 
     test "names the file and line of the offending clause" do
       assert_raise ArgumentError, ~r/handler_test\.exs:\d+: this handle_message/, fn ->
-        compile("def handle_message(_message, _metadata), do: :ok")
+        compile(~s|def handle_message("literal", _metadata), do: :ok|)
       end
     end
 
@@ -270,6 +266,58 @@ defmodule DMEx.HandlerTest do
       assert_raise ArgumentError, ~r/defines no handle_message\/2/, fn ->
         compile_raw("logs: [:orders], id: :some_id", "")
       end
+    end
+  end
+
+  # What a whole-log handler decodes is not its clauses but its application: it
+  # asked for every row, and a clause naming no type accepts every message.
+  describe "casting on a whole-log handler" do
+    test "resolves a type no clause named" do
+      assert %OrderShipped{order_id: 1, carrier: "dhl"} =
+               Handlers.EchoWholeLog.__dmex_cast__(
+                 OrderShipped.type(),
+                 %{"order_id" => 1, "carrier" => "dhl"},
+                 %{}
+               )
+    end
+
+    test "a handler naming no type at all is legal, and decodes the same way" do
+      assert Handlers.Sink.__dmex__().messages == MapSet.new([])
+
+      assert %OrderPlaced{order_id: 7} =
+               Handlers.Sink.__dmex_cast__(OrderPlaced.type(), %{"order_id" => 7}, %{})
+    end
+
+    # The limit of it, and what keeps such a handler a diagnostic rather than a
+    # promise: nothing here can turn this into a struct, so it stays a skip.
+    test "a type no module declares is still nil" do
+      assert Handlers.Sink.__dmex_cast__("nothing.declares.this", %{}, %{}) == nil
+    end
+
+    # Why the fallback still asks whether a clause wants the message: naming no
+    # type is a property of the first argument, where accepting one is the whole
+    # head. Without the test this row would be delivered and `handle_message/2`
+    # would raise `FunctionClauseError` — a handler failure, retried and
+    # dead-lettered, for a message nothing ever wanted.
+    test "a whole-log clause that narrows elsewhere still turns a message down" do
+      shipped = %{"order_id" => 1, "carrier" => "dhl"}
+
+      assert Handlers.WholeLogNarrowed.__dmex_cast__(OrderShipped.type(), shipped, %{}) == nil
+
+      assert %OrderShipped{order_id: 1} =
+               Handlers.WholeLogNarrowed.__dmex_cast__(
+                 OrderShipped.type(),
+                 shipped,
+                 %{"replay" => true}
+               )
+    end
+
+    test "a selective handler resolves nothing it did not name" do
+      assert Handlers.Echo.__dmex_cast__(
+               OrderShipped.type(),
+               %{"order_id" => 1, "carrier" => "dhl"},
+               %{}
+             ) == nil
     end
   end
 
@@ -449,6 +497,8 @@ defmodule DMEx.HandlerTest do
   defp compile_module(body), do: compile_module_raw("logs: [:orders], id: :some_id", body)
 
   defp messages_of(body), do: body |> compile() |> Map.fetch!(:messages)
+
+  defp declaration_of(body), do: compile(body)
 
   defp compile_raw(declaration, body) do
     compile_module_raw(declaration, body).__dmex__()

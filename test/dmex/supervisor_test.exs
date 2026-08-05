@@ -277,10 +277,10 @@ defmodule DMEx.SupervisorTest do
                    fn -> subscribe(Handlers.Echo, filter: ["Some.Type"]) end
     end
 
-    # Both belong to the handler module: it is the complete declaration of what
-    # the subscription *is*, and a call site able to vary that could disagree
-    # with it.
-    test "rejects `selective:` here, since it belongs on the handler" do
+    # Whether the log narrows the stream is the handler's clauses' to say, so
+    # there is no option for it anywhere — here least of all, where a call site
+    # able to vary it could disagree with the module.
+    test "rejects `selective:`, which is no longer an option anywhere" do
       assert_raise ArgumentError, ~r/\[:selective\].*belong to the handler module/s, fn ->
         subscribe(Handlers.Echo, selective: false)
       end
