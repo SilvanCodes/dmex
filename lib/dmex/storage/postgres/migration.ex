@@ -11,6 +11,8 @@ defmodule DMEx.Storage.Postgres.Migration do
 
   use Ecto.Migration
 
+  alias DMEx.Storage.Postgres
+
   @doc false
   @spec up([:log | :subscriptions], String.t() | nil) :: :ok
   def up(tables, prefix) do
@@ -102,7 +104,7 @@ defmodule DMEx.Storage.Postgres.Migration do
 
   # One renderer for both halves of the adapter, so a prefixed name in DDL and a
   # prefixed name in a query cannot disagree.
-  defp qualified(name, prefix), do: DMEx.Storage.Postgres.__table__(name, prefix)
+  defp qualified(name, prefix), do: Postgres.__table__(name, prefix)
 
   defp up_subscriptions(prefix) do
     create_if_not_exists table(:dmex_cursors, primary_key: false, prefix: prefix) do
