@@ -207,7 +207,7 @@ defmodule DMEx.Handler.Stream do
     with {:ok, cursor} <- durable_cursor(state),
          {:ok, source} <- state.transport.connect(connect_opts(state, cursor)) do
       {:noreply,
-       %{
+       touch(%{
          state
          | source: source,
            # The durable cursor just read is the authority, so it is seeded here
@@ -216,8 +216,7 @@ defmodule DMEx.Handler.Stream do
            # re-skipped. Either way it is not owed a write.
            pipeline: %{state.pipeline | cursor: resume_at(cursor), pending: false},
            attempt: 0
-       }
-       |> touch()}
+       })}
     else
       {:error, reason} -> {:noreply, reconnect(state, reason)}
     end

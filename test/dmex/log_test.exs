@@ -2,12 +2,13 @@ defmodule DMEx.LogTest do
   use DMEx.Case, async: true
 
   alias DMEx.Test.Log
+  alias DMEx.Test.Repo
 
   describe "__dmex__/0" do
     test "resolves everything the append and stream paths need" do
       assert %{
                log: Log,
-               repo: DMEx.Test.Repo,
+               repo: Repo,
                storage: DMEx.Storage.Postgres,
                notifier: DMEx.Notifier.Postgres,
                app_key: "dm_ex_test_log",
@@ -25,7 +26,7 @@ defmodule DMEx.LogTest do
       # Each is handed exactly its map and nothing else, so neither can drift —
       # and storage carries nothing about notification.
       assert storage_opts == %{
-               repo: DMEx.Test.Repo,
+               repo: Repo,
                log: Log,
                lock: {classid, objid},
                prefix: nil
@@ -35,7 +36,7 @@ defmodule DMEx.LogTest do
       # why neither adapter rebuilds it from `:log` — and why `:log` is not in
       # this map at all.
       assert notifier_opts == %{
-               repo: DMEx.Test.Repo,
+               repo: Repo,
                name: DMEx.Test.Log.Notifications,
                channel: "dmex_dm_ex_test_log"
              }
@@ -93,11 +94,8 @@ defmodule DMEx.LogTest do
         define!("AppKeyLong", ~s(repo: DMEx.Test.Repo, app: "#{long}"))
       end
 
-      assert define!(
-               "AppKeyAtLimit",
-               ~s(repo: DMEx.Test.Repo, app: "#{String.duplicate("a", 58)}")
-             ).app_key
-             |> byte_size() == 58
+      assert byte_size(define!("AppKeyAtLimit", ~s(repo: DMEx.Test.Repo, app: "#{String.duplicate("a", 58)}")).app_key) ==
+               58
     end
   end
 

@@ -290,7 +290,7 @@ defmodule DMEx.Config do
   end
 
   defp validate_inclusion!(field, value, allowed) do
-    unless value in allowed do
+    if value not in allowed do
       raise ArgumentError,
             "#{inspect(field)} must be one of #{inspect(allowed)}, got: #{inspect(value)}"
     end

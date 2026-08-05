@@ -5,9 +5,8 @@ defmodule DMEx.Storage.PostgresTest do
   # the driver's own error shape.
   use DMEx.Case, async: true, database: true
 
-  alias Ecto.Adapters.SQL
-
   alias DMEx.Storage.Postgres
+  alias Ecto.Adapters.SQL
 
   @some "orders/some"
 
@@ -96,7 +95,7 @@ defmodule DMEx.Storage.PostgresTest do
     test "refuses a log without a usable advisory lock", %{opts: opts} do
       for lock <- [nil, {1, 2, 3}, "1701", {1_701, "4242"}] do
         assert_raise ArgumentError, ~r/lock: \{classid, objid\}/, fn ->
-          Postgres.validate!(%{opts | lock: lock} |> Map.put(:log, MyApp.Log))
+          %{opts | lock: lock} |> Map.put(:log, MyApp.Log) |> Postgres.validate!()
         end
       end
     end

@@ -89,7 +89,7 @@ for {storage, repo, tag} <- [
 
         assert {:ok, [row]} = @storage.read(opts, id - 1, 1, @megabyte, :all)
 
-        assert Map.keys(row) |> Enum.sort() ==
+        assert row |> Map.keys() |> Enum.sort() ==
                  [:data, :id, :inserted_at, :message_type, :metadata]
 
         assert row.id == id
@@ -456,7 +456,7 @@ for {storage, repo, tag} <- [
 
         assert {:ok, [row]} = @storage.dead_messages(opts, @some)
 
-        assert Map.keys(row) |> Enum.sort() ==
+        assert row |> Map.keys() |> Enum.sort() ==
                  [:data, :id, :inserted_at, :message_type, :metadata]
 
         assert is_binary(row.data)

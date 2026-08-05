@@ -62,9 +62,7 @@ DMEx.Handler.Fingerprint sweep — xor16
   probes:     #{max_strangers} distinct non-members, hashed once
 """)
 
-IO.puts(
-  "n,slots,raw_bytes,blob_chars,bytes_per_type,recovered,recovered_over_encoded,false_positives"
-)
+IO.puts("n,slots,raw_bytes,blob_chars,bytes_per_type,recovered,recovered_over_encoded,false_positives")
 
 results =
   Enum.map(counts, fn n ->

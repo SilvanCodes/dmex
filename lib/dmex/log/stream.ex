@@ -242,8 +242,7 @@ defmodule DMEx.Log.Stream do
           %{log: state.log}
         )
 
-        {:sent, conn,
-         %{state | cursor: last_id, last_sent_at: System.monotonic_time(:millisecond)}}
+        {:sent, conn, %{state | cursor: last_id, last_sent_at: System.monotonic_time(:millisecond)}}
 
       {:error, _reason} ->
         {:closed, conn}

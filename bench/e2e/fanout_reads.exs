@@ -104,10 +104,11 @@ for connections <- [10, 50, 200], append_rate <- [0, 100] do
       spawn(fn ->
         interval = max(div(1_000, append_rate), 1)
 
-        Stream.repeatedly(fn ->
+        fn ->
           {:ok, _} = Log.append(%OrderPlaced{order_id: 1})
           Process.sleep(interval)
-        end)
+        end
+        |> Stream.repeatedly()
         |> Enum.take(append_rate * 5)
       end)
     end

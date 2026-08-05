@@ -40,7 +40,7 @@ defmodule Bench.CountingHandler do
   use DMEx.Handler, logs: [:bench], id: :counting
 
   @impl true
-  def handle_message(%DMEx.Test.Messages.OrderPlaced{}, _metadata) do
+  def handle_message(%OrderPlaced{}, _metadata) do
     :counters.add(:persistent_term.get(:bench_drain_counter), 1, 1)
 
     :ok
@@ -102,9 +102,7 @@ await = fn counter, target, label ->
         seen
 
       System.monotonic_time(:millisecond) >= deadline ->
-        IO.puts(
-          "  !! #{label} reached only #{seen} of #{target} in #{div(await_timeout, 1_000)}s"
-        )
+        IO.puts("  !! #{label} reached only #{seen} of #{target} in #{div(await_timeout, 1_000)}s")
 
         seen
 
@@ -118,7 +116,6 @@ await = fn counter, target, label ->
 end
 
 ## (a) Log side only: read, encode, wire.
-
 started = System.monotonic_time(:microsecond)
 {:ok, conn} = Mint.HTTP.connect(:http, "127.0.0.1", port, mode: :active)
 {:ok, conn, ref} = Mint.HTTP.request(conn, "GET", "/stream", [], nil)
@@ -185,7 +182,6 @@ seen = discard.(discard, conn, 0, "")
 report.("(a) log -> discard", seen, System.monotonic_time(:microsecond) - started)
 
 ## (b) End to end with a no-op handler.
-
 :persistent_term.put(:bench_drain_counter, :counters.new(1, [:write_concurrency]))
 counter = :persistent_term.get(:bench_drain_counter)
 

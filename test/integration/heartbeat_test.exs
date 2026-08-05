@@ -15,6 +15,7 @@ defmodule DMEx.Integration.HeartbeatTest do
 
   alias DMEx.Test.Handlers
   alias DMEx.Test.HeartbeatLog, as: Log
+  alias DMEx.Test.IntegrationRepo
   alias DMEx.Test.Messages.OrderPlaced
   alias DMEx.Test.Server
   alias DMEx.Transport.SSE.Decoder
@@ -28,7 +29,7 @@ defmodule DMEx.Integration.HeartbeatTest do
     plug(:match)
     plug(:dispatch)
 
-    forward("/stream", to: DMEx.Log.Plug, log: DMEx.Test.HeartbeatLog)
+    forward("/stream", to: DMEx.Log.Plug, log: Log)
 
     match _ do
       send_resp(conn, 404, "not found")
@@ -157,11 +158,7 @@ defmodule DMEx.Integration.HeartbeatTest do
       base = Server.start!(plug: SilentPlug)
 
       start_supervised!(
-        {DMEx.Supervisor,
-         name: SilentHandler,
-         otp_app: nil,
-         repo: DMEx.Test.IntegrationRepo,
-         logs: Server.logs(base <> "/stream")}
+        {DMEx.Supervisor, name: SilentHandler, otp_app: nil, repo: IntegrationRepo, logs: Server.logs(base <> "/stream")}
       )
 
       ref = :telemetry_test.attach_event_handlers(self(), [[:dmex, :handler, :reconnect]])
@@ -184,10 +181,7 @@ defmodule DMEx.Integration.HeartbeatTest do
 
       start_supervised!(
         {DMEx.Supervisor,
-         name: PersistentHandler,
-         otp_app: nil,
-         repo: DMEx.Test.IntegrationRepo,
-         logs: Server.logs(base <> "/stream")}
+         name: PersistentHandler, otp_app: nil, repo: IntegrationRepo, logs: Server.logs(base <> "/stream")}
       )
 
       ref = :telemetry_test.attach_event_handlers(self(), [[:dmex, :handler, :reconnect]])

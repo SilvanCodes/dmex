@@ -74,8 +74,7 @@ defmodule DMEx.Transport.SSE.Decoder do
   the default is for tests and benchmarks that have no config to hand.
   """
   @spec new(pos_integer()) :: t()
-  def new(max_bytes \\ DMEx.Config.defaults().handler[:max_frame_bytes])
-      when is_integer(max_bytes) and max_bytes > 0 do
+  def new(max_bytes \\ DMEx.Config.defaults().handler[:max_frame_bytes]) when is_integer(max_bytes) and max_bytes > 0 do
     %__MODULE__{max_bytes: max_bytes}
   end
 

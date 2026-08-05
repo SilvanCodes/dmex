@@ -28,12 +28,12 @@ defmodule DMEx.Case do
       quote do
         import DMEx.Case
 
+        alias unquote(repo), as: Repo
+
         @moduletag unquote(tag)
 
         # `setup/1` is handed tags and nothing else, so the repo travels as one.
         @moduletag repo: unquote(repo)
-
-        alias unquote(repo), as: Repo
       end
     else
       quote do

@@ -174,7 +174,7 @@ defmodule DMEx.Message do
         other -> raise_type(module, other)
       end
 
-    unless Regex.match?(@type_format, value), do: raise_type(module, value)
+    if !Regex.match?(@type_format, value), do: raise_type(module, value)
 
     value
   end

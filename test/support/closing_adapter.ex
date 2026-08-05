@@ -10,6 +10,8 @@ defmodule DMEx.Test.ClosingAdapter do
 
   @behaviour Plug.Conn.Adapter
 
+  alias Plug.Conn.Adapter
+
   @doc """
   Builds a conn that closes after `chunks` successful writes.
 
@@ -40,10 +42,10 @@ defmodule DMEx.Test.ClosingAdapter do
     }
   end
 
-  @impl Plug.Conn.Adapter
+  @impl Adapter
   def send_chunked(state, _status, _headers), do: {:ok, "", state}
 
-  @impl Plug.Conn.Adapter
+  @impl Adapter
   def chunk({owner, limit, sent}, body) do
     send(owner, {:chunk, IO.iodata_to_binary(body)})
 
@@ -54,31 +56,31 @@ defmodule DMEx.Test.ClosingAdapter do
     end
   end
 
-  @impl Plug.Conn.Adapter
+  @impl Adapter
   def send_resp({owner, _, _} = state, status, _headers, body) do
     send(owner, {:resp, status, IO.iodata_to_binary(body)})
 
     {:ok, "", state}
   end
 
-  @impl Plug.Conn.Adapter
+  @impl Adapter
   def send_file(state, _status, _headers, _file, _offset, _length), do: {:ok, "", state}
 
-  @impl Plug.Conn.Adapter
+  @impl Adapter
   def read_req_body(state, _opts), do: {:ok, "", state}
 
-  @impl Plug.Conn.Adapter
+  @impl Adapter
   def inform(_state, _status, _headers), do: :ok
 
-  @impl Plug.Conn.Adapter
+  @impl Adapter
   def upgrade(_state, _protocol, _opts), do: {:error, :not_supported}
 
-  @impl Plug.Conn.Adapter
+  @impl Adapter
   def push(_state, _path, _headers), do: {:error, :not_supported}
 
-  @impl Plug.Conn.Adapter
+  @impl Adapter
   def get_peer_data(_state), do: %{address: {127, 0, 0, 1}, port: 0, ssl_cert: nil}
 
-  @impl Plug.Conn.Adapter
+  @impl Adapter
   def get_http_protocol(_state), do: :"HTTP/1.1"
 end

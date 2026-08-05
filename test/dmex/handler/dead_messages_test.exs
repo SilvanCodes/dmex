@@ -4,6 +4,7 @@ defmodule DMEx.Handler.DeadMessagesTest do
   alias DMEx.Config
   alias DMEx.Handler.DeadMessages
   alias DMEx.Handler.Pipeline
+  alias DMEx.Storage.Error
   alias DMEx.Storage.Postgres
   alias DMEx.Test.Handlers
   alias DMEx.Test.Messages.OrderPlaced
@@ -30,7 +31,6 @@ defmodule DMEx.Handler.DeadMessagesTest do
     """
     use DMEx.Handler, logs: [:test], id: :fail_times
 
-    alias DMEx.Test.Handlers
     alias DMEx.Test.Messages.OrderShipped
 
     @impl true
@@ -50,9 +50,6 @@ defmodule DMEx.Handler.DeadMessagesTest do
     """
     use DMEx.Handler, logs: [:test], id: :fail_times
 
-    alias DMEx.Test.Handlers
-    alias DMEx.Test.Messages.OrderPlaced
-
     @impl true
     def handle_message(%OrderPlaced{customer_id: 7} = message, _metadata) do
       send(Handlers.owner(), {:attempted, message})
@@ -69,8 +66,6 @@ defmodule DMEx.Handler.DeadMessagesTest do
     again. Only the callbacks replay uses, so there is no `@behaviour` to
     satisfy with a dozen delegates.
     """
-    alias DMEx.Storage.Postgres
-
     def transaction(_opts, _fun), do: {:error, :pool_timeout}
 
     defdelegate dead_messages(opts, subscription), to: Postgres
@@ -119,7 +114,7 @@ defmodule DMEx.Handler.DeadMessagesTest do
       assert {:ok, [row]} = DeadMessages.list(@handler, ctx.opts)
 
       # Exactly what read/3 returns and what the pipeline consumes.
-      assert Map.keys(row) |> Enum.sort() == [:data, :id, :inserted_at, :message_type, :metadata]
+      assert row |> Map.keys() |> Enum.sort() == [:data, :id, :inserted_at, :message_type, :metadata]
     end
   end
 
@@ -264,7 +259,7 @@ defmodule DMEx.Handler.DeadMessagesTest do
                       }}
 
       assert is_integer(duration)
-      refute is_nil(origin)
+      assert origin
     end
 
     # Section 4 of the pipeline, on this path too: `{:error, reason}` from
@@ -274,7 +269,7 @@ defmodule DMEx.Handler.DeadMessagesTest do
       kill(ctx, 1)
       Handlers.FailTimes.set(0)
 
-      assert_raise DMEx.Storage.Error, fn ->
+      assert_raise Error, fn ->
         DeadMessages.replay(@handler, ctx.replay ++ [storage: TransactionFails])
       end
 
@@ -282,7 +277,7 @@ defmodule DMEx.Handler.DeadMessagesTest do
     end
 
     test "a read that fails raises rather than mismatching", ctx do
-      assert_raise DMEx.Storage.Error, fn ->
+      assert_raise Error, fn ->
         DeadMessages.replay(@handler, ctx.replay ++ [storage: ReadFails])
       end
     end
@@ -315,7 +310,7 @@ defmodule DMEx.Handler.DeadMessagesTest do
 
     state =
       Pipeline.build(
-        storage: DMEx.Storage.Postgres,
+        storage: Postgres,
         storage_opts: ctx.storage_opts,
         handler: @handler,
         origin: @url,

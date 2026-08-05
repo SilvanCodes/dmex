@@ -8,10 +8,12 @@ defmodule DMEx.Test.Database do
   exercised on a machine with nothing running.
   """
 
+  alias DMEx.Test.Migrations.Install
+  alias DMEx.Test.Repo
   alias Ecto.Adapters.Postgres
   alias Ecto.Adapters.SQLite3
 
-  @repos [DMEx.Test.Repo, DMEx.Test.IntegrationRepo]
+  @repos [Repo, DMEx.Test.IntegrationRepo]
   @sqlite_repos [DMEx.Test.SQLiteRepo, DMEx.Test.SQLiteIntegrationRepo]
 
   @doc """
@@ -82,8 +84,8 @@ defmodule DMEx.Test.Database do
       # skipped against a database from before the edit, and the suite would test
       # yesterday's schema. Greenfield: the tables are cheap and hold nothing
       # worth keeping between runs.
-      Ecto.Migrator.down(repo, 1, DMEx.Test.Migrations.Install, log: false)
-      Ecto.Migrator.up(repo, 1, DMEx.Test.Migrations.Install, log: false)
+      Ecto.Migrator.down(repo, 1, Install, log: false)
+      Ecto.Migrator.up(repo, 1, Install, log: false)
     end)
   end
 
@@ -109,7 +111,7 @@ defmodule DMEx.Test.Database do
   @spec setup_sqlite!() :: :ok
   def setup_sqlite! do
     Enum.each(@sqlite_repos, fn repo ->
-      path = repo.config() |> Keyword.fetch!(:database)
+      path = Keyword.fetch!(repo.config(), :database)
 
       File.mkdir_p!(Path.dirname(path))
 
@@ -123,7 +125,7 @@ defmodule DMEx.Test.Database do
   @spec migrate_sqlite!() :: :ok
   def migrate_sqlite! do
     Enum.each(@sqlite_repos, fn repo ->
-      Ecto.Migrator.up(repo, 1, DMEx.Test.Migrations.Install, log: false)
+      Ecto.Migrator.up(repo, 1, Install, log: false)
     end)
   end
 
@@ -131,7 +133,7 @@ defmodule DMEx.Test.Database do
   @spec uri() :: URI.t()
   def uri do
     :dmex
-    |> Application.fetch_env!(DMEx.Test.Repo)
+    |> Application.fetch_env!(Repo)
     |> Keyword.fetch!(:url)
     |> URI.parse()
   end

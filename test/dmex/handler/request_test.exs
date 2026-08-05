@@ -32,13 +32,13 @@ defmodule DMEx.Handler.RequestTest do
     # `last-event-id`; there is nothing left to negotiate, so this request is
     # byte-identical to what a browser's EventSource sends for the same URL.
     test "adds no DMEx headers of its own" do
-      names = Request.headers(42, config()) |> Enum.map(&elem(&1, 0)) |> Enum.sort()
+      names = 42 |> Request.headers(config()) |> Enum.map(&elem(&1, 0)) |> Enum.sort()
 
       assert names == ["accept", "last-event-id"]
     end
 
     test "with nothing to resume from, only accept" do
-      names = Request.headers(:none, config()) |> Enum.map(&elem(&1, 0))
+      names = :none |> Request.headers(config()) |> Enum.map(&elem(&1, 0))
 
       assert names == ["accept"]
     end

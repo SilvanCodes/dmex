@@ -72,8 +72,7 @@ defmodule DMEx.Handler.Cursors do
   migration or a console with no handler running.
   """
   @spec move!(module(), non_neg_integer(), keyword()) :: :ok
-  def move!(handler, id, opts)
-      when is_atom(handler) and is_integer(id) and id >= 0 do
+  def move!(handler, id, opts) when is_atom(handler) and is_integer(id) and id >= 0 do
     {storage, storage_opts} = DMEx.Supervisor.storage!(opts)
     subscription = Handler.subscription_id!(handler, opts)
 

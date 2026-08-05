@@ -13,6 +13,7 @@ defmodule DMEx.Integration.VerticalSliceTest do
   alias DMEx.Storage.Postgres
   alias DMEx.Test.Handlers
   alias DMEx.Test.IntegrationLog, as: Log
+  alias DMEx.Test.IntegrationRepo
   alias DMEx.Test.Messages.OrderPlaced
   alias DMEx.Test.Messages.OrderShipped
   alias DMEx.Test.Server
@@ -21,9 +22,6 @@ defmodule DMEx.Integration.VerticalSliceTest do
   defmodule SecondHandler do
     @moduledoc false
     use DMEx.Handler, logs: [:test], id: :second
-
-    alias DMEx.Test.Handlers
-    alias DMEx.Test.Messages.OrderPlaced
 
     @impl true
     def handle_message(%OrderPlaced{} = message, _metadata) do
@@ -117,9 +115,6 @@ defmodule DMEx.Integration.VerticalSliceTest do
       @moduledoc false
       use DMEx.Handler, logs: [:test], id: :slice
 
-      alias DMEx.Test.Handlers
-      alias DMEx.Test.Messages.OrderPlaced
-
       @impl true
       def handle_message(%OrderPlaced{} = message, _metadata) do
         send(Handlers.owner(), {:sliced, message})
@@ -132,9 +127,6 @@ defmodule DMEx.Integration.VerticalSliceTest do
       @moduledoc "Slice after an ordinary module rename — same declaration."
       use DMEx.Handler, logs: [:test], id: :slice
 
-      alias DMEx.Test.Handlers
-      alias DMEx.Test.Messages.OrderPlaced
-
       @impl true
       def handle_message(%OrderPlaced{} = message, _metadata) do
         send(Handlers.owner(), {:sliced, message})
@@ -146,10 +138,6 @@ defmodule DMEx.Integration.VerticalSliceTest do
     defmodule SliceWidened do
       @moduledoc "Slice with a clause added for a second type — same identity."
       use DMEx.Handler, logs: [:test], id: :slice
-
-      alias DMEx.Test.Handlers
-      alias DMEx.Test.Messages.OrderPlaced
-      alias DMEx.Test.Messages.OrderShipped
 
       @impl true
       def handle_message(%OrderPlaced{} = message, _metadata), do: report(message)
@@ -264,7 +252,7 @@ defmodule DMEx.Integration.VerticalSliceTest do
 
   defp cursor_rows do
     SQL.query!(
-      DMEx.Test.IntegrationRepo,
+      IntegrationRepo,
       "SELECT subscription, last_seen FROM dmex_cursors ORDER BY subscription",
       []
     ).rows
@@ -279,7 +267,7 @@ defmodule DMEx.Integration.VerticalSliceTest do
     :ok
   end
 
-  defp consumer_opts, do: %{repo: DMEx.Test.IntegrationRepo, prefix: nil}
+  defp consumer_opts, do: %{repo: IntegrationRepo, prefix: nil}
 
   defp received_order_ids(count) do
     for _ <- 1..count do

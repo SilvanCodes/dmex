@@ -78,6 +78,8 @@ defmodule DMEx.Log.Plug do
   There is no `503`/`Retry-After` *admission control* — see `ROADMAP.md`.
   """
 
+  @behaviour Plug
+
   alias DMEx.Config
   alias DMEx.Log.Params
   alias DMEx.Log.Selection
@@ -87,8 +89,6 @@ defmodule DMEx.Log.Plug do
   alias DMEx.Transport.SSE.Frame
 
   require Logger
-
-  @behaviour Plug
 
   # Sent only on a selective stream, saying how many of the application's types
   # the filter admitted.

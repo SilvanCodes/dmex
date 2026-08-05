@@ -1,14 +1,10 @@
 import Config
 
+alias Ecto.Adapters.SQL.Sandbox
+
 unit_url =
   System.get_env("DMEX_POSTGRES_URL") ||
     "postgres://postgres:postgres@postgres:5432/dmex_test"
-
-config :dmex, DMEx.Test.Repo,
-  url: unit_url,
-  pool: Ecto.Adapters.SQL.Sandbox,
-  pool_size: 10,
-  log: false
 
 # The integration repo is deliberately *not* sandboxed. Two things in the design
 # cannot be observed inside a sandbox transaction:
@@ -30,6 +26,12 @@ integration_url =
   System.get_env("DMEX_POSTGRES_INTEGRATION_URL") ||
     unit_url |> URI.parse() |> Map.put(:path, "/dmex_integration_test") |> URI.to_string()
 
+config :dmex, DMEx.Test.Repo,
+  url: unit_url,
+  pool: Sandbox,
+  pool_size: 10,
+  log: false
+
 # The derivation cannot collide, but an explicit DMEX_POSTGRES_INTEGRATION_URL
 # can. Refusing to boot beats discovering it from a truncated unit database.
 if integration_url == unit_url do
@@ -42,14 +44,26 @@ if integration_url == unit_url do
   """
 end
 
+# `setup_sqlite!/0` deletes these files before every run, so two suites sharing a
+# path destroy each other mid-flight. Overridable to let concurrent runs isolate.
+sqlite_dir = System.get_env("DMEX_SQLITE_DIR") || Path.expand("../tmp", __DIR__)
+
+# Deliberately left at the ecto_sqlite3 default, for the test that
+# `DMEx.Storage.SQLite` refuses it.
+config :dmex, DMEx.Test.DeferredRepo, database: Path.join(sqlite_dir, "dmex_deferred.db")
+
 config :dmex, DMEx.Test.IntegrationRepo,
   url: integration_url,
   pool_size: 10,
   log: false
 
-# `setup_sqlite!/0` deletes these files before every run, so two suites sharing a
-# path destroy each other mid-flight. Overridable to let concurrent runs isolate.
-sqlite_dir = System.get_env("DMEX_SQLITE_DIR") || Path.expand("../tmp", __DIR__)
+config :dmex, DMEx.Test.SQLiteIntegrationRepo,
+  database: Path.join(sqlite_dir, "dmex_integration_test.db"),
+  pool_size: 5,
+  journal_mode: :wal,
+  default_transaction_mode: :immediate,
+  busy_timeout: 5_000,
+  log: false
 
 # SQLite needs no server, so this half of the storage suite runs anywhere. The
 # two non-default settings are the ones `DMEx.Storage.SQLite` requires of any
@@ -62,23 +76,11 @@ sqlite_dir = System.get_env("DMEX_SQLITE_DIR") || Path.expand("../tmp", __DIR__)
 #     continuous reader per open connection.
 config :dmex, DMEx.Test.SQLiteRepo,
   database: Path.join(sqlite_dir, "dmex_test.db"),
-  pool: Ecto.Adapters.SQL.Sandbox,
+  pool: Sandbox,
   pool_size: 5,
   journal_mode: :wal,
   default_transaction_mode: :immediate,
   busy_timeout: 5_000,
   log: false
-
-config :dmex, DMEx.Test.SQLiteIntegrationRepo,
-  database: Path.join(sqlite_dir, "dmex_integration_test.db"),
-  pool_size: 5,
-  journal_mode: :wal,
-  default_transaction_mode: :immediate,
-  busy_timeout: 5_000,
-  log: false
-
-# Deliberately left at the ecto_sqlite3 default, for the test that
-# `DMEx.Storage.SQLite` refuses it.
-config :dmex, DMEx.Test.DeferredRepo, database: Path.join(sqlite_dir, "dmex_deferred.db")
 
 config :logger, level: :warning

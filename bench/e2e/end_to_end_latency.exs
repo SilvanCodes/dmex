@@ -30,8 +30,6 @@ defmodule Bench.LatencyHandler do
   @moduledoc false
   use DMEx.Handler, logs: [:bench], id: :latency
 
-  alias DMEx.Test.Messages.OrderPlaced
-
   @impl true
   def handle_message(%OrderPlaced{order_id: sent_at}, _metadata) do
     # Stamped *here*, in the handler, at the moment of delivery. Stamping it in

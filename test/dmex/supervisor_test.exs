@@ -5,7 +5,10 @@ defmodule DMEx.SupervisorTest do
 
   alias DMEx.Handler
   alias DMEx.Test.Handlers
+  alias DMEx.Test.IntegrationRepo
+  alias DMEx.Test.Log
   alias DMEx.Test.Messages.OrderPlaced
+  alias DMEx.Test.Repo
 
   @moduletag :capture_log
 
@@ -21,7 +24,7 @@ defmodule DMEx.SupervisorTest do
   # discovered handler is not allowed to.
   defmodule OtherHandler do
     @moduledoc false
-    use DMEx.Handler, logs: [:test], id: :other
+    use Handler, logs: [:test], id: :other
 
     @impl true
     def handle_message(%OrderPlaced{}, _metadata), do: :ok
@@ -29,7 +32,7 @@ defmodule DMEx.SupervisorTest do
 
   defmodule EchoTwin do
     @moduledoc "Declares Handlers.Echo's identity, for the duplicate check."
-    use DMEx.Handler, logs: [:test], id: :echo
+    use Handler, logs: [:test], id: :echo
 
     @impl true
     def handle_message(%OrderPlaced{}, _metadata), do: :ok
@@ -37,7 +40,7 @@ defmodule DMEx.SupervisorTest do
 
   defmodule ElsewhereHandler do
     @moduledoc "Names a log nothing binds."
-    use DMEx.Handler, logs: [:elsewhere], id: :elsewhere
+    use Handler, logs: [:elsewhere], id: :elsewhere
 
     @impl true
     def handle_message(%OrderPlaced{}, _metadata), do: :ok
@@ -45,7 +48,7 @@ defmodule DMEx.SupervisorTest do
 
   defmodule FannedTwin do
     @moduledoc "Collides with Handlers.Fanned on one of its two logs."
-    use DMEx.Handler, logs: [:other], id: :fanned
+    use Handler, logs: [:other], id: :fanned
 
     @impl true
     def handle_message(%OrderPlaced{}, _metadata), do: :ok
@@ -84,9 +87,7 @@ defmodule DMEx.SupervisorTest do
     # app is the Mix project, and in a release it declares `:dmex` and is scanned
     # for that reason instead.
     test "defaults the scanned application to the Mix project" do
-      start_supervised!(
-        {DMEx.Supervisor, name: TestSupervisor, repo: DMEx.Test.Repo, logs: @logs}
-      )
+      start_supervised!({DMEx.Supervisor, name: TestSupervisor, repo: Repo, logs: @logs})
 
       eventually(fn -> subscribed?("test/echo") end)
     end
@@ -99,7 +100,7 @@ defmodule DMEx.SupervisorTest do
 
       # Not a handler at all, and a log module answers `__dmex__/0` too.
       refute Handlers.NotAHandler in discovered
-      refute DMEx.Test.Log in discovered
+      refute Log in discovered
 
       # Compiled from a `.exs`, so not in the application's module list.
       refute EchoTwin in discovered
@@ -113,13 +114,13 @@ defmodule DMEx.SupervisorTest do
     end
 
     test "starts a log module bound in logs:" do
-      start_supervisor(logs: [owned: DMEx.Test.Log] ++ @logs)
+      start_supervisor(logs: [owned: Log] ++ @logs)
 
       assert Process.whereis(DMEx.Test.Log.Supervisor)
     end
 
     test "starts an owned log once even when two names point at it" do
-      start_supervisor(logs: [owned: DMEx.Test.Log, mirror: DMEx.Test.Log] ++ @logs)
+      start_supervisor(logs: [owned: Log, mirror: Log] ++ @logs)
 
       assert Process.whereis(DMEx.Test.Log.Supervisor)
     end
@@ -127,11 +128,11 @@ defmodule DMEx.SupervisorTest do
     # The binding is the whole of the choice: a module is read in this VM, a URL
     # over HTTP. Nothing names a transport anywhere.
     test "reads a log this application owns in this VM" do
-      start_supervisor(logs: [test: DMEx.Test.Log, other: @other])
+      start_supervisor(logs: [test: Log, other: @other])
 
       assert {:ok, [pid]} = subscribe(Handlers.Echo)
 
-      assert %{transport: DMEx.Transport.Local, origin: DMEx.Test.Log} = :sys.get_state(pid)
+      assert %{transport: DMEx.Transport.Local, origin: Log} = :sys.get_state(pid)
     end
 
     test "reads a log bound to a URL over HTTP" do
@@ -356,16 +357,16 @@ defmodule DMEx.SupervisorTest do
 
       {:ok, [pid]} = subscribe(Handlers.Echo)
 
-      assert :sys.get_state(pid).storage_opts.repo == DMEx.Test.Repo
+      assert :sys.get_state(pid).storage_opts.repo == Repo
     end
 
     test "a subscription may override the supervisor's repo" do
       # For an application whose bookkeeping lives in a second repo.
       start_supervisor([])
 
-      {:ok, [pid]} = subscribe(Handlers.Echo, repo: DMEx.Test.IntegrationRepo)
+      {:ok, [pid]} = subscribe(Handlers.Echo, repo: IntegrationRepo)
 
-      assert :sys.get_state(pid).storage_opts.repo == DMEx.Test.IntegrationRepo
+      assert :sys.get_state(pid).storage_opts.repo == IntegrationRepo
     end
   end
 
@@ -373,7 +374,7 @@ defmodule DMEx.SupervisorTest do
     test "a bare subscribe/2 with no logs and nothing running names both fixes" do
       assert_raise ArgumentError, ~r/no `logs:`.*logs: \[orders:/s, fn ->
         DMEx.Supervisor.subscribe(Handlers.Echo,
-          repo: DMEx.Test.Repo,
+          repo: Repo,
           supervisor: NotRunningSupervisor
         )
       end
@@ -413,7 +414,7 @@ defmodule DMEx.SupervisorTest do
     {:error, {%ArgumentError{message: message}, _stacktrace}} =
       DMEx.Supervisor.start_link(
         Keyword.merge(
-          [name: TestSupervisor, otp_app: nil, repo: DMEx.Test.Repo, logs: @logs],
+          [name: TestSupervisor, otp_app: nil, repo: Repo, logs: @logs],
           opts
         )
       )
@@ -427,7 +428,7 @@ defmodule DMEx.SupervisorTest do
     start_supervised!(
       {DMEx.Supervisor,
        Keyword.merge(
-         [name: TestSupervisor, otp_app: nil, repo: DMEx.Test.Repo, logs: @logs],
+         [name: TestSupervisor, otp_app: nil, repo: Repo, logs: @logs],
          opts
        )}
     )

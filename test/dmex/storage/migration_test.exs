@@ -1,9 +1,8 @@
 defmodule DMEx.Storage.MigrationTest do
   use DMEx.Case, async: true, database: true
 
-  alias Ecto.Adapters.SQL
-
   alias DMEx.Storage.Migration
+  alias Ecto.Adapters.SQL
 
   describe "option validation" do
     test "rejects an unknown table" do

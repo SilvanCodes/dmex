@@ -5,6 +5,7 @@ defmodule DMEx.Log.StreamTest do
   alias DMEx.Log.Stream, as: SendLoop
   alias DMEx.Test.ClosingAdapter
   alias DMEx.Test.Storage, as: Stub
+  alias DMEx.Transport.SSE
 
   @moduletag :capture_log
 
@@ -475,7 +476,7 @@ defmodule DMEx.Log.StreamTest do
 
   # The ids of every frame in one write, in order.
   defp ids(write) do
-    Regex.scan(~r{^id: (\d+)$}m, write) |> Enum.map(fn [_, id] -> String.to_integer(id) end)
+    ~r{^id: (\d+)$}m |> Regex.scan(write) |> Enum.map(fn [_, id] -> String.to_integer(id) end)
   end
 
   # The loop only returns when the connection closes, and an idle stream never
@@ -499,9 +500,9 @@ defmodule DMEx.Log.StreamTest do
   defp sink(parent, test_opts) do
     chunks = Keyword.get(test_opts, :chunks, 1)
 
-    case Keyword.get(test_opts, :transport, DMEx.Transport.SSE) do
+    case Keyword.get(test_opts, :transport, SSE) do
       StubTransport -> %{owner: parent, limit: chunks, sent: 0}
-      DMEx.Transport.SSE -> ClosingAdapter.conn(parent, chunks, state: :chunked)
+      SSE -> ClosingAdapter.conn(parent, chunks, state: :chunked)
     end
   end
 
@@ -521,7 +522,7 @@ defmodule DMEx.Log.StreamTest do
   defp state(opts, test_opts) do
     %{
       log: __MODULE__,
-      transport: Keyword.get(test_opts, :transport, DMEx.Transport.SSE),
+      transport: Keyword.get(test_opts, :transport, SSE),
       storage: Stub,
       storage_opts: opts,
       cursor: Keyword.get(test_opts, :cursor, 0),

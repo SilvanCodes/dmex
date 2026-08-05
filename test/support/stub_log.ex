@@ -11,6 +11,8 @@ defmodule DMEx.Test.StubLog do
   Call `install/2` in whichever process will run the plug.
   """
 
+  alias DMEx.Test.Storage
+
   @key :dmex_test_stub
 
   @doc "Points this process's stub log at `opts`, with optional config overrides."
@@ -39,8 +41,8 @@ defmodule DMEx.Test.StubLog do
 
     %{
       log: __MODULE__,
-      repo: DMEx.Test.Storage,
-      storage: DMEx.Test.Storage,
+      repo: Storage,
+      storage: Storage,
       notifier: DMEx.Notifier.Beam,
       app_key: "stub",
       channel: "dmex_stub",
@@ -49,7 +51,7 @@ defmodule DMEx.Test.StubLog do
       config: config,
       storage_opts: Map.put(storage_opts, :log, __MODULE__),
       notifier_opts: %{
-        repo: DMEx.Test.Storage,
+        repo: Storage,
         name: Module.concat(__MODULE__, "Notifications"),
         channel: "dmex_stub"
       }

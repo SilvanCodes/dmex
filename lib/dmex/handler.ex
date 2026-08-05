@@ -266,7 +266,7 @@ defmodule DMEx.Handler do
     declaration = declaration!(handler)
     log = to_string(log)
 
-    unless log in declaration.logs, do: raise_unknown_log(declaration, log)
+    if log not in declaration.logs, do: raise_unknown_log(declaration, log)
 
     log <> "/" <> declaration.id
   end
@@ -325,7 +325,7 @@ defmodule DMEx.Handler do
   """
   @spec declaration!(module()) :: declaration()
   def declaration!(handler) when is_atom(handler) do
-    unless handler?(handler) do
+    if !handler?(handler) do
       raise ArgumentError,
             "#{inspect(handler)} is not a DMEx handler. Add `use DMEx.Handler` to it."
     end
@@ -420,7 +420,7 @@ defmodule DMEx.Handler do
     heads = Enum.reverse(Module.get_attribute(env.module, :dmex_heads))
     {:v1, :def, _meta, clauses} = Module.get_definition(env.module, {:handle_message, 2})
 
-    unless length(heads) == length(clauses), do: raise_unseen_clauses(env, heads, clauses)
+    if length(heads) != length(clauses), do: raise_unseen_clauses(env, heads, clauses)
 
     accepts = Enum.map(heads, &matcher_clause/1)
     casts = Enum.map(messages, &cast_clause/1)
@@ -497,7 +497,7 @@ defmodule DMEx.Handler do
   # already resolved to modules, so this needs no `Macro.expand/2` and no
   # `@on_definition` hook shadowing every definition on its way past.
   defp messages!(env) do
-    unless Module.defines?(env.module, {:handle_message, 2}, :def) do
+    if !Module.defines?(env.module, {:handle_message, 2}, :def) do
       raise ArgumentError, """
       #{inspect(env.module)} defines no handle_message/2, so there are no message types \
       to derive.
@@ -513,9 +513,7 @@ defmodule DMEx.Handler do
     # Every clause is checked, including the second one matching a struct an
     # earlier clause already named — the set collapses the duplicate, but only
     # after `message!/2` has had its say about it.
-    clauses
-    |> Enum.map(&message!(env, &1))
-    |> MapSet.new()
+    MapSet.new(clauses, &message!(env, &1))
   end
 
   defp message!(env, {meta, [pattern | _rest], _guards, _body}) do
@@ -533,7 +531,7 @@ defmodule DMEx.Handler do
     # is not the same fact as "this is not a message".
     Code.ensure_compiled!(module)
 
-    unless DMEx.Message.message?(module), do: raise_not_a_message(env, meta, module)
+    if !DMEx.Message.message?(module), do: raise_not_a_message(env, meta, module)
 
     module
   end
@@ -651,7 +649,7 @@ defmodule DMEx.Handler do
         other -> raise_identifier(module, key, other)
       end
 
-    unless DMEx.identifier?(value), do: raise_identifier(module, key, value)
+    if !DMEx.identifier?(value), do: raise_identifier(module, key, value)
 
     value
   end

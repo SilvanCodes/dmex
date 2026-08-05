@@ -95,7 +95,8 @@ defmodule DMEx.HandlerTest do
     test "`selective:` must be a boolean" do
       assert_raise ArgumentError, ~r/:selective in .* must be true .* or false/s, fn ->
         defmodule NotABoolean do
-          use DMEx.Handler, logs: [:test], id: :not_a_boolean, selective: :sometimes
+          @moduledoc false
+          use Handler, logs: [:test], id: :not_a_boolean, selective: :sometimes
 
           def handle_message(%OrderPlaced{}, _metadata), do: :ok
         end

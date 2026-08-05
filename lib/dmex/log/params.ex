@@ -70,8 +70,7 @@ defmodule DMEx.Log.Params do
   present but outside its vocabulary, which the caller answers with a `400`.
   """
   @spec parse([String.t()], [{String.t(), String.t()}]) :: {:ok, t()} | {:error, error()}
-  def parse(path_info, req_headers)
-      when is_list(path_info) and is_list(req_headers) do
+  def parse(path_info, req_headers) when is_list(path_info) and is_list(req_headers) do
     with {:ok, selection} <- selection(path_info),
          {:ok, cursor} <- cursor(req_headers) do
       {:ok, %__MODULE__{selection: selection, cursor: cursor}}

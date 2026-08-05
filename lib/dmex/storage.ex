@@ -261,8 +261,7 @@ defmodule DMEx.Storage do
   `DMEx.Handler.Cursors`, not by the stream.
   """
   @callback cursor(opts(), subscription :: String.t()) ::
-              {:ok,
-               %{required(:last_seen) => non_neg_integer(), optional(atom()) => term()} | nil}
+              {:ok, %{required(:last_seen) => non_neg_integer(), optional(atom()) => term()} | nil}
               | {:error, term()}
 
   @doc """

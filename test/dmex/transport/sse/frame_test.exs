@@ -31,7 +31,7 @@ defmodule DMEx.Transport.SSE.FrameTest do
     test "carries the payload and the metadata, and nothing else" do
       assert {:message, message} = reparse(encode(row(1042)))
 
-      assert Map.keys(message) |> Enum.sort() == ~w(data id message_type metadata)
+      assert message |> Map.keys() |> Enum.sort() == ~w(data id message_type metadata)
     end
 
     # Three slots carry the row and two of them are SSE's own — which is what
@@ -83,7 +83,7 @@ defmodule DMEx.Transport.SSE.FrameTest do
     end
 
     test "returns iodata, not a flattened binary" do
-      assert row(1) |> Frame.encode_row() |> is_list()
+      assert 1 |> row() |> Frame.encode_row() |> is_list()
     end
   end
 

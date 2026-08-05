@@ -119,6 +119,7 @@ defmodule DMEx.Handler.Pipeline do
   """
 
   alias DMEx.Handler
+  alias DMEx.Storage.Error
 
   require Logger
 
@@ -261,7 +262,7 @@ defmodule DMEx.Handler.Pipeline do
   def build(opts) do
     handler = Keyword.fetch!(opts, :handler)
 
-    unless Handler.handler?(handler) do
+    if !Handler.handler?(handler) do
       raise ArgumentError,
             "#{inspect(handler)} is not a DMEx handler. " <>
               "Add `use DMEx.Handler` to it."
@@ -321,7 +322,7 @@ defmodule DMEx.Handler.Pipeline do
     # that never failed, and `on_failure` would dead-letter a message the
     # handler accepted — so this leaves by the same door `give_up/6` and
     # `flush/1` use, with the cursor still below the message.
-    storage_error in DMEx.Storage.Error ->
+    storage_error in Error ->
       reraise storage_error, __STACKTRACE__
 
     exception ->
@@ -444,7 +445,7 @@ defmodule DMEx.Handler.Pipeline do
   defp commit!(state, fun) do
     case state.storage.transaction(state.storage_opts, fun) do
       {:ok, result} -> result
-      {:error, reason} -> raise DMEx.Storage.Error, reason
+      {:error, reason} -> raise Error, reason
     end
   end
 

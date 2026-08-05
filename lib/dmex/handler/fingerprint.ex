@@ -260,7 +260,8 @@ defmodule DMEx.Handler.Fingerprint do
 
     Enum.each(stack, fn {hash, slot} ->
       value =
-        each_position(hash, block, fn other -> :atomics.get(fps, other) end)
+        hash
+        |> each_position(block, fn other -> :atomics.get(fps, other) end)
         |> Enum.reduce(fingerprint(hash), &bxor/2)
 
       :atomics.put(fps, slot, band(value, @fingerprint_mask))

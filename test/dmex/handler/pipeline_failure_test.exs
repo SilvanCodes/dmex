@@ -88,6 +88,7 @@ defmodule DMEx.Handler.PipelineFailureTest do
   alias DMEx.Config
   alias DMEx.Handler.Pipeline
   alias DMEx.Handler.PipelineFailureTest.FlakyStorage
+  alias DMEx.Storage.Error
   alias DMEx.Storage.Postgres
   alias DMEx.Test.Handlers
   alias DMEx.Test.Messages.OrderPlaced
@@ -147,11 +148,9 @@ defmodule DMEx.Handler.PipelineFailureTest do
 
       # No span ever covers the backoff sleep, so a span's duration is what
       # the handler cost rather than how long the schedule waited.
-      assert_receive {[:dmex, :handler, :message, :exception], ^ref, _,
-                      %{attempt: 1, handler: Handlers.FailTimes}}
+      assert_receive {[:dmex, :handler, :message, :exception], ^ref, _, %{attempt: 1, handler: Handlers.FailTimes}}
 
-      assert_receive {[:dmex, :handler, :message, :stop], ^ref, _,
-                      %{attempt: 2, handler: Handlers.FailTimes}}
+      assert_receive {[:dmex, :handler, :message, :stop], ^ref, _, %{attempt: 2, handler: Handlers.FailTimes}}
     end
   end
 
@@ -370,7 +369,7 @@ defmodule DMEx.Handler.PipelineFailureTest do
       opts = FlakyStorage.new([:commit, :commit, :commit])
       state = stub_state(opts, handler: Handlers.Echo, max_attempts: 3)
 
-      assert_raise DMEx.Storage.Error, fn -> Pipeline.run(row(1), state) end
+      assert_raise Error, fn -> Pipeline.run(row(1), state) end
 
       assert stub_dead(opts, "test/echo") == []
       assert {:ok, nil} = FlakyStorage.last_seen(opts, "test/echo")
@@ -392,7 +391,7 @@ defmodule DMEx.Handler.PipelineFailureTest do
       opts = FlakyStorage.new([:timeout])
       state = stub_state(opts, handler: Handlers.Echo, max_attempts: 3)
 
-      assert_raise DMEx.Storage.Error, ~r/pool_timeout/, fn -> Pipeline.run(row(1), state) end
+      assert_raise Error, ~r/pool_timeout/, fn -> Pipeline.run(row(1), state) end
 
       refute_received {:handled, _, _}
       assert stub_dead(opts, "test/echo") == []
@@ -406,7 +405,7 @@ defmodule DMEx.Handler.PipelineFailureTest do
       opts = FlakyStorage.new([:ok, :ok, :ok, :commit])
       state = stub_state(opts, handler: Handlers.Raising, max_attempts: 3)
 
-      assert_raise DMEx.Storage.Error, fn -> Pipeline.run(row(1), state) end
+      assert_raise Error, fn -> Pipeline.run(row(1), state) end
 
       assert stub_dead(opts, "test/raising") == []
       assert {:ok, nil} = FlakyStorage.last_seen(opts, "test/raising")
@@ -416,7 +415,7 @@ defmodule DMEx.Handler.PipelineFailureTest do
       opts = FlakyStorage.new([:timeout])
       state = stub_state(opts, handler: Handlers.Echo, max_attempts: 3)
 
-      assert_raise DMEx.Storage.Error, fn ->
+      assert_raise Error, fn ->
         Pipeline.flush(%{state | cursor: 7, pending: true})
       end
     end
@@ -469,7 +468,7 @@ defmodule DMEx.Handler.PipelineFailureTest do
       Keyword.split(opts, [:on_failure, :max_attempts, :reconnect_backoff, :reconnect_backoff_max])
 
     Pipeline.build(
-      storage: DMEx.Storage.Postgres,
+      storage: Postgres,
       storage_opts: ctx.storage_opts,
       handler: Keyword.fetch!(opts, :handler),
       origin: @url,

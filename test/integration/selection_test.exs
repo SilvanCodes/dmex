@@ -216,8 +216,7 @@ defmodule DMEx.Integration.SelectionTest do
 
   defp absorb([], _ref, status, headers, body), do: {:cont, status, headers, body}
 
-  defp absorb([{:status, ref, status} | rest], ref, _status, headers, body),
-    do: absorb(rest, ref, status, headers, body)
+  defp absorb([{:status, ref, status} | rest], ref, _status, headers, body), do: absorb(rest, ref, status, headers, body)
 
   defp absorb([{:headers, ref, headers} | rest], ref, status, _headers, body) do
     if status == 200 do
@@ -232,11 +231,9 @@ defmodule DMEx.Integration.SelectionTest do
   defp absorb([{:data, ref, chunk} | rest], ref, status, headers, body),
     do: absorb(rest, ref, status, headers, body <> chunk)
 
-  defp absorb([{:done, ref} | _rest], ref, status, headers, body),
-    do: {:done, {:ok, status, headers, body}}
+  defp absorb([{:done, ref} | _rest], ref, status, headers, body), do: {:done, {:ok, status, headers, body}}
 
-  defp absorb([_other | rest], ref, status, headers, body),
-    do: absorb(rest, ref, status, headers, body)
+  defp absorb([_other | rest], ref, status, headers, body), do: absorb(rest, ref, status, headers, body)
 
   # Opens a stream and returns whatever it sends within a short window, which is
   # enough to see which message types made it onto the wire.

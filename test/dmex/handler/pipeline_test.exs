@@ -95,8 +95,7 @@ defmodule DMEx.Handler.PipelineTest do
 
       Pipeline.run(unknown_row(1), state)
 
-      assert_receive {[:dmex, :handler, :skip], ^ref, %{id: 1},
-                      %{handler: Handlers.Echo} = metadata}
+      assert_receive {[:dmex, :handler, :skip], ^ref, %{id: 1}, %{handler: Handlers.Echo} = metadata}
 
       assert metadata.message_type == "SomeOtherApp.Messages.Unknown"
       assert metadata.origin == @url
@@ -404,13 +403,11 @@ defmodule DMEx.Handler.PipelineTest do
 
       Pipeline.run(row(1), state)
 
-      assert_receive {[:dmex, :handler, :message, :start], ^ref, _,
-                      %{handler: Handlers.Echo, id: 1} = metadata}
+      assert_receive {[:dmex, :handler, :message, :start], ^ref, _, %{handler: Handlers.Echo, id: 1} = metadata}
 
       assert metadata.message_type == "order_placed"
 
-      assert_receive {[:dmex, :handler, :message, :stop], ^ref, %{duration: _},
-                      %{handler: Handlers.Echo}}
+      assert_receive {[:dmex, :handler, :message, :stop], ^ref, %{duration: _}, %{handler: Handlers.Echo}}
     end
 
     test "reports an exception rather than swallowing it" do
@@ -424,8 +421,7 @@ defmodule DMEx.Handler.PipelineTest do
 
       catch_error(Pipeline.run(row(1), state))
 
-      assert_receive {[:dmex, :handler, :message, :exception], ^ref, _,
-                      %{handler: Handlers.Raising}}
+      assert_receive {[:dmex, :handler, :message, :exception], ^ref, _, %{handler: Handlers.Raising}}
     end
   end
 
@@ -437,7 +433,7 @@ defmodule DMEx.Handler.PipelineTest do
   # subject, and the default is `:dead_message`.
   defp state(ctx, opts) do
     Pipeline.build(
-      storage: DMEx.Storage.Postgres,
+      storage: Postgres,
       storage_opts: ctx.storage_opts,
       handler: Keyword.fetch!(opts, :handler),
       origin: @url,

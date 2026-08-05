@@ -3,13 +3,14 @@ defmodule DMEx.Handler.CursorsTest do
 
   alias DMEx.Handler.Cursors
   alias DMEx.Storage.Postgres
+  alias DMEx.Test.Messages.OrderPlaced
 
   defmodule Old do
     @moduledoc false
     use DMEx.Handler, logs: [:orders], id: :old
 
     @impl true
-    def handle_message(%DMEx.Test.Messages.OrderPlaced{}, _metadata), do: :ok
+    def handle_message(%OrderPlaced{}, _metadata), do: :ok
   end
 
   defmodule New do
@@ -17,7 +18,7 @@ defmodule DMEx.Handler.CursorsTest do
     use DMEx.Handler, logs: [:orders], id: :new
 
     @impl true
-    def handle_message(%DMEx.Test.Messages.OrderPlaced{}, _metadata), do: :ok
+    def handle_message(%OrderPlaced{}, _metadata), do: :ok
   end
 
   defmodule Both do
@@ -25,7 +26,7 @@ defmodule DMEx.Handler.CursorsTest do
     use DMEx.Handler, logs: [:orders, :returns], id: :both
 
     @impl true
-    def handle_message(%DMEx.Test.Messages.OrderPlaced{}, _metadata), do: :ok
+    def handle_message(%OrderPlaced{}, _metadata), do: :ok
   end
 
   @old "orders/old"
@@ -58,7 +59,7 @@ defmodule DMEx.Handler.CursorsTest do
       use DMEx.Handler, logs: [:orders], id: :old
 
       @impl true
-      def handle_message(%DMEx.Test.Messages.OrderPlaced{}, _metadata), do: :ok
+      def handle_message(%OrderPlaced{}, _metadata), do: :ok
     end
 
     test "a renamed module reads the same cursor", ctx do

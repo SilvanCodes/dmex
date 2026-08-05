@@ -103,7 +103,7 @@ defmodule DMEx.Storage.Migration do
   defp validate!(opts) do
     tables = Keyword.get(opts, :tables, @tables)
 
-    unless is_list(tables) and tables != [] and Enum.all?(tables, &(&1 in @tables)) do
+    if !(is_list(tables) and tables != [] and Enum.all?(tables, &(&1 in @tables))) do
       raise ArgumentError,
             ":tables must be a non-empty list drawn from #{inspect(@tables)}, " <>
               "got: #{inspect(tables)}"

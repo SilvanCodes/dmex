@@ -65,13 +65,13 @@ defmodule DMEx.Supervisor do
 
   use Supervisor
 
-  require Logger
-
   alias DMEx.Config
   alias DMEx.Handler
   alias DMEx.Handler.Stream, as: Subscription
   alias DMEx.Handler.Supervisor, as: Subscriptions
   alias DMEx.Supervisor.Starter
+
+  require Logger
 
   @default_name __MODULE__
   # Every storage option and its default, in one list: `storage/1` reads it and
@@ -129,8 +129,7 @@ defmodule DMEx.Supervisor do
           # The default storage and the log bindings ride along as registry
           # metadata, seeded at start, which is why a bare subscribe/2 can find
           # them with no GenServer call.
-          {Registry,
-           keys: :unique, name: registry(name), meta: [storage: storage_config!(opts), logs: logs]},
+          {Registry, keys: :unique, name: registry(name), meta: [storage: storage_config!(opts), logs: logs]},
           {Subscriptions, name: subscriptions(name)},
           {Starter, {name, handlers}}
         ]
@@ -450,11 +449,10 @@ defmodule DMEx.Supervisor do
     end
   end
 
-  defp log_name!(name) when is_atom(name) and not is_nil(name),
-    do: log_name!(Atom.to_string(name))
+  defp log_name!(name) when is_atom(name) and not is_nil(name), do: log_name!(Atom.to_string(name))
 
   defp log_name!(name) when is_binary(name) do
-    unless DMEx.identifier?(name) do
+    if !DMEx.identifier?(name) do
       raise ArgumentError,
             "the log name #{inspect(name)} is not a legal identifier: it must match " <>
               "#{inspect(DMEx.identifier_format())}, the same charset a handler's `logs:` and `id:` use, " <>
@@ -497,8 +495,7 @@ defmodule DMEx.Supervisor do
     end
   end
 
-  defp log_target!(name, other),
-    do: raise_log_url(name, other, "it is neither a log module nor a non-empty string")
+  defp log_target!(name, other), do: raise_log_url(name, other, "it is neither a log module nor a non-empty string")
 
   defp raise_log_url(name, url, why) do
     raise ArgumentError,
@@ -593,8 +590,7 @@ defmodule DMEx.Supervisor.Starter do
 
   @doc false
   @spec start_link({atom(), [module()]}) :: GenServer.on_start()
-  def start_link({supervisor, handlers}),
-    do: GenServer.start_link(__MODULE__, {supervisor, handlers})
+  def start_link({supervisor, handlers}), do: GenServer.start_link(__MODULE__, {supervisor, handlers})
 
   @impl GenServer
   def init(state), do: {:ok, state, {:continue, :subscribe}}

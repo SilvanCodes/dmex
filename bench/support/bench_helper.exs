@@ -3,6 +3,7 @@ defmodule DMEx.BenchHelper do
   Shared setup and fixtures for the benchmark suite.
   """
 
+  alias DMEx.Test.IntegrationRepo
   alias DMEx.Test.Storage, as: Stub
 
   @doc "Starts the integration repo, for benchmarks that touch a real database."
@@ -10,7 +11,7 @@ defmodule DMEx.BenchHelper do
     Application.ensure_all_started(:ecto_sql)
     Application.ensure_all_started(:postgrex)
 
-    case DMEx.Test.IntegrationRepo.start_link() do
+    case IntegrationRepo.start_link() do
       {:ok, pid} -> pid
       {:error, {:already_started, pid}} -> pid
     end
@@ -38,7 +39,7 @@ defmodule DMEx.BenchHelper do
   def start_supervisor!(name, url) do
     case DMEx.Supervisor.start_link(
            name: name,
-           repo: DMEx.Test.IntegrationRepo,
+           repo: IntegrationRepo,
            otp_app: nil,
            logs: [bench: url]
          ) do
@@ -73,7 +74,7 @@ defmodule DMEx.BenchHelper do
   """
   def reset_log! do
     Ecto.Adapters.SQL.query!(
-      DMEx.Test.IntegrationRepo,
+      IntegrationRepo,
       "TRUNCATE dmex_messages, dmex_cursors, dmex_dead_messages RESTART IDENTITY CASCADE",
       []
     )

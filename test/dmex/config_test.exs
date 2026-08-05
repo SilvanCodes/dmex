@@ -146,25 +146,25 @@ defmodule DMEx.ConfigTest do
   # period. This is the one place the reciprocal is taken.
   describe "batch_interval/1" do
     test "is the reciprocal of the frequency, in ms" do
-      assert Config.log!(max_batch_frequency: 5) |> Config.batch_interval() == 200
-      assert Config.log!(max_batch_frequency: 1) |> Config.batch_interval() == 1_000
-      assert Config.log!(max_batch_frequency: 100) |> Config.batch_interval() == 10
+      assert [max_batch_frequency: 5] |> Config.log!() |> Config.batch_interval() == 200
+      assert [max_batch_frequency: 1] |> Config.log!() |> Config.batch_interval() == 1_000
+      assert [max_batch_frequency: 100] |> Config.log!() |> Config.batch_interval() == 10
     end
 
     # The slow end has no integer spelling as a frequency, which is why this is
     # the one setting that accepts a fraction.
     test "a fractional frequency is a long interval" do
-      assert Config.log!(max_batch_frequency: 0.2) |> Config.batch_interval() == 5_000
-      assert Config.log!(max_batch_frequency: 0.5) |> Config.batch_interval() == 2_000
+      assert [max_batch_frequency: 0.2] |> Config.log!() |> Config.batch_interval() == 5_000
+      assert [max_batch_frequency: 0.5] |> Config.log!() |> Config.batch_interval() == 2_000
     end
 
     test "rounds to whole milliseconds, which is all Process.sleep/1 resolves" do
-      assert Config.log!(max_batch_frequency: 3) |> Config.batch_interval() == 333
-      assert Config.log!(max_batch_frequency: 1_000) |> Config.batch_interval() == 1
+      assert [max_batch_frequency: 3] |> Config.log!() |> Config.batch_interval() == 333
+      assert [max_batch_frequency: 1_000] |> Config.log!() |> Config.batch_interval() == 1
 
       # Past the point where a period is expressible, the throttle stops
       # throttling rather than pretending to.
-      assert Config.log!(max_batch_frequency: 5_000) |> Config.batch_interval() == 0
+      assert [max_batch_frequency: 5_000] |> Config.log!() |> Config.batch_interval() == 0
     end
   end
 

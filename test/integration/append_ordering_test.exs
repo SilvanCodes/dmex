@@ -102,7 +102,7 @@ defmodule DMEx.Integration.AppendOrderingTest do
       {:ok, second} = Task.await(late, 10_000)
 
       assert second > first
-      assert DateTime.compare(inserted_at(second), inserted_at(first)) == :gt
+      assert DateTime.after?(inserted_at(second), inserted_at(first))
     end
   end
 

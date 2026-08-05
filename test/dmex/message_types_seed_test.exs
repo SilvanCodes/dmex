@@ -12,6 +12,8 @@ defmodule DMEx.MessageTypesSeedTest do
   # Not async: the owned log starts real processes against the sandbox.
   use DMEx.Case, async: false, database: true
 
+  alias DMEx.Test.Repo
+
   @moduletag :capture_log
 
   @url "http://127.0.0.1:1/stream"
@@ -28,7 +30,7 @@ defmodule DMEx.MessageTypesSeedTest do
 
   defmodule Dep.Log do
     @moduledoc false
-    use DMEx.Log, repo: DMEx.Test.Repo, app: :dmex_fake_dep
+    use DMEx.Log, repo: Repo, app: :dmex_fake_dep
   end
 
   defmodule Collide.First do
@@ -43,7 +45,7 @@ defmodule DMEx.MessageTypesSeedTest do
 
   defmodule Collide.Log do
     @moduledoc false
-    use DMEx.Log, repo: DMEx.Test.Repo, app: :dmex_fake_collide
+    use DMEx.Log, repo: Repo, app: :dmex_fake_collide
   end
 
   setup_all do
@@ -119,7 +121,7 @@ defmodule DMEx.MessageTypesSeedTest do
 
   defp options(opts) do
     Keyword.merge(
-      [name: TestSupervisor, otp_app: nil, repo: DMEx.Test.Repo, logs: [test: @url]],
+      [name: TestSupervisor, otp_app: nil, repo: Repo, logs: [test: @url]],
       opts
     )
   end

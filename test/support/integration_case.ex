@@ -103,11 +103,7 @@ defmodule DMEx.IntegrationCase do
   @spec start_supervisor!(keyword(), keyword()) :: pid()
   def start_supervisor!(logs, opts \\ []) do
     start_supervised!(
-      {DMEx.Supervisor,
-       name: TestSupervisor,
-       otp_app: Keyword.get(opts, :otp_app),
-       repo: IntegrationRepo,
-       logs: logs}
+      {DMEx.Supervisor, name: TestSupervisor, otp_app: Keyword.get(opts, :otp_app), repo: IntegrationRepo, logs: logs}
     )
   end
 

@@ -437,7 +437,7 @@ defmodule DMEx.Log do
         other -> raise ArgumentError, ":app must be an atom or a string, got: #{inspect(other)}"
       end
 
-    unless DMEx.identifier?(key) do
+    if !DMEx.identifier?(key) do
       raise ArgumentError,
             "the app key #{inspect(key)} derived for #{inspect(module)} is not a legal " <>
               "identifier. It must match #{inspect(DMEx.identifier_format())} — pass `app: :your_key`."

@@ -164,11 +164,11 @@ defmodule DMEx.Log.PlugTest do
     # healthy stream looks dead to both the consumer and the proxy's own idle
     # timeout. The header is ignored by everything else.
     test "tells nginx not to buffer", %{opts: opts, plug: plug} do
-      assert stream(opts, plug, @whole_log) |> get_header("x-accel-buffering") == "no"
+      assert opts |> stream(plug, @whole_log) |> get_header("x-accel-buffering") == "no"
     end
 
     test "sets keep-alive on HTTP/1.1, where it means something", %{opts: opts, plug: plug} do
-      assert stream(opts, plug, @whole_log) |> get_header("connection") == "keep-alive"
+      assert opts |> stream(plug, @whole_log) |> get_header("connection") == "keep-alive"
     end
 
     # There is no pacing echo, because there is no pacing request. A DMEx
