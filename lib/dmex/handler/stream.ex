@@ -11,7 +11,7 @@ defmodule DMEx.Handler.Stream do
   On every connect — first or thousandth — the stream reads its durable
   `last_seen` and hands it to the transport. It never resumes from the last row
   it saw and never trusts anything in memory, which is what makes a dropped
-  connection a non-event. `stream_from:` applies only when there is no cursor at
+  connection a non-event. `last_seen:` applies only when there is no cursor at
   all.
 
   ## Reconnects are jittered
@@ -231,7 +231,7 @@ defmodule DMEx.Handler.Stream do
   end
 
   # The transport is handed the cursor raw, `:none` included, because that is
-  # what `DMEx.Handler.Request.position/2` needs to apply `stream_from:`. The
+  # what `DMEx.Handler.Request.position/2` needs to apply `last_seen:`. The
   # pipeline is handed this instead: it compares `id <= cursor`, and every number
   # sorts below every atom in Erlang term order, so `:none` there would suppress
   # every row as a duplicate rather than none of them.
@@ -239,7 +239,7 @@ defmodule DMEx.Handler.Stream do
   defp resume_at(cursor), do: cursor
 
   # `:none` rather than 0 for "never committed anything" — that distinction is
-  # what makes `stream_from:` apply exactly once.
+  # what makes `last_seen:` apply exactly once.
   defp durable_cursor(state) do
     case state.storage.last_seen(state.storage_opts, state.subscription) do
       {:ok, nil} -> {:ok, :none}

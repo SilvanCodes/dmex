@@ -75,14 +75,14 @@ defmodule DMEx.Transport.LocalTest do
     end
   end
 
-  describe "stream_from" do
+  describe "last_seen" do
     # No socket, no header: the same two answers the wire carries, resolved
     # directly against the log's storage through the same `Request.position/2`.
-    test "an id delivers from that id onward, inclusive" do
-      {:ok, _} = Log.append(%OrderPlaced{order_id: 1})
-      {:ok, second} = Log.append(%OrderPlaced{order_id: 2})
+    test "a cursor delivers everything above it" do
+      {:ok, first} = Log.append(%OrderPlaced{order_id: 1})
+      {:ok, _} = Log.append(%OrderPlaced{order_id: 2})
 
-      subscribe(Handlers.Echo, stream_from: second)
+      subscribe(Handlers.Echo, last_seen: first)
 
       assert_receive {:handled, %OrderPlaced{order_id: 2}, _}, 2_000
       refute_received {:handled, %OrderPlaced{order_id: 1}, _}
@@ -93,7 +93,7 @@ defmodule DMEx.Transport.LocalTest do
     test "unset skips the backlog" do
       {:ok, _} = Log.append(%OrderPlaced{order_id: 1})
 
-      [pid] = subscribe(Handlers.Echo, stream_from: nil)
+      [pid] = subscribe(Handlers.Echo, last_seen: nil)
 
       # "Now" is resolved at connect, so the second append has to land after
       # that read — otherwise it is part of the backlog this is about skipping.
@@ -106,14 +106,14 @@ defmodule DMEx.Transport.LocalTest do
     end
 
     # A subscription that has never committed reads its durable cursor as
-    # `:none`, which is what makes `stream_from:` apply exactly once. The
+    # `:none`, which is what makes `last_seen:` apply exactly once. The
     # pipeline compares `id <= cursor` and must never see that atom: every
     # number sorts below every atom in Erlang term order, so `id <= :none` is
     # always true and *every row* would be dropped as a duplicate — a
     # subscription that connects, looks healthy and delivers nothing. The
     # transport still gets the raw `:none`; only the pipeline is normalised.
     test "a never-committed cursor reaches the pipeline as 0, not :none" do
-      [pid] = subscribe(Handlers.Echo, stream_from: 1)
+      [pid] = subscribe(Handlers.Echo, last_seen: 0)
 
       assert {:ok, nil} = Postgres.last_seen(Log.__dmex__().storage_opts, "test/echo")
 
@@ -125,7 +125,7 @@ defmodule DMEx.Transport.LocalTest do
     test "a subscription with no durable cursor still delivers from the start" do
       {:ok, _} = Log.append(%OrderPlaced{order_id: 1})
 
-      subscribe(Handlers.Echo, stream_from: 1)
+      subscribe(Handlers.Echo, last_seen: 0)
 
       assert_receive {:handled, %OrderPlaced{order_id: 1}, _}, 2_000
     end
@@ -180,10 +180,10 @@ defmodule DMEx.Transport.LocalTest do
     )
   end
 
-  # `stream_from: 1` throughout: every test here appends first and subscribes
-  # after, which is the backlog these assertions are about. The default
-  # unset would correctly skip all of it.
-  defp subscribe(handler, opts \\ [stream_from: 1]) do
+  # `last_seen: 0` throughout: every test here appends first and subscribes
+  # after, which is the backlog these assertions are about. The default —
+  # unset — would correctly skip all of it.
+  defp subscribe(handler, opts \\ [last_seen: 0]) do
     {:ok, pids} = DMEx.Supervisor.subscribe(handler, [supervisor: TestSupervisor] ++ opts)
 
     pids

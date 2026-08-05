@@ -226,11 +226,11 @@ defmodule DMEx.Integration.HeartbeatTest do
     end
   end
 
-  # `stream_from: 1` because these tests append *after* subscribing, and the
+  # `last_seen: 0` because these tests append *after* subscribing, and the
   # default resolves to the log's tip at connect. The log is empty until they
   # append, so the two name the same rows without racing the connect.
   defp subscribe do
-    DMEx.Supervisor.subscribe(Handlers.Echo, supervisor: TestSupervisor, stream_from: 1)
+    DMEx.Supervisor.subscribe(Handlers.Echo, supervisor: TestSupervisor, last_seen: 0)
   end
 
   # A bare Mint client that reads for a while and returns whatever arrived.

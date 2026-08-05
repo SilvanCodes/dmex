@@ -93,11 +93,11 @@ defmodule DMEx.Integration.SelectionTest do
 
   describe "delivery" do
     test "only the selected types cross the wire", %{base: _base} do
-      # `stream_from: 1` because the appends below follow the subscribe, and the
+      # `last_seen: 0` because the appends below follow the subscribe, and the
       # default resolves to the log's tip at connect. The log is empty here, so
       # the whole log is the same set of rows without racing that connect.
       {:ok, _} =
-        DMEx.Supervisor.subscribe(Handlers.Echo, supervisor: TestSupervisor, stream_from: 1)
+        DMEx.Supervisor.subscribe(Handlers.Echo, supervisor: TestSupervisor, last_seen: 0)
 
       {:ok, _} = Log.append(%OrderShipped{order_id: 1, carrier: "dhl"})
       {:ok, _} = Log.append(%OrderPlaced{order_id: 2})
@@ -130,10 +130,10 @@ defmodule DMEx.Integration.SelectionTest do
       # selective subscription sees a sparse subset of the same ids rather than
       # a space of its own.
       {:ok, _} =
-        DMEx.Supervisor.subscribe(Handlers.Echo, supervisor: TestSupervisor, stream_from: 1)
+        DMEx.Supervisor.subscribe(Handlers.Echo, supervisor: TestSupervisor, last_seen: 0)
 
       {:ok, _} =
-        DMEx.Supervisor.subscribe(Handlers.EchoAll, supervisor: TestSupervisor, stream_from: 1)
+        DMEx.Supervisor.subscribe(Handlers.EchoAll, supervisor: TestSupervisor, last_seen: 0)
 
       {:ok, _} = Log.append(%OrderShipped{order_id: 1, carrier: "dhl"})
       {:ok, placed} = Log.append(%OrderPlaced{order_id: 2})

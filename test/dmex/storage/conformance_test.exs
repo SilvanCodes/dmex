@@ -323,7 +323,7 @@ for {storage, repo, tag} <- [
     end
 
     describe "last_seen/2 and advance/3" do
-      # nil, not 0. That distinction is what makes `stream_from:` apply exactly
+      # nil, not 0. That distinction is what makes `last_seen:` apply exactly
       # once: a subscription with no cursor resolves it, and one with a cursor —
       # even at 0 — ignores it entirely.
       test "is nil before anything has committed", %{opts: opts} do
@@ -384,7 +384,7 @@ for {storage, repo, tag} <- [
         assert {:ok, %{last_seen: 42, updated_at: %DateTime{}}} = @storage.cursor(opts, @some)
       end
 
-      # Distinct from advancing to 0: with no row at all, `stream_from:` applies
+      # Distinct from advancing to 0: with no row at all, `last_seen:` applies
       # again on the subscription's next start.
       test "delete_cursor/2 removes the row entirely", %{opts: opts} do
         :ok = @storage.advance(opts, @some, 42)

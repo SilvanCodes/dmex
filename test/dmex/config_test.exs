@@ -95,7 +95,7 @@ defmodule DMEx.ConfigTest do
   describe "handler!/1" do
     test "returns the documented defaults when given nothing" do
       assert %{
-               stream_from: nil,
+               last_seen: nil,
                on_failure: :dead_message,
                max_attempts: 3,
                retry_backoff: 100,
@@ -124,24 +124,20 @@ defmodule DMEx.ConfigTest do
                )
     end
 
-    test "accepts every legal :stream_from value" do
-      assert Config.handler!(stream_from: nil).stream_from == nil
-      assert Config.handler!(stream_from: 1).stream_from == 1
-      assert Config.handler!(stream_from: 1042).stream_from == 1042
+    test "accepts every legal :last_seen value" do
+      assert Config.handler!(last_seen: nil).last_seen == nil
+      assert Config.handler!(last_seen: 1042).last_seen == 1042
     end
 
-    # Its own message, because 0 is what someone reaches for meaning "from the
-    # start" and the fix is a different number rather than a different form.
-    test "raises on :stream_from 0, which names no message" do
-      assert_raise ArgumentError, ~r/ids start at 1/, fn ->
-        Config.handler!(stream_from: 0)
-      end
+    # A cursor, not a starting id: 0 is a position rather than a mistake, and it
+    # is the whole log.
+    test "accepts :last_seen 0, which is the whole log" do
+      assert Config.handler!(last_seen: 0).last_seen == 0
     end
 
-    # Timestamps and `:current` were both dropped from the wire contract, so a
-    # position is one id or nothing at all.
-    test "raises on an illegal :stream_from" do
-      for stream_from <- [
+    # A position is one cursor or nothing at all — no atoms, no timestamps.
+    test "raises on an illegal :last_seen" do
+      for last_seen <- [
             :current,
             :beginning,
             :latest,
@@ -150,8 +146,8 @@ defmodule DMEx.ConfigTest do
             "2026-08-03T10:00:00Z",
             ~U[2026-08-03 10:00:00Z]
           ] do
-        assert_raise ArgumentError, ~r/:stream_from must be a positive integer id or nil/, fn ->
-          Config.handler!(stream_from: stream_from)
+        assert_raise ArgumentError, ~r/:last_seen must be a non-negative/, fn ->
+          Config.handler!(last_seen: last_seen)
         end
       end
     end

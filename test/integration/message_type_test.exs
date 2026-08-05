@@ -58,7 +58,7 @@ defmodule DMEx.Integration.MessageTypeTest do
     {:ok, _} = Log.append(%OrderPlaced{order_id: 1, customer_id: 10, total: 999})
 
     {:ok, _} =
-      DMEx.Supervisor.subscribe(RenamedConsumer, supervisor: TestSupervisor, stream_from: 1)
+      DMEx.Supervisor.subscribe(RenamedConsumer, supervisor: TestSupervisor, last_seen: 0)
 
     # Decoded into the consumer's own struct, with the producer's field values
     # intact: the type carried the identity across two unrelated module names.

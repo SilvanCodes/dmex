@@ -39,11 +39,11 @@ defmodule DMEx.Test.Handlers do
     @moduledoc """
     Reports every message it handles and does nothing else.
 
-    `stream_from: 1` because tests subscribe and *then* append: the default —
+    `last_seen: 0` because tests subscribe and *then* append: the default —
     unset — resolves to the log's tip at connect, which races those appends.
     A test wanting the default says so at its subscribe call.
     """
-    use DMEx.Handler, logs: [:test], id: :echo, stream_from: 1
+    use DMEx.Handler, logs: [:test], id: :echo, last_seen: 0
 
     alias DMEx.Test.Handlers
     alias DMEx.Test.Messages.OrderPlaced
@@ -162,7 +162,7 @@ defmodule DMEx.Test.Handlers do
     only thing they share is this module. `:other` is bound alongside `:test`
     wherever a test starts a supervisor that discovers this file.
     """
-    use DMEx.Handler, logs: [:test, :other], id: :fanned, stream_from: 1
+    use DMEx.Handler, logs: [:test, :other], id: :fanned, last_seen: 0
 
     alias DMEx.Test.Handlers
     alias DMEx.Test.Messages.OrderPlaced

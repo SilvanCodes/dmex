@@ -39,7 +39,7 @@ defmodule DMEx.Storage do
 
   **`c:last_seen/2` must distinguish "no cursor" from "cursor at 0".** It
   returns `nil`, not `0`, when a subscription has never committed anything,
-  which is what makes `stream_from:` apply exactly once.
+  which is what makes the `last_seen:` option apply exactly once.
   """
 
   @typedoc """
@@ -238,7 +238,7 @@ defmodule DMEx.Storage do
   Removes a subscription's cursor entirely.
 
   Distinct from advancing it to 0: with no row at all the subscription's
-  `stream_from:` option applies again on its next start.
+  `last_seen:` option applies again on its next start.
   """
   @callback delete_cursor(opts(), subscription :: String.t()) :: :ok | {:error, term()}
 

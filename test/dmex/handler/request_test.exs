@@ -54,34 +54,32 @@ defmodule DMEx.Handler.RequestTest do
       assert Request.last_event_id(0, config()) == [{"last-event-id", "0"}]
     end
 
-    test "the durable cursor wins over stream_from:, whatever it says" do
-      for stream_from <- [nil, 1, 99] do
-        assert Request.last_event_id(7, config(stream_from: stream_from)) ==
+    test "the durable cursor wins over last_seen:, whatever it says" do
+      for last_seen <- [nil, 0, 99] do
+        assert Request.last_event_id(7, config(last_seen: last_seen)) ==
                  [{"last-event-id", "7"}]
       end
     end
 
-    # An id names a message and `stream_from` is inclusive, so the cursor is one
-    # below it. The only such conversion in DMEx.
-    test "stream_from: an id with no cursor sends the id below it" do
-      assert Request.last_event_id(:none, config(stream_from: 500)) == [{"last-event-id", "499"}]
+    # One domain, one unit: the option is already the cursor the header carries,
+    # so nothing is computed anywhere between them.
+    test "last_seen: with no cursor is sent as itself" do
+      assert Request.last_event_id(:none, config(last_seen: 499)) == [{"last-event-id", "499"}]
     end
 
-    # The boundary the conversion would need a clamp for, if 0 were a legal
-    # `stream_from` — DMEx.Config rejects it, so this is as low as it goes.
-    test "stream_from: 1 sends cursor 0, the whole log" do
-      assert Request.last_event_id(:none, config(stream_from: 1)) == [{"last-event-id", "0"}]
+    test "last_seen: 0 is the whole log" do
+      assert Request.last_event_id(:none, config(last_seen: 0)) == [{"last-event-id", "0"}]
     end
 
     # The absence of the header is the whole of "from now on" — there is no
-    # token, so an unset `stream_from` sends nothing at all.
-    test "stream_from: unset with no cursor sends no header" do
+    # token, so an unset `last_seen` sends nothing at all.
+    test "last_seen: unset with no cursor sends no header" do
       assert Request.last_event_id(:none, config()) == []
       assert Request.position(:none, config()) == :now
     end
 
     test "headers/2 carries it through" do
-      assert :none |> Request.headers(config(stream_from: 500)) |> header("last-event-id") ==
+      assert :none |> Request.headers(config(last_seen: 499)) |> header("last-event-id") ==
                "499"
     end
   end
@@ -111,19 +109,20 @@ defmodule DMEx.Handler.RequestTest do
       assert params.selection == :all
     end
 
-    test "stream_from: 1 round-trips as the whole log" do
-      headers = Request.headers(:none, config(stream_from: 1))
+    test "last_seen: 0 round-trips as the whole log" do
+      headers = Request.headers(:none, config(last_seen: 0))
 
       assert {:ok, %{cursor: 0}} = Params.parse([], headers)
     end
 
-    test "stream_from: an id round-trips as the cursor below it" do
-      headers = Request.headers(:none, config(stream_from: 42))
+    # The round trip is an echo: what the option says is what the log parses.
+    test "last_seen: a cursor round-trips unchanged" do
+      headers = Request.headers(:none, config(last_seen: 41))
 
       assert {:ok, %{cursor: 41}} = Params.parse([], headers)
     end
 
-    test "stream_from: unset round-trips as the log's tip" do
+    test "last_seen: unset round-trips as the log's tip" do
       headers = Request.headers(:none, config())
 
       assert {:ok, %{cursor: :now}} = Params.parse([], headers)

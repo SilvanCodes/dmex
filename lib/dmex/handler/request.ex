@@ -11,10 +11,10 @@ defmodule DMEx.Handler.Request do
   every SSE client sends. It carries one non-negative integer — the exclusive
   cursor to resume after — or it is absent, which asks the log for its tip.
 
-  An **id names a message**, so `stream_from: 42` must deliver 42 — the
-  exclusive cursor `41`. This is the only place in DMEx that conversion happens,
-  and it needs no clamp because `DMEx.Config` has already rejected anything
-  below 1.
+  **Nothing here converts anything.** A durable cursor, a configured
+  `last_seen:` and the header are one domain in one unit: exclusive, delivery
+  starting above it. `position/2` is a choice between two of them and no
+  arithmetic at all.
   """
 
   alias DMEx.Config
@@ -49,14 +49,14 @@ defmodule DMEx.Handler.Request do
   @doc """
   Where this subscription is asking to start.
 
-  A durable cursor wins over `stream_from:` whenever there is one — that is the
+  A durable cursor wins over `last_seen:` whenever there is one — that is the
   whole of resumption. `DMEx.Transport.Local` resolves the same two answers
-  against the log directly rather than over a wire, so the id form's `- 1` is
-  computed here and nowhere else.
+  against the log directly rather than over a wire, which is why this is the one
+  function in this module a transport with no wire has any use for.
   """
   @spec position(cursor(), Config.handler()) :: position()
-  def position(:none, %{stream_from: nil}), do: :now
-  def position(:none, %{stream_from: id}) when is_integer(id), do: id - 1
+  def position(:none, %{last_seen: nil}), do: :now
+  def position(:none, %{last_seen: cursor}) when is_integer(cursor), do: cursor
   def position(cursor, _config) when is_integer(cursor), do: cursor
 
   @doc """

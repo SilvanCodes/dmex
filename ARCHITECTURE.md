@@ -204,9 +204,10 @@ data: {"data":{"order_id":7},"metadata":{"trace_id":"abc"}}
   `id:` be the row's own id, and makes a frame mean the same thing whether one
   row or five hundred went out together.
 - **`id:` is a number and the position vocabulary is one number.** A frame's
-  `id:`, a `Last-Event-ID`, and a cursor are the same thing in the same units,
-  so the round trip is an echo with no parsing, no arithmetic and no second
-  spelling of any position.
+  `id:`, a `Last-Event-ID`, `dmex_cursors.last_seen` and a subscription's
+  `last_seen:` option are the same thing in the same units — exclusive, so
+  delivery starts above it. The round trip is an echo: no parsing, no
+  arithmetic, and no second spelling of any position anywhere in DMEx.
 - **`data:` is one line**, so the payload is exactly a JSON document a client
   hands to its parser. JSON's grammar forbids raw control characters inside
   strings, which is what makes it safe to splice stored `jsonb` text in with no

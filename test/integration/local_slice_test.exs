@@ -104,10 +104,10 @@ defmodule DMEx.Integration.LocalSliceTest do
 
   ## Helpers
 
-  # `stream_from: 1` throughout: these tests append first and subscribe after,
+  # `last_seen: 0` throughout: these tests append first and subscribe after,
   # which is the backlog they are about. The default — unset — would correctly
   # skip all of it.
-  defp subscribe(handler, opts \\ [stream_from: 1]) do
+  defp subscribe(handler, opts \\ [last_seen: 0]) do
     {:ok, _pids} = DMEx.Supervisor.subscribe(handler, [supervisor: TestSupervisor] ++ opts)
 
     :ok
