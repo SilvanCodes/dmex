@@ -1,4 +1,4 @@
-defmodule DMEx.StorageError do
+defmodule DMEx.Storage.Error do
   @moduledoc """
   A `c:DMEx.Storage.transaction/2` that failed as infrastructure, not as a
   handler.

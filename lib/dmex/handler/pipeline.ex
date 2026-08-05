@@ -74,7 +74,7 @@ defmodule DMEx.Handler.Pipeline do
   **Only the handler's own failure counts.** `c:DMEx.Storage.transaction/2`
   answering `{:error, reason}` says the message was never processed — a checkout
   that timed out, a dropped connection, a serialization failure — so it raises
-  `DMEx.StorageError` and nothing here rescues it. Retrying would re-run side
+  `DMEx.Storage.Error` and nothing here rescues it. Retrying would re-run side
   effects that never failed, and section 6 would resolve a message no handler
   rejected. The stream dies, the supervisor restarts it, and it resumes from its
   durable cursor — which still points *below* this message, since the advance
@@ -158,7 +158,7 @@ defmodule DMEx.Handler.Pipeline do
   whether it is waiting on `flush/1`.
 
   Propagates whatever the handler raises once retries are exhausted and
-  `on_failure` says `:crash`, and `DMEx.StorageError` whenever storage itself
+  `on_failure` says `:crash`, and `DMEx.Storage.Error` whenever storage itself
   failed — that one at once, and whatever `on_failure` says.
   """
   @spec run(row(), t()) :: {:ok, t()}
@@ -321,7 +321,7 @@ defmodule DMEx.Handler.Pipeline do
     # that never failed, and `on_failure` would dead-letter a message the
     # handler accepted — so this leaves by the same door `give_up/6` and
     # `flush/1` use, with the cursor still below the message.
-    storage_error in DMEx.StorageError ->
+    storage_error in DMEx.Storage.Error ->
       reraise storage_error, __STACKTRACE__
 
     exception ->
@@ -370,7 +370,7 @@ defmodule DMEx.Handler.Pipeline do
   end
 
   defp give_up(state, row, id, exception, attempts, mode) do
-    # Outside any rescue, and so is `attempt/4`'s commit now: a `DMEx.StorageError`
+    # Outside any rescue, and so is `attempt/4`'s commit now: a `DMEx.Storage.Error`
     # from either one leaves the same way, with the cursor still below the
     # message. The record and the advance are one transaction, so a failure here
     # means neither happened and the restart re-delivers the row.
@@ -444,7 +444,7 @@ defmodule DMEx.Handler.Pipeline do
   defp commit!(state, fun) do
     case state.storage.transaction(state.storage_opts, fun) do
       {:ok, result} -> result
-      {:error, reason} -> raise DMEx.StorageError, reason
+      {:error, reason} -> raise DMEx.Storage.Error, reason
     end
   end
 

@@ -214,7 +214,7 @@ defmodule DMEx.Storage do
   frame later; it survives because those three are also called outside a
   transaction, from `DMEx.Handler.Cursors` and `DMEx.Handler.DeadMessages`.
   A `c:transaction/2` that fails as *infrastructure* is neither — that is
-  `DMEx.StorageError`, raised by `DMEx.Handler.Pipeline`, and nothing here
+  `DMEx.Storage.Error`, raised by `DMEx.Handler.Pipeline`, and nothing here
   reports it.
   """
   @callback advance(opts(), subscription :: String.t(), id :: non_neg_integer()) :: :ok

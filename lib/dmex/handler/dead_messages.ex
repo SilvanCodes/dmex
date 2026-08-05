@@ -62,7 +62,7 @@ defmodule DMEx.Handler.DeadMessages do
   text, exactly as stored.
 
   Returns storage's `{:error, reason}` rather than raising, because a listing is
-  something a caller inspects; `replay/2` raises `DMEx.StorageError` on the same
+  something a caller inspects; `replay/2` raises `DMEx.Storage.Error` on the same
   failure, having no tagged return to carry it and no business reporting an
   unreachable database as a count.
   """
@@ -87,7 +87,7 @@ defmodule DMEx.Handler.DeadMessages do
 
   Returns `%{replayed: n, failed: n}`, where `failed` also counts a row no
   clause matches — it is a row still in the table, and the log line says what to
-  do about it. Raises `DMEx.StorageError` if storage itself fails, which is not
+  do about it. Raises `DMEx.Storage.Error` if storage itself fails, which is not
   a message a handler rejected and not a count.
   """
   @spec replay(module(), keyword()) :: %{replayed: non_neg_integer(), failed: non_neg_integer()}
@@ -131,20 +131,20 @@ defmodule DMEx.Handler.DeadMessages do
 
   ## Internals
 
-  # A `DMEx.StorageError` rather than a failed match: an unreachable database is
+  # A `DMEx.Storage.Error` rather than a failed match: an unreachable database is
   # not a verdict on any message, and the whole run has to stop rather than
   # report zero of them.
   defp dead_messages!(subscription, storage, storage_opts) do
     case storage.dead_messages(storage_opts, subscription) do
       {:ok, rows} -> rows
-      {:error, reason} -> raise DMEx.StorageError, reason
+      {:error, reason} -> raise DMEx.Storage.Error, reason
     end
   end
 
   # The delete is what `deliver/3` commits inside the handler's transaction,
   # where a stream commits the cursor advance — so a row leaves the table
   # exactly when the handler accepts it. Nothing else here is replay's own:
-  # retries, telemetry, and letting `DMEx.StorageError` through are the
+  # retries, telemetry, and letting `DMEx.Storage.Error` through are the
   # pipeline's, and `on_failure` is the pipeline's and deliberately not applied
   # (see the module documentation).
   defp replay_one(row, state, subscription) do

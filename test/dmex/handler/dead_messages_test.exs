@@ -274,7 +274,7 @@ defmodule DMEx.Handler.DeadMessagesTest do
       kill(ctx, 1)
       Handlers.FailTimes.set(0)
 
-      assert_raise DMEx.StorageError, fn ->
+      assert_raise DMEx.Storage.Error, fn ->
         DeadMessages.replay(@handler, ctx.replay ++ [storage: TransactionFails])
       end
 
@@ -282,7 +282,7 @@ defmodule DMEx.Handler.DeadMessagesTest do
     end
 
     test "a read that fails raises rather than mismatching", ctx do
-      assert_raise DMEx.StorageError, fn ->
+      assert_raise DMEx.Storage.Error, fn ->
         DeadMessages.replay(@handler, ctx.replay ++ [storage: ReadFails])
       end
     end
