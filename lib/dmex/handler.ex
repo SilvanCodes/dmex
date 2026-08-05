@@ -98,10 +98,19 @@ defmodule DMEx.Handler do
   @typedoc """
   A handler's compile-time declaration, as returned by its `__dmex__/0`.
 
-  `:fingerprint` is the path segment this subscription requests, or `nil` when
-  `selective: false` asked for the whole log. There is no separate `:selective`
-  field: a `nil` fingerprint is that answer, and carrying both would be two
-  values that can disagree.
+  `:types` is the message set **as it read at compile time** — the strings the
+  modules in `:messages` reported then, sorted. It is the one cached copy of
+  that set: the fingerprint and the `__dmex_cast__/3` clauses are both built
+  from this list. It does not restate `:messages`, which is the *live* set of
+  modules — the two drifting apart is the whole subject of `verify_fresh!/1`.
+
+  `:fingerprint` is the path segment this subscription requests — `:types`
+  encoded — or `nil` when `selective: false` asked for the whole log. It is
+  carried rather than derived at boot because the request path wants a
+  compile-time constant and an unencodable set has to be a compile error; being
+  a pure function of `:types`, it cannot disagree with it. There is no separate
+  `:selective` field: a `nil` fingerprint is that answer, and carrying both
+  would be two values that can disagree.
 
   `:config` is only what this module declared, not a resolved config: resolving
   at compile time would freeze DMEx's defaults into the handler's BEAM file, and
@@ -112,6 +121,7 @@ defmodule DMEx.Handler do
           logs: [String.t()],
           id: String.t(),
           messages: MapSet.t(module()),
+          types: [String.t()],
           fingerprint: String.t() | nil,
           config: keyword()
         }
@@ -122,7 +132,7 @@ defmodule DMEx.Handler do
   Receives the decoded struct and the `metadata` map — the publisher's, plus
   whichever of its own columns the *log* lifts into it with `metadata:`, which is
   the only way an id or an append time reaches a handler. See
-  `DMEx.Log.merge_metadata/2`. The return value is ignored; raise to signal failure.
+  `DMEx.Log.Metadata`. The return value is ignored; raise to signal failure.
 
   **The first argument must be a struct pattern.** That is what declares which
   message types this subscription consumes — see the module documentation.
@@ -196,20 +206,29 @@ defmodule DMEx.Handler do
       Module.get_attribute(env.module, :dmex_declared)
 
     messages = messages!(env)
+    types = types(messages)
 
     %{
       handler: env.module,
       logs: logs,
       id: id,
       messages: messages,
+      # The snapshot everything else cached about the set is built from, and
+      # therefore the only thing `verify_fresh!/1` has to compare.
+      types: types,
       config: config,
       # `selective:` is not carried through — a `nil` fingerprint *is* the
       # answer, and the two together could only disagree. A non-selective
       # handler therefore also never risks the compile error an unbuildable
       # fingerprint would raise.
-      fingerprint: if(selective, do: fingerprint!(env, messages))
+      fingerprint: if(selective, do: fingerprint!(env, types))
     }
   end
+
+  # The one derivation of the cached set from the live modules, run at compile
+  # time to take the snapshot and at boot to compare against it. Sorted, so the
+  # list carries no more information than the set does.
+  defp types(messages), do: messages |> Enum.map(& &1.type()) |> Enum.sort()
 
   @doc """
   Lists every handler compiled into the applications `DMEx.discovery/1` scans.
@@ -328,9 +347,7 @@ defmodule DMEx.Handler do
   # `type/0` callable — and the right one, since the result is then a constant
   # compiled into `__dmex__/0` and an unbuildable fingerprint is a compile error
   # rather than a runtime fallback path.
-  defp fingerprint!(env, messages) do
-    types = Enum.map(messages, & &1.type())
-
+  defp fingerprint!(env, types) do
     case Fingerprint.build(types) do
       {:ok, fingerprint} ->
         Fingerprint.encode(fingerprint)
@@ -347,36 +364,26 @@ defmodule DMEx.Handler do
   @doc """
   Raises if `declaration` was compiled against message types that have since changed.
 
-  A declaration caches its message set **as strings**: the fingerprint it
-  requests, and one `__dmex_cast__/3` clause per type. The handler depends on
-  its message modules by *export* (see `message!/2`), and `c:DMEx.Message.type/0`
-  is a function body — so editing a `type:` recompiles the message module and
-  **not** the handler, leaving both halves naming a type nothing appends. The
+  A declaration caches its message set **as strings** in `:types`, and builds
+  everything else from that one list: the fingerprint it requests, and one
+  `__dmex_cast__/3` clause per type. The handler depends on its message modules
+  by *export* (see `message!/2`), and `c:DMEx.Message.type/0` is a function body
+  — so editing a `type:` recompiles the message module and **not** the handler,
+  leaving every one of those artifacts naming a type nothing appends. The
   subscription then selects no rows and skips the ones it does get: silent
   message loss, which is what this turns into a boot failure.
 
-  Re-deriving from the loaded modules is exact rather than heuristic, because
-  the fingerprint's seed is a pure function of the sorted type list — the same
-  set encodes to the same blob on every machine, so a difference *is* a changed
-  set. Both cached halves come from that one list, so this covers the cast
-  clauses too.
-
-  `selective: false` carries no fingerprint and so has nothing to compare
-  against; its cast clauses can still go stale.
+  Re-deriving the list from the loaded modules is exact rather than heuristic,
+  and it is the *list* that is compared rather than the fingerprint built from
+  it. That is one check for both kinds of handler: `selective: false` caches no
+  fingerprint but caches the same cast clauses, and encoding would only add a
+  step that cannot change the answer.
   """
   @spec verify_fresh!(declaration()) :: :ok
-  def verify_fresh!(%{fingerprint: nil}), do: :ok
+  def verify_fresh!(declaration) do
+    live = types(declaration.messages)
 
-  def verify_fresh!(%{fingerprint: fingerprint} = declaration) do
-    types = Enum.map(declaration.messages, & &1.type())
-
-    case Fingerprint.build(types) do
-      {:ok, live} ->
-        if Fingerprint.encode(live) == fingerprint, do: :ok, else: raise_stale(declaration, types)
-
-      {:error, _reason} ->
-        raise_stale(declaration, types)
-    end
+    if live == declaration.types, do: :ok, else: raise_stale(declaration, live)
   end
 
   defp raise_stale(declaration, types) do
@@ -384,7 +391,8 @@ defmodule DMEx.Handler do
     #{inspect(declaration.handler)} is stale: it was compiled against message types that have \
     since changed.
 
-    Its message modules now declare: #{inspect(Enum.sort(types))}
+    It was compiled against:         #{inspect(declaration.types)}
+    Its message modules now declare: #{inspect(types)}
 
     A handler bakes its message set into its selection fingerprint and its decode clauses at \
     compile time, and depends on the message modules by export — so editing a `type:` \

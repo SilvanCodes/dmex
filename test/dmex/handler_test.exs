@@ -39,6 +39,28 @@ defmodule DMEx.HandlerTest do
       assert messages == MapSet.new([OrderPlaced, OrderShipped])
     end
 
+    # The cached copy of the set, and the only one: the fingerprint and the
+    # decode clauses are both built from it, which is what leaves
+    # `verify_fresh!/1` a single list to compare.
+    test "carries the message set as the type strings it read at compile time" do
+      assert %{types: types} = Handlers.EchoAll.__dmex__()
+
+      assert types == Enum.sort([OrderPlaced.type(), OrderShipped.type()])
+    end
+
+    test "the fingerprint is those types encoded, so the two cannot disagree" do
+      %{types: types, fingerprint: fingerprint} = Handlers.EchoAll.__dmex__()
+
+      assert {:ok, built} = Fingerprint.build(types)
+      assert Fingerprint.encode(built) == fingerprint
+    end
+
+    test "a non-selective handler caches the same types, with no fingerprint" do
+      assert %{types: types, fingerprint: nil} = Handlers.EchoWholeLog.__dmex__()
+
+      assert types == [OrderPlaced.type()]
+    end
+
     # The message set's second job. Built here rather than at connect because
     # this is the first point `type/0` is callable — `Code.ensure_compiled!/1`
     # has just run on every matched module — and because a constant is what

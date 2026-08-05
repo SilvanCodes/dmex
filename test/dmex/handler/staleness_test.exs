@@ -12,7 +12,6 @@ defmodule DMEx.Handler.StalenessTest do
   import ExUnit.CaptureIO
 
   alias DMEx.Handler
-  alias DMEx.Handler.Fingerprint
   alias DMEx.Test.Handlers
 
   @message DMEx.Handler.StalenessTest.Message
@@ -60,10 +59,27 @@ defmodule DMEx.Handler.StalenessTest do
       assert message =~ "mix compile --force"
     end
 
-    # `selective: false` carries no fingerprint, so there is nothing cached to
-    # disagree with.
-    test "a non-selective handler has nothing to compare" do
+    test "a non-selective handler is checked too" do
       assert :ok = Handler.verify_fresh!(Handlers.EchoWholeLog.__dmex__())
+    end
+
+    # `selective: false` caches no fingerprint, but it caches decode clauses
+    # just the same — and it subscribes to the whole log, so the rows do arrive
+    # to be dropped.
+    test "a non-selective handler whose message changed its type is stale" do
+      define_message!("staleness_before")
+      handler = define_handler!(selective: false)
+
+      assert :ok = Handler.verify_fresh!(handler.__dmex__())
+      assert handler.__dmex__().fingerprint == nil
+
+      define_message!("staleness_after")
+
+      assert handler.__dmex_cast__("staleness_after", %{order_id: 1}, %{}) == nil
+
+      assert_raise ArgumentError, ~r/is stale/, fn ->
+        Handler.verify_fresh!(handler.__dmex__())
+      end
     end
   end
 
@@ -88,6 +104,16 @@ defmodule DMEx.Handler.StalenessTest do
       end
     end
 
+    test "the boot check refuses a stale non-selective one too" do
+      define_message!("staleness_before")
+      handler = define_handler!(selective: false)
+      define_message!("staleness_after")
+
+      assert_raise ArgumentError, ~r/is stale/, fn ->
+        DMEx.Supervisor.__startable__!([handler], %{"test" => "http://127.0.0.1:1/stream"})
+      end
+    end
+
     test "a fresh handler passes both" do
       define_message!("staleness_before")
       handler = define_handler!()
@@ -103,12 +129,13 @@ defmodule DMEx.Handler.StalenessTest do
   end
 
   describe "the comparison itself" do
-    test "a fingerprint over a different set is what is detected" do
+    # The cached list rather than the fingerprint built from it, which is what
+    # makes one check cover a handler that has no fingerprint.
+    test "a cached list naming a different set is what is detected" do
       declaration = Handlers.Echo.__dmex__()
-      {:ok, other} = Fingerprint.build(["some.other.type"])
 
       assert_raise ArgumentError, ~r/is stale/, fn ->
-        Handler.verify_fresh!(%{declaration | fingerprint: Fingerprint.encode(other)})
+        Handler.verify_fresh!(%{declaration | types: ["some.other.type"]})
       end
     end
   end
@@ -130,13 +157,14 @@ defmodule DMEx.Handler.StalenessTest do
     @message
   end
 
-  defp define_handler! do
+  defp define_handler!(opts \\ []) do
     name = "DMEx.Handler.StalenessTest.Handler#{System.unique_integer([:positive])}"
+    selective = Keyword.get(opts, :selective, true)
 
     {{:module, module, _, _}, _} =
       Code.eval_string("""
       defmodule #{name} do
-        use DMEx.Handler, logs: [:test], id: :staleness
+        use DMEx.Handler, logs: [:test], id: :staleness, selective: #{selective}
 
         @impl true
         def handle_message(%#{inspect(@message)}{}, _metadata), do: :ok
