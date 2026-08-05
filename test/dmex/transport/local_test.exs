@@ -93,7 +93,11 @@ defmodule DMEx.Transport.LocalTest do
     test "unset skips the backlog" do
       {:ok, _} = Log.append(%OrderPlaced{order_id: 1})
 
-      subscribe(Handlers.Echo, stream_from: nil)
+      [pid] = subscribe(Handlers.Echo, stream_from: nil)
+
+      # "Now" is resolved at connect, so the second append has to land after
+      # that read — otherwise it is part of the backlog this is about skipping.
+      eventually(fn -> :sys.get_state(pid).source != nil end)
 
       {:ok, _} = Log.append(%OrderPlaced{order_id: 2})
 

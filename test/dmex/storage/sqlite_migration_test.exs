@@ -46,11 +46,11 @@ defmodule DMEx.Storage.SQLiteMigrationTest do
       assert {:ok, _datetime, 0} = DateTime.from_iso8601(at)
     end
 
-    test "carries both indexes, on the columns the two queries need" do
+    test "carries the selective read's index, on the columns that query needs" do
       indexes = index_columns("dmex_messages")
 
       assert indexes["dmex_messages_message_type_id_index"] == ["message_type", "id"]
-      assert indexes["dmex_messages_inserted_at_id_index"] == ["inserted_at", "id"]
+      assert indexes["dmex_messages_inserted_at_id_index"] == nil
     end
   end
 
