@@ -504,7 +504,6 @@ for {storage, repo, tag} <- [
 
     defp raw(%{repo: repo}, sql), do: SQL.query!(repo, sql, []).rows
 
-
     # What the byte bound counts: payload plus the type.
     defp payload_bytes(rows) do
       Enum.reduce(rows, 0, fn row, total ->

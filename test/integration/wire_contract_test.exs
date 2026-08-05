@@ -121,7 +121,6 @@ defmodule DMEx.Integration.WireContractTest do
 
       assert order_ids == [1, 2, 3, 4, 5]
     end
-
   end
 
   describe "a malformed request is a 400" do
