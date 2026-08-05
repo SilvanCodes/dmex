@@ -97,7 +97,7 @@ defmodule DMEx.Integration.HeartbeatTest do
     test "a stream with something to send sends the frame, not a heartbeat", ctx do
       {:ok, _} = Log.append(%OrderPlaced{order_id: 1})
 
-      body = collect(ctx, 300)
+      body = collect(ctx, 300, [{"last-event-id", "0"}])
 
       # The frame's own bytes are the liveness signal.
       assert body =~ "event: order_placed"
@@ -234,9 +234,12 @@ defmodule DMEx.Integration.HeartbeatTest do
   end
 
   # A bare Mint client that reads for a while and returns whatever arrived.
-  defp collect(ctx, duration) do
+  # `headers` is where a test asks for history: with none, an absent
+  # `last-event-id` means "from now on" and a stream over an existing log has
+  # nothing to send.
+  defp collect(ctx, duration, headers \\ []) do
     {:ok, conn} = Mint.HTTP.connect(:http, ctx.host, ctx.port, mode: :active)
-    {:ok, conn, ref} = Mint.HTTP.request(conn, "GET", "/stream", [], nil)
+    {:ok, conn, ref} = Mint.HTTP.request(conn, "GET", "/stream", headers, nil)
 
     deadline = System.monotonic_time(:millisecond) + duration
 

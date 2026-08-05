@@ -240,13 +240,22 @@ defmodule DMEx.Integration.SelectionTest do
 
   # Opens a stream and returns whatever it sends within a short window, which is
   # enough to see which message types made it onto the wire.
+  # `last-event-id: 0` because these read what was appended *before* the
+  # request: with the header absent the log answers with its tip and sends
+  # nothing at all.
   defp read_frames(url) do
     uri = URI.parse(url)
 
     {:ok, conn} = Mint.HTTP.connect(:http, uri.host, uri.port)
 
     {:ok, conn, ref} =
-      Mint.HTTP.request(conn, "GET", uri.path, [{"accept", "text/event-stream"}], nil)
+      Mint.HTTP.request(
+        conn,
+        "GET",
+        uri.path,
+        [{"accept", "text/event-stream"}, {"last-event-id", "0"}],
+        nil
+      )
 
     body = drain(conn, ref, "", System.monotonic_time(:millisecond))
 
