@@ -71,10 +71,10 @@ defmodule DMEx.Storage.PostgresTest do
     # The error term is the driver's, not DMEx's — the behaviour promises
     # `{:error, term()}` and nothing about its shape.
     test "one subscription cannot record the same message twice", %{opts: opts} do
-      assert :ok = Postgres.dead_message(opts, dead_attrs())
+      assert :ok = Postgres.record_dead_message(opts, dead_attrs())
 
       assert {:error, %Postgrex.Error{postgres: %{code: :unique_violation}}} =
-               Postgres.dead_message(opts, dead_attrs())
+               Postgres.record_dead_message(opts, dead_attrs())
     end
   end
 

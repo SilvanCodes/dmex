@@ -140,8 +140,8 @@ three new tests, including that a lone CRLF does *not* end a frame.
 - `fail/3` and `hang/2` took an ignored `fun`. Dropped it rather than honouring
   it: reads are the only call these tests inject faults into, and an argument
   naming a callback that is never consulted is a silent no-op.
-- `dead_messages/2` did not return `t:row/0`. It now stamps `:inserted_at` in
-  `dead_message/2` — the adapter's job, as the callback docs say — and returns
+- `list_dead_messages/2` did not return `t:row/0`. It now stamps `:inserted_at` in
+  `record_dead_message/2` — the adapter's job, as the callback docs say — and returns
   exactly the `t:row/0` keys, matching what the Postgres adapter does.
 - `dead_messages/1`, `appends/1` and `add_rows/2` had no callers; removed, along
   with the `:appends` field that only they fed.

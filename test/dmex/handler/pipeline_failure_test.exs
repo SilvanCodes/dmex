@@ -67,9 +67,9 @@ defmodule DMEx.Handler.PipelineFailureTest.FlakyStorage do
   @impl DMEx.Storage
   defdelegate advance(opts, subscription, id), to: Storage
   @impl DMEx.Storage
-  defdelegate dead_message(opts, attrs), to: Storage
+  defdelegate record_dead_message(opts, attrs), to: Storage
   @impl DMEx.Storage
-  defdelegate dead_messages(opts, subscription), to: Storage
+  defdelegate list_dead_messages(opts, subscription), to: Storage
   @impl DMEx.Storage
   defdelegate delete_dead_message(opts, subscription, id), to: Storage
 end
@@ -458,7 +458,7 @@ defmodule DMEx.Handler.PipelineFailureTest do
   end
 
   defp stub_dead(storage_opts, subscription) do
-    {:ok, rows} = FlakyStorage.dead_messages(storage_opts, subscription)
+    {:ok, rows} = FlakyStorage.list_dead_messages(storage_opts, subscription)
 
     rows
   end

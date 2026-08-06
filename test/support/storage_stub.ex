@@ -200,21 +200,21 @@ defmodule DMEx.Test.Storage do
   def transaction(_opts, fun), do: {:ok, fun.()}
 
   @impl DMEx.Storage
-  def advance(opts, subscription, id) when is_binary(subscription) do
-    update(opts, &%{&1 | cursors: Map.put(&1.cursors, subscription, id)})
+  def advance(opts, subscription, last_seen) when is_binary(subscription) do
+    update(opts, &%{&1 | cursors: Map.put(&1.cursors, subscription, last_seen)})
   end
 
   # `:inserted_at` records when the row landed here, so it is the adapter's to
   # stamp — the caller never sends one.
   @impl DMEx.Storage
-  def dead_message(opts, attrs) do
+  def record_dead_message(opts, attrs) do
     attrs = Map.put(attrs, :inserted_at, DateTime.utc_now())
 
     update(opts, &%{&1 | dead: [attrs | &1.dead]})
   end
 
   @impl DMEx.Storage
-  def dead_messages(opts, subscription) when is_binary(subscription) do
+  def list_dead_messages(opts, subscription) when is_binary(subscription) do
     Agent.get(store(opts), fn state ->
       rows =
         state.dead

@@ -34,7 +34,7 @@ defmodule MyApp.Messages.OrderPlaced do
 end
 
 # in a Plug.Router
-forward "/stream", to: DMEx.Log.Plug, log: MyApp.Log
+forward "/stream", to: DMEx.Log.Plug, log_module: MyApp.Log
 
 MyApp.Log.append(%MyApp.Messages.OrderPlaced{order_id: 7})
 #=> {:ok, 1042}
@@ -101,7 +101,7 @@ jittered backoff. Once those are exhausted, `on_failure` decides:
 back rather than rebuilding a message from parts:
 
     DMEx.Handler.DeadMessages.list(MyApp.OrderProjection, repo: MyApp.Repo)
-    DMEx.Handler.DeadMessages.replay(MyApp.OrderProjection, repo: MyApp.Repo)
+    DMEx.Handler.DeadMessages.replay!(MyApp.OrderProjection, repo: MyApp.Repo)
 
 ## Backpressure
 

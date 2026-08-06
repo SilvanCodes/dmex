@@ -35,7 +35,7 @@ defmodule DMEx do
       end
 
       # in a Plug.Router
-      forward "/stream", to: DMEx.Log.Plug, log: MyApp.Log
+      forward "/stream", to: DMEx.Log.Plug, log_module: MyApp.Log
 
       MyApp.Log.append(%MyApp.Messages.OrderPlaced{order_id: 7})
       #=> {:ok, 1042}

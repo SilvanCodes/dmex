@@ -254,7 +254,7 @@ defmodule DMEx.Handler.PipelineTest do
       {:ok, state} = run_all([unknown_row(1), unknown_row(2)], state)
       Pipeline.flush(state)
 
-      assert_receive {[:dmex, :handler, :checkpoint], ^ref, %{id: 2},
+      assert_receive {[:dmex, :handler, :checkpoint], ^ref, %{cursor: 2},
                       %{handler: Handlers.Echo, subscription: "test/echo"}}
     end
   end

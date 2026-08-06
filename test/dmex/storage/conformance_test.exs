@@ -419,9 +419,9 @@ for {storage, repo, tag} <- [
 
     describe "dead_message/2" do
       test "stores the log row verbatim, plus whose row it is", %{opts: opts} do
-        assert :ok = @storage.dead_message(opts, dead_attrs())
+        assert :ok = @storage.record_dead_message(opts, dead_attrs())
 
-        assert {:ok, [row]} = @storage.dead_messages(opts, @some)
+        assert {:ok, [row]} = @storage.list_dead_messages(opts, @some)
 
         assert row.id == 1042
         assert row.type == "MyApp.Messages.OrderPlaced"
@@ -434,8 +434,8 @@ for {storage, repo, tag} <- [
       end
 
       test "two subscriptions may give up on the same log row", %{opts: opts} do
-        assert :ok = @storage.dead_message(opts, dead_attrs(subscription: @one))
-        assert :ok = @storage.dead_message(opts, dead_attrs(subscription: @two))
+        assert :ok = @storage.record_dead_message(opts, dead_attrs(subscription: @one))
+        assert :ok = @storage.record_dead_message(opts, dead_attrs(subscription: @two))
 
         assert count(opts, "dmex_dead_messages") == 2
       end
@@ -443,8 +443,8 @@ for {storage, repo, tag} <- [
       test "defaults metadata to an empty object", %{opts: opts} do
         attrs = Map.put(dead_attrs(), :metadata, nil)
 
-        assert :ok = @storage.dead_message(opts, attrs)
-        assert {:ok, [%{metadata: "{}"}]} = @storage.dead_messages(opts, @some)
+        assert :ok = @storage.record_dead_message(opts, attrs)
+        assert {:ok, [%{metadata: "{}"}]} = @storage.list_dead_messages(opts, @some)
       end
     end
 
@@ -452,9 +452,9 @@ for {storage, repo, tag} <- [
       # The point of the table's shape: what comes back is a log row, in exactly
       # the shape read/5 returns and the pipeline consumes.
       test "reads back rows in the same shape read/5 returns", %{opts: opts} do
-        :ok = @storage.dead_message(opts, dead_attrs())
+        :ok = @storage.record_dead_message(opts, dead_attrs())
 
-        assert {:ok, [row]} = @storage.dead_messages(opts, @some)
+        assert {:ok, [row]} = @storage.list_dead_messages(opts, @some)
 
         assert row |> Map.keys() |> Enum.sort() ==
                  [:data, :id, :inserted_at, :metadata, :type]
@@ -464,25 +464,25 @@ for {storage, repo, tag} <- [
       end
 
       test "returns only the given subscription's messages, oldest first", %{opts: opts} do
-        :ok = @storage.dead_message(opts, dead_attrs(subscription: @one, id: 3))
-        :ok = @storage.dead_message(opts, dead_attrs(subscription: @one, id: 1))
-        :ok = @storage.dead_message(opts, dead_attrs(subscription: @two, id: 2))
+        :ok = @storage.record_dead_message(opts, dead_attrs(subscription: @one, id: 3))
+        :ok = @storage.record_dead_message(opts, dead_attrs(subscription: @one, id: 1))
+        :ok = @storage.record_dead_message(opts, dead_attrs(subscription: @two, id: 2))
 
-        assert {:ok, rows} = @storage.dead_messages(opts, @one)
+        assert {:ok, rows} = @storage.list_dead_messages(opts, @one)
         assert Enum.map(rows, & &1.id) == [1, 3]
       end
 
       test "is empty for a subscription that has given up on nothing", %{opts: opts} do
-        assert {:ok, []} = @storage.dead_messages(opts, @some)
+        assert {:ok, []} = @storage.list_dead_messages(opts, @some)
       end
 
       test "delete removes one message by subscription and log id", %{opts: opts} do
-        :ok = @storage.dead_message(opts, dead_attrs(id: 1))
-        :ok = @storage.dead_message(opts, dead_attrs(id: 2))
+        :ok = @storage.record_dead_message(opts, dead_attrs(id: 1))
+        :ok = @storage.record_dead_message(opts, dead_attrs(id: 2))
 
         assert :ok = @storage.delete_dead_message(opts, @some, 1)
 
-        assert {:ok, [row]} = @storage.dead_messages(opts, @some)
+        assert {:ok, [row]} = @storage.list_dead_messages(opts, @some)
         assert row.id == 2
       end
 

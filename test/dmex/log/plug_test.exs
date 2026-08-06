@@ -17,12 +17,12 @@ defmodule DMEx.Log.PlugTest do
   setup do
     start_supervised!(Streams.child_spec(StubLog))
 
-    %{opts: Stub.new(), plug: LogPlug.init(log: StubLog)}
+    %{opts: Stub.new(), plug: LogPlug.init(log_module: StubLog)}
   end
 
   describe "init/1" do
     test "requires a log, and says how to give it one" do
-      assert_raise ArgumentError, ~r/requires a `:log`.*log: MyApp.Log/s, fn ->
+      assert_raise ArgumentError, ~r/requires a `:log_module`.*log_module: MyApp.Log/s, fn ->
         LogPlug.init([])
       end
     end
@@ -30,7 +30,7 @@ defmodule DMEx.Log.PlugTest do
     test "returns a prepared map without touching the database or registry" do
       # Under Phoenix's default init_mode this runs at compile time, so it must
       # not do either.
-      assert %{log: StubLog} = LogPlug.init(log: StubLog)
+      assert %{log: StubLog} = LogPlug.init(log_module: StubLog)
     end
   end
 

@@ -6,7 +6,7 @@ defmodule DMEx.Handler.DeadMessages do
       DMEx.Handler.DeadMessages.list(MyApp.OrderProjection, repo: MyApp.Repo)
 
       # fix the handler, deploy, then
-      DMEx.Handler.DeadMessages.replay(MyApp.OrderProjection, repo: MyApp.Repo)
+      DMEx.Handler.DeadMessages.replay!(MyApp.OrderProjection, repo: MyApp.Repo)
 
   The stored columns are `dmex_messages`' columns, so a dead row *is* a log row:
   replay hands the same message back rather than rebuilding one from parts. It
@@ -33,7 +33,7 @@ defmodule DMEx.Handler.DeadMessages do
   ## Replay does not touch the cursor
 
   The subscription advanced past a dead message long ago, and moving the cursor
-  backwards would redeliver everything in between. So `replay/2` calls the
+  backwards would redeliver everything in between. So `replay!/2` calls the
   handler directly and deletes the row on success, in one transaction. It
   follows that replay bypasses duplicate suppression, which consults only the
   cursor — so a handler can be called for a message whose side effects partly
@@ -62,7 +62,7 @@ defmodule DMEx.Handler.DeadMessages do
   text, exactly as stored.
 
   Returns storage's `{:error, reason}` rather than raising, because a listing is
-  something a caller inspects; `replay/2` raises `DMEx.Storage.Error` on the same
+  something a caller inspects; `replay!/2` raises `DMEx.Storage.Error` on the same
   failure, having no tagged return to carry it and no business reporting an
   unreachable database as a count.
   """
@@ -70,7 +70,7 @@ defmodule DMEx.Handler.DeadMessages do
   def list(handler, opts) when is_atom(handler) do
     {storage, storage_opts} = DMEx.Supervisor.storage!(opts)
 
-    storage.dead_messages(storage_opts, Handler.subscription_id!(handler, opts))
+    storage.list_dead_messages(storage_opts, Handler.subscription_id!(handler, opts))
   end
 
   @doc """
@@ -90,8 +90,8 @@ defmodule DMEx.Handler.DeadMessages do
   do about it. Raises `DMEx.Storage.Error` if storage itself fails, which is not
   a message a handler rejected and not a count.
   """
-  @spec replay(module(), keyword()) :: %{replayed: non_neg_integer(), failed: non_neg_integer()}
-  def replay(handler, opts) when is_atom(handler) do
+  @spec replay!(module(), keyword()) :: %{replayed: non_neg_integer(), failed: non_neg_integer()}
+  def replay!(handler, opts) when is_atom(handler) do
     {storage, storage_opts} = DMEx.Supervisor.storage!(opts)
 
     subscription = Handler.subscription_id!(handler, opts)
@@ -122,8 +122,8 @@ defmodule DMEx.Handler.DeadMessages do
   For a message that should never have been appended, or one whose effects were
   applied by hand.
   """
-  @spec discard(module(), non_neg_integer(), keyword()) :: :ok
-  def discard(handler, id, opts) when is_atom(handler) and is_integer(id) do
+  @spec discard!(module(), non_neg_integer(), keyword()) :: :ok
+  def discard!(handler, id, opts) when is_atom(handler) and is_integer(id) do
     {storage, storage_opts} = DMEx.Supervisor.storage!(opts)
 
     :ok = storage.delete_dead_message(storage_opts, Handler.subscription_id!(handler, opts), id)
@@ -135,7 +135,7 @@ defmodule DMEx.Handler.DeadMessages do
   # not a verdict on any message, and the whole run has to stop rather than
   # report zero of them.
   defp dead_messages!(subscription, storage, storage_opts) do
-    case storage.dead_messages(storage_opts, subscription) do
+    case storage.list_dead_messages(storage_opts, subscription) do
       {:ok, rows} -> rows
       {:error, reason} -> raise DMEx.Storage.Error, reason
     end
@@ -162,7 +162,7 @@ defmodule DMEx.Handler.DeadMessages do
       :skipped ->
         Logger.warning(
           "DMEx cannot replay dead message #{row.id}: no #{inspect(state.handler)} clause " <>
-            "matches a #{row.type}. Widen one and replay again, or discard/3 it."
+            "matches a #{row.type}. Widen one and replay again, or `discard!/3` it."
         )
 
         :error

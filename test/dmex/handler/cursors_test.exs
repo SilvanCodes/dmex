@@ -36,15 +36,15 @@ defmodule DMEx.Handler.CursorsTest do
     %{opts: [repo: Repo], storage_opts: %{repo: Repo, prefix: nil}}
   end
 
-  describe "inspect/2" do
+  describe "position/2" do
     test "is nil for a handler that has never committed a position", ctx do
-      assert {:ok, nil} = Cursors.inspect(Old, ctx.opts)
+      assert {:ok, nil} = Cursors.position(Old, ctx.opts)
     end
 
     test "reports the position and when it last moved", ctx do
       :ok = Postgres.advance(ctx.storage_opts, @old, 42)
 
-      assert {:ok, cursor} = Cursors.inspect(Old, ctx.opts)
+      assert {:ok, cursor} = Cursors.position(Old, ctx.opts)
       assert cursor.last_seen == 42
       assert cursor.updated_at
     end
@@ -65,7 +65,7 @@ defmodule DMEx.Handler.CursorsTest do
     test "a renamed module reads the same cursor", ctx do
       :ok = Cursors.move!(Old, 4_242, ctx.opts)
 
-      assert {:ok, %{last_seen: 4_242}} = Cursors.inspect(Renamed, ctx.opts)
+      assert {:ok, %{last_seen: 4_242}} = Cursors.position(Renamed, ctx.opts)
     end
   end
 
@@ -129,7 +129,7 @@ defmodule DMEx.Handler.CursorsTest do
 
       :ok = Cursors.rename!(@old, @new, ctx.opts)
 
-      assert {:ok, %{last_seen: 10}} = Cursors.inspect(New, ctx.opts)
+      assert {:ok, %{last_seen: 10}} = Cursors.position(New, ctx.opts)
     end
 
     test "refuses to overwrite a cursor the target already has", ctx do
@@ -162,7 +162,7 @@ defmodule DMEx.Handler.CursorsTest do
   # A cursor is one {log, id} pair, so a handler reading several has to name one.
   describe "a handler reading several logs" do
     test "refuses a call that does not say which cursor", ctx do
-      assert_raise ArgumentError, ~r/reads 2 logs/, fn -> Cursors.inspect(Both, ctx.opts) end
+      assert_raise ArgumentError, ~r/reads 2 logs/, fn -> Cursors.position(Both, ctx.opts) end
 
       assert_raise ArgumentError, ~r/reads 2 logs/, fn -> Cursors.move!(Both, 0, ctx.opts) end
 
@@ -172,8 +172,8 @@ defmodule DMEx.Handler.CursorsTest do
     test "addresses the cursor `log:` names, and only that one", ctx do
       :ok = Cursors.move!(Both, 7, [log: :returns] ++ ctx.opts)
 
-      assert {:ok, %{last_seen: 7}} = Cursors.inspect(Both, [log: :returns] ++ ctx.opts)
-      assert {:ok, nil} = Cursors.inspect(Both, [log: :orders] ++ ctx.opts)
+      assert {:ok, %{last_seen: 7}} = Cursors.position(Both, [log: :returns] ++ ctx.opts)
+      assert {:ok, nil} = Cursors.position(Both, [log: :orders] ++ ctx.opts)
     end
   end
 end

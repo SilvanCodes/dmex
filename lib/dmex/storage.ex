@@ -193,13 +193,14 @@ defmodule DMEx.Storage do
   @callback transaction(opts(), (-> result)) :: {:ok, result} | {:error, term()} when result: var
 
   @doc """
-  Moves a subscription's cursor to `id`.
+  Moves a subscription's cursor to `last_seen` — the column it writes, and the
+  same exclusive position the `last_seen:` option names.
 
   It does not refuse to move backwards: duplicate suppression happens in the
   pipeline, which is the authority, and an operator resetting a cursor
   deliberately needs this to go both ways.
 
-  **`:ok` and nothing else**, where `c:dead_message/2`,
+  **`:ok` and nothing else**, where `c:record_dead_message/2`,
   `c:delete_dead_message/3` and `c:delete_cursor/2` also admit
   `{:error, term()}`. Deliberate, and the asymmetry is worth stating rather than
   smoothing over. Both shipped adapters implement this as a hard match on the
@@ -217,7 +218,7 @@ defmodule DMEx.Storage do
   `DMEx.Storage.Error`, raised by `DMEx.Handler.Pipeline`, and nothing here
   reports it.
   """
-  @callback advance(opts(), subscription :: String.t(), id :: non_neg_integer()) :: :ok
+  @callback advance(opts(), subscription :: String.t(), last_seen :: non_neg_integer()) :: :ok
 
   @doc """
   Records a message its handler gave up on.
@@ -231,9 +232,9 @@ defmodule DMEx.Storage do
   landed and is the adapter's to stamp.
 
   **Nothing about the failure is stored**, which is what lets
-  `c:dead_messages/2` return the row as an ordinary `t:row/0`.
+  `c:list_dead_messages/2` return the row as an ordinary `t:row/0`.
   """
-  @callback dead_message(opts(), attrs :: map()) :: :ok | {:error, term()}
+  @callback record_dead_message(opts(), attrs :: map()) :: :ok | {:error, term()}
 
   @doc """
   Lists every message `subscription` gave up on, oldest first, as log rows.
@@ -241,7 +242,7 @@ defmodule DMEx.Storage do
   `t:row/0` shape — what `c:read/5` returns and the pipeline consumes — because
   the stored columns are the log's columns, so replay needs no reshaping.
   """
-  @callback dead_messages(opts(), subscription :: String.t()) ::
+  @callback list_dead_messages(opts(), subscription :: String.t()) ::
               {:ok, [row()]} | {:error, term()}
 
   @doc """

@@ -243,7 +243,7 @@ defmodule DMEx.Handler.Pipeline do
 
     :telemetry.execute(
       [:dmex, :handler, :checkpoint],
-      %{id: cursor},
+      %{cursor: cursor},
       %{subscription: state.subscription, handler: state.handler, origin: state.origin}
     )
 
@@ -389,7 +389,7 @@ defmodule DMEx.Handler.Pipeline do
 
   defp record_dead!(state, row, id) do
     :ok =
-      state.storage.dead_message(state.storage_opts, %{
+      state.storage.record_dead_message(state.storage_opts, %{
         subscription: state.subscription,
         id: id,
         type: Map.fetch!(row, "type"),
@@ -450,7 +450,7 @@ defmodule DMEx.Handler.Pipeline do
     end
   end
 
-  defp advance!(state, id) do
-    :ok = state.storage.advance(state.storage_opts, state.subscription, id)
+  defp advance!(state, last_seen) do
+    :ok = state.storage.advance(state.storage_opts, state.subscription, last_seen)
   end
 end

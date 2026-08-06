@@ -85,7 +85,8 @@ defmodule DMEx.Telemetry do
   ### `[:dmex, :handler, :checkpoint]`
 
   A coalesced run of skipped rows was written to `dmex_cursors`. Measurements:
-  `:id`, the position persisted. Never fires on a stream whose rows are all
+  `:cursor`, the position persisted — named for what it is, since `:id` on the
+  sibling handler events is a log row's own id. Never fires on a stream whose rows are all
   handled. Its rate against `[:dmex, :handler, :skip]` is the coalescing ratio:
   one per thousand skips is the mechanism working, one per skip means runs are
   being broken up by handled rows.

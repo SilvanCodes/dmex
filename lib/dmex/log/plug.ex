@@ -8,7 +8,7 @@ defmodule DMEx.Log.Plug do
 
   Mount it in a `Plug.Router`:
 
-      forward "/stream", to: DMEx.Log.Plug, log: MyApp.Log
+      forward "/stream", to: DMEx.Log.Plug, log_module: MyApp.Log
 
   The mount is a prefix `forward`, and two things hang off it:
 
@@ -20,6 +20,21 @@ defmodule DMEx.Log.Plug do
 
   There is no application segment and no query string: one mount serves exactly
   one log.
+
+  ## `log_module:`, and not `log:`
+
+  A log **module**, never a name from `DMEx.Supervisor`'s `logs:`. The two are
+  different kinds of thing and the option says which: a `logs:` name is a
+  *reader's* alias for a log, scoped to the reading application and deliberately
+  transport-transparent, while this is the local resource the mount serves. A
+  producer needs no alias for its own log — on the network it is identified by
+  this mount's path and hostname.
+
+  Which is also why a name could not be accepted here even if the words matched.
+  Resolving one needs a running supervisor and its registry, and this runs at
+  compile time (see `init/1`); a mount serving a log needs no `DMEx.Supervisor`
+  at all today, since a log module carries its own supervision subtree. See
+  ARCHITECTURE.md on why DMEx does not proxy.
 
   ## Selection is resolved once, at connect
 
@@ -97,10 +112,10 @@ defmodule DMEx.Log.Plug do
   @impl Plug
   def init(opts) do
     log =
-      Keyword.get(opts, :log) ||
+      Keyword.get(opts, :log_module) ||
         raise ArgumentError,
-              "DMEx.Log.Plug requires a `:log`, e.g. " <>
-                "`forward \"/stream\", to: DMEx.Log.Plug, log: MyApp.Log`"
+              "DMEx.Log.Plug requires a `:log_module`, e.g. " <>
+                "`forward \"/stream\", to: DMEx.Log.Plug, log_module: MyApp.Log`"
 
     # Deliberately no database or registry access: under Phoenix's default
     # `init_mode` this runs at compile time.

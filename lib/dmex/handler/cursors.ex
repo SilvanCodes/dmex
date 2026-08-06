@@ -47,38 +47,39 @@ defmodule DMEx.Handler.Cursors do
   subscription started with the default `last_seen:` on a quiet log, since
   nothing writes a cursor until it has consumed something.
   """
-  @spec inspect(module(), keyword()) ::
+  @spec position(module(), keyword()) ::
           {:ok, %{last_seen: non_neg_integer(), updated_at: term()} | nil}
           | {:error, term()}
-  def inspect(handler, opts) when is_atom(handler) do
+  def position(handler, opts) when is_atom(handler) do
     {storage, storage_opts} = DMEx.Supervisor.storage!(opts)
 
     storage.cursor(storage_opts, Handler.subscription_id!(handler, opts))
   end
 
   @doc """
-  Moves `handler`'s cursor to `id`, so the next connect resumes after it.
+  Moves `handler`'s cursor to `last_seen`, so the next connect resumes after it.
 
-  `id` is a cursor and therefore **exclusive**, which is exactly what
-  `last_seen:` is — one domain, one unit, so `move!(h, 41)` and `last_seen: 41`
-  name the same place. The difference is only durability: this writes the row,
-  the option stands in for one until there is a row.
+  A cursor is **exclusive**, which is exactly what the `last_seen:` option is —
+  one domain, one unit, one name, so `move!(h, 41)` and `last_seen: 41` name the
+  same place. The difference is only durability: this writes the row, the option
+  stands in for one until there is a row.
 
-  `id: 0` replays the whole log — not the same as `reset!/2`, since a cursor at 0
-  still exists and `last_seen:` stays ignored. Every message after that id which this
-  subscription selects is redelivered, so the handler must tolerate it.
+  `0` replays the whole log — not the same as `reset!/2`, since a cursor at 0
+  still exists and `last_seen:` stays ignored. Every message after that position
+  which this subscription selects is redelivered, so the handler must tolerate
+  it.
 
   A cursor is nothing but a subscription and a position, so this runs from a
   migration or a console with no handler running.
   """
   @spec move!(module(), non_neg_integer(), keyword()) :: :ok
-  def move!(handler, id, opts) when is_atom(handler) and is_integer(id) and id >= 0 do
+  def move!(handler, last_seen, opts) when is_atom(handler) and is_integer(last_seen) and last_seen >= 0 do
     {storage, storage_opts} = DMEx.Supervisor.storage!(opts)
     subscription = Handler.subscription_id!(handler, opts)
 
     # No transaction: one statement is already atomic, and `rename!/3` — which
     # genuinely needs one, for two — is the contrast.
-    :ok = storage.advance(storage_opts, subscription, id)
+    :ok = storage.advance(storage_opts, subscription, last_seen)
   end
 
   @doc """
@@ -118,8 +119,8 @@ defmodule DMEx.Handler.Cursors do
 
           {_, {:ok, %{last_seen: existing}}} ->
             raise ArgumentError,
-                  "#{Kernel.inspect(to)} already has a cursor at #{existing}. " <>
-                    "Renaming #{Kernel.inspect(from)} onto it would overwrite that " <>
+                  "#{inspect(to)} already has a cursor at #{existing}. " <>
+                    "Renaming #{inspect(from)} onto it would overwrite that " <>
                     "subscription's position — reset one of them first if that is what you want."
 
           {{:ok, %{last_seen: id}}, {:ok, nil}} ->

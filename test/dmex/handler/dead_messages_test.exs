@@ -68,19 +68,19 @@ defmodule DMEx.Handler.DeadMessagesTest do
     """
     def transaction(_opts, _fun), do: {:error, :pool_timeout}
 
-    defdelegate dead_messages(opts, subscription), to: Postgres
+    defdelegate list_dead_messages(opts, subscription), to: Postgres
     defdelegate delete_dead_message(opts, subscription, id), to: Postgres
   end
 
   defmodule ReadFails do
-    @moduledoc "Storage whose `dead_messages/2` itself fails."
-    def dead_messages(_opts, _subscription), do: {:error, :pool_timeout}
+    @moduledoc "Storage whose `list_dead_messages/2` itself fails."
+    def list_dead_messages(_opts, _subscription), do: {:error, :pool_timeout}
   end
 
   setup do
     Handlers.report_to(self())
 
-    # `replay/2` takes no message set — it reads the handler's own.
+    # `replay!/2` takes no message set — it reads the handler's own.
     %{
       opts: [repo: Repo],
       replay: [repo: Repo],
@@ -118,7 +118,7 @@ defmodule DMEx.Handler.DeadMessagesTest do
     end
   end
 
-  describe "replay/2" do
+  describe "replay!/2" do
     # The whole reason the table has the log's shape: a dead row *is* a log row,
     # so replaying one is handing it back rather than rebuilding a message from
     # parts.
@@ -130,14 +130,14 @@ defmodule DMEx.Handler.DeadMessagesTest do
       # raising.
       Handlers.FailTimes.set(0)
 
-      assert %{replayed: 2, failed: 0} = DeadMessages.replay(@handler, ctx.replay)
+      assert %{replayed: 2, failed: 0} = DeadMessages.replay!(@handler, ctx.replay)
     end
 
     test "delivers the same struct and metadata the handler would have seen", ctx do
       kill(ctx, 1, metadata: %{"trace_id" => "abc"})
       Handlers.FailTimes.set(0)
 
-      DeadMessages.replay(@handler, ctx.replay)
+      DeadMessages.replay!(@handler, ctx.replay)
 
       assert_received {:attempted, %OrderPlaced{order_id: 1}}
     end
@@ -147,7 +147,7 @@ defmodule DMEx.Handler.DeadMessagesTest do
       kill(ctx, 2)
       Handlers.FailTimes.set(0)
 
-      DeadMessages.replay(@handler, ctx.replay)
+      DeadMessages.replay!(@handler, ctx.replay)
 
       assert {:ok, []} = DeadMessages.list(@handler, ctx.opts)
     end
@@ -159,7 +159,7 @@ defmodule DMEx.Handler.DeadMessagesTest do
       # Still broken.
       Handlers.FailTimes.set(10)
 
-      assert %{replayed: 0, failed: 2} = DeadMessages.replay(@handler, ctx.replay)
+      assert %{replayed: 0, failed: 2} = DeadMessages.replay!(@handler, ctx.replay)
 
       assert {:ok, rows} = DeadMessages.list(@handler, ctx.opts)
       assert length(rows) == 2
@@ -171,7 +171,7 @@ defmodule DMEx.Handler.DeadMessagesTest do
       kill(ctx, 1)
       Handlers.FailTimes.set(10)
 
-      DeadMessages.replay(@handler, ctx.replay)
+      DeadMessages.replay!(@handler, ctx.replay)
 
       assert {:ok, [_row]} = DeadMessages.list(@handler, ctx.opts)
     end
@@ -184,14 +184,14 @@ defmodule DMEx.Handler.DeadMessagesTest do
       Handlers.FailTimes.set(0)
 
       assert %{replayed: 0, failed: 1} =
-               DeadMessages.replay(Mismatched, ctx.replay)
+               DeadMessages.replay!(Mismatched, ctx.replay)
 
       assert {:ok, [_row]} = DeadMessages.list(@handler, ctx.opts)
     end
 
     test "rejects a module that is not a handler", ctx do
       assert_raise ArgumentError, ~r/is not a DMEx handler/, fn ->
-        DeadMessages.replay(Handlers.NotAHandler, ctx.replay)
+        DeadMessages.replay!(Handlers.NotAHandler, ctx.replay)
       end
     end
 
@@ -200,7 +200,7 @@ defmodule DMEx.Handler.DeadMessagesTest do
       :ok = Postgres.advance(ctx.storage_opts, @subscription, 500)
       Handlers.FailTimes.set(0)
 
-      DeadMessages.replay(@handler, ctx.replay)
+      DeadMessages.replay!(@handler, ctx.replay)
 
       # A replayed message is delivered out of band; rewinding the cursor to
       # reach it would redeliver everything in between.
@@ -208,7 +208,7 @@ defmodule DMEx.Handler.DeadMessagesTest do
     end
 
     test "is a no-op when there is nothing dead", ctx do
-      assert %{replayed: 0, failed: 0} = DeadMessages.replay(@handler, ctx.replay)
+      assert %{replayed: 0, failed: 0} = DeadMessages.replay!(@handler, ctx.replay)
     end
 
     # Replay is the recovery operation, so it cannot be the one place a
@@ -222,7 +222,7 @@ defmodule DMEx.Handler.DeadMessagesTest do
       Handlers.FailTimes.set(2)
 
       assert %{replayed: 1, failed: 0} =
-               DeadMessages.replay(@handler, ctx.replay ++ [retry_backoff: 1])
+               DeadMessages.replay!(@handler, ctx.replay ++ [retry_backoff: 1])
 
       assert attempts() == 3
       assert {:ok, []} = DeadMessages.list(@handler, ctx.opts)
@@ -233,7 +233,7 @@ defmodule DMEx.Handler.DeadMessagesTest do
       Handlers.FailTimes.set(10)
 
       assert %{replayed: 0, failed: 1} =
-               DeadMessages.replay(@handler, ctx.replay ++ [retry_backoff: 1])
+               DeadMessages.replay!(@handler, ctx.replay ++ [retry_backoff: 1])
 
       assert attempts() == 3
     end
@@ -246,7 +246,7 @@ defmodule DMEx.Handler.DeadMessagesTest do
 
       ref = :telemetry_test.attach_event_handlers(self(), [[:dmex, :handler, :message, :stop]])
 
-      DeadMessages.replay(@handler, ctx.replay)
+      DeadMessages.replay!(@handler, ctx.replay)
 
       assert_receive {[:dmex, :handler, :message, :stop], ^ref, %{duration: duration},
                       %{
@@ -270,7 +270,7 @@ defmodule DMEx.Handler.DeadMessagesTest do
       Handlers.FailTimes.set(0)
 
       assert_raise Error, fn ->
-        DeadMessages.replay(@handler, ctx.replay ++ [storage: TransactionFails])
+        DeadMessages.replay!(@handler, ctx.replay ++ [storage: TransactionFails])
       end
 
       assert {:ok, [_row]} = DeadMessages.list(@handler, ctx.opts)
@@ -278,18 +278,18 @@ defmodule DMEx.Handler.DeadMessagesTest do
 
     test "a read that fails raises rather than mismatching", ctx do
       assert_raise Error, fn ->
-        DeadMessages.replay(@handler, ctx.replay ++ [storage: ReadFails])
+        DeadMessages.replay!(@handler, ctx.replay ++ [storage: ReadFails])
       end
     end
   end
 
-  describe "discard/3" do
+  describe "discard!/3" do
     test "drops a message without running it", ctx do
       kill(ctx, 1)
       kill(ctx, 2)
       Handlers.FailTimes.set(0)
 
-      assert :ok = DeadMessages.discard(@handler, 1, ctx.opts)
+      assert :ok = DeadMessages.discard!(@handler, 1, ctx.opts)
 
       assert {:ok, [row]} = DeadMessages.list(@handler, ctx.opts)
       assert row.id == 2
@@ -297,7 +297,7 @@ defmodule DMEx.Handler.DeadMessagesTest do
     end
 
     test "is fine on something already gone", ctx do
-      assert :ok = DeadMessages.discard(@handler, 999, ctx.opts)
+      assert :ok = DeadMessages.discard!(@handler, 999, ctx.opts)
     end
   end
 

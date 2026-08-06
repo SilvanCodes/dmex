@@ -28,7 +28,7 @@ defmodule DMEx.Integration.StallReclaimTest do
     plug(:match)
     plug(:dispatch)
 
-    forward("/stream", to: DMEx.Log.Plug, log: Log)
+    forward("/stream", to: DMEx.Log.Plug, log_module: Log)
 
     match _ do
       send_resp(conn, 404, "not found")

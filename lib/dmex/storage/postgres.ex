@@ -252,7 +252,7 @@ defmodule DMEx.Storage.Postgres do
   end
 
   @impl DMEx.Storage
-  def advance(opts, subscription, id) when is_binary(subscription) and is_integer(id) do
+  def advance(opts, subscription, last_seen) when is_binary(subscription) and is_integer(last_seen) do
     repo = Map.fetch!(opts, :repo)
 
     sql = """
@@ -263,13 +263,13 @@ defmodule DMEx.Storage.Postgres do
                     updated_at = now()
     """
 
-    {:ok, _} = SQL.query(repo, sql, [subscription, id])
+    {:ok, _} = SQL.query(repo, sql, [subscription, last_seen])
 
     :ok
   end
 
   @impl DMEx.Storage
-  def dead_message(opts, attrs) when is_map(attrs) do
+  def record_dead_message(opts, attrs) when is_map(attrs) do
     repo = Map.fetch!(opts, :repo)
 
     sql = """
@@ -293,7 +293,7 @@ defmodule DMEx.Storage.Postgres do
   end
 
   @impl DMEx.Storage
-  def dead_messages(opts, subscription) when is_binary(subscription) do
+  def list_dead_messages(opts, subscription) when is_binary(subscription) do
     sql = """
     SELECT id, type, data::text, metadata::text, inserted_at
       FROM #{table(opts, @dead_messages)}
