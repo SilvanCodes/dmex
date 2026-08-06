@@ -214,7 +214,7 @@ different selection is a different resource — so it belongs in the path:
 **The response** is `text/event-stream` with `Cache-Control: no-cache`,
 `X-Accel-Buffering: no` (nginx buffers by default, which would swallow both
 pacing and heartbeats), and `Connection: keep-alive` on HTTP/1.1. A selective
-stream additionally carries **`dmex-matched-messages`**, the count of the
+stream additionally carries **`dmex-matched-types`**, the count of the
 producer's own types the filter admitted. It is the only DMEx header anywhere,
 and it is diagnostic: the blob cannot be reversed, so this is the one thing that
 makes a subscription legible from outside — a count of `0` where ten types were
@@ -292,10 +292,10 @@ its payload, which `max_batch_bytes` counts, and a fixed ~1 KB for the map, the
 `%DateTime{}` and the frame's iodata cells — which no budget in database octets
 can see. At a 1 KB payload the byte bound binds; at a 50-byte payload the same
 1 MiB budget admits ~21 000 rows whose fixed cost alone is ~22 MB, and
-`max_batch_size` closes that end.
+`max_batch_rows` closes that end.
 
 Both bounds are applied **inside the query** (`c:DMEx.Storage.read/5`): a read
-that returns `max_batch_size` rows and lets the caller trim them has already
+that returns `max_batch_rows` rows and lets the caller trim them has already
 spent the memory the bound exists to cap. One deliberate exception — a single
 row larger than the whole budget is returned alone, because refusing it would
 wedge the subscription forever.
@@ -344,7 +344,7 @@ absorb nothing at a sustained mismatch, and every row of slack is one more the
 socket accepts before it says stop.
 
 **9. Pacing has exactly one owner, and it is stated as a rate.**
-`max_batch_frequency`, `max_batch_size` and `max_batch_bytes` are producer
+`max_batch_frequency`, `max_batch_rows` and `max_batch_bytes` are producer
 configuration and appear nowhere else — not in a request, not in a response, not
 in a subscription's options. There is no "requested" value to drift from an
 "effective" one, no clamping, no echo to interpret, no mid-subscription
@@ -539,7 +539,7 @@ of scope.
   quoted with. A mostly-skipped log replays at wire speed.
 
   The ~36 000 and ~39 000 figures are paced by the log's `max_batch_frequency`
-  (100/s by default, so `max_batch_size` × 100 is the ceiling), not by a limit
+  (100/s by default, so `max_batch_rows` × 100 is the ceiling), not by a limit
   the design imposes; only the ~265 is a property of the consumer.
 - **The selection filter behaves as the design assumes.** `mix bench.fingerprint`
   sweeps 86 set sizes over 1–2000: **zero false negatives** across 45 660
@@ -602,9 +602,9 @@ of scope.
 - **Whether the pacing defaults are right under real load.** They are in
   `DMEx.Config` with reasoning beside each, but have only been exercised against
   benchmarks and a deliberately slow test handler. The one interacting with
-  something a producer does not control is `max_batch_size`: a write does not
+  something a producer does not control is `max_batch_rows`: a write does not
   complete until the consumer drains it, so
-  `max_batch_size / slowest-consumer-rows-per-second` has to stay well under
+  `max_batch_rows / slowest-consumer-rows-per-second` has to stay well under
   `stall_timeout`. See [the deployment guide](guides/deployment.md).
 - **Where the read-amplification ceiling actually is**, and whether the pool
   wants partitioning so stream reads cannot starve append writes. Amplification is per-type rather than
@@ -613,7 +613,7 @@ of scope.
   consumer-side buffer, a consumer too slow for its producer's pacing stops
   reading, is reclaimed, reconnects, and does it again. That is correct and costs
   a re-read each time, but it is a loop, and the only lever is the producer's
-  `max_batch_size` — which one slow consumer cannot ask to be lowered for it
+  `max_batch_rows` — which one slow consumer cannot ask to be lowered for it
   alone. Is a steady `[:dmex, :stream, :reclaim]` rate an adequate operator
   signal, or does the protocol need a way to say "less at a time"?
 - **Third-party client backpressure** — invariant 8 is a property of *DMEx's*

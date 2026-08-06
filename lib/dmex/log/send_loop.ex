@@ -5,7 +5,7 @@ defmodule DMEx.Log.SendLoop do
   There is no separate catch-up mode and no distinction between a "catching up"
   and a "live tailing" connection — the same loop, differing only in whether it
   finds rows waiting when it reads. A consumer far behind the tip finds a full
-  `max_batch_size` on every read and writes batches back-to-back until it
+  `max_batch_rows` on every read and writes batches back-to-back until it
   drains.
 
   A selective connection is not a distinct mode either: its read carries one
@@ -31,9 +31,9 @@ defmodule DMEx.Log.SendLoop do
 
   ## Pacing
 
-  `max_batch_frequency` caps how often this loop reads; `max_batch_size` and
+  `max_batch_frequency` caps how often this loop reads; `max_batch_rows` and
   `max_batch_bytes` cap what one read returns. The loop is sequential, so
-  together they cap the connection at `max_batch_size` rows or
+  together they cap the connection at `max_batch_rows` rows or
   `max_batch_bytes`, `max_batch_frequency` times a second. All three are log
   configuration (ARCHITECTURE invariant 9).
   """
@@ -180,7 +180,7 @@ defmodule DMEx.Log.SendLoop do
       state.storage.read(
         state.storage_opts,
         state.cursor,
-        state.config.max_batch_size,
+        state.config.max_batch_rows,
         state.config.max_batch_bytes,
         state.types
       )
@@ -203,7 +203,7 @@ defmodule DMEx.Log.SendLoop do
   end
 
   # A whole read's rows in one call, so syscalls and deadline arming do not
-  # multiply by `max_batch_size`.
+  # multiply by `max_batch_rows`.
   defp send_rows(conn, state, rows) do
     last_id = rows |> List.last() |> Map.fetch!(:id)
 

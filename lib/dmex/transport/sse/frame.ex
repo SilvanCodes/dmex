@@ -46,7 +46,7 @@ defmodule DMEx.Transport.SSE.Frame do
   String-keyed and one level decoded; turning `data` into a message struct is
   the message module's job, later, in the pipeline.
   """
-  @type decoded_row :: DMEx.Handler.Pipeline.row()
+  @type decoded_row :: DMEx.Handler.Pipeline.decoded_row()
 
   @typedoc """
   One parsed frame block.

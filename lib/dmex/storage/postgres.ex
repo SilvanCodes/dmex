@@ -93,17 +93,17 @@ defmodule DMEx.Storage.Postgres do
   end
 
   @impl DMEx.Storage
-  def read(opts, cursor, limit, max_bytes, :all)
-      when is_integer(cursor) and cursor >= 0 and is_integer(limit) and limit > 0 and is_integer(max_bytes) and
+  def read(opts, cursor, max_rows, max_bytes, :all)
+      when is_integer(cursor) and cursor >= 0 and is_integer(max_rows) and max_rows > 0 and is_integer(max_bytes) and
              max_bytes > 0 do
-    query(opts, read_sql(opts, ""), [cursor, limit, max_bytes])
+    query(opts, read_sql(opts, ""), [cursor, max_rows, max_bytes])
   end
 
-  def read(opts, cursor, limit, max_bytes, types)
-      when is_integer(cursor) and cursor >= 0 and is_integer(limit) and limit > 0 and is_integer(max_bytes) and
+  def read(opts, cursor, max_rows, max_bytes, types)
+      when is_integer(cursor) and cursor >= 0 and is_integer(max_rows) and max_rows > 0 and is_integer(max_bytes) and
              max_bytes > 0 and is_list(types) do
     # A separate statement, not a nullable predicate — see `c:DMEx.Storage.read/5`.
-    query(opts, read_sql(opts, "AND type = ANY($4)"), [cursor, limit, max_bytes, types])
+    query(opts, read_sql(opts, "AND type = ANY($4)"), [cursor, max_rows, max_bytes, types])
   end
 
   # Public so `DMEx.Storage.PostgresTest` can EXPLAIN the real statement.

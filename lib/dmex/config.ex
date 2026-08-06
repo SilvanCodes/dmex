@@ -17,14 +17,14 @@ defmodule DMEx.Config do
   | setting | default | why |
   | --- | --- | --- |
   | `max_batch_frequency` | `100` | reads per second — **how hard one connection may hammer the database**. A hundred puts added latency (`1 / 2f`) at 5 ms, low enough to be invisible next to the network hop. The cost is at the pool, not the connection: worst-case reads per second is `open streams x this`, so it is the first setting to lower when many streams share one pool. Measured, a 10-connection pool starts queueing checkouts somewhere between 50 and 200 busy streams at this rate — see ARCHITECTURE's *What has been measured* and `guides/deployment.md`. Any positive number: `0.2` is one read every five seconds. |
-  | `max_batch_size` | `500` | rows per read. Bounds the **per-row** heap cost — about a kilobyte each once decoded and framed, which no byte budget can see — and bounds the running sum enforcing `max_batch_bytes`. Also subject to the sizing rule in `guides/deployment.md`: one write must drain in well under `stall_timeout` at the slowest handler's rate. |
+  | `max_batch_rows` | `500` | rows per read. Bounds the **per-row** heap cost — about a kilobyte each once decoded and framed, which no byte budget can see — and bounds the running sum enforcing `max_batch_bytes`. Also subject to the sizing rule in `guides/deployment.md`: one write must drain in well under `stall_timeout` at the slowest handler's rate. |
   | `max_batch_bytes` | `1_048_576` | **payload** bytes per read, enforced inside the query (see `c:DMEx.Storage.read/5`). Bounds the half of the heap cost that scales with message size: 500 rows is half a megabyte at 1 KB each and half a gigabyte at 1 MB each. One row larger than this is still delivered on its own, since refusing it would wedge the stream permanently. |
   | `heartbeat_interval` | `15_000` | ms; half the most common 30 s proxy idle timeout, so two heartbeats fit inside every window. |
   | `poll_interval` | `1_000` | ms; Oban stager parity. The worst-case wakeup latency when a `NOTIFY` is lost, costing one `max(id)` index descent per app per second. |
   | `stall_timeout` | `30_000` | ms; the budget for any one blocking step of the send loop. Generous on purpose: killing a healthy slow handler costs a reconnect and a fresh catch-up read, where a wedged connection lingering 30 s costs one request process. At the 1 MiB write cap it tolerates a handler draining a full write at ~280 kbit/s. `:infinity` runs no watcher at all. |
   | `stall_check_interval` | `1_000` | ms; how often `DMEx.Log.Watcher` sweeps, so a stall is reclaimed within `stall_timeout + stall_check_interval`. A sweep is one atomics read per connection and no query. |
 
-  `max_batch_size` and `max_batch_bytes` are not two spellings of one limit: a
+  `max_batch_rows` and `max_batch_bytes` are not two spellings of one limit: a
   row costs heap both as payload, which the byte bound counts, and as a fixed
   ~1 KB of terms the database cannot see. At a 50-byte payload the 1 MiB budget
   admits ~21 000 rows whose fixed cost alone is ~22 MB, and the row bound is
@@ -77,7 +77,7 @@ defmodule DMEx.Config do
 
   @log_defaults [
     max_batch_frequency: 100,
-    max_batch_size: 500,
+    max_batch_rows: 500,
     heartbeat_interval: 15_000,
     poll_interval: 1_000,
     max_batch_bytes: 1_048_576,
@@ -101,7 +101,7 @@ defmodule DMEx.Config do
   @typedoc "A log's resolved configuration."
   @type log :: %{
           max_batch_frequency: number(),
-          max_batch_size: pos_integer(),
+          max_batch_rows: pos_integer(),
           heartbeat_interval: pos_integer(),
           poll_interval: pos_integer(),
           max_batch_bytes: pos_integer(),
@@ -211,7 +211,7 @@ defmodule DMEx.Config do
     positive_number!(config, :max_batch_frequency)
 
     for field <- [
-          :max_batch_size,
+          :max_batch_rows,
           :heartbeat_interval,
           :poll_interval,
           :max_batch_bytes,

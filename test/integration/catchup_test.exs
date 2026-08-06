@@ -39,16 +39,16 @@ defmodule DMEx.Integration.CatchupTest do
 
     assert ids == Enum.to_list(1..@backlog)
 
-    # `max_batch_size` is a hard cap on how much one write carries, however far
+    # `max_batch_rows` is a hard cap on how much one write carries, however far
     # behind the consumer is — the loop reads with it as the LIMIT every time.
     # It is the *log's* setting, so this is the log's default.
     write_sizes = collect_write_sizes(ref)
 
     assert write_sizes != []
-    assert Enum.max(write_sizes) <= DMEx.Config.log!([]).max_batch_size
+    assert Enum.max(write_sizes) <= DMEx.Config.log!([]).max_batch_rows
   end
 
-  # The log's memory bound, over a real socket. `max_batch_size` alone is
+  # The log's memory bound, over a real socket. `max_batch_rows` alone is
   # not one: 500 rows is half a megabyte at 1 KB each and half a gigabyte at
   # 1 MB each, and the difference is entirely the payloads a publisher happens
   # to send.
@@ -67,7 +67,7 @@ defmodule DMEx.Integration.CatchupTest do
 
     writes = collect_writes(ref)
     budget = DMEx.Config.log!([]).max_batch_bytes
-    rows_limit = DMEx.Config.log!([]).max_batch_size
+    rows_limit = DMEx.Config.log!([]).max_batch_rows
 
     # The claim, over every write the connection made: payload bytes never
     # exceed the budget. The slack is SSE framing, which the storage bound does

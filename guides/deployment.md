@@ -45,7 +45,7 @@ consumer; a steady rate is either a consumer that cannot keep up or a
 
 ### Two bounds on a read
 
-`max_batch_size` (500 rows) and `max_batch_bytes` (1 MiB of `data` + `metadata`
+`max_batch_rows` (500 rows) and `max_batch_bytes` (1 MiB of `data` + `metadata`
 + `type` octets) bound the same read, and whichever binds first ends it.
 
 Both are memory bounds, over different costs (ARCHITECTURE invariant 2): the
@@ -56,14 +56,14 @@ octets can.
 To size it, add both: 500 rows at 1 MiB of payload is ~1.5 MiB per open stream,
 so 200 streams is ~300 MiB of worst-case transient read memory.
 
-### Sizing `max_batch_size` against `stall_timeout`
+### Sizing `max_batch_rows` against `stall_timeout`
 
 A consumer processes rows **inline, as they arrive**, so the producer's write
 does not complete until the consumer has drained it through its handler. One
 write's drain time is therefore a real term in the stall budget:
 
 ```
-max_batch_size / (slowest consumer's rows per second)  <  stall_timeout
+max_batch_rows / (slowest consumer's rows per second)  <  stall_timeout
 ```
 
 265 rows/s is the measured ceiling for a handler that commits at all (see
@@ -71,7 +71,7 @@ ARCHITECTURE's *What has been measured*), so at the defaults that is
 `500 / 265 ≈ 1.9 s` against a 30 s budget. It breaks down below roughly
 **17 rows/s** — a handler spending 60 ms per message.
 
-If your handlers are that slow, lower `max_batch_size` rather than raising
+If your handlers are that slow, lower `max_batch_rows` rather than raising
 `stall_timeout`: a smaller batch also lowers the latency floor and the
 per-connection memory, while a larger timeout only delays noticing a genuinely
 wedged connection. This is the one place a producer's setting has to account for

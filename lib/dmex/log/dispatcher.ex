@@ -13,7 +13,7 @@ defmodule DMEx.Log.Dispatcher do
   separate code path here: the poll runs alone.
 
   **It never reads rows or fans out data.** Each stream reads for itself,
-  bounded by its own `max_batch_size`, so this shared per-app process holds no
+  bounded by its own `max_batch_rows`, so this shared per-app process holds no
   message data on any connection's behalf. A notification carries a routing key
   and nothing else — never a range, an id, or a row. Missing a hint costs
   latency, never correctness, so the send loop stays correct with this process

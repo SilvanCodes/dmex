@@ -7,7 +7,7 @@ defmodule DMEx.ConfigTest do
     test "returns the documented defaults when given nothing" do
       assert %{
                max_batch_frequency: 100,
-               max_batch_size: 500,
+               max_batch_rows: 500,
                heartbeat_interval: 15_000,
                poll_interval: 1_000,
                max_batch_bytes: 1_048_576,
@@ -21,7 +21,7 @@ defmodule DMEx.ConfigTest do
 
       assert config.max_batch_frequency == 50
       assert config.heartbeat_interval == 30_000
-      assert config.max_batch_size == Config.log!([]).max_batch_size
+      assert config.max_batch_rows == Config.log!([]).max_batch_rows
     end
 
     test "ignores keys that belong to the log module rather than its pacing" do
@@ -36,8 +36,8 @@ defmodule DMEx.ConfigTest do
         Config.log!(max_batch_frequency: "5")
       end
 
-      assert_raise ArgumentError, ~r/:max_batch_size must be a positive integer/, fn ->
-        Config.log!(max_batch_size: 0)
+      assert_raise ArgumentError, ~r/:max_batch_rows must be a positive integer/, fn ->
+        Config.log!(max_batch_rows: 0)
       end
 
       assert_raise ArgumentError, ~r/:heartbeat_interval must be a positive integer/, fn ->
@@ -70,7 +70,7 @@ defmodule DMEx.ConfigTest do
     # different value. A log that wants a 10 ms window may simply have one.
     test "takes any positive pacing value, with nothing to clamp it against" do
       assert Config.log!(max_batch_frequency: 200).max_batch_frequency == 200
-      assert Config.log!(max_batch_size: 9_000).max_batch_size == 9_000
+      assert Config.log!(max_batch_rows: 9_000).max_batch_rows == 9_000
     end
   end
 
@@ -94,7 +94,7 @@ defmodule DMEx.ConfigTest do
     # way it ignores `:repo`.
     test "carries no pacing settings at all" do
       refute Map.has_key?(Config.handler!([]), :max_batch_frequency)
-      refute Map.has_key?(Config.handler!([]), :max_batch_size)
+      refute Map.has_key?(Config.handler!([]), :max_batch_rows)
     end
 
     test "ignores keys that belong to the subscription rather than its pacing" do

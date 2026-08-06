@@ -76,7 +76,7 @@ defmodule DMEx.Log.SendLoopTest do
       # Two writes: the first succeeds and is measured, the second is refused and
       # ends the loop.
       Stub.put_rows(opts, 2)
-      run_with(opts, chunks: 2, max_batch_size: 1)
+      run_with(opts, chunks: 2, max_batch_rows: 1)
 
       assert_receive {[:dmex, :stream, :write], ^ref, measurements, _metadata}, 1_000
 
@@ -87,7 +87,7 @@ defmodule DMEx.Log.SendLoopTest do
     test "a transport that reports the sink closed ends the loop", %{opts: opts} do
       Stub.put_rows(opts, 10)
 
-      start_loop(opts, transport: StubTransport, chunks: 1, max_batch_size: 1)
+      start_loop(opts, transport: StubTransport, chunks: 1, max_batch_rows: 1)
 
       assert_receive {:done, _}, 2_000
     end
@@ -140,7 +140,7 @@ defmodule DMEx.Log.SendLoopTest do
       # frames must take three batch_windows, not three heartbeats.
       Stub.put_rows(opts, 10)
 
-      start_loop(opts, chunks: 3, max_batch_size: 2, heartbeat_interval: 60_000, batch_window: 1)
+      start_loop(opts, chunks: 3, max_batch_rows: 2, heartbeat_interval: 60_000, batch_window: 1)
 
       assert_receive {:done, _}, 1_000
       assert length(Stub.reads(opts)) == 3
@@ -166,10 +166,10 @@ defmodule DMEx.Log.SendLoopTest do
       assert write =~ "event: order_placed\n"
     end
 
-    test "never reads more than max_batch_size", %{opts: opts} do
+    test "never reads more than max_batch_rows", %{opts: opts} do
       Stub.put_rows(opts, 100)
 
-      run(opts, chunks: 3, max_batch_size: 7)
+      run(opts, chunks: 3, max_batch_rows: 7)
 
       assert Enum.all?(Stub.reads(opts), fn {_cursor, limit, _types} -> limit == 7 end)
 
@@ -182,7 +182,7 @@ defmodule DMEx.Log.SendLoopTest do
     test "advances the cursor to the last id sent", %{opts: opts} do
       Stub.put_rows(opts, 10)
 
-      run(opts, chunks: 3, max_batch_size: 4)
+      run(opts, chunks: 3, max_batch_rows: 4)
 
       # Reads walk the log rather than re-reading it: 0 -> 4 -> 8.
       assert Stub.reads(opts) == [{0, 4, :all}, {4, 4, :all}, {8, 4, :all}]
@@ -290,7 +290,7 @@ defmodule DMEx.Log.SendLoopTest do
       Stub.put_rows(opts, 10)
 
       started = System.monotonic_time(:millisecond)
-      start_loop(opts, chunks: 3, max_batch_size: 1, batch_interval: 100)
+      start_loop(opts, chunks: 3, max_batch_rows: 1, batch_interval: 100)
 
       assert_receive {:done, _}, 2_000
 
@@ -325,7 +325,7 @@ defmodule DMEx.Log.SendLoopTest do
     test "returns the conn when the socket closes mid-stream", %{opts: opts} do
       Stub.put_rows(opts, 100)
 
-      assert %Plug.Conn{} = run(opts, chunks: 2, max_batch_size: 1)
+      assert %Plug.Conn{} = run(opts, chunks: 2, max_batch_rows: 1)
 
       # It stopped at the close rather than draining all hundred rows.
       assert length(Stub.reads(opts)) == 2
@@ -441,7 +441,7 @@ defmodule DMEx.Log.SendLoopTest do
 
       Stub.put_rows(opts, 10)
 
-      run(opts, chunks: 2, max_batch_size: 4)
+      run(opts, chunks: 2, max_batch_rows: 4)
 
       # Matched in the pattern rather than asserted afterwards: telemetry
       # handlers are global, so an async sibling's write event can land in this
@@ -455,7 +455,7 @@ defmodule DMEx.Log.SendLoopTest do
 
     # There is no `truncated` flag any more, because the byte bound is applied
     # in the read rather than by trimming a batch already in hand — and `rows`
-    # against `max_batch_size` says the same thing more precisely. A write
+    # against `max_batch_rows` says the same thing more precisely. A write
     # carrying fewer rows than the limit, with `bytes` near `max_batch_bytes`,
     # is a stream whose byte budget is what binds.
     test "a byte-bounded write reports fewer rows than the row limit", %{opts: opts} do
@@ -464,7 +464,7 @@ defmodule DMEx.Log.SendLoopTest do
       big = String.duplicate("x", 400)
       Stub.put_rows(opts, for(id <- 1..10, do: Stub.row(id, data: ~s({"note":"#{big}"}))))
 
-      run(opts, chunks: 2, max_batch_size: 10, max_batch_bytes: 1_000)
+      run(opts, chunks: 2, max_batch_rows: 10, max_batch_bytes: 1_000)
 
       assert_receive {[:dmex, :stream, :write], ^ref, measurements, _metadata}
       assert measurements.rows < 10
@@ -531,7 +531,7 @@ defmodule DMEx.Log.SendLoopTest do
       # drift from what a real log hands the loop.
       config:
         DMEx.Config.log!(
-          max_batch_size: Keyword.get(test_opts, :max_batch_size, 500),
+          max_batch_rows: Keyword.get(test_opts, :max_batch_rows, 500),
           heartbeat_interval: Keyword.get(test_opts, :heartbeat_interval, 60_000),
           max_batch_bytes: Keyword.get(test_opts, :max_batch_bytes, 1_048_576),
           stall_timeout: Keyword.get(test_opts, :stall_timeout, 30_000)

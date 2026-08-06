@@ -52,7 +52,7 @@ defmodule DMEx.Integration.SelectionTest do
       assert {:ok, 200, headers, _ref} = connect(base <> "/stream/" <> fingerprint)
 
       # Exactly one of the log's three message types matched.
-      assert header(headers, "dmex-matched-messages") == "1"
+      assert header(headers, "dmex-matched-types") == "1"
       assert header(headers, "content-type") =~ "text/event-stream"
     end
 
@@ -62,7 +62,7 @@ defmodule DMEx.Integration.SelectionTest do
       # before selection existed.
       assert {:ok, 200, headers, _ref} = connect(base <> "/stream")
 
-      assert header(headers, "dmex-matched-messages") == nil
+      assert header(headers, "dmex-matched-types") == nil
     end
 
     test "a fingerprint over every type the log knows matches all of them", %{base: base} do
@@ -72,7 +72,7 @@ defmodule DMEx.Integration.SelectionTest do
       assert {:ok, 200, headers, _ref} =
                connect(base <> "/stream/" <> Fingerprint.encode(fingerprint))
 
-      assert header(headers, "dmex-matched-messages") == to_string(length(types))
+      assert header(headers, "dmex-matched-types") == to_string(length(types))
     end
 
     test "a segment that is not a decodable blob is a 400", %{base: base} do

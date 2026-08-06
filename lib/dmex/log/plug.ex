@@ -76,7 +76,7 @@ defmodule DMEx.Log.Plug do
 
     * **`x-accel-buffering: no`** — nginx-specific; stops it buffering the
       stream. See `guides/deployment.md`.
-    * **`dmex-matched-messages`** — on a selective stream only, how many of the
+    * **`dmex-matched-types`** — on a selective stream only, how many of the
       application's types the filter admitted.
 
   `connection: keep-alive` is set only on HTTP/1.1, where it means something; it
@@ -107,7 +107,7 @@ defmodule DMEx.Log.Plug do
 
   # Sent only on a selective stream, saying how many of the application's types
   # the filter admitted.
-  @matched "dmex-matched-messages"
+  @matched "dmex-matched-types"
 
   @impl Plug
   def init(opts) do

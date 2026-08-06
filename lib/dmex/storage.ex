@@ -86,6 +86,16 @@ defmodule DMEx.Storage do
   frame on the wire. `DMEx.Storage.Postgres.Migration` uses `timestamptz` for
   exactly this reason, `DMEx.Storage.SQLite` parses its text column back into a
   `DateTime`, and `conformance_test.exs` asserts the struct for every adapter.
+
+  **`:inserted_at` means two different things, by table.** From `c:read/5` it is
+  when the message was appended; from `c:list_dead_messages/2` it is when the row
+  landed in `dmex_dead_messages`, since a dead row's append time is deliberately
+  not carried over — see `DMEx.Storage.Migration`. The column keeps one name
+  because that is what makes a dead row *structurally* a log row, which is what
+  lets a replay go straight back through the pipeline with no reshaping and no
+  second decode path. Nothing in DMEx reads the field either way; it is
+  observability, and `DMEx.Handler.DeadMessages.list/2` is the one place a
+  reader has to know which of the two it is holding.
   """
   @type row :: %{
           required(:id) => pos_integer(),
@@ -119,9 +129,9 @@ defmodule DMEx.Storage do
 
     * **Both bounds are applied inside the query.** `max_bytes` caps
       `octet_length(data) + octet_length(metadata) + octet_length(type)`
-      summed across the returned rows. Reading `limit` rows and trimming the
+      summed across the returned rows. Reading `max_rows` rows and trimming the
       surplus afterwards has already spent the memory the bound exists to cap.
-      `limit` is not advisory either: it bounds the fixed ~1 KB per-row cost of
+      `max_rows` is not advisory either: it bounds the fixed ~1 KB per-row cost of
       turning a row into terms, which no budget in database octets can see, and
       it is what makes the running sum cheap by giving it a bounded input.
 
@@ -146,7 +156,7 @@ defmodule DMEx.Storage do
   @callback read(
               opts(),
               cursor :: non_neg_integer(),
-              limit :: pos_integer(),
+              max_rows :: pos_integer(),
               max_bytes :: pos_integer(),
               types :: :all | [String.t()]
             ) :: {:ok, [row()]} | {:error, term()}

@@ -139,23 +139,23 @@ defmodule DMEx.Storage.SQLite do
   end
 
   @impl DMEx.Storage
-  def read(opts, cursor, limit, max_bytes, :all)
-      when is_integer(cursor) and cursor >= 0 and is_integer(limit) and limit > 0 and is_integer(max_bytes) and
+  def read(opts, cursor, max_rows, max_bytes, :all)
+      when is_integer(cursor) and cursor >= 0 and is_integer(max_rows) and max_rows > 0 and is_integer(max_bytes) and
              max_bytes > 0 do
-    query(opts, read_sql(""), [cursor, limit, max_bytes])
+    query(opts, read_sql(""), [cursor, max_rows, max_bytes])
   end
 
   # Ahead of the list clause: an empty selection admits nothing, and building
   # `IN ()` out of it would be a descending range and an unbindable statement.
   # `DMEx.Storage.Postgres` answers the same call with an empty `= ANY($4)`.
-  def read(_opts, cursor, limit, max_bytes, [])
-      when is_integer(cursor) and cursor >= 0 and is_integer(limit) and limit > 0 and is_integer(max_bytes) and
+  def read(_opts, cursor, max_rows, max_bytes, [])
+      when is_integer(cursor) and cursor >= 0 and is_integer(max_rows) and max_rows > 0 and is_integer(max_bytes) and
              max_bytes > 0 do
     {:ok, []}
   end
 
-  def read(opts, cursor, limit, max_bytes, types)
-      when is_integer(cursor) and cursor >= 0 and is_integer(limit) and limit > 0 and is_integer(max_bytes) and
+  def read(opts, cursor, max_rows, max_bytes, types)
+      when is_integer(cursor) and cursor >= 0 and is_integer(max_rows) and max_rows > 0 and is_integer(max_bytes) and
              max_bytes > 0 and is_list(types) do
     validate_types!(types)
 
@@ -167,7 +167,7 @@ defmodule DMEx.Storage.SQLite do
 
     query(opts, read_sql("AND type IN (#{placeholders})"), [
       cursor,
-      limit,
+      max_rows,
       max_bytes | types
     ])
   end

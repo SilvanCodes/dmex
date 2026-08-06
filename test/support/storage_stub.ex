@@ -9,7 +9,7 @@ defmodule DMEx.Test.Storage do
 
   It also records every read, which is how the loop tests assert things a real
   adapter could only hint at: that an empty read sends no frame, that the cursor
-  advances to the last id sent, and that `max_batch_size` really is the limit.
+  advances to the last id sent, and that `max_batch_rows` really is the limit.
   """
 
   @behaviour DMEx.Storage
@@ -57,7 +57,7 @@ defmodule DMEx.Test.Storage do
   @spec put_rows(DMEx.Storage.opts(), [DMEx.Storage.row()] | non_neg_integer()) :: :ok
   def put_rows(opts, rows), do: update(opts, &%{&1 | rows: rows(rows)})
 
-  @doc "Every `{cursor, limit, types}` triple `read/5` was called with, oldest first."
+  @doc "Every `{cursor, max_rows, types}` triple `read/5` was called with, oldest first."
   @spec reads(DMEx.Storage.opts()) :: [
           {non_neg_integer(), pos_integer(), :all | [String.t()]}
         ]
@@ -107,18 +107,18 @@ defmodule DMEx.Test.Storage do
   end
 
   @impl DMEx.Storage
-  def read(opts, cursor, limit, max_bytes, types) do
+  def read(opts, cursor, max_rows, max_bytes, types) do
     # Before the agent call, so the caller wedges rather than the stub.
     maybe_hang(opts)
 
     Agent.get_and_update(store(opts), fn state ->
       state = %{
         state
-        | reads: [{cursor, limit, types} | state.reads],
+        | reads: [{cursor, max_rows, types} | state.reads],
           read_bytes: [max_bytes | state.read_bytes]
       }
 
-      do_read(state, cursor, limit, max_bytes, types)
+      do_read(state, cursor, max_rows, max_bytes, types)
     end)
   end
 
@@ -126,11 +126,11 @@ defmodule DMEx.Test.Storage do
     {{:error, reason}, %{state | fail: nil}}
   end
 
-  defp do_read(state, cursor, limit, max_bytes, types) do
+  defp do_read(state, cursor, max_rows, max_bytes, types) do
     rows =
       state.rows
       |> Enum.filter(&(&1.id > cursor and selected?(&1, types)))
-      |> Enum.take(limit)
+      |> Enum.take(max_rows)
       |> cap_bytes(max_bytes)
 
     {{:ok, rows}, state}

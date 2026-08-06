@@ -44,7 +44,7 @@ defmodule DMEx.Integration.WireContractTest do
     test "carries no DMEx headers in either direction", ctx do
       {200, headers, _} = request(ctx, [])
 
-      # No exemption: this is a bare `GET /stream`, so `dmex-matched-messages`
+      # No exemption: this is a bare `GET /stream`, so `dmex-matched-types`
       # is not set either — and exempting the one header the plug can emit would
       # blind the assertion to exactly what it is named for. Its presence on a
       # selective stream is asserted in `selection_test.exs`.

@@ -12,7 +12,7 @@ defmodule DMEx.Handler.DeadMessages do
   replay hands the same message back rather than rebuilding one from parts. It
   does have to restate it, though — a stored row is `t:DMEx.Storage.row/0`
   (atom keys, JSON text, as a driver returns it) while the pipeline consumes
-  `t:DMEx.Handler.Pipeline.row/0` (string keys, decoded one level, as a
+  `t:DMEx.Handler.Pipeline.decoded_row/0` (string keys, decoded one level, as a
   transport yields it). See `c:DMEx.Storage.dead_message/2` for the shape and
   for what is deliberately not stored.
 
@@ -59,7 +59,10 @@ defmodule DMEx.Handler.DeadMessages do
   Lists every message `handler`'s subscription gave up on, oldest first.
 
   Rows come back in `t:DMEx.Storage.row/0` shape — `data` and `metadata` as JSON
-  text, exactly as stored.
+  text, exactly as stored. With one field to read carefully: `:inserted_at` here
+  is when the row landed in `dmex_dead_messages`, not when the message was
+  appended, which is not carried over. Same name, same shape as a log row, which
+  is what lets `replay!/2` hand one straight back to the pipeline.
 
   Returns storage's `{:error, reason}` rather than raising, because a listing is
   something a caller inspects; `replay!/2` raises `DMEx.Storage.Error` on the same

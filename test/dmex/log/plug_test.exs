@@ -48,7 +48,7 @@ defmodule DMEx.Log.PlugTest do
       conn = stream(opts, plug, @whole_log, path_info: [Fingerprint.encode(filter)])
 
       assert conn.status == 200
-      assert get_header(conn, "dmex-matched-messages") == "1"
+      assert get_header(conn, "dmex-matched-types") == "1"
     end
 
     test "a whole-log stream sends no matched header", %{opts: opts, plug: plug} do
@@ -56,7 +56,7 @@ defmodule DMEx.Log.PlugTest do
 
       conn = stream(opts, plug, @whole_log)
 
-      assert get_header(conn, "dmex-matched-messages") == nil
+      assert get_header(conn, "dmex-matched-types") == nil
     end
 
     test "a filter matching none of the application's types is a 404",

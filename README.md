@@ -112,7 +112,7 @@ the socket is not re-armed, the TCP receive window closes, and the producer's
 next read cannot happen until the previous write returns.
 
 Nothing is configurable on the consumer side. Pacing is `max_batch_frequency`,
-`max_batch_size` and `max_batch_bytes` on the **producer** — the party whose
+`max_batch_rows` and `max_batch_bytes` on the **producer** — the party whose
 database, memory and request processes they protect. See ARCHITECTURE.md
 invariants 3, 8 and 9.
 

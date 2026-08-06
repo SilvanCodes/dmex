@@ -132,7 +132,7 @@ defmodule DMEx.Handler.Pipeline do
   row — so a transport produces the same shape whether it parsed a frame or read
   the columns directly.
   """
-  @type row :: %{String.t() => term()}
+  @type decoded_row :: %{String.t() => term()}
 
   @typedoc """
   Everything processing a row needs, built once per subscription.
@@ -163,7 +163,7 @@ defmodule DMEx.Handler.Pipeline do
   `on_failure` says `:crash`, and `DMEx.Storage.Error` whenever storage itself
   failed — that one at once, and whatever `on_failure` says.
   """
-  @spec run(row(), t()) :: {:ok, t()}
+  @spec run(decoded_row(), t()) :: {:ok, t()}
   def run(row, state) do
     id = Map.fetch!(row, "id")
 
@@ -209,7 +209,7 @@ defmodule DMEx.Handler.Pipeline do
   as `{:failed, ...}` and section 6 is `run/2`'s answer to it, so a caller for
   which those terminal actions are meaningless does not inherit them.
   """
-  @spec deliver(t(), row(), (-> any())) :: verdict()
+  @spec deliver(t(), decoded_row(), (-> any())) :: verdict()
   def deliver(state, row, commit) do
     id = Map.fetch!(row, "id")
     type = Map.fetch!(row, "type")

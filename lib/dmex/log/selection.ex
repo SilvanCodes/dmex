@@ -78,7 +78,7 @@ defmodule DMEx.Log.Selection do
   How many message types a selection admits, or `nil` for the whole log.
 
   For the `matched:` measurement on `[:dmex, :stream, :connect]` and the
-  `dmex-matched-messages` header, which must agree.
+  `dmex-matched-types` header, which must agree.
   """
   @spec size(t()) :: non_neg_integer() | nil
   def size(:all), do: nil

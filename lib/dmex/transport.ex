@@ -49,7 +49,7 @@ defmodule DMEx.Transport do
     * `{:stop, reason}` — fatal. Reconnecting would repeat whatever caused it.
   """
   @type action ::
-          {:rows, [DMEx.Handler.Pipeline.row()], source()}
+          {:rows, [DMEx.Handler.Pipeline.decoded_row()], source()}
           | {:noreply, source()}
           | :unknown
           | {:disconnect, term(), source()}
@@ -84,6 +84,15 @@ defmodule DMEx.Transport do
   Takes the subscription's whole option list and uses what it needs. Runs inside
   `DMEx.Handler.Subscription`, so anything it starts is linked to the process that
   owns the cursor.
+
+  `:origin` is the option every transport reads, and it is deliberately the
+  *general* name: `DMEx.Supervisor` resolves a `logs:` binding to either a URL or
+  a log module, and only the transport knows which it got. So each one narrows it
+  on the way in — `DMEx.Transport.SSE` keeps a `url`, `DMEx.Transport.Local` a
+  `log`. That is specialization rather than drift; renaming either to `origin`
+  would trade a name that says what the value *is* for one that says where the
+  slot came from, and renaming `:origin` itself to `url` would be wrong for the
+  local half, where it is a module.
   """
   @callback connect(keyword()) :: {:ok, source()} | {:error, term()}
 

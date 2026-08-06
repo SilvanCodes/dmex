@@ -28,7 +28,7 @@ defmodule DMEx.Telemetry do
 
   One write to one connection. Measurements: `:rows`, plus `:bytes` on a
   transport where bytes are meaningful. Metadata: `:log`. `:rows` sitting at
-  `max_batch_size` write after write is what catch-up looks like.
+  `max_batch_rows` write after write is what catch-up looks like.
 
   ### `[:dmex, :stream, :heartbeat]`
 
