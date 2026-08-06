@@ -64,9 +64,9 @@ defmodule DMEx.Handler do
   rather than the ones this handler wants.
 
   It also widens what can be **decoded**. A type no clause named still resolves
-  to a module, through the ones the consumer's own application knows
-  (`DMEx.message_module/2`), so a catch-all receives everything this application
-  can turn back into a struct. A type *no* module declares is still skipped —
+  to a module, through every message module the node knows
+  (`DMEx.message_module/1`), so a catch-all receives everything this node can
+  turn back into a struct. A type *no* module declares is still skipped —
   there is nothing to decode it into — which is what makes such a handler a
   usable diagnostic: every row arrives, and `[:dmex, :handler, :skip]` names the
   types nothing here understands.
@@ -456,8 +456,8 @@ defmodule DMEx.Handler do
   # filter false positive: `nil`, and the pipeline skips it.
   #
   # A whole-log one asked for every row, so a type it never mentioned still
-  # resolves, through the application's own index of message modules. Not
-  # `String.to_atom/1` on what a log sent: `DMEx.message_module/2` is a lookup in
+  # resolves, through the node's index of message modules. Not
+  # `String.to_atom/1` on what a log sent: `DMEx.message_module/1` is a lookup in
   # a map built at boot from compiled modules, so a type nothing declares stays a
   # skip rather than an atom.
   #
@@ -469,7 +469,7 @@ defmodule DMEx.Handler do
   defp last_cast_clause(%{fingerprint: nil}) do
     quote do
       def __dmex_cast__(message_type, data, metadata) do
-        case DMEx.message_module(__MODULE__, message_type) do
+        case DMEx.message_module(message_type) do
           nil ->
             nil
 

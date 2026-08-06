@@ -28,9 +28,8 @@ defmodule DMEx.Test.HeartbeatLog do
   Log for the heartbeat suite, beating fast enough that a test does not sit
   through 15 seconds of it.
 
-  Here rather than in the test file because `DMEx.message_types/1` keys on the
-  application owning the log module, and a module defined inside a test file
-  belongs to no application.
+  Here rather than in the test file so it is compiled once and the suites that
+  stream from it share one log.
   """
 
   use DMEx.Log,
@@ -60,9 +59,7 @@ defmodule DMEx.Test.StallLog do
   Log for the stall-reclaim suite: a short deadline and a small write cap.
 
   Here rather than in the test file for the same reason as
-  `DMEx.Test.HeartbeatLog` — `DMEx.message_types/1` keys on the application
-  owning the log module, and a module defined inside a test file belongs to
-  none, so every selective connect against it would 404.
+  `DMEx.Test.HeartbeatLog`.
   """
 
   use DMEx.Log,

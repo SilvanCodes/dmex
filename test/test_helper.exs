@@ -39,6 +39,12 @@ if sqlite_available? do
   Sandbox.mode(SQLiteRepo, :manual)
 end
 
+# What a host application's `DMEx.Supervisor` does with its `otp_app:` at boot.
+# The suite's own message modules live in `:dmex`, which declares no dependency
+# on itself, so no scan reaches them unless something names it — and most tests
+# here read the index without starting a supervisor.
+DMEx.refresh_message_index(:dmex)
+
 exclude =
   if(database_available?, do: [], else: [:database]) ++
     if(sqlite_available?, do: [], else: [:sqlite])

@@ -37,21 +37,20 @@ defmodule DMEx.Log.Selection do
   @type t :: :all | MapSet.t(String.t())
 
   @doc """
-  Expands a parsed `DMEx.Log.Params` selection against a log.
+  Expands a parsed `DMEx.Log.Params` selection.
 
-  Against the compiled message modules of the application owning the log, rather
-  than against what the log happens to contain — see `DMEx.message_types/1` for
-  why those are not interchangeable, and why the set is not per log.
+  Against the node's compiled message modules, rather than against what the log
+  happens to contain — see `DMEx.message_types/0` for why those are not
+  interchangeable, and why the set is not per log.
 
   An empty `MapSet` is a filter that matched nothing, which `DMEx.Log.Plug`
   answers with a `404`.
   """
-  @spec expand(module(), :all | Fingerprint.t()) :: t()
-  def expand(_log, :all), do: :all
+  @spec expand(:all | Fingerprint.t()) :: t()
+  def expand(:all), do: :all
 
-  def expand(log, %Fingerprint{} = filter) do
-    log
-    |> DMEx.message_types()
+  def expand(%Fingerprint{} = filter) do
+    DMEx.message_types()
     |> Enum.filter(&Fingerprint.member?(filter, &1))
     |> MapSet.new()
   end

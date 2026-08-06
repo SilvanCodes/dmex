@@ -6,9 +6,8 @@ defmodule DMExTest do
   decides what `use DMEx.Message` means at all — a handler's compile-time
   derivation and `append/2` both ask it — and it once answered `false` for every
   message module, which surfaced as a compile error in a fixture file rather
-  than as a test. `DMEx.message_types/1` is what a selective connect resolves a
-  filter against, keyed by the *application owning the log module*, which has a
-  sharp edge worth pinning.
+  than as a test. `DMEx.message_types/0` is what a selective connect resolves a
+  filter against.
   """
 
   use DMEx.Case, async: true
@@ -56,33 +55,12 @@ defmodule DMExTest do
     end
   end
 
-  describe "DMEx.message_types/1" do
-    test "resolves a log module against the application that owns it" do
-      types = DMEx.message_types(DMEx.Test.IntegrationLog)
+  describe "DMEx.message_types/0" do
+    test "holds the suite's types, whichever log a caller came from" do
+      types = DMEx.message_types()
 
       assert MapSet.member?(types, "order_placed")
       assert MapSet.member?(types, "order_shipped")
-    end
-
-    test "a log module owned by no application resolves to nothing" do
-      # The trap: `:application.get_application/1` answers `:undefined` for a
-      # module defined at runtime or inside a `.exs`, so it caches under the
-      # `nil` key — which sees only applications that *depend on* `:dmex`, and
-      # `:dmex` does not depend on itself. A selective connect against such a
-      # log 404s every time. It is why a test's log module belongs in
-      # `test/support/`, not in the test file.
-      [{unowned, _}] =
-        Code.compile_string("""
-        defmodule DMExTest.UnownedLog do
-          use DMEx.Log, repo: DMEx.Test.Repo, app: :dmex_unowned
-        end
-        """)
-
-      assert :application.get_application(unowned) == :undefined
-      assert DMEx.message_types(unowned) == MapSet.new()
-    after
-      :code.purge(DMExTest.UnownedLog)
-      :code.delete(DMExTest.UnownedLog)
     end
   end
 end

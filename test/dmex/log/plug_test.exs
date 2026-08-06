@@ -35,8 +35,8 @@ defmodule DMEx.Log.PlugTest do
   end
 
   # The selective branch of `select/4`, which is the only path that consults
-  # `DMEx.message_types/1` — and therefore the only one sensitive to how that
-  # set is discovered and which application it is cached under. It had been
+  # `DMEx.message_types/0` — and therefore the only one sensitive to how that
+  # set is discovered. It had been
   # exercised only by `:integration` tests, which `mix test` excludes, so two
   # separate regressions in message discovery left the default run green.
   describe "the selective path" do

@@ -21,9 +21,9 @@ defmodule DMEx.Log.SelectionTest do
     end
   end
 
-  describe "expand/2" do
-    test "leaves a whole-log request alone, without asking the log anything" do
-      assert Selection.expand(:no_such_log, :all) == :all
+  describe "expand/1" do
+    test "leaves a whole-log request alone, without touching the index" do
+      assert Selection.expand(:all) == :all
     end
   end
 

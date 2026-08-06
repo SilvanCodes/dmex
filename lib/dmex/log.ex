@@ -51,8 +51,8 @@ defmodule DMEx.Log do
 
   An unrecognised option raises at compile time rather than being ignored.
 
-  Which application's modules are scanned for the message types this log can
-  append is `otp_app:` on `DMEx.Supervisor` — see `DMEx.message_types/1`.
+  Which applications' modules are scanned for the message types this log can
+  append is `otp_app:` on `DMEx.Supervisor` — see `DMEx.message_types/0`.
 
   ## The app key
 

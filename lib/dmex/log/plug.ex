@@ -16,7 +16,7 @@ defmodule DMEx.Log.Plug do
       `EventSource` or `curl` asks for.
     * **`GET /stream/<blob>`** — the same log narrowed to the message types a
       consumer's filter admits. See `DMEx.Handler.Fingerprint` for the blob and
-      `DMEx.message_types/1` for what it is resolved against.
+      `DMEx.message_types/0` for what it is resolved against.
 
   There is no application segment and no query string: one mount serves exactly
   one log.
@@ -132,7 +132,7 @@ defmodule DMEx.Log.Plug do
   # the result from here on. `size/1` is `nil` for a whole-log selection, which
   # is the one that can never be empty.
   defp select(conn, log, params, config) do
-    selection = Selection.expand(log, params.selection)
+    selection = Selection.expand(params.selection)
 
     if Selection.size(selection) == 0 do
       not_found(conn)

@@ -216,7 +216,7 @@ defmodule Bench.SkippingHandler do
   # selective stream would carry none of these rows, so there would be nothing
   # to skip. And a selective fingerprint here could not match anything, since
   # `Bench.UnusedMessage` is defined at runtime in this script while the producer
-  # expands filters over *compiled* application modules (`DMEx.message_types/1`)
+  # expands filters over *compiled* application modules (`DMEx.message_types/0`)
   # — the filter would match zero types, the connect would 404, and this stage
   # would retry forever.
   use DMEx.Handler, logs: [:bench], id: :skipping

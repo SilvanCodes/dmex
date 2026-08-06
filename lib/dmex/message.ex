@@ -319,6 +319,18 @@ defmodule DMEx.Message do
     end)
   end
 
+  @doc """
+  `module`, or a raise when it is not the module already holding `type`.
+
+  The merge step of `DMEx.refresh_message_index/1`, where the two sides are
+  separate scans rather than two modules in one: a rescan of an application
+  meets its own modules again and must stay quiet, a second module claiming the
+  type must not.
+  """
+  @spec collision!(String.t(), module(), module()) :: module()
+  def collision!(_type, module, module), do: module
+  def collision!(type, already, module), do: raise_collision(type, already, module)
+
   # Names both modules: "duplicate message type" on its own is a riddle in an
   # application with thirty of them.
   defp raise_collision(type, already, module) do
