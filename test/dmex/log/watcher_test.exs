@@ -1,8 +1,8 @@
 defmodule DMEx.Log.WatcherTest do
   use DMEx.Case, async: true
 
+  alias DMEx.Log.SendLoop
   alias DMEx.Log.Status
-  alias DMEx.Log.Stream, as: SendLoop
   alias DMEx.Log.Streams
   alias DMEx.Log.Watcher
   alias DMEx.Test.ClosingAdapter
@@ -95,8 +95,6 @@ defmodule DMEx.Log.WatcherTest do
     end
   end
 
-  ## Harness
-
   defp state(opts, status) do
     %{
       SendLoop.connect(Log, transport: DMEx.Transport.SSE, status: status)
@@ -104,6 +102,8 @@ defmodule DMEx.Log.WatcherTest do
         storage_opts: opts
     }
   end
+
+  ## Harness
 
   # A stand-in for a stream process: it registers, arms, and then blocks exactly
   # as a wedged loop does — the watcher's whole input is the registry entry, so

@@ -111,7 +111,7 @@ defmodule DMEx.Handler.Pipeline do
   killed it, forever. Choose it when later messages must not be processed
   without this one, or when a loud alarm beats a growing table nobody watches.
   A jittered `reconnect_backoff` pause before the re-raise keeps the loop off the
-  log's database and off its siblings; `DMEx.Handler.Supervisor` deliberately
+  log's database and off its siblings; `DMEx.Handler.Subscriptions` deliberately
   sets no restart budget.
 
   **`:skip`** advances past the failing message without the handler having
@@ -283,7 +283,7 @@ defmodule DMEx.Handler.Pipeline do
     }
   end
 
-  # `DMEx.Handler.Stream` always names the subscription it runs, since it is one
+  # `DMEx.Handler.Subscription` always names the subscription it runs, since it is one
   # of possibly several. A caller that did not — a test — only has an answer
   # when there is exactly one, and it renders that answer through
   # `Handler.subscription_id/2` rather than concatenating its own.
@@ -353,7 +353,7 @@ defmodule DMEx.Handler.Pipeline do
         # after the crash is in a position to pace the loop — and without this a
         # poison message reconnects to another application's log as fast as the
         # supervisor can restart this process, which is why
-        # `DMEx.Handler.Supervisor` can afford to set no restart budget.
+        # `DMEx.Handler.Subscriptions` can afford to set no restart budget.
         state.config
         |> crash_backoff()
         |> Process.sleep()

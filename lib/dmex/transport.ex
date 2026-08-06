@@ -2,8 +2,8 @@ defmodule DMEx.Transport do
   @moduledoc """
   How rows get from a log to a handler — the two ends of one wire, or of none.
 
-  `DMEx.Log.Stream` reads, paces and tracks a cursor; a transport decides what
-  is *done* with each read's rows. `DMEx.Handler.Stream` owns a durable cursor,
+  `DMEx.Log.SendLoop` reads, paces and tracks a cursor; a transport decides what
+  is *done* with each read's rows. `DMEx.Handler.Subscription` owns a durable cursor,
   a pipeline and its checkpointing; a transport decides what *produces* the rows
   it runs. Everything protocol-specific — framing, sockets, decoding, liveness,
   the id chain — lives behind these callbacks.
@@ -27,7 +27,7 @@ defmodule DMEx.Transport do
   to choose.
 
   **Rows are handled in the process that owns the cursor.** `c:handle_message/2`
-  runs inside `DMEx.Handler.Stream` and its rows are run inline there. A
+  runs inside `DMEx.Handler.Subscription` and its rows are run inline there. A
   transport running the pipeline itself would put the handler callback and the
   cursor advance in different processes.
   """
@@ -82,7 +82,7 @@ defmodule DMEx.Transport do
   Opens the receive side at `cursor`, or fails so the caller can back off.
 
   Takes the subscription's whole option list and uses what it needs. Runs inside
-  `DMEx.Handler.Stream`, so anything it starts is linked to the process that
+  `DMEx.Handler.Subscription`, so anything it starts is linked to the process that
   owns the cursor.
   """
   @callback connect(keyword()) :: {:ok, source()} | {:error, term()}
@@ -90,7 +90,7 @@ defmodule DMEx.Transport do
   @doc """
   Interprets one process message.
 
-  The message is whatever landed in `DMEx.Handler.Stream`'s mailbox — a socket
+  The message is whatever landed in `DMEx.Handler.Subscription`'s mailbox — a socket
   message, a linked reader's exit, anything. `:unknown` means it was not this
   transport's.
 

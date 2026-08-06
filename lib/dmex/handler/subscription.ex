@@ -1,4 +1,4 @@
-defmodule DMEx.Handler.Stream do
+defmodule DMEx.Handler.Subscription do
   @moduledoc """
   One subscription: one transport, one handler, one cursor.
 
@@ -16,7 +16,7 @@ defmodule DMEx.Handler.Stream do
 
   ## Reconnects are jittered
 
-  `DMEx.Handler.Supervisor` sets no restart budget, so the pacing is here for a
+  `DMEx.Handler.Subscriptions` sets no restart budget, so the pacing is here for a
   *disconnect*: each reconnect triggers a fresh read against a *different
   application's* database when the transport is a wire. A restart is not paced
   here at all — `init/1` starts at `attempt: 0` and connects immediately — so a

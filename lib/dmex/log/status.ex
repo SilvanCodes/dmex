@@ -17,7 +17,7 @@ defmodule DMEx.Log.Status do
   makes `flip/1` a test-and-set, so two dispatchers cannot both conclude they
   should send.
 
-  `DMEx.Log.Stream` clears its own flag before each read, never after — see
+  `DMEx.Log.SendLoop` clears its own flag before each read, never after — see
   `clear/1`.
 
   **The deadline** is what `DMEx.Log.Watcher` enforces from outside: the loop

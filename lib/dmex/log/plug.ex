@@ -98,8 +98,8 @@ defmodule DMEx.Log.Plug do
   alias DMEx.Config
   alias DMEx.Log.Params
   alias DMEx.Log.Selection
+  alias DMEx.Log.SendLoop
   alias DMEx.Log.Status
-  alias DMEx.Log.Stream, as: SendLoop
   alias DMEx.Log.Streams
   alias DMEx.Transport.SSE.Frame
 
@@ -149,14 +149,14 @@ defmodule DMEx.Log.Plug do
   defp select(conn, log, params, config) do
     selection = Selection.expand(params.selection)
 
+    ## Streaming
+
     if Selection.size(selection) == 0 do
       not_found(conn)
     else
       stream(conn, log, params, config, selection)
     end
   end
-
-  ## Streaming
 
   defp stream(conn, log, params, config, selection) do
     # The request process registers *itself*, so a stream's entry dies with it.

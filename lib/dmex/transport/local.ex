@@ -9,7 +9,7 @@ defmodule DMEx.Transport.Local do
 
   **It is the same send loop.** `connect/1` starts a linked process that
   registers with `DMEx.Log.Streams` — the same registration a request process
-  serving SSE makes — and runs `DMEx.Log.Stream.loop/2` with this module as its
+  serving SSE makes — and runs `DMEx.Log.SendLoop.loop/2` with this module as its
   transport. So a local subscription gets `LISTEN`/`NOTIFY` wakeups,
   selection-based routing, pacing and `DMEx.Log.Watcher` reclaim by construction
   rather than reimplementation. Only `c:DMEx.Transport.write/2` and
@@ -34,7 +34,7 @@ defmodule DMEx.Transport.Local do
   alias DMEx.Handler
   alias DMEx.Handler.Request
   alias DMEx.Log.Selection
-  alias DMEx.Log.Stream, as: SendLoop
+  alias DMEx.Log.SendLoop
   alias DMEx.Log.Streams
 
   ## Send side — the loop process writes into its owner

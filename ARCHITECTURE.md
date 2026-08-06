@@ -286,7 +286,7 @@ there: SQLite has one writer database-wide, so a second writer cannot draw a
 rowid until the first commits, and `DMEx.Storage.SQLite` takes no lock at all.
 
 **2. Producer memory per connection is one batch, bounded in rows *and*
-bytes.** The send loop in `DMEx.Log.Stream` holds at most the rows it is
+bytes.** The send loop in `DMEx.Log.SendLoop` holds at most the rows it is
 writing; there is no accumulator. Two bounds because a row costs heap two ways:
 its payload, which `max_batch_bytes` counts, and a fixed ~1 KB for the map, the
 `%DateTime{}` and the frame's iodata cells — which no budget in database octets
@@ -334,7 +334,7 @@ aggressive about reclaiming, and why there is no in-band "you are being dropped"
 frame — it would have to be written to the very socket that is stalled.
 
 **8. The consumer has no buffer, and that is what makes the backpressure
-exact.** `DMEx.Handler.Stream` runs each row through the pipeline **inline, on
+exact.** `DMEx.Handler.Subscription` runs each row through the pipeline **inline, on
 the socket path**, as it is decoded. `Mint.HTTP.stream/2` re-arms `active:
 :once` itself, so while the process is inside a handler nothing is re-armed, the
 TCP receive window closes, and the producer's `chunk/2` blocks on it. The most
@@ -391,13 +391,13 @@ each log supervises.
 | `DMEx.Log.Watcher` | sweeps deadlines and reclaims connections that stopped making progress. |
 
 None ever holds message data on a connection's behalf. The connections
-themselves are processes running `DMEx.Log.Stream`: a web-server request process
+themselves are processes running `DMEx.Log.SendLoop`: a web-server request process
 when the reader is remote, and the reader process `DMEx.Transport.Local` starts
 when it is in this VM. Both register in the same registry, so wakeups, pacing
 and stall reclaim treat them identically.
 
-**Subscriptions.** `DMEx.Supervisor` supervises one `DMEx.Handler.Stream` per
-subscription under a `DMEx.Handler.Supervisor`, each owning one cursor and one
+**Subscriptions.** `DMEx.Supervisor` supervises one `DMEx.Handler.Subscription` per
+subscription under a `DMEx.Handler.Subscriptions`, each owning one cursor and one
 `DMEx.Transport`, running `DMEx.Handler.Pipeline` inline on the rows that
 transport yields. The transport is inferred from the log's binding — a module is
 read in this VM, a URL over HTTP. There is nothing else in a subscription: no

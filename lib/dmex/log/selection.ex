@@ -5,7 +5,7 @@ defmodule DMEx.Log.Selection do
   `:all` is a whole-log subscription; a `MapSet` is a selective one, already
   resolved to concrete type names. One value reaches four places — the
   `DMEx.Log.Streams` entry it rides in, `DMEx.Log.Dispatcher`'s routing
-  decision, the read's type predicate in `DMEx.Log.Stream`, and the `matched:`
+  decision, the read's type predicate in `DMEx.Log.SendLoop`, and the `matched:`
   measurement both transports emit — so every question asked of it is answered
   here, and the two transports cannot answer one differently.
 

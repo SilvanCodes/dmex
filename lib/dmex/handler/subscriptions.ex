@@ -1,6 +1,6 @@
-defmodule DMEx.Handler.Supervisor do
+defmodule DMEx.Handler.Subscriptions do
   @moduledoc """
-  Owns one `DMEx.Handler.Stream` per live subscription.
+  Owns one `DMEx.Handler.Subscription` process per live subscription.
 
   **Restart intensity is set never to trip, on purpose.** `on_failure: :crash`
   is specified to crash-loop on a poison message forever, and a

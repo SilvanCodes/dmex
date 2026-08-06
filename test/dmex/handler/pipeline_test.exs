@@ -442,7 +442,7 @@ defmodule DMEx.Handler.PipelineTest do
     )
   end
 
-  # `DMEx.Handler.Stream` runs rows one at a time; this is the local
+  # `DMEx.Handler.Subscription` runs rows one at a time; this is the local
   # convenience for a test holding a whole batch already.
   defp run_all(rows, state) do
     Enum.reduce(rows, {:ok, state}, fn row, {:ok, state} -> Pipeline.run(row, state) end)

@@ -1,4 +1,4 @@
-defmodule DMEx.Log.Stream do
+defmodule DMEx.Log.SendLoop do
   @moduledoc """
   The log's send loop: read, send, wait, repeat.
 

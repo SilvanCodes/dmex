@@ -33,7 +33,7 @@ defmodule DMEx.Handler.Cursors do
 
   ## These do not touch a running subscription
 
-  A live `DMEx.Handler.Stream` holds its cursor in memory and re-reads the
+  A live `DMEx.Handler.Subscription` holds its cursor in memory and re-reads the
   durable one only on connect, so a move takes effect at its next reconnect. Do
   this while it is stopped, or restart it afterwards.
   """

@@ -67,8 +67,8 @@ defmodule DMEx.Supervisor do
 
   alias DMEx.Config
   alias DMEx.Handler
-  alias DMEx.Handler.Stream, as: Subscription
-  alias DMEx.Handler.Supervisor, as: Subscriptions
+  alias DMEx.Handler.Subscription
+  alias DMEx.Handler.Subscriptions
   alias DMEx.Supervisor.Starter
 
   require Logger

@@ -181,7 +181,7 @@ defmodule DMEx.Handler.PipelineFailureTest do
     # builds fresh state and connects immediately, so nothing after the crash is
     # in a position to pace the loop. Without it a poison message reconnects to
     # another application's log as fast as the supervisor can restart this
-    # process — which is what `DMEx.Handler.Supervisor`'s absent restart budget
+    # process — which is what `DMEx.Handler.Subscriptions`'s absent restart budget
     # assumes is not happening.
     test "pauses for reconnect_backoff before re-raising", ctx do
       state =
@@ -489,7 +489,7 @@ defmodule DMEx.Handler.PipelineFailureTest do
     )
   end
 
-  # `DMEx.Handler.Stream` runs rows one at a time; this is the local
+  # `DMEx.Handler.Subscription` runs rows one at a time; this is the local
   # convenience for a test holding a whole batch already.
   defp run_all(rows, state) do
     Enum.reduce(rows, {:ok, state}, fn row, {:ok, state} -> Pipeline.run(row, state) end)

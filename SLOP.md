@@ -117,7 +117,7 @@ pool checkout like any other read. The arm is not
 dead: the registration's arm covers that query, and this one gives the header
 write its own full budget. Commented rather than removed.
 
-## 4. `DMEx.Handler.Stream` tracked a timer reference it never reads — fixed
+## 4. `DMEx.Handler.Subscription` tracked a timer reference it never reads — fixed
 
 Confirmed. `:checkpoint_timer` was written and never read or cancelled. Dropped
 the field; `schedule_checkpoint/1` no longer stores the reference, and a comment

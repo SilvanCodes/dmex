@@ -1,8 +1,8 @@
-defmodule DMEx.Log.StreamTest do
+defmodule DMEx.Log.SendLoopTest do
   use DMEx.Case, async: true
 
+  alias DMEx.Log.SendLoop
   alias DMEx.Log.Status
-  alias DMEx.Log.Stream, as: SendLoop
   alias DMEx.Test.ClosingAdapter
   alias DMEx.Test.Storage, as: Stub
   alias DMEx.Transport.SSE

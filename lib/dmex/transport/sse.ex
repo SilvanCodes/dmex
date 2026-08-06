@@ -5,7 +5,7 @@ defmodule DMEx.Transport.SSE do
   Both ends of the wire DMEx defines. The send side encodes rows as
   `DMEx.Transport.SSE.Frame` blocks and chunks them down a `Plug.Conn`; the
   receive side owns a Mint connection, decodes what comes back, and turns HTTP
-  into the small vocabulary `DMEx.Handler.Stream` acts on.
+  into the small vocabulary `DMEx.Handler.Subscription` acts on.
 
   Chosen for a `logs:` entry that is a URL. Everything true of a *wire* and of
   nothing else lives here:
