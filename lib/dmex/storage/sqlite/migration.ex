@@ -42,9 +42,8 @@ defmodule DMEx.Storage.SQLite.Migration do
 
   All three tables' defaults render `DMEx.Storage.SQLite.__now__/0` rather than
   spelling the expression out, because the adapter is a fourth writer of the
-  format: `advance/3` stamps `dmex_cursors.updated_at` itself, and `cursor_at/2`
-  renders its bound parameter to match. One statement, so the invariant cannot
-  hold for one table and not another.
+  format: `advance/3` stamps `dmex_cursors.updated_at` itself. One statement, so
+  the invariant cannot hold for one table and not another.
 
   ## The `type` CHECK, in GLOB
 

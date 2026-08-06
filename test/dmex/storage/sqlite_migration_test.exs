@@ -107,8 +107,8 @@ defmodule DMEx.Storage.SQLiteMigrationTest do
   end
 
   # Fixed width is what makes byte comparison equal chronological comparison,
-  # which the `(inserted_at, id)` index and `c:DMEx.Storage.cursor_at/2` both
-  # rest on — see `DMEx.Storage.SQLite.Migration`. All three tables, because the
+  # which is the only thing making these columns orderable at all — SQLite has no
+  # timestamp type. See `DMEx.Storage.SQLite.Migration`. All three tables, because the
   # format is one invariant and holding it for `dmex_messages` alone would be an
   # accident rather than a property. (This subsumes the `dmex_messages`-only
   # assertion that used to sit in the first describe block: same two assertions,

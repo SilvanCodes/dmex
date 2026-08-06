@@ -58,7 +58,7 @@ than frames/s.
 ### 1e. `catchup_drain` stage (a) never counted a single row — fixed (not in the original report)
 
 Stage (a) counted `"id":` in the chunk stream. The row's id travels in the SSE
-`id:` field as `previous/current`; the JSON payload has no `"id"` key, and this
+`id:` field; the JSON payload has no `"id"` key, and this
 benchmark's rows carry `order_id`. Verified directly: **710 690 bytes arrived and
 `seen` stayed 0.**
 
@@ -111,8 +111,9 @@ rather than truncating the unit database.
 ## 3. `DMEx.Log.Plug` arms the same deadline three times at connect — **false positive**
 
 **The report's premise is wrong.** `resolve_cursor/2` sits between the
-registration and the arm at line 164, and for `cursor=latest` it issues a
-`max_id` query, which takes a pool checkout like any other read. The arm is not
+registration and the arm at line 164, and for an absent `Last-Event-ID` — which
+`DMEx.Log.Params` resolves to `:now` — it issues a `max_id` query, which takes a
+pool checkout like any other read. The arm is not
 dead: the registration's arm covers that query, and this one gives the header
 write its own full budget. Commented rather than removed.
 
@@ -140,9 +141,8 @@ three new tests, including that a lone CRLF does *not* end a frame.
   it: reads are the only call these tests inject faults into, and an argument
   naming a callback that is never consulted is a silent no-op.
 - `dead_messages/2` did not return `t:row/0`. It now stamps `:inserted_at` in
-  `dead_message/2` — the adapter's job, as the callback docs say — and sets
-  `previous_id: nil`, matching what the Postgres adapter does for a row with no
-  delivered sequence.
+  `dead_message/2` — the adapter's job, as the callback docs say — and returns
+  exactly the `t:row/0` keys, matching what the Postgres adapter does.
 - `dead_messages/1`, `appends/1` and `add_rows/2` had no callers; removed, along
   with the `:appends` field that only they fed.
 

@@ -33,8 +33,10 @@ defmodule DMEx.Log do
       disagree with the struct it describes.
     * `metadata` passes through **untouched**, all the way to the handler that
       receives it. Nothing DMEx knows is ever written into it.
-    * Nothing records which log appended the message. `type` is fully
-      qualified, so it already identifies the appending application.
+    * Nothing records which log appended the message. Whether a `type` says
+      where it came from is the producer's choice of a namespaced one — see
+      `DMEx.Message`, which is also where the collision that follows from
+      declining is described.
 
   ## Options
 

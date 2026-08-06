@@ -4,8 +4,8 @@ defmodule DMEx.Config do
 
   DMEx reads **no global application config**. A log's settings are `use`
   options on its log module, a subscription's are `use DMEx.Handler` or
-  `subscribe/2` options, and both are resolved exactly once — never per append,
-  per request, or per row. `log!/1` and `handler!/1` copy across only keys they
+  `DMEx.Supervisor.subscribe/2` options, and both are resolved exactly once —
+  never per append, per request, or per row. `log!/1` and `handler!/1` copy across only keys they
   know and validate what they copied, so an unrecognised key cannot silently
   become a setting.
 

@@ -16,7 +16,7 @@ defmodule DMEx.Log.Selection do
   set admits a type the consumer never declared at a rate of 2⁻¹⁶ per type
   tested.
 
-  `declared/1` is `DMEx.Transport.Local`'s: the handler's declared modules are
+  `declared/2` is `DMEx.Transport.Local`'s: the handler's declared modules are
   in this VM, so no blob is built and the set is exact.
 
   A local subscription therefore reads a *subset* of what the same handler reads

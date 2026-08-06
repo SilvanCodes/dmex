@@ -225,7 +225,7 @@ silence.
 
 ```
 id: 1042
-event: MyApp.Messages.OrderShipped
+event: order_shipped
 data: {"data":{"order_id":7},"metadata":{"trace_id":"abc"}}
 
 ```

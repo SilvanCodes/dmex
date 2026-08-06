@@ -5,7 +5,7 @@ defmodule DMEx.Transport.SSE.Frame do
   Three slots carry the row and there is no envelope:
 
       id: 1042
-      event: MyApp.Messages.OrderShipped
+      event: order_shipped
       data: {"data":{"order_id":7},"metadata":{"trace_id":"abc"}}
 
   Nothing DMEx owns rides inside `data:`: `metadata` is the publisher's, byte for

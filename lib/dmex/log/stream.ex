@@ -48,7 +48,7 @@ defmodule DMEx.Log.Stream do
 
   The log's settings are carried as `config:` rather than copied out field by
   field: they are read once per *read*, never per row, and a second spelling of
-  `DMEx.Config.log/0` is a second place for a setting to be added and forgotten.
+  `t:DMEx.Config.log/0` is a second place for a setting to be added and forgotten.
   Only `batch_interval` is here in its own right, because it is derived — the
   reciprocal of `max_batch_frequency`, taken once rather than per iteration.
   """
@@ -117,33 +117,6 @@ defmodule DMEx.Log.Stream do
       state.config.heartbeat_ms -> true
     end
   end
-
-  @doc """
-  Resolves what a connect asked for into a cursor to read from.
-
-  The two spellings of a position both arrive here: `DMEx.Log.Params` tags an
-  instant `{:at, at}` so a caller cannot mistake it for a cursor, and
-  `DMEx.Handler.Request.position/2` — which is where the id form's `- 1` lives,
-  for both transports — returns one bare. They mean the same thing, and the
-  query that answers it is the same query, so both transports ask it here.
-
-  An error is fatal to the connect rather than a fallback to 0. Falling back
-  would turn a pool timeout into a whole-log replay — and since every
-  `stream_from: :current` subscription resolves an instant, that is the default
-  path, not an exotic one. `DMEx.Log.Plug` answers it with a 503; a local
-  subscription retries on its own jittered schedule. Either costs one reconnect.
-  """
-  @spec resolve_cursor(module(), non_neg_integer() | DateTime.t() | {:at, DateTime.t()}) ::
-          {:ok, non_neg_integer()} | {:error, term()}
-  def resolve_cursor(log, {:at, at}), do: resolve_cursor(log, at)
-
-  def resolve_cursor(log, %DateTime{} = at) do
-    %{storage: storage, storage_opts: storage_opts} = log.__dmex__()
-
-    storage.cursor_at(storage_opts, at)
-  end
-
-  def resolve_cursor(_log, cursor) when is_integer(cursor), do: {:ok, cursor}
 
   @doc """
   Announces a connect and builds the loop's state for it.

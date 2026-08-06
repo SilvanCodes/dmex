@@ -65,8 +65,8 @@ defmodule DMEx.Storage.SQLite do
   @max_types 900
 
   # `strftime('%f')` renders `SS.SSS`, so every stored value is fixed-width and
-  # comparable as bytes — which is what the `(inserted_at, id)` index and
-  # `cursor_at/2` rest on. Stated once: `DMEx.Storage.SQLite.Migration` renders
+  # comparable as bytes, which is what makes `updated_at` orderable at all —
+  # SQLite has no timestamp type. Stated once: `DMEx.Storage.SQLite.Migration` renders
   # all three of its column defaults from `__now__/0` below, so no writer of
   # these tables can disagree about the format.
   @now "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')"
