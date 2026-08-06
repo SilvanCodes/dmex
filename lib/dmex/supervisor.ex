@@ -112,16 +112,13 @@ defmodule DMEx.Supervisor do
     handlers = __startable__!(Handler.discover(otp_app), logs)
 
     # Both the collision check and the cache seed, and the only scan on the boot
-    # path: an application owning no log — a pure consumer — is checked too, and
-    # no connection pays for the scan later. See `DMEx.message_types/1`.
-    _ = DMEx.refresh_message_types(otp_app)
-
-    # That cache is read under the application owning the *log module*, which is
-    # `otp_app` only for a single-app host: an umbrella parent, or a log shipped
-    # in a dependency, reads under a key `otp_app` never seeds. Seeding those
-    # keys too is what keeps the collision check at boot for them, rather than
-    # as a 500 from the first selective connect that scans lazily.
-    for app <- log_apps(logs), app != otp_app, do: DMEx.refresh_message_types(app)
+    # path. `otp_app` unconditionally, so an application owning no log — a pure
+    # consumer — is checked too; plus one key per application owning a log,
+    # since that is the key the cache is read under and `otp_app` is it only for
+    # a single-app host. An umbrella parent, or a log shipped in a dependency,
+    # would otherwise scan lazily inside the first selective connect, turning a
+    # collision into a 500. See `DMEx.message_types/1`.
+    for app <- Enum.uniq([otp_app | log_apps(logs)]), do: DMEx.refresh_message_index(app)
 
     children =
       owned_logs(logs) ++

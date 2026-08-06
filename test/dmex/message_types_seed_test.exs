@@ -63,7 +63,7 @@ defmodule DMEx.MessageTypesSeedTest do
 
   setup do
     for app <- [:dmex_fake_host, :dmex_fake_dep, :dmex_fake_collide],
-        do: :persistent_term.erase({DMEx, :message_types, app})
+        do: :persistent_term.erase({DMEx, :message_index, app})
 
     :ok
   end
@@ -75,7 +75,7 @@ defmodule DMEx.MessageTypesSeedTest do
 
     # What `DMEx.Log.Plug` looks up at the first selective connect. A miss here
     # is a full module scan inside the request instead of at boot.
-    assert :persistent_term.get({DMEx, :message_types, :dmex_fake_dep}, :miss) != :miss
+    assert :persistent_term.get({DMEx, :message_index, :dmex_fake_dep}, :miss) != :miss
     assert MapSet.member?(DMEx.message_types(Dep.Log), "fake_dep_thing")
   end
 

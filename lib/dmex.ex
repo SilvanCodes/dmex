@@ -172,7 +172,8 @@ defmodule DMEx do
   end
 
   @doc """
-  Every message type visible to the application owning `module`, cached.
+  Every message type visible to the application owning `module`, from the cached
+  index.
 
   What a consumer's filter is resolved against: `DMEx.Log.Plug` tests every type
   here for membership once at connect, and the types that pass become the
@@ -206,24 +207,19 @@ defmodule DMEx do
 
   A module belonging to no application — one defined at runtime — resolves to
   `nil`, which scans the dependent applications alone. So does a bare
-  `refresh_message_types/1`.
+  `refresh_message_index/1`.
 
   The lazy branch keeps every caller free of start order: a node whose
-  `DMEx.Supervisor` has not run `refresh_message_types/1` — or that runs no
+  `DMEx.Supervisor` has not run `refresh_message_index/1` — or that runs no
   supervisor at all — still answers correctly, just more slowly the first time.
   """
   @spec message_types(module()) :: MapSet.t(String.t())
   def message_types(module) when is_atom(module) do
-    otp_app = owning_app(module)
-
-    case :persistent_term.get(message_types_key(otp_app), nil) do
-      nil -> refresh_message_types(otp_app)
-      types -> types
-    end
+    module |> owning_app() |> message_index() |> Map.keys() |> MapSet.new()
   end
 
   @doc """
-  Rescans and caches an application's message types, raising if two modules
+  Rescans and caches an application's message index, raising if two modules
   declare one type.
 
   Called from `DMEx.Supervisor`'s `init/1` with its `otp_app:` — so an
@@ -231,18 +227,16 @@ defmodule DMEx do
   owning one of its logs, since that is the key `message_types/1` reads under.
   Both the boot-time collision check and the cache seed.
   """
-  @spec refresh_message_types(atom() | nil) :: MapSet.t(String.t())
-  def refresh_message_types(otp_app \\ nil) do
+  @spec refresh_message_index(atom() | nil) :: %{String.t() => module()}
+  def refresh_message_index(otp_app \\ nil) do
     index = otp_app |> DMEx.Message.discover() |> DMEx.Message.index!()
-    types = index |> Map.keys() |> MapSet.new()
 
-    # Two entries, one scan and one collision check: the set is what a filter is
-    # expanded against, the index is what a whole-log handler resolves a type
-    # through, and writing them together is what stops them disagreeing.
+    # One entry, so the set a filter expands against and the index a whole-log
+    # handler resolves a type through cannot disagree: the set is the index's
+    # keys, rebuilt per read — once per connect, over a compile-time-sized map.
     :persistent_term.put(message_index_key(otp_app), index)
-    :persistent_term.put(message_types_key(otp_app), types)
 
-    types
+    index
   end
 
   @doc """
@@ -261,22 +255,16 @@ defmodule DMEx do
   """
   @spec message_module(module(), String.t()) :: module() | nil
   def message_module(module, type) when is_atom(module) and is_binary(type) do
-    otp_app = owning_app(module)
-
-    index =
-      case :persistent_term.get(message_index_key(otp_app), nil) do
-        nil ->
-          _ = refresh_message_types(otp_app)
-          :persistent_term.get(message_index_key(otp_app), %{})
-
-        index ->
-          index
-      end
-
-    Map.get(index, type)
+    module |> owning_app() |> message_index() |> Map.get(type)
   end
 
-  defp message_types_key(otp_app), do: {__MODULE__, :message_types, otp_app}
+  defp message_index(otp_app) do
+    case :persistent_term.get(message_index_key(otp_app), nil) do
+      nil -> refresh_message_index(otp_app)
+      index -> index
+    end
+  end
+
   defp message_index_key(otp_app), do: {__MODULE__, :message_index, otp_app}
 
   @doc false
