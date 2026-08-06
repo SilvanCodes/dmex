@@ -162,7 +162,7 @@ defmodule DMEx.Handler.DeadMessages do
       :skipped ->
         Logger.warning(
           "DMEx cannot replay dead message #{row.id}: no #{inspect(state.handler)} clause " <>
-            "matches a #{row.message_type}. Widen one and replay again, or discard/3 it."
+            "matches a #{row.type}. Widen one and replay again, or discard/3 it."
         )
 
         :error
@@ -182,7 +182,7 @@ defmodule DMEx.Handler.DeadMessages do
   defp pipeline_row(row) do
     %{
       "id" => row.id,
-      "message_type" => row.message_type,
+      "type" => row.type,
       "data" => JSON.decode!(row.data),
       "metadata" => JSON.decode!(row.metadata)
     }

@@ -11,10 +11,10 @@ defmodule DMEx.Log.Selection do
 
   ## Two constructors, and they do not build the same set
 
-  `expand/2` is the wire's: a `DMEx.Handler.Fingerprint` blob tested against the
-  message types of the application owning the log. Membership there is
-  probabilistic, so the set admits a type the consumer never declared at a rate
-  of 2⁻¹⁶ per type tested.
+  `expand/1` is the wire's: a `DMEx.Handler.Fingerprint` blob tested against
+  every message type the node knows. Membership there is probabilistic, so the
+  set admits a type the consumer never declared at a rate of 2⁻¹⁶ per type
+  tested.
 
   `declared/1` is `DMEx.Transport.Local`'s: the handler's declared modules are
   in this VM, so no blob is built and the set is exact.
@@ -32,7 +32,7 @@ defmodule DMEx.Log.Selection do
   Which message types a connection asked for.
 
   `:all` is a whole-log subscription; a `MapSet` is a selective one, already
-  expanded from its filter against the log's own message types.
+  expanded from its filter against the node's message types.
   """
   @type t :: :all | MapSet.t(String.t())
 
@@ -40,7 +40,7 @@ defmodule DMEx.Log.Selection do
   Expands a parsed `DMEx.Log.Params` selection.
 
   Against the node's compiled message modules, rather than against what the log
-  happens to contain — see `DMEx.message_types/0` for why those are not
+  happens to contain — see `DMEx.Message.types/0` for why those are not
   interchangeable, and why the set is not per log.
 
   An empty `MapSet` is a filter that matched nothing, which `DMEx.Log.Plug`
@@ -50,13 +50,13 @@ defmodule DMEx.Log.Selection do
   def expand(:all), do: :all
 
   def expand(%Fingerprint{} = filter) do
-    DMEx.message_types()
+    DMEx.Message.types()
     |> Enum.filter(&Fingerprint.member?(filter, &1))
     |> MapSet.new()
   end
 
   @doc """
-  The selection a handler's own declared message modules make. See `expand/2`
+  The selection a handler's own declared message modules make. See `expand/1`
   for why this set is exact and that one is not.
 
   Which of the two a subscription gets is decided by the same value on both

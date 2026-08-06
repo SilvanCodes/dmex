@@ -103,7 +103,7 @@ defmodule DMEx.Storage.Postgres do
       when is_integer(cursor) and cursor >= 0 and is_integer(limit) and limit > 0 and is_integer(max_bytes) and
              max_bytes > 0 and is_list(types) do
     # A separate statement, not a nullable predicate — see `c:DMEx.Storage.read/5`.
-    query(opts, read_sql(opts, "AND message_type = ANY($4)"), [cursor, limit, max_bytes, types])
+    query(opts, read_sql(opts, "AND type = ANY($4)"), [cursor, limit, max_bytes, types])
   end
 
   # Public so `DMEx.Storage.PostgresTest` can EXPLAIN the real statement.
@@ -126,7 +126,7 @@ defmodule DMEx.Storage.Postgres do
   #
   # **The outer filter** applies the byte bound — inclusive, plus
   # `prefix_bytes = 0` so one oversized row cannot wedge the subscription. That
-  # identifies the first row exactly: `message_type` is `NOT NULL` and at least
+  # identifies the first row exactly: `type` is `NOT NULL` and at least
   # one character, so every row contributes at least one byte. See
   # `c:DMEx.Storage.read/5`.
   #
@@ -135,19 +135,19 @@ defmodule DMEx.Storage.Postgres do
   # guarantee.
   defp read_sql(opts, predicate) do
     """
-    SELECT id, message_type, data, metadata, inserted_at
+    SELECT id, type, data, metadata, inserted_at
       FROM (
-        SELECT id, message_type, data, metadata, inserted_at, bytes,
+        SELECT id, type, data, metadata, inserted_at, bytes,
                coalesce(
                  sum(bytes) OVER (ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),
                  0
                ) AS prefix_bytes
           FROM (
-            SELECT id, message_type, data, metadata, inserted_at,
-                   octet_length(data) + octet_length(metadata) + octet_length(message_type)
+            SELECT id, type, data, metadata, inserted_at,
+                   octet_length(data) + octet_length(metadata) + octet_length(type)
                      AS bytes
               FROM (
-                SELECT id, message_type, data::text AS data, metadata::text AS metadata,
+                SELECT id, type, data::text AS data, metadata::text AS metadata,
                        inserted_at
                   FROM #{table(opts, @messages)}
                  WHERE id > $1 #{predicate}
@@ -187,7 +187,7 @@ defmodule DMEx.Storage.Postgres do
     # over one poll interval of appends. On an idle log `max(id)` is NULL, which
     # is the empty case.
     sql = """
-    SELECT max(id), coalesce(array_agg(DISTINCT message_type), '{}')
+    SELECT max(id), coalesce(array_agg(DISTINCT type), '{}')
       FROM #{table(opts, @messages)}
      WHERE id > $1
     """
@@ -274,14 +274,14 @@ defmodule DMEx.Storage.Postgres do
 
     sql = """
     INSERT INTO #{table(opts, @dead_messages)}
-           (subscription, id, message_type, data, metadata)
+           (subscription, id, type, data, metadata)
          VALUES ($1, $2, $3, $4::text::jsonb, $5::text::jsonb)
     """
 
     params = [
       Map.fetch!(attrs, :subscription),
       Map.fetch!(attrs, :id),
-      Map.fetch!(attrs, :message_type),
+      Map.fetch!(attrs, :type),
       Map.fetch!(attrs, :data),
       Map.get(attrs, :metadata) || "{}"
     ]
@@ -295,7 +295,7 @@ defmodule DMEx.Storage.Postgres do
   @impl DMEx.Storage
   def dead_messages(opts, subscription) when is_binary(subscription) do
     sql = """
-    SELECT id, message_type, data::text, metadata::text, inserted_at
+    SELECT id, type, data::text, metadata::text, inserted_at
       FROM #{table(opts, @dead_messages)}
      WHERE subscription = $1
      ORDER BY id
@@ -333,7 +333,7 @@ defmodule DMEx.Storage.Postgres do
 
   defp insert!(repo, opts, type, data, metadata) do
     sql = """
-    INSERT INTO #{table(opts, @messages)} (message_type, data, metadata)
+    INSERT INTO #{table(opts, @messages)} (type, data, metadata)
          VALUES ($1, $2::text::jsonb, $3::text::jsonb)
       RETURNING id
     """
@@ -347,12 +347,12 @@ defmodule DMEx.Storage.Postgres do
 
   # This head **is** the SELECT list, in order: change the column list without
   # changing the head and the rows come out mis-keyed. Not silently —
-  # `test/dmex/storage/conformance_test.exs` value-pins `message_type`, so the
+  # `test/dmex/storage/conformance_test.exs` value-pins `type`, so the
   # mismatch is a failing suite rather than a wrong wire frame.
-  defp to_row([id, message_type, data, metadata, inserted_at]) do
+  defp to_row([id, type, data, metadata, inserted_at]) do
     %{
       id: id,
-      message_type: message_type,
+      type: type,
       data: data,
       metadata: metadata,
       inserted_at: inserted_at

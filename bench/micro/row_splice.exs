@@ -32,7 +32,7 @@ reencode = fn rows ->
     Enum.map(rows, fn row ->
       %{
         "id" => row.id,
-        "message_type" => row.message_type,
+        "type" => row.type,
         "data" => JSON.decode!(row.data),
         "metadata" => JSON.decode!(row.metadata)
       }

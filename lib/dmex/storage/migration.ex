@@ -32,7 +32,7 @@ defmodule DMEx.Storage.Migration do
   ## The two indexes
 
   **The primary key on `id`** serves every whole-log read directly: those are
-  `id > cursor` range scans and nothing else. **`(message_type, id)`** serves a
+  `id > cursor` range scans and nothing else. **`(type, id)`** serves a
   selective subscription's `id > cursor` plus a type predicate, and the
   planner takes it when the selection is rare — measured on a 500k-row skewed
   log, at 0.1% of rows yes, at 1% and above it prefers the primary key, which is
@@ -40,9 +40,9 @@ defmodule DMEx.Storage.Migration do
   not anyone selects against it, because the alternative is that server-side
   selection saves bandwidth and no database work at all.
 
-  ## The `message_type` CHECK
+  ## The `type` CHECK
 
-  `message_type` is restricted to `[A-Za-z0-9_.]+` because it goes on the wire as
+  `type` is restricted to `[A-Za-z0-9_.]+` because it goes on the wire as
   an SSE `event:` line and SSE field lines have no escaping. Everything else on
   the wire is spliced JSON, whose grammar already forbids raw control characters
   inside strings. `use DMEx.Message` enforces the same charset on a declared

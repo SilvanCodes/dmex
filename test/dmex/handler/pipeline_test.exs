@@ -97,7 +97,7 @@ defmodule DMEx.Handler.PipelineTest do
 
       assert_receive {[:dmex, :handler, :skip], ^ref, %{id: 1}, %{handler: Handlers.Echo} = metadata}
 
-      assert metadata.message_type == "SomeOtherApp.Messages.Unknown"
+      assert metadata.type == "SomeOtherApp.Messages.Unknown"
       assert metadata.origin == @url
     end
   end
@@ -143,7 +143,7 @@ defmodule DMEx.Handler.PipelineTest do
       assert_receive {[:dmex, :handler, :skip], ^ref, %{id: 1}, metadata}
 
       assert metadata.handler == Handlers.Narrowed
-      assert metadata.message_type == "order_placed"
+      assert metadata.type == "order_placed"
     end
 
     test "respects a guard as well as a pattern", ctx do
@@ -268,14 +268,14 @@ defmodule DMEx.Handler.PipelineTest do
       assert {:ok, 1} = Postgres.last_seen(ctx.storage_opts, "test/echo")
     end
 
-    # Everything else in the row stays with DMEx: the id, the message_type, the
+    # Everything else in the row stays with DMEx: the id, the type, the
     # frame's max_id. None of it is a property of the message.
     test "receives the decoded struct and the publisher's metadata, and nothing else", ctx do
       state = state(ctx, handler: Handlers.Echo, cursor: 0)
 
       row = %{
         "id" => 1,
-        "message_type" => "order_placed",
+        "type" => "order_placed",
         "data" => %{"order_id" => 7, "total" => 1999},
         "metadata" => %{"trace_id" => "abc"}
       }
@@ -405,7 +405,7 @@ defmodule DMEx.Handler.PipelineTest do
 
       assert_receive {[:dmex, :handler, :message, :start], ^ref, _, %{handler: Handlers.Echo, id: 1} = metadata}
 
-      assert metadata.message_type == "order_placed"
+      assert metadata.type == "order_placed"
 
       assert_receive {[:dmex, :handler, :message, :stop], ^ref, %{duration: _}, %{handler: Handlers.Echo}}
     end
@@ -453,7 +453,7 @@ defmodule DMEx.Handler.PipelineTest do
   defp row(id) do
     %{
       "id" => id,
-      "message_type" => "order_placed",
+      "type" => "order_placed",
       "data" => %{"order_id" => id},
       "metadata" => %{}
     }
@@ -462,7 +462,7 @@ defmodule DMEx.Handler.PipelineTest do
   defp shipped_row(id) do
     %{
       "id" => id,
-      "message_type" => "order_shipped",
+      "type" => "order_shipped",
       "data" => %{"order_id" => id, "carrier" => "dhl"},
       "metadata" => %{}
     }
@@ -477,6 +477,6 @@ defmodule DMEx.Handler.PipelineTest do
   end
 
   defp unknown_row(id) do
-    %{row(id) | "message_type" => "SomeOtherApp.Messages.Unknown"}
+    %{row(id) | "type" => "SomeOtherApp.Messages.Unknown"}
   end
 end

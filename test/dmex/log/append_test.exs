@@ -30,7 +30,7 @@ defmodule DMEx.Log.AppendTest do
     test "reads the wire type off the message's own module", %{opts: opts} do
       {:ok, id} = Log.append(%OrderPlaced{order_id: 7})
 
-      assert %{message_type: "order_placed"} = fetch!(opts, id)
+      assert %{type: "order_placed"} = fetch!(opts, id)
     end
 
     test "serializes the struct, not a wrapper around it", %{opts: opts} do
@@ -70,7 +70,7 @@ defmodule DMEx.Log.AppendTest do
 
       assert {:ok, rows} = Postgres.read(opts, 0, 10, 1_048_576, :all)
 
-      assert Enum.map(rows, & &1.message_type) == [
+      assert Enum.map(rows, & &1.type) == [
                "order_placed",
                "order_shipped"
              ]
@@ -95,8 +95,8 @@ defmodule DMEx.Log.AppendTest do
 
       assert {:ok, [first, second]} = Postgres.read(opts, 0, 10, 1_048_576, :all)
 
-      assert Map.take(first, [:message_type, :data, :metadata]) ==
-               Map.take(second, [:message_type, :data, :metadata])
+      assert Map.take(first, [:type, :data, :metadata]) ==
+               Map.take(second, [:type, :data, :metadata])
     end
 
     test "reaches append/1 through apply as well" do
@@ -150,7 +150,7 @@ defmodule DMEx.Log.AppendTest do
 
       assert_received {[:dmex, :append, :start], ^ref, _measurements, metadata}
       assert metadata.log == Log
-      assert metadata.message_type == "order_placed"
+      assert metadata.type == "order_placed"
 
       assert_received {[:dmex, :append, :stop], ^ref, %{duration: duration}, _metadata}
       assert is_integer(duration)

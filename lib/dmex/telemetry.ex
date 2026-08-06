@@ -10,7 +10,7 @@ defmodule DMEx.Telemetry do
 
   ### `[:dmex, :append, :start | :stop | :exception]`
 
-  A `:telemetry.span/3` around the append. Metadata: `:log`, `:message_type`.
+  A `:telemetry.span/3` around the append. Metadata: `:log`, `:type`.
 
   The one to alert on is `:exception` — an append that raises is a message the
   application believes it emitted and did not.
@@ -64,7 +64,7 @@ defmodule DMEx.Telemetry do
 
   A `:telemetry.span/3` around **one attempt** at one message: the handler call
   and the cursor advance, in their transaction. Extra metadata:
-  `:message_type`, `:id`, `:attempt`.
+  `:type`, `:id`, `:attempt`.
 
   One span per attempt, so an `:exception` at `attempt: 1` followed by a `:stop`
   at `attempt: 2` is a transient failure recovering. Per attempt rather than per
@@ -73,10 +73,10 @@ defmodule DMEx.Telemetry do
 
   ### `[:dmex, :handler, :skip]`
 
-  A row no clause matched: either its `message_type` names no declared module,
+  A row no clause matched: either its `type` names no declared module,
   or the type is declared but a clause narrowed to a field's value turned it
   down. Neither reached a handler, so neither is inside a `:message` span.
-  Measurements: `:id`. Extra metadata: `:message_type`.
+  Measurements: `:id`. Extra metadata: `:type`.
 
   **Worth a dashboard even though it is not a fault**: a consumer silently
   discarding most of a stream and one silently discarding the single type it
@@ -93,7 +93,7 @@ defmodule DMEx.Telemetry do
   ### `[:dmex, :handler, :failed]`
 
   A message that exhausted its local retries. Measurements: `:id`, `:attempts`.
-  Extra metadata: `:message_type`, `:on_failure`, `:reason`.
+  Extra metadata: `:type`, `:on_failure`, `:reason`.
 
   Emitted for `:dead_message` and `:skip`. `:crash` re-raises instead, so the
   supervisor's own report is the record there. Worth an alert either way: under

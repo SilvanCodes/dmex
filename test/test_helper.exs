@@ -43,7 +43,7 @@ end
 # The suite's own message modules live in `:dmex`, which declares no dependency
 # on itself, so no scan reaches them unless something names it — and most tests
 # here read the index without starting a supervisor.
-DMEx.refresh_message_index(:dmex)
+DMEx.Message.refresh_index(:dmex)
 
 exclude =
   if(database_available?, do: [], else: [:database]) ++

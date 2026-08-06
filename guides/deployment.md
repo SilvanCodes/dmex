@@ -46,7 +46,7 @@ consumer; a steady rate is either a consumer that cannot keep up or a
 ### Two bounds on a read
 
 `max_batch_size` (500 rows) and `max_batch_bytes` (1 MiB of `data` + `metadata`
-+ `message_type` octets) bound the same read, and whichever binds first ends it.
++ `type` octets) bound the same read, and whichever binds first ends it.
 
 Both are memory bounds, over different costs (ARCHITECTURE invariant 2): the
 byte cap counts what the database can see, and the row cap bounds the fixed

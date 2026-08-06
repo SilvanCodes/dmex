@@ -48,10 +48,10 @@ defmodule DMEx.Storage.SQLiteTest do
       assert plan =~ ~r/SEARCH .*dmex_messages USING INTEGER PRIMARY KEY/
     end
 
-    test "a selective read takes the (message_type, id) index", %{opts: opts} do
-      plan = explain(opts, "AND message_type IN (?4)")
+    test "a selective read takes the (type, id) index", %{opts: opts} do
+      plan = explain(opts, "AND type IN (?4)")
 
-      assert plan =~ "dmex_messages_message_type_id_index"
+      assert plan =~ "dmex_messages_type_id_index"
     end
 
     # The window function has to run over the *limited* batch. SQLite also

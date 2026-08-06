@@ -11,7 +11,7 @@ defmodule DMEx.Transport.SSE.DecoderTest do
       {:ok, [row], _} = push(Decoder.new(), frame_bytes(1..1))
 
       assert row["id"] == 1
-      assert row["message_type"] == "order_placed"
+      assert row["type"] == "order_placed"
       assert is_map(row["data"])
     end
 

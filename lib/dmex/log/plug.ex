@@ -16,7 +16,7 @@ defmodule DMEx.Log.Plug do
       `EventSource` or `curl` asks for.
     * **`GET /stream/<blob>`** — the same log narrowed to the message types a
       consumer's filter admits. See `DMEx.Handler.Fingerprint` for the blob and
-      `DMEx.message_types/0` for what it is resolved against.
+      `DMEx.Message.types/0` for what it is resolved against.
 
   There is no application segment and no query string: one mount serves exactly
   one log.
@@ -26,7 +26,7 @@ defmodule DMEx.Log.Plug do
   A filter cannot be pushed into a SQL index — membership is a computation, not
   something an index can seek on — so `DMEx.Log.Selection` expands it against
   the log's compiled message modules before the send loop starts, turning it
-  into the concrete type list the read path's `message_type = ANY($1)` wants.
+  into the concrete type list the read path's `type = ANY($1)` wants.
   The resulting set also routes wakeups, so an append only disturbs the
   connections that asked for that type.
 

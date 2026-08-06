@@ -41,7 +41,7 @@ defmodule DMEx.Storage.SQLiteMigrationTest do
       assert columns["data"].type == "TEXT"
       assert columns["metadata"].type == "TEXT"
       assert columns["inserted_at"].type == "TEXT"
-      assert columns["message_type"].notnull == 1
+      assert columns["type"].notnull == 1
       assert columns["metadata"].dflt_value == "'{}'"
       assert columns["inserted_at"].dflt_value =~ "strftime"
     end
@@ -60,12 +60,12 @@ defmodule DMEx.Storage.SQLiteMigrationTest do
     test "carries the selective read's index, on the columns that query needs" do
       indexes = index_columns("dmex_messages")
 
-      assert indexes["dmex_messages_message_type_id_index"] == ["message_type", "id"]
+      assert indexes["dmex_messages_type_id_index"] == ["type", "id"]
       assert indexes["dmex_messages_inserted_at_id_index"] == nil
     end
   end
 
-  describe "the message_type CHECK" do
+  describe "the type CHECK" do
     # It goes on the wire as an unescaped SSE `event:` line, and the comma case
     # is load-bearing a second time: `appended_since/2` splits `group_concat` on
     # one, which is only lossless because no type can contain one.
@@ -135,7 +135,7 @@ defmodule DMEx.Storage.SQLiteMigrationTest do
         SQL.query(
           Repo,
           """
-          INSERT INTO dmex_dead_messages (subscription, id, message_type, data, metadata)
+          INSERT INTO dmex_dead_messages (subscription, id, type, data, metadata)
                VALUES (?1, ?2, ?3, ?4, ?5)
           """,
           [@some, 7, "A", ~s({"n":1}), "{}"]
@@ -171,7 +171,7 @@ defmodule DMEx.Storage.SQLiteMigrationTest do
   end
 
   defp insert_sql do
-    "INSERT INTO dmex_messages (message_type, data, metadata) VALUES (?1, ?2, ?3)"
+    "INSERT INTO dmex_messages (type, data, metadata) VALUES (?1, ?2, ?3)"
   end
 
   defp query(sql, params \\ []) do

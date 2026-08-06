@@ -28,7 +28,7 @@ defmodule DMEx.Message do
 
   ## `c:type/0` — the wire type
 
-  Declared, not derived. The string is the `message_type` column, the SSE
+  Declared, not derived. The string is the `type` column, the SSE
   `event:` name, and the key a consumer resolves a row back to a module with:
 
       MyApp.Messages.OrderPlaced.type()
@@ -101,6 +101,10 @@ defmodule DMEx.Message do
   # degenerate namespaces — `"."`, `".foo"`, `"foo."` — are illegal by
   # construction rather than merely never written.
   @type_format ~r/\A[A-Za-z0-9_]+(\.[A-Za-z0-9_]+)*\z/
+
+  # One key for the node: a type is unique node-wide, so there is nothing an
+  # application-scoped key would separate. See `types/0`.
+  @index_key {__MODULE__, :index}
 
   @doc """
   The message's wire type — the string it declared.
@@ -256,7 +260,7 @@ defmodule DMEx.Message do
   depending on `:dmex` is offered to this predicate — a stranger admitted here
   has its `type/0` called and the result folded into the node's type set, where
   at worst it collides with a real message and fails the boot in
-  `types!/1` naming a module that has nothing to do with DMEx.
+  `index!/1` naming a module that has nothing to do with DMEx.
 
   `module_info/1` rather than `__info__/1`, since the scan reaches Erlang
   modules too.
@@ -286,26 +290,17 @@ defmodule DMEx.Message do
   end
 
   @doc """
-  The set of types `modules` declare, raising if two of them declare one type.
+  `modules` keyed by the type each declares, raising if two of them declare one.
 
-  A `MapSet` of the types alone would collapse a duplicate without a word, and a
-  swallowed collision is silent message loss: whichever module lost the race is
-  unreachable, and every row of that type is skipped by every consumer.
+  What turns a `type` off the wire back into a module without
+  `String.to_atom/1`.
+
+  It raises rather than letting the second module win, because a swallowed
+  collision is silent message loss: whichever module lost is unreachable, and
+  every row of that type is skipped by every consumer.
 
   Checked once at boot rather than at compile time — a collision is a property of
   the module *set*, which no single module's compilation can see.
-  """
-  @spec types!([module()]) :: MapSet.t(String.t())
-  def types!(modules) when is_list(modules) do
-    modules |> index!() |> Map.keys() |> MapSet.new()
-  end
-
-  @doc """
-  `modules` keyed by the type each declares, raising if two of them declare one.
-
-  What turns a `message_type` off the wire back into a module without
-  `String.to_atom/1`. `types!/1` is this with the values thrown away, so the two
-  cannot disagree about what collides.
   """
   @spec index!([module()]) :: %{String.t() => module()}
   def index!(modules) when is_list(modules) do
@@ -320,12 +315,105 @@ defmodule DMEx.Message do
   end
 
   @doc """
+  Every type known to the node, from the cached index.
+
+  What a consumer's filter is resolved against: `DMEx.Log.Plug` tests every type
+  here for membership once at connect, and the types that pass become the
+  connection's `type = ANY($1)` predicate and its wakeup routing set.
+
+  The keys of `index!/1`'s map, asked of the node rather than of a given list of
+  modules, and answered from the cache.
+
+  ## Why the *modules*, and not a log's contents
+
+  Expanding over the types a log has actually seen — `SELECT DISTINCT type` —
+  goes stale silently: a log's code can know a type it has not yet emitted, and
+  first emission involves no restart and no reconnect, so an open connection
+  would keep an expansion missing a type its consumer genuinely selected. That
+  is a false negative, which is silent message loss.
+
+  Compiled modules have no such gap: that set changes only on deploy, and a
+  deploy takes every SSE connection with it, so every affected consumer
+  reconnects and re-expands.
+
+  ## Why one set for the whole node, and not one per application
+
+  A type is unique node-wide — `refresh_index/1` raises on a second module
+  claiming one — so there is nothing for a per-application key to separate. This
+  is never per log either: the set only has to *contain* everything a log might
+  append, since an extra type matches no filter and a missing one is silent
+  loss.
+
+  The lazy branch keeps every caller free of start order: a node whose
+  `DMEx.Supervisor` has not run `refresh_index/1` — or that runs no supervisor
+  at all — still answers correctly, just more slowly the first time. It scans
+  the applications depending on `:dmex` alone, so an application that does not —
+  an umbrella parent — is only ever reached by being named.
+  """
+  @spec types() :: MapSet.t(String.t())
+  def types do
+    index() |> Map.keys() |> MapSet.new()
+  end
+
+  @doc """
+  The module declaring `type`, or `nil`.
+
+  How a handler decodes a type it never named: `DMEx.Handler` compiles a clause
+  per type its callback did name, and — for a handler with a clause that names
+  none, which asks for the whole log — a fallback that comes here. A **lookup,
+  never `String.to_atom/1`** — the key is a string a log sent, so resolving it
+  through anything that creates atoms would make an unbounded atom table out of
+  attacker-controlled input.
+
+  Same cache and same scan as `types/0`; see there for why the modules rather
+  than the log's contents.
+  """
+  @spec for_type(String.t()) :: module() | nil
+  def for_type(type) when is_binary(type) do
+    Map.get(index(), type)
+  end
+
+  @doc """
+  Rescans an application's message modules into the node's index, raising if two
+  modules declare one type.
+
+  Merges rather than replaces, because the scan an application sees is not the
+  whole node: `DMEx.discovery/1` reaches every application depending on `:dmex`
+  plus the one named, so an umbrella parent and its children each contribute
+  modules the other's scan misses. Replacing would make the last writer at boot
+  drop the rest.
+
+  Which is also where the collision check earns its keep: a type already in the
+  index under a *different* module raises here, even when no single scan sees
+  both — the check is node-wide because the index is.
+
+  Called from `DMEx.Supervisor`'s `init/1` with its `otp_app:` — so an
+  application owning no log gets the check too — and once per application owning
+  one of its logs.
+  """
+  @spec refresh_index(atom() | nil) :: %{String.t() => module()}
+  def refresh_index(otp_app \\ nil) do
+    scanned = otp_app |> discover() |> index!()
+
+    # Read raw rather than through `index/0`, whose miss branch is this function.
+    cached = :persistent_term.get(@index_key, %{})
+    merged = Map.merge(cached, scanned, &collision!/3)
+
+    :persistent_term.put(@index_key, merged)
+
+    merged
+  end
+
+  defp index do
+    :persistent_term.get(@index_key, nil) || refresh_index()
+  end
+
+  @doc """
   `module`, or a raise when it is not the module already holding `type`.
 
-  The merge step of `DMEx.refresh_message_index/1`, where the two sides are
-  separate scans rather than two modules in one: a rescan of an application
-  meets its own modules again and must stay quiet, a second module claiming the
-  type must not.
+  The merge step of `refresh_index/1`, where the two sides are separate scans
+  rather than two modules in one: a rescan of an application meets its own
+  modules again and must stay quiet, a second module claiming the type must not.
   """
   @spec collision!(String.t(), module(), module()) :: module()
   def collision!(_type, module, module), do: module

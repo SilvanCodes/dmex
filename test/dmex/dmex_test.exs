@@ -6,7 +6,7 @@ defmodule DMExTest do
   decides what `use DMEx.Message` means at all — a handler's compile-time
   derivation and `append/2` both ask it — and it once answered `false` for every
   message module, which surfaced as a compile error in a fixture file rather
-  than as a test. `DMEx.message_types/0` is what a selective connect resolves a
+  than as a test. `DMEx.Message.types/0` is what a selective connect resolves a
   filter against.
   """
 
@@ -55,9 +55,9 @@ defmodule DMExTest do
     end
   end
 
-  describe "DMEx.message_types/0" do
+  describe "DMEx.Message.types/0" do
     test "holds the suite's types, whichever log a caller came from" do
-      types = DMEx.message_types()
+      types = DMEx.Message.types()
 
       assert MapSet.member?(types, "order_placed")
       assert MapSet.member?(types, "order_shipped")

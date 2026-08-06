@@ -89,7 +89,7 @@ defmodule DMEx.Integration.CatchupTest do
     SQL.query!(
       Repo,
       """
-      INSERT INTO dmex_messages (message_type, data, metadata)
+      INSERT INTO dmex_messages (type, data, metadata)
       SELECT $1, json_build_object('order_id', n, 'note', $3::text)::text::jsonb, '{}'::jsonb
         FROM generate_series(1, $2) AS n
       """,
@@ -103,7 +103,7 @@ defmodule DMEx.Integration.CatchupTest do
     SQL.query!(
       Repo,
       """
-      INSERT INTO dmex_messages (message_type, data, metadata)
+      INSERT INTO dmex_messages (type, data, metadata)
       SELECT $1, json_build_object('order_id', n)::text::jsonb, '{}'::jsonb
         FROM generate_series(1, $2) AS n
       """,

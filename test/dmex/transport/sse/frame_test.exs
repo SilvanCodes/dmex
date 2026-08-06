@@ -9,7 +9,7 @@ defmodule DMEx.Transport.SSE.FrameTest do
   defp row(id, opts \\ []) do
     %{
       id: id,
-      message_type: Keyword.get(opts, :message_type, "MyApp.Messages.OrderPlaced"),
+      type: Keyword.get(opts, :type, "MyApp.Messages.OrderPlaced"),
       data: Keyword.get(opts, :data, ~s({"order_id":7})),
       metadata: Keyword.get(opts, :metadata, "{}"),
       inserted_at: Keyword.get(opts, :inserted_at, @at)
@@ -31,7 +31,7 @@ defmodule DMEx.Transport.SSE.FrameTest do
     test "carries the payload and the metadata, and nothing else" do
       assert {:message, message} = reparse(encode(row(1042)))
 
-      assert message |> Map.keys() |> Enum.sort() == ~w(data id message_type metadata)
+      assert message |> Map.keys() |> Enum.sort() == ~w(data id metadata type)
     end
 
     # Three slots carry the row and two of them are SSE's own — which is what
@@ -41,7 +41,7 @@ defmodule DMEx.Transport.SSE.FrameTest do
       assert {:message, message} = reparse(encode(row(1042)))
 
       assert message["id"] == 1042
-      assert message["message_type"] == "MyApp.Messages.OrderPlaced"
+      assert message["type"] == "MyApp.Messages.OrderPlaced"
     end
 
     test "splices row data verbatim rather than re-encoding it" do
@@ -106,7 +106,7 @@ defmodule DMEx.Transport.SSE.FrameTest do
     test "decodes exactly one level — rows stay as maps, not structs" do
       assert {:ok, {:message, message}} = Frame.parse(block(encode(row(1042))))
 
-      assert message["message_type"] == "MyApp.Messages.OrderPlaced"
+      assert message["type"] == "MyApp.Messages.OrderPlaced"
       assert message["data"] == %{"order_id" => 7}
       assert message["metadata"] == %{}
     end
@@ -115,8 +115,8 @@ defmodule DMEx.Transport.SSE.FrameTest do
       crlf = ~s(id: 5\r\nevent: T\r\ndata: {"data":{}})
       cr = ~s(id: 5\revent: T\rdata: {"data":{}})
 
-      assert {:ok, {:message, %{"id" => 5, "message_type" => "T"}}} = Frame.parse(crlf)
-      assert {:ok, {:message, %{"id" => 5, "message_type" => "T"}}} = Frame.parse(cr)
+      assert {:ok, {:message, %{"id" => 5, "type" => "T"}}} = Frame.parse(crlf)
+      assert {:ok, {:message, %{"id" => 5, "type" => "T"}}} = Frame.parse(cr)
     end
 
     test "joins consecutive data: lines with LF, as the SSE spec requires" do
@@ -130,7 +130,7 @@ defmodule DMEx.Transport.SSE.FrameTest do
     end
 
     test "preserves further leading spaces, stripping only the first" do
-      assert {:ok, {:message, %{"message_type" => " padded"}}} =
+      assert {:ok, {:message, %{"type" => " padded"}}} =
                Frame.parse(~s(id: 1\nevent:  padded\ndata: {"data":{}}))
     end
 
@@ -181,7 +181,7 @@ defmodule DMEx.Transport.SSE.FrameTest do
             ) do
         row =
           row(id,
-            message_type: "T" <> type,
+            type: "T" <> type,
             data: JSON.encode!(payload),
             metadata: JSON.encode!(metadata)
           )
@@ -189,7 +189,7 @@ defmodule DMEx.Transport.SSE.FrameTest do
         assert {:ok, {:message, message}} = Frame.parse(block(encode(row)))
 
         assert message["id"] == id
-        assert message["message_type"] == "T" <> type
+        assert message["type"] == "T" <> type
         assert message["data"] == payload
         assert message["metadata"] == metadata
       end

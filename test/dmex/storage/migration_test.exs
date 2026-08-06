@@ -55,7 +55,7 @@ defmodule DMEx.Storage.MigrationTest do
       # The primary key serves a whole-log read — a bare `id > cursor` range
       # scan — directly.
       #
-      # `(message_type, id)` serves a selective one. Leading on `message_type`
+      # `(type, id)` serves a selective one. Leading on `type`
       # is what lets the planner seek per selected type and merge, so a consumer
       # selecting a slice of a busy log reads that slice rather than scanning
       # everything and discarding; without it, resolving a filter server-side
@@ -65,11 +65,11 @@ defmodule DMEx.Storage.MigrationTest do
       # maintenance sits on the one write path that cannot be parallelized away,
       # and every log pays it whether or not anyone selects against it.
       assert indexes("dmex_messages") == [
-               "dmex_messages_message_type_id_index",
-               "dmex_messages_pkey"
+               "dmex_messages_pkey",
+               "dmex_messages_type_id_index"
              ]
 
-      assert index_columns("dmex_messages_message_type_id_index") == ["message_type", "id"]
+      assert index_columns("dmex_messages_type_id_index") == ["type", "id"]
     end
 
     # Stamped by the same INSERT that draws the id, inside the advisory lock's
@@ -79,12 +79,12 @@ defmodule DMEx.Storage.MigrationTest do
       assert %{"column_default" => "clock_timestamp()"} = column("dmex_messages", "inserted_at")
     end
 
-    # `message_type` goes on the wire as an SSE `event:` line, unescaped, because
+    # `type` goes on the wire as an SSE `event:` line, unescaped, because
     # SSE field lines have no escaping. Everything else on the wire is spliced
     # JSON, whose grammar already forbids raw control characters inside strings;
     # this column is not, so the log enforces the charset instead. A row that
     # could split a frame cannot be written in the first place.
-    test "message_type is constrained to what an SSE event: line can carry" do
+    test "type is constrained to what an SSE event: line can carry" do
       assert "dmex_messages_type_charset" in constraints("dmex_messages")
 
       for bad <- ["With\nNewline", "With\rReturn", "With Space", "With:Colon", ""] do
@@ -140,7 +140,7 @@ defmodule DMEx.Storage.MigrationTest do
     # landed here rather than when the message was appended — so it is asserted
     # separately below.
     test "carries the message log's columns, with the same types" do
-      for name <- ~w(id message_type data metadata inserted_at) do
+      for name <- ~w(id type data metadata inserted_at) do
         dead = column("dmex_dead_messages", name)
         log = column("dmex_messages", name)
 
@@ -218,7 +218,7 @@ defmodule DMEx.Storage.MigrationTest do
     rows == []
   end
 
-  # Column *order* is the whole point for `(message_type, id)` — the same two
+  # Column *order* is the whole point for `(type, id)` — the same two
   # columns the other way round would not serve a selective read — so this
   # unnests `indkey` with ordinality rather than taking whatever order the
   # catalog join happens to produce.
@@ -254,7 +254,7 @@ defmodule DMEx.Storage.MigrationTest do
 
   defp insert_type(type) do
     query(
-      "INSERT INTO dmex_messages (message_type, data) VALUES ($1, '{}'::jsonb)",
+      "INSERT INTO dmex_messages (type, data) VALUES ($1, '{}'::jsonb)",
       [type]
     )
 

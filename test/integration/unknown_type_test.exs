@@ -4,7 +4,7 @@ defmodule DMEx.Integration.UnknownTypeTest do
 
   A subscription's message set does two jobs: it is the selection the log
   resolves its filter against, so undecodable rows mostly never cross the wire
-  at all — and it is what resolves a `message_type` back to a module for the
+  at all — and it is what resolves a `type` back to a module for the
   ones that do.
 
   Both halves are tested here, because **the skip path is still load-bearing**.
@@ -62,7 +62,7 @@ defmodule DMEx.Integration.UnknownTypeTest do
     # *delivered*, and on a selective subscription it lags the log by however
     # much of it went to somebody else.
     #
-    # It costs nothing to catch up from. `(message_type, id)` makes the next
+    # It costs nothing to catch up from. `(type, id)` makes the next
     # read an index seek, which is the same price whether the next matching row
     # is one id away or ten million.
     refute_receive {:handled, _, _}, 500
@@ -91,7 +91,7 @@ defmodule DMEx.Integration.UnknownTypeTest do
     # The undecodable row crossed the wire, invoked nothing, and did not wedge
     # the stream behind it.
     assert_receive {[:dmex, :handler, :skip], ^ref, _measurements, metadata}, 5_000
-    assert metadata.message_type == @undecodable
+    assert metadata.type == @undecodable
     assert metadata.handler == Handlers.EchoWholeLog
 
     assert_receive {:handled, %OrderPlaced{order_id: 2}, _}, 5_000
@@ -157,7 +157,7 @@ defmodule DMEx.Integration.UnknownTypeTest do
     {:ok, _} = DMEx.Supervisor.subscribe(handler, supervisor: TestSupervisor, last_seen: 0)
   end
 
-  # A row whose `message_type` no compiled module declares — the only thing a
+  # A row whose `type` no compiled module declares — the only thing a
   # whole-log handler skips now that it resolves everything its application
   # knows. Appended through the storage adapter, because `Log.append/2` takes the
   # type off a message module and a module is exactly what this row must not

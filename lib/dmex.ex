@@ -115,10 +115,6 @@ defmodule DMEx do
   # name, and the errors for each say so — so the rule is written once.
   @identifier ~r/\A[a-z][a-z0-9_]*\z/
 
-  # One key for the node: a message type is unique node-wide, so there is
-  # nothing an application-scoped key would separate. See `message_types/0`.
-  @message_index_key {__MODULE__, :message_index}
-
   @doc """
   The charset every DMEx identifier shares — a log name, a handler `id:`, a log
   `app:`. Exposed so the three call sites cannot drift, and so each can quote it
@@ -173,97 +169,6 @@ defmodule DMEx do
       {:ok, modules} -> modules
       _other -> []
     end
-  end
-
-  @doc """
-  Every message type known to the node, from the cached index.
-
-  What a consumer's filter is resolved against: `DMEx.Log.Plug` tests every type
-  here for membership once at connect, and the types that pass become the
-  connection's `message_type = ANY($1)` predicate and its wakeup routing set.
-
-  ## Why the *modules*, and not a log's contents
-
-  Expanding over the types a log has actually seen — `SELECT DISTINCT
-  message_type` — goes stale silently: a log's code can know a type it has not
-  yet emitted, and first emission involves no restart and no reconnect, so an
-  open connection would keep an expansion missing a type its consumer genuinely
-  selected. That is a false negative, which is silent message loss.
-
-  Compiled modules have no such gap: that set changes only on deploy, and a
-  deploy takes every SSE connection with it, so every affected consumer
-  reconnects and re-expands.
-
-  ## Why one set for the whole node, and not one per application
-
-  A message type is unique node-wide — `refresh_message_index/1` raises on a
-  second module claiming one — so there is nothing for a per-application key to
-  separate. This is never per log either: the set only has to *contain*
-  everything a log might append, since an extra type matches no filter and a
-  missing one is silent loss.
-
-  The lazy branch keeps every caller free of start order: a node whose
-  `DMEx.Supervisor` has not run `refresh_message_index/1` — or that runs no
-  supervisor at all — still answers correctly, just more slowly the first time.
-  It scans the applications depending on `:dmex` alone, so an application that
-  does not — an umbrella parent — is only ever reached by being named.
-  """
-  @spec message_types() :: MapSet.t(String.t())
-  def message_types do
-    message_index() |> Map.keys() |> MapSet.new()
-  end
-
-  @doc """
-  Rescans an application's message modules into the node's index, raising if two
-  modules declare one type.
-
-  Merges rather than replaces, because the scan an application sees is not the
-  whole node: `discovery/1` reaches every application depending on `:dmex` plus
-  the one named, so an umbrella parent and its children each contribute modules
-  the other's scan misses. Replacing would make the last writer at boot drop the
-  rest.
-
-  Which is also where the collision check earns its keep: a type already in the
-  index under a *different* module raises here, even when no single scan sees
-  both — the check is node-wide because the index is.
-
-  Called from `DMEx.Supervisor`'s `init/1` with its `otp_app:` — so an
-  application owning no log gets the check too — and once per application owning
-  one of its logs.
-  """
-  @spec refresh_message_index(atom() | nil) :: %{String.t() => module()}
-  def refresh_message_index(otp_app \\ nil) do
-    scanned = otp_app |> DMEx.Message.discover() |> DMEx.Message.index!()
-
-    # Read raw rather than through `message_index/0`, whose miss branch is this
-    # function.
-    cached = :persistent_term.get(@message_index_key, %{})
-    merged = Map.merge(cached, scanned, &DMEx.Message.collision!/3)
-
-    :persistent_term.put(@message_index_key, merged)
-
-    merged
-  end
-
-  @doc """
-  The message module declaring `type`, or `nil`.
-
-  How a handler decodes a type it never named: `DMEx.Handler` compiles a clause
-  per type its callback did name, and — for a handler with a clause that names
-  none, which asks for the whole log — a fallback that comes here. A **lookup, never `String.to_atom/1`** — the key is a string
-  a log sent, so resolving it through anything that creates atoms would make an
-  unbounded atom table out of attacker-controlled input.
-
-  Same cache and same scan as `message_types/0`; see there for why the modules
-  rather than the log's contents.
-  """
-  @spec message_module(String.t()) :: module() | nil
-  def message_module(type) when is_binary(type) do
-    Map.get(message_index(), type)
-  end
-
-  defp message_index do
-    :persistent_term.get(@message_index_key, nil) || refresh_message_index()
   end
 
   @doc false

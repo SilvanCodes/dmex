@@ -125,7 +125,7 @@ defmodule DMEx.Storage.SQLite do
   @impl DMEx.Storage
   def append(opts, type, data, metadata) when is_binary(type) and is_binary(data) and is_binary(metadata) do
     sql = """
-    INSERT INTO #{@messages} (message_type, data, metadata)
+    INSERT INTO #{@messages} (type, data, metadata)
          VALUES (?1, ?2, ?3)
       RETURNING id
     """
@@ -165,7 +165,7 @@ defmodule DMEx.Storage.SQLite do
     # varying arity costs nothing: exqlite prepares every statement anyway.
     placeholders = Enum.map_join(4..(3 + length(types))//1, ",", &"?#{&1}")
 
-    query(opts, read_sql("AND message_type IN (#{placeholders})"), [
+    query(opts, read_sql("AND type IN (#{placeholders})"), [
       cursor,
       limit,
       max_bytes | types
@@ -199,20 +199,20 @@ defmodule DMEx.Storage.SQLite do
   # Postgres adapter's.
   defp read_sql(predicate) do
     """
-    SELECT id, message_type, data, metadata, inserted_at
+    SELECT id, type, data, metadata, inserted_at
       FROM (
-        SELECT id, message_type, data, metadata, inserted_at, bytes,
+        SELECT id, type, data, metadata, inserted_at, bytes,
                coalesce(
                  sum(bytes) OVER (ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),
                  0
                ) AS prefix_bytes
           FROM (
-            SELECT id, message_type, data, metadata, inserted_at,
+            SELECT id, type, data, metadata, inserted_at,
                    length(CAST(data AS BLOB)) +
                    length(CAST(metadata AS BLOB)) +
-                   length(CAST(message_type AS BLOB)) AS bytes
+                   length(CAST(type AS BLOB)) AS bytes
               FROM (
-                SELECT id, message_type, data, metadata, inserted_at
+                SELECT id, type, data, metadata, inserted_at
                   FROM #{@messages}
                  WHERE id > ?1 #{predicate}
                  ORDER BY id
@@ -245,10 +245,10 @@ defmodule DMEx.Storage.SQLite do
     # One statement, because the empty case runs once per poll interval per app
     # and is the common one. `group_concat` takes DISTINCT only in its
     # single-argument form, so the separator is not ours to choose — splitting on
-    # it is lossless anyway, since the `message_type` CHECK forbids a comma
+    # it is lossless anyway, since the `type` CHECK forbids a comma
     # inside a type. See `DMEx.Storage.SQLite.Migration`.
     sql = """
-    SELECT max(id), coalesce(group_concat(DISTINCT message_type), '')
+    SELECT max(id), coalesce(group_concat(DISTINCT type), '')
       FROM #{@messages}
      WHERE id > ?1
     """
@@ -327,14 +327,14 @@ defmodule DMEx.Storage.SQLite do
     # stop its driver re-encoding an already-encoded binary; text has no such
     # trap to fall into.
     sql = """
-    INSERT INTO #{@dead_messages} (subscription, id, message_type, data, metadata)
+    INSERT INTO #{@dead_messages} (subscription, id, type, data, metadata)
          VALUES (?1, ?2, ?3, ?4, ?5)
     """
 
     params = [
       Map.fetch!(attrs, :subscription),
       Map.fetch!(attrs, :id),
-      Map.fetch!(attrs, :message_type),
+      Map.fetch!(attrs, :type),
       Map.fetch!(attrs, :data),
       Map.get(attrs, :metadata) || "{}"
     ]
@@ -348,7 +348,7 @@ defmodule DMEx.Storage.SQLite do
   @impl DMEx.Storage
   def dead_messages(opts, subscription) when is_binary(subscription) do
     sql = """
-    SELECT id, message_type, data, metadata, inserted_at
+    SELECT id, type, data, metadata, inserted_at
       FROM #{@dead_messages}
      WHERE subscription = ?1
      ORDER BY id
@@ -371,12 +371,12 @@ defmodule DMEx.Storage.SQLite do
 
   # This head **is** the SELECT list, in order: change the column list without
   # changing the head and the rows come out mis-keyed. Not silently —
-  # `test/dmex/storage/conformance_test.exs` value-pins `message_type`, so the
+  # `test/dmex/storage/conformance_test.exs` value-pins `type`, so the
   # mismatch is a failing suite rather than a wrong wire frame.
-  defp to_row([id, message_type, data, metadata, inserted_at]) do
+  defp to_row([id, type, data, metadata, inserted_at]) do
     %{
       id: id,
-      message_type: message_type,
+      type: type,
       data: data,
       metadata: metadata,
       inserted_at: datetime!(inserted_at)

@@ -1,6 +1,6 @@
 defmodule DMEx.MessageTypesSeedTest do
   @moduledoc """
-  The boot-time seed of `DMEx.message_types/0`, when the supervisor's `otp_app:`
+  The boot-time seed of `DMEx.Message.types/0`, when the supervisor's `otp_app:`
   and the application owning a log module are not the same one.
 
   Which is the case `otp_app:` exists for: an umbrella parent starting DMEx for
@@ -64,7 +64,7 @@ defmodule DMEx.MessageTypesSeedTest do
     load!(:dmex_fake_across, [Across.Thing])
 
     on_exit(fn ->
-      :persistent_term.erase({DMEx, :message_index})
+      :persistent_term.erase({DMEx.Message, :index})
       for app <- @apps, do: :application.unload(app)
     end)
 
@@ -77,8 +77,8 @@ defmodule DMEx.MessageTypesSeedTest do
     # way `test_helper.exs` leaves it so the suites after this one still see the
     # suite's own message modules.
     reset = fn ->
-      :persistent_term.erase({DMEx, :message_index})
-      DMEx.refresh_message_index(:dmex)
+      :persistent_term.erase({DMEx.Message, :index})
+      DMEx.Message.refresh_index(:dmex)
     end
 
     reset.()
@@ -95,8 +95,8 @@ defmodule DMEx.MessageTypesSeedTest do
     # In the term, not merely reachable: `DMEx.Log.Plug` reads the cache at the
     # first selective connect, and a lazy scan there would not reach
     # `:dmex_fake_dep` at all, since it declares no `:dmex` dependency.
-    assert {DMEx, :message_index} |> :persistent_term.get() |> Map.has_key?("fake_dep_thing")
-    assert MapSet.member?(DMEx.message_types(), "fake_dep_thing")
+    assert {DMEx.Message, :index} |> :persistent_term.get() |> Map.has_key?("fake_dep_thing")
+    assert MapSet.member?(DMEx.Message.types(), "fake_dep_thing")
   end
 
   test "runs the collision check at boot, not on the first request" do
@@ -108,17 +108,17 @@ defmodule DMEx.MessageTypesSeedTest do
     # The reason the index is node-wide: neither application declares `:dmex`,
     # so no single scan holds both modules and `DMEx.Message.index!/1` alone
     # would let both through. The merge is what catches it.
-    _ = DMEx.refresh_message_index(:dmex_fake_dep)
+    _ = DMEx.Message.refresh_index(:dmex_fake_dep)
 
     assert_raise ArgumentError, ~r/"fake_dep_thing" is declared by both/, fn ->
-      DMEx.refresh_message_index(:dmex_fake_across)
+      DMEx.Message.refresh_index(:dmex_fake_across)
     end
   end
 
   test "a rescan of one application does not collide with itself" do
-    index = DMEx.refresh_message_index(:dmex_fake_dep)
+    index = DMEx.Message.refresh_index(:dmex_fake_dep)
 
-    assert DMEx.refresh_message_index(:dmex_fake_dep) == index
+    assert DMEx.Message.refresh_index(:dmex_fake_dep) == index
   end
 
   ## Helpers

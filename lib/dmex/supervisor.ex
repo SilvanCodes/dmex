@@ -37,8 +37,8 @@ defmodule DMEx.Supervisor do
       for the message types a *pure consumer* can see. Defaults to the Mix
       project; worth stating in a release, though every application depending on
       `:dmex` is scanned regardless. `otp_app: nil` scans nothing beyond those.
-      The types an owned log can append are scanned under the application owning
-      that log module, which is this one only for a single-app host.
+      The application owning each owned log module is scanned too, which is this
+      one only for a single-app host.
     * `:repo` — the Ecto repo holding `dmex_cursors`.
     * `:storage` — the `DMEx.Storage` adapter; defaults to `DMEx.Storage.Postgres`.
       `DMEx.Storage.SQLite` is the other shipped one.
@@ -117,8 +117,8 @@ defmodule DMEx.Supervisor do
     # owning no log — a pure consumer — is checked too, plus each application
     # owning a log, which is `otp_app` only for a single-app host. An umbrella
     # parent would otherwise be scanned lazily inside the first selective
-    # connect, turning a collision into a 500. See `DMEx.message_types/0`.
-    for app <- Enum.uniq([otp_app | log_apps(logs)]), do: DMEx.refresh_message_index(app)
+    # connect, turning a collision into a 500. See `DMEx.Message.types/0`.
+    for app <- Enum.uniq([otp_app | log_apps(logs)]), do: DMEx.Message.refresh_index(app)
 
     children =
       owned_logs(logs) ++
@@ -142,8 +142,8 @@ defmodule DMEx.Supervisor do
     Supervisor.init(children, strategy: :rest_for_one)
   end
 
-  # The applications owning the logs this supervisor starts, which is where
-  # `DMEx.Log.Plug` looks their message types up.
+  # The applications owning the logs this supervisor starts — the ones a scan
+  # cannot reach on its own unless they are named.
   defp log_apps(logs) do
     logs |> owned_logs() |> Enum.map(&DMEx.owning_app/1) |> Enum.uniq()
   end

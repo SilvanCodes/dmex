@@ -33,7 +33,7 @@ defmodule DMEx.Log do
       disagree with the struct it describes.
     * `metadata` passes through **untouched**, all the way to the handler that
       receives it. Nothing DMEx knows is ever written into it.
-    * Nothing records which log appended the message. `message_type` is fully
+    * Nothing records which log appended the message. `type` is fully
       qualified, so it already identifies the appending application.
 
   ## Options
@@ -52,7 +52,7 @@ defmodule DMEx.Log do
   An unrecognised option raises at compile time rather than being ignored.
 
   Which applications' modules are scanned for the message types this log can
-  append is `otp_app:` on `DMEx.Supervisor` — see `DMEx.message_types/0`.
+  append is `otp_app:` on `DMEx.Supervisor` — see `DMEx.Message.types/0`.
 
   ## The app key
 
@@ -87,7 +87,7 @@ defmodule DMEx.Log do
   ## Telemetry
 
   `append/2` emits `[:dmex, :append, :start | :stop | :exception]` with
-  `%{log: module, message_type: String.t()}` metadata.
+  `%{log: module, type: String.t()}` metadata.
   """
 
   alias DMEx.Config
@@ -334,13 +334,13 @@ defmodule DMEx.Log do
 
     %{storage: storage, storage_opts: storage_opts} = config = log.__dmex__()
 
-    type = message_type!(message)
+    type = type!(message)
     data = JSON.encode!(message)
     metadata = opts |> Keyword.get(:metadata, %{}) |> JSON.encode!()
 
     :telemetry.span(
       [:dmex, :append],
-      %{log: log, message_type: type},
+      %{log: log, type: type},
       fn ->
         result = storage.append(storage_opts, type, data, metadata)
 
@@ -353,7 +353,7 @@ defmodule DMEx.Log do
           config.notifier.notify(config.notifier_opts, type)
         end
 
-        {result, %{log: log, message_type: type}}
+        {result, %{log: log, type: type}}
       end
     )
   end
@@ -361,7 +361,7 @@ defmodule DMEx.Log do
   # `DMEx.Message.message?/1` rather than `function_exported?(module, :type, 0)`:
   # exporting `type/0` is a shape a struct can have by coincidence, and one that
   # gets past this dies further in, inside `JSON.encode!/1`.
-  defp message_type!(%module{} = message) do
+  defp type!(%module{} = message) do
     if DMEx.Message.message?(module) do
       module.type()
     else
@@ -373,7 +373,7 @@ defmodule DMEx.Log do
 
   # A non-struct gets the same `ArgumentError` the generated `append/2` promises,
   # rather than a `FunctionClauseError` from a guard.
-  defp message_type!(other) do
+  defp type!(other) do
     raise ArgumentError,
           "#{inspect(other)} is not a struct built with `use DMEx.Message`, " <>
             "so it cannot be appended."

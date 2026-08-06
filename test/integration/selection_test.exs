@@ -66,7 +66,7 @@ defmodule DMEx.Integration.SelectionTest do
     end
 
     test "a fingerprint over every type the log knows matches all of them", %{base: base} do
-      types = MapSet.to_list(DMEx.message_types())
+      types = MapSet.to_list(DMEx.Message.types())
       {:ok, fingerprint} = Fingerprint.build(types)
 
       assert {:ok, 200, headers, _ref} =

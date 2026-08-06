@@ -12,7 +12,7 @@ loss.
 ## What the filter is
 
 An [XOR filter](https://arxiv.org/abs/1912.08258) (Graf & Lemire) over the set
-of `message_type` strings a subscription can decode, with 16-bit fingerprints.
+of `type` strings a subscription can decode, with 16-bit fingerprints.
 
 It has **no false negatives**: every type the consumer selected is delivered,
 always. A false positive — 2⁻¹⁶ per type tested — admits one extra message type,
@@ -29,7 +29,7 @@ stated otherwise. `>>` is a logical shift right. `^` is XOR.
 
 ## 1. Key hashing
 
-The key is the `message_type` string — the `type:` a producer's message module
+The key is the `type` string — the `type:` a producer's message module
 declares — encoded as **UTF-8**, with no normalization, case folding or
 trimming.
 

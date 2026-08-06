@@ -114,7 +114,7 @@ defmodule DMEx.Handler.DeadMessagesTest do
       assert {:ok, [row]} = DeadMessages.list(@handler, ctx.opts)
 
       # Exactly what read/3 returns and what the pipeline consumes.
-      assert row |> Map.keys() |> Enum.sort() == [:data, :id, :inserted_at, :message_type, :metadata]
+      assert row |> Map.keys() |> Enum.sort() == [:data, :id, :inserted_at, :metadata, :type]
     end
   end
 
@@ -252,7 +252,7 @@ defmodule DMEx.Handler.DeadMessagesTest do
                       %{
                         subscription: @subscription,
                         handler: @handler,
-                        message_type: "order_placed",
+                        type: "order_placed",
                         origin: origin,
                         id: 1,
                         attempt: 1
@@ -322,7 +322,7 @@ defmodule DMEx.Handler.DeadMessagesTest do
       Pipeline.run(
         %{
           "id" => id,
-          "message_type" => "order_placed",
+          "type" => "order_placed",
           "data" => %{"order_id" => id},
           "metadata" => Keyword.get(opts, :metadata, %{})
         },

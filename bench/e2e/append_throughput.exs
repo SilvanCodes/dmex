@@ -31,7 +31,7 @@ unlocked = fn ->
   SQL.query!(
     DMEx.Test.IntegrationRepo,
     """
-    INSERT INTO dmex_messages (message_type, data, metadata)
+    INSERT INTO dmex_messages (type, data, metadata)
          VALUES ($1, $2::text::jsonb, '{}'::jsonb)
     """,
     [OrderPlaced.type(), data]

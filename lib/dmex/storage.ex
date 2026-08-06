@@ -89,7 +89,7 @@ defmodule DMEx.Storage do
   """
   @type row :: %{
           required(:id) => pos_integer(),
-          required(:message_type) => String.t(),
+          required(:type) => String.t(),
           required(:data) => binary(),
           required(:metadata) => binary(),
           required(:inserted_at) => DateTime.t()
@@ -118,7 +118,7 @@ defmodule DMEx.Storage do
   Four things an adapter must get right:
 
     * **Both bounds are applied inside the query.** `max_bytes` caps
-      `octet_length(data) + octet_length(metadata) + octet_length(message_type)`
+      `octet_length(data) + octet_length(metadata) + octet_length(type)`
       summed across the returned rows. Reading `limit` rows and trimming the
       surplus afterwards has already spent the memory the bound exists to cap.
       `limit` is not advisory either: it bounds the fixed ~1 KB per-row cost of
@@ -132,7 +132,7 @@ defmodule DMEx.Storage do
 
     * **`types` is two statements, not one.** `:all` for a whole-log
       subscription, or a list already expanded by `DMEx.Log.Plug`. A
-      `($4 IS NULL OR message_type = ANY($4))` shape is a correct query and a
+      `($4 IS NULL OR type = ANY($4))` shape is a correct query and a
       ruinous plan, defeating the index on both branches.
 
   Nothing about the log's tip comes back: the wire carries no `max_id`, so a
@@ -226,7 +226,7 @@ defmodule DMEx.Storage do
   commit together or not at all.
 
   `attrs` carries `:subscription` — the table is shared across the application —
-  plus the log row itself: `:id`, `:message_type`, `:data`, `:metadata`, as the
+  plus the log row itself: `:id`, `:type`, `:data`, `:metadata`, as the
   consumer received them. Not `:inserted_at`, which here records when the row
   landed and is the adapter's to stamp.
 

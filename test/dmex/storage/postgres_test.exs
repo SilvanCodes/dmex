@@ -139,7 +139,7 @@ defmodule DMEx.Storage.PostgresTest do
     %{
       subscription: @some,
       id: 1042,
-      message_type: "MyApp.Messages.OrderPlaced",
+      type: "MyApp.Messages.OrderPlaced",
       data: ~s({"order_id":7}),
       metadata: ~s({"trace_id":"abc"})
     }

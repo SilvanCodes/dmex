@@ -29,7 +29,7 @@ defmodule DMEx.Transport.SSE.Frame do
   reaches the wire, which is what makes it safe to put a whole payload on one
   `data:` line with no escaping pass.
 
-  `message_type` is the constrained-charset case: it goes straight onto the
+  `type` is the constrained-charset case: it goes straight onto the
   `event:` line, and SSE field lines have no escaping. `dmex_messages` carries a
   CHECK restricting it to `[A-Za-z0-9_.]`, so a type that cannot be written on an
   `event:` line cannot be appended. See `DMEx.Storage.Migration`.
@@ -81,7 +81,7 @@ defmodule DMEx.Transport.SSE.Frame do
       "id: ",
       Integer.to_string(row.id),
       "\nevent: ",
-      row.message_type,
+      row.type,
       "\ndata: {\"data\":",
       row.data,
       ",\"metadata\":",
@@ -156,7 +156,7 @@ defmodule DMEx.Transport.SSE.Frame do
   defp decode_row(payload, id, event) do
     case JSON.decode(payload) do
       {:ok, %{"data" => _} = decoded} ->
-        row = %{"id" => id, "message_type" => event}
+        row = %{"id" => id, "type" => event}
 
         {:ok, {:message, Map.merge(decoded, row)}}
 

@@ -257,7 +257,7 @@ defmodule DMEx.Handler.PipelineFailureTest do
 
       assert [[subscription, id, type, data, metadata, inserted_at]] =
                query("""
-               SELECT subscription, id, message_type,
+               SELECT subscription, id, type,
                       data::text, metadata::text, inserted_at
                  FROM dmex_dead_messages
                """)
@@ -293,7 +293,7 @@ defmodule DMEx.Handler.PipelineFailureTest do
                 WHERE table_name = 'dmex_dead_messages'
                """)
 
-      assert columns == [~w(data id inserted_at message_type metadata subscription)]
+      assert columns == [~w(data id inserted_at metadata subscription type)]
     end
 
     test "reports the failure through logs and telemetry instead", ctx do
@@ -498,7 +498,7 @@ defmodule DMEx.Handler.PipelineFailureTest do
   defp row(id, opts \\ []) do
     %{
       "id" => id,
-      "message_type" => "order_placed",
+      "type" => "order_placed",
       "data" => %{"order_id" => id},
       "metadata" => Keyword.get(opts, :metadata, %{})
     }

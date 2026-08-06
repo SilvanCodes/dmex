@@ -39,24 +39,24 @@ The block below is **illustrative and restates rather than defines**:
 `DMEx.Storage.Postgres.Migration` is authoritative, `DMEx.Storage.SQLite.Migration`
 is the same schema on the other engine, and neither `dmex_cursors` nor
 `dmex_dead_messages` is shown here. It is already not literal — the migration adds
-the `message_type` CHECK as a named constraint through a `DO` block rather than
+the `type` CHECK as a named constraint through a `DO` block rather than
 inline, so that it stays re-runnable.
 
 ```sql
 CREATE TABLE dmex_messages (
   id            bigserial   PRIMARY KEY,
-  message_type  text        NOT NULL CHECK (message_type ~ '^[A-Za-z0-9_.]+$'),
+  type  text        NOT NULL CHECK (type ~ '^[A-Za-z0-9_.]+$'),
   data          jsonb       NOT NULL,
   metadata      jsonb       NOT NULL DEFAULT '{}',
   inserted_at   timestamptz NOT NULL DEFAULT clock_timestamp()
 );
 
-CREATE INDEX ON dmex_messages (message_type, id);
+CREATE INDEX ON dmex_messages (type, id);
 ```
 
 - `id` is the offset and the only ordering and resumption mechanism. `bigint`
   because a log nothing deletes from outgrows 2³¹.
-- `message_type` is the string the appending module declared as its `type:`,
+- `type` is the string the appending module declared as its `type:`,
   independent of what that module is called, so a producer can reorganise its
   message modules without any of it reaching this column.
 - `metadata` is entirely publisher-owned; DMEx writes nothing into this column,
@@ -67,25 +67,25 @@ CREATE INDEX ON dmex_messages (message_type, id);
   `now()` so it still ascends with `id`: `now()` is the transaction's start
   time, taken before the advisory lock was acquired, so it says nothing about
   the order ids were assigned in.
-- `message_type` is constrained to `[A-Za-z0-9_.]+` because it goes on an SSE
+- `type` is constrained to `[A-Za-z0-9_.]+` because it goes on an SSE
   `event:` line, and SSE field lines have no escaping. Dots survive so a
   declared type can namespace itself.
 
 **Two indexes, one per read shape.** The primary key serves a whole-log
-`id > cursor` range scan; `(message_type, id)` serves a selective one, and the
+`id > cursor` range scan; `(type, id)` serves a selective one, and the
 planner takes whichever is cheaper (see *What has been measured*).
 
 **A row says what a message *is*, never who might want it.** A grouping stamped
 in at append time would be immutable with the table: fixed message by message,
 unable to apply to history or to follow readers as they change. So
-`message_type` is the only classification a row carries, and who wants what is
+`type` is the only classification a row carries, and who wants what is
 resolved at read time.
 
 ## Message-type selection
 
 **The selection is the handler's clauses.** `DMEx.Handler` already derives a
 subscription's message set at compile time from the structs `handle_message/2`
-matches on — it has to, or a consumer could not turn a `message_type` back into
+matches on — it has to, or a consumer could not turn a `type` back into
 a struct. That set is also the selection. A name standing for a set of types would
 be a second vocabulary to define, version, discover and keep in sync, and the
 two can disagree: naming a type the handler cannot decode, or omitting one it
@@ -135,10 +135,10 @@ new type, have handlers declare both, cut producers over, and drop the old
 module a deploy later.
 
 **The producer resolves it against its own compiled modules**, not against what
-its log contains. `SELECT DISTINCT message_type` goes stale silently: a producer
+its log contains. `SELECT DISTINCT type` goes stale silently: a producer
 can know a type it has not yet emitted, and first emission involves no restart
 and no reconnect — while the module set changes only on deploy, and a deploy
-takes every SSE connection with it. `DMEx.message_types/1` scans the producer's OTP
+takes every SSE connection with it. `DMEx.Message.types/0` scans the producer's OTP
 application and every loaded application depending on `:dmex`, which is exactly
 the set whose modules could contain a `use DMEx.Message`. The result only has to
 be a *superset* of what the producer appends: an extra type never matches, a
@@ -148,7 +148,7 @@ missing one is silent loss.
 sequence. A selective subscription sees a sparse subset of that same id space,
 so every consumer's `last_seen` is comparable with every other's. A selective
 cursor lags the log by however much of it went to somebody else, which costs
-nothing to resume from: `(message_type, id)` makes the next read an index seek,
+nothing to resume from: `(type, id)` makes the next read an index seek,
 the same price whether the next matching row is one id away or ten million.
 
 **Selection does not reach the append path.** A publisher does not know, and
@@ -233,7 +233,7 @@ data: {"data":{"order_id":7},"metadata":{"trace_id":"abc"}}
 | column | goes to | why there |
 | --- | --- | --- |
 | `id` | `id:` | it *is* the resume position, so a generic client's `Last-Event-ID` works with no DMEx knowledge |
-| `message_type` | `event:` | it *is* the event name, so `addEventListener("order_shipped", …)` works in a browser |
+| `type` | `event:` | it *is* the event name, so `addEventListener("order_shipped", …)` works in a browser |
 | `data` | inside `data:` | the publisher's payload, verbatim |
 | `metadata` | inside `data:` | the publisher's metadata, verbatim |
 | `inserted_at` | nowhere | observability only, and a field on every frame for a signal most consumers never read |
@@ -363,7 +363,7 @@ separately — its own transaction, handler call, cursor advance and failure
 handling. A mid-batch failure rolls back exactly one message.
 
 **11. The handler sees its message and a metadata map, nothing else.** No frame,
-no id, no `message_type` — the map is the publisher's, byte for byte. A handler
+no id, no `type` — the map is the publisher's, byte for byte. A handler
 stays a plain function of its domain data plus context, testable by constructing
 a struct and a map.
 
@@ -535,14 +535,14 @@ of scope.
 
   It also puts a number on the request-line ceiling: **~2 400 message types** at
   an 8 KB limit.
-- **The `(message_type, id)` index is taken exactly when it pays.** This one is
+- **The `(type, id)` index is taken exactly when it pays.** This one is
   a one-off `EXPLAIN` session rather than a `bench/` artifact — nothing in
   `bench/` runs `EXPLAIN`. On a 500k-row skewed log (one type at 99%, one at
   0.9%, one at 0.1%): the 0.1% type uses the index; the 0.9% type or larger uses
   the primary key and filters, at fewer buffers than the index plan would cost. A hand-written per-type `LATERAL`
   seek — the usual loose-index-scan workaround — is *worse* everywhere except the
   most extreme selectivity, because each branch fetches a whole `LIMIT` per type
-  and discards the surplus. So plain `message_type = ANY($1)` is the right query
+  and discards the surplus. So plain `type = ANY($1)` is the right query
   and the planner is left to choose.
 
 ## Open questions
@@ -555,7 +555,7 @@ of scope.
   repos and languages. The options — a shared package, a self-describing schema
   endpoint, a loose map-plus-type-string decode, an external registry — are not
   mutually exclusive. One constraint: dropping `origin` rests
-  on `message_type` being unique across producers, which a declared `type:` makes
+  on `type` being unique across producers, which a declared `type:` makes
   a producer's own choice rather than a property of the module name. Nothing
   outside a single node can detect two producers declaring one type, so any
   option here has to say how a consumer knows which application a message came

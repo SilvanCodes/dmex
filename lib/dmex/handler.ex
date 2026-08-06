@@ -65,7 +65,7 @@ defmodule DMEx.Handler do
 
   It also widens what can be **decoded**. A type no clause named still resolves
   to a module, through every message module the node knows
-  (`DMEx.message_module/1`), so a catch-all receives everything this node can
+  (`DMEx.Message.for_type/1`), so a catch-all receives everything this node can
   turn back into a struct. A type *no* module declares is still skipped —
   there is nothing to decode it into — which is what makes such a handler a
   usable diagnostic: every row arrives, and `[:dmex, :handler, :skip]` names the
@@ -155,7 +155,7 @@ defmodule DMEx.Handler do
   Handles one message.
 
   Receives the decoded struct and the publisher's `metadata` map, which DMEx
-  writes nothing into — no id, no `message_type`, nothing about the row. The
+  writes nothing into — no id, no `type`, nothing about the row. The
   return value is ignored; raise to signal failure.
 
   **The first argument declares what this subscription consumes.** A named
@@ -457,7 +457,7 @@ defmodule DMEx.Handler do
   #
   # A whole-log one asked for every row, so a type it never mentioned still
   # resolves, through the node's index of message modules. Not
-  # `String.to_atom/1` on what a log sent: `DMEx.message_module/1` is a lookup in
+  # `String.to_atom/1` on what a log sent: `DMEx.Message.for_type/1` is a lookup in
   # a map built at boot from compiled modules, so a type nothing declares stays a
   # skip rather than an atom.
   #
@@ -468,8 +468,8 @@ defmodule DMEx.Handler do
   # a failure, retried and dead-lettered, for a message nothing asked for.
   defp last_cast_clause(%{fingerprint: nil}) do
     quote do
-      def __dmex_cast__(message_type, data, metadata) do
-        case DMEx.message_module(message_type) do
+      def __dmex_cast__(type, data, metadata) do
+        case DMEx.Message.for_type(type) do
           nil ->
             nil
 
@@ -484,7 +484,7 @@ defmodule DMEx.Handler do
 
   defp last_cast_clause(_declaration) do
     quote do
-      def __dmex_cast__(_message_type, _data, _metadata), do: nil
+      def __dmex_cast__(_type, _data, _metadata), do: nil
     end
   end
 

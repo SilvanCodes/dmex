@@ -60,7 +60,7 @@ seed = fn count ->
   SQL.query!(
     DMEx.Test.IntegrationRepo,
     """
-    INSERT INTO dmex_messages (message_type, data, metadata)
+    INSERT INTO dmex_messages (type, data, metadata)
     SELECT $1, json_build_object('order_id', n, 'note', repeat('x', 200))::text::jsonb, '{}'::jsonb
       FROM generate_series(1, $2) AS n
     """,
@@ -216,7 +216,7 @@ defmodule Bench.SkippingHandler do
   # selective stream would carry none of these rows, so there would be nothing
   # to skip. And a selective fingerprint here could not match anything, since
   # `Bench.UnusedMessage` is defined at runtime in this script while the producer
-  # expands filters over *compiled* application modules (`DMEx.message_types/0`)
+  # expands filters over *compiled* application modules (`DMEx.Message.types/0`)
   # — the filter would match zero types, the connect would 404, and this stage
   # would retry forever.
   use DMEx.Handler, logs: [:bench], id: :skipping

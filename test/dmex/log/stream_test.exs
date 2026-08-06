@@ -58,7 +58,7 @@ defmodule DMEx.Log.StreamTest do
 
       # Storage rows, not frames: framing is the transport's business and the
       # loop never sees a byte.
-      assert %{id: 1, message_type: _, data: _, metadata: _, inserted_at: _} = hd(rows)
+      assert %{id: 1, type: _, data: _, metadata: _, inserted_at: _} = hd(rows)
     end
 
     test "leaves metadata exactly as read", %{opts: opts} do

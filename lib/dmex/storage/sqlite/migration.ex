@@ -46,7 +46,7 @@ defmodule DMEx.Storage.SQLite.Migration do
   renders its bound parameter to match. One statement, so the invariant cannot
   hold for one table and not another.
 
-  ## The `message_type` CHECK, in GLOB
+  ## The `type` CHECK, in GLOB
 
   SQLite has no regex operator, so Postgres's `~ '^[A-Za-z0-9_.]+$'` becomes
   "contains no character outside the set", plus a non-empty test the negated glob
@@ -121,8 +121,8 @@ defmodule DMEx.Storage.SQLite.Migration do
     execute("""
     CREATE TABLE IF NOT EXISTS #{@messages} (
       id           INTEGER PRIMARY KEY AUTOINCREMENT,
-      message_type TEXT NOT NULL
-                   CHECK (message_type <> '' AND message_type NOT GLOB '*[^A-Za-z0-9_.]*'),
+      type TEXT NOT NULL
+                   CHECK (type <> '' AND type NOT GLOB '*[^A-Za-z0-9_.]*'),
       data         TEXT NOT NULL CHECK (json_valid(data)),
       metadata     TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(metadata)),
       inserted_at  TEXT NOT NULL DEFAULT (#{@now})
@@ -132,8 +132,8 @@ defmodule DMEx.Storage.SQLite.Migration do
     # The same one the Postgres migration creates, for the same query — see
     # `DMEx.Storage.Migration` for when it earns its per-append cost.
     execute("""
-    CREATE INDEX IF NOT EXISTS #{@messages}_message_type_id_index
-        ON #{@messages} (message_type, id)
+    CREATE INDEX IF NOT EXISTS #{@messages}_type_id_index
+        ON #{@messages} (type, id)
     """)
 
     :ok
@@ -157,7 +157,7 @@ defmodule DMEx.Storage.SQLite.Migration do
     CREATE TABLE IF NOT EXISTS #{@dead_messages} (
       subscription TEXT NOT NULL,
       id           INTEGER NOT NULL,
-      message_type TEXT NOT NULL,
+      type TEXT NOT NULL,
       data         TEXT NOT NULL CHECK (json_valid(data)),
       metadata     TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(metadata)),
       inserted_at  TEXT NOT NULL DEFAULT (#{@now}),

@@ -50,7 +50,7 @@ defmodule DMEx.Notifier do
   @doc """
   Subscribes the calling process to this log's append notifications.
 
-  Delivery is `{:notification, pid, reference(), channel :: String.t(), message_type ::
+  Delivery is `{:notification, pid, reference(), channel :: String.t(), type ::
   String.t()}` — the shape `Postgrex.Notifications` sends, of which
   `DMEx.Log.Dispatcher` reads the last element and nothing else.
 
@@ -83,7 +83,7 @@ defmodule DMEx.Notifier do
   into an error, so this returns `:ok` regardless. The lost notification costs
   one poll interval.
 
-  The payload is the `message_type` and nothing else — what the *dispatcher*
+  The payload is the `type` and nothing else — what the *dispatcher*
   routes on, never a carrier of work. No notifier routes on it: `:channel` is
   the only dimension a notifier selects by, and every stream reads for itself.
 
@@ -94,5 +94,5 @@ defmodule DMEx.Notifier do
   is wrong — the round trip is what buys reach past this cluster — but on a hot
   append path the difference is the thing to choose on.
   """
-  @callback notify(opts(), message_type :: String.t()) :: :ok
+  @callback notify(opts(), type :: String.t()) :: :ok
 end

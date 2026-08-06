@@ -54,12 +54,12 @@ defmodule DMEx.Transport.Local do
   @impl DMEx.Transport
   def heartbeat(sink), do: {:ok, sink}
 
-  # The pipeline reads `id`, `message_type`, `data` and `metadata` — the same
+  # The pipeline reads `id`, `type`, `data` and `metadata` — the same
   # shape a parsed frame has, minus the trip through JSON text.
   defp row(row) do
     %{
       "id" => row.id,
-      "message_type" => row.message_type,
+      "type" => row.type,
       "data" => JSON.decode!(row.data),
       "metadata" => JSON.decode!(row.metadata)
     }

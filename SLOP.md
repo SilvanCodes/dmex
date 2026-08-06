@@ -44,7 +44,7 @@ instead of "no pool queueing at 200 concurrent streams".
 ### 1c. `catchup_drain` stage (c) hung — fixed
 
 Confirmed exactly as reported: the runtime-defined `Bench.UnusedMessage` cannot
-appear in `DMEx.message_types/1`'s scan of *compiled* application modules, so a
+appear in `DMEx.Message.types/0`'s scan of *compiled* application modules, so a
 selective fingerprint matched zero types → `404` → retry forever. Now
 `selective: false`, which the file's own header already documented as stage (c)'s
 design.
@@ -232,11 +232,11 @@ within noise.
 | `recovered/encoded` | 1.0 at 84/86, worst 1.00069 | identical |
 | request-line ceiling | ~2 400 types | ~2 460 |
 
-The **`(message_type, id)` index claim** had no artifact in the repo at all — one
+The **`(type, id)` index claim** had no artifact in the repo at all — one
 whole-log `EXPLAIN` assertion in `postgres_test.exs`, nothing for the skewed
 case. Re-derived against a fresh 500 000-row log at 99% / 0.9% / 0.1%:
 
-- 0.1% (500 rows) → `Index Scan using dmex_messages_message_type_id_index`
+- 0.1% (500 rows) → `Index Scan using dmex_messages_type_id_index`
 - 0.9% (4 500 rows) → `Index Scan using dmex_messages_pkey`
 - 99% (495 000 rows) → `Index Scan using dmex_messages_pkey`
 

@@ -46,7 +46,7 @@ defmodule DMEx.Test.Storage do
   def row(id, opts \\ []) do
     %{
       id: id,
-      message_type: Keyword.get(opts, :message_type, "order_placed"),
+      type: Keyword.get(opts, :type, "order_placed"),
       data: Keyword.get(opts, :data, ~s({"order_id":#{id}})),
       metadata: Keyword.get(opts, :metadata, "{}"),
       inserted_at: Keyword.get(opts, :inserted_at, ~U[2026-07-27 10:31:04.221Z])
@@ -100,7 +100,7 @@ defmodule DMEx.Test.Storage do
   def append(opts, type, data, metadata) do
     Agent.get_and_update(store(opts), fn state ->
       id = length(state.rows) + 1
-      row = row(id, message_type: type, data: data, metadata: metadata)
+      row = row(id, type: type, data: data, metadata: metadata)
 
       {{:ok, id}, %{state | rows: state.rows ++ [row]}}
     end)
@@ -152,11 +152,11 @@ defmodule DMEx.Test.Storage do
   end
 
   defp row_bytes(row) do
-    byte_size(row.data) + byte_size(row.metadata) + byte_size(row.message_type)
+    byte_size(row.data) + byte_size(row.metadata) + byte_size(row.type)
   end
 
   defp selected?(_row, :all), do: true
-  defp selected?(row, types), do: row.message_type in types
+  defp selected?(row, types), do: row.type in types
 
   @impl DMEx.Storage
   def max_id(opts) do
@@ -171,7 +171,7 @@ defmodule DMEx.Test.Storage do
     Agent.get(store(opts), fn state ->
       case Enum.filter(state.rows, &(&1.id > cursor)) do
         [] -> {:ok, {nil, []}}
-        rows -> {:ok, {max_id_of(rows), rows |> Enum.map(& &1.message_type) |> Enum.uniq()}}
+        rows -> {:ok, {max_id_of(rows), rows |> Enum.map(& &1.type) |> Enum.uniq()}}
       end
     end)
   end
@@ -220,7 +220,7 @@ defmodule DMEx.Test.Storage do
         state.dead
         |> Enum.reverse()
         |> Enum.filter(&(&1.subscription == subscription))
-        |> Enum.map(&Map.take(&1, [:id, :message_type, :data, :metadata, :inserted_at]))
+        |> Enum.map(&Map.take(&1, [:id, :type, :data, :metadata, :inserted_at]))
 
       {:ok, rows}
     end)

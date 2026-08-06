@@ -90,10 +90,10 @@ for {storage, repo, tag} <- [
         assert {:ok, [row]} = @storage.read(opts, id - 1, 1, @megabyte, :all)
 
         assert row |> Map.keys() |> Enum.sort() ==
-                 [:data, :id, :inserted_at, :message_type, :metadata]
+                 [:data, :id, :inserted_at, :metadata, :type]
 
         assert row.id == id
-        assert row.message_type == "MyApp.Messages.OrderPlaced"
+        assert row.type == "MyApp.Messages.OrderPlaced"
       end
 
       # This is the splice invariant. DMEx.Transport.SSE.Frame.encode_row/1 copies
@@ -237,7 +237,7 @@ for {storage, repo, tag} <- [
         assert {:ok, rows} = @storage.read(opts, 0, 100, row_bytes * 3 + 1, ["A"])
 
         assert length(rows) == 3
-        assert Enum.all?(rows, &(&1.message_type == "A"))
+        assert Enum.all?(rows, &(&1.type == "A"))
       end
 
       # The budget is counted in bytes, not characters — which only shows up on a
@@ -424,7 +424,7 @@ for {storage, repo, tag} <- [
         assert {:ok, [row]} = @storage.dead_messages(opts, @some)
 
         assert row.id == 1042
-        assert row.message_type == "MyApp.Messages.OrderPlaced"
+        assert row.type == "MyApp.Messages.OrderPlaced"
         assert JSON.decode!(row.data) == %{"order_id" => 7}
         assert JSON.decode!(row.metadata) == %{"trace_id" => "abc"}
 
@@ -457,7 +457,7 @@ for {storage, repo, tag} <- [
         assert {:ok, [row]} = @storage.dead_messages(opts, @some)
 
         assert row |> Map.keys() |> Enum.sort() ==
-                 [:data, :id, :inserted_at, :message_type, :metadata]
+                 [:data, :id, :inserted_at, :metadata, :type]
 
         assert is_binary(row.data)
         assert is_binary(row.metadata)
@@ -507,7 +507,7 @@ for {storage, repo, tag} <- [
     # What the byte bound counts: payload plus the type.
     defp payload_bytes(rows) do
       Enum.reduce(rows, 0, fn row, total ->
-        total + byte_size(row.data) + byte_size(row.metadata) + byte_size(row.message_type)
+        total + byte_size(row.data) + byte_size(row.metadata) + byte_size(row.type)
       end)
     end
 
@@ -526,7 +526,7 @@ for {storage, repo, tag} <- [
       %{
         subscription: Keyword.get(overrides, :subscription, @some),
         id: Keyword.get(overrides, :id, 1042),
-        message_type: "MyApp.Messages.OrderPlaced",
+        type: "MyApp.Messages.OrderPlaced",
         data: ~s({"order_id":7}),
         metadata: ~s({"trace_id":"abc"})
       }

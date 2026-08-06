@@ -55,7 +55,7 @@ defmodule DMEx.Storage.Postgres.Migration do
       # describes what the message *is*, never who might want to read it. Who
       # wants what is resolved at read time, by the reader. Constrained below,
       # because it goes on the wire as an unescaped SSE `event:` line.
-      add(:message_type, :text, null: false)
+      add(:type, :text, null: false)
 
       # jsonb so operators can query inside payloads directly. The accepted cost
       # is normalization: key order is not preserved and duplicate keys are
@@ -87,7 +87,7 @@ defmodule DMEx.Storage.Postgres.Migration do
     # it. It is also the reason a whole-log read is a *separate statement* (see
     # `DMEx.Storage.Postgres.read/5`): folding both into one query with a
     # nullable predicate would defeat this index and the primary key at once.
-    create_if_not_exists(index(@messages, [:message_type, :id], prefix: prefix))
+    create_if_not_exists(index(@messages, [:type, :id], prefix: prefix))
 
     # Written out rather than through `constraint/3`, because Ecto has no
     # `create_if_not_exists` for constraints and Postgres has no
@@ -97,7 +97,7 @@ defmodule DMEx.Storage.Postgres.Migration do
     DO $$ BEGIN
       ALTER TABLE #{qualified(@messages, prefix)}
         ADD CONSTRAINT #{@messages}_type_charset
-        CHECK (message_type ~ '^[A-Za-z0-9_.]+$');
+        CHECK (type ~ '^[A-Za-z0-9_.]+$');
     EXCEPTION WHEN duplicate_object THEN NULL;
     END $$;
     """)
@@ -142,7 +142,7 @@ defmodule DMEx.Storage.Postgres.Migration do
 
       # From here down, this is dmex_messages.
       add(:id, :bigint, primary_key: true)
-      add(:message_type, :text, null: false)
+      add(:type, :text, null: false)
       add(:data, :jsonb, null: false)
       add(:metadata, :jsonb, null: false, default: fragment("'{}'::jsonb"))
 

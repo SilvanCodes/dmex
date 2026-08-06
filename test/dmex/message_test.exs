@@ -207,20 +207,20 @@ defmodule DMEx.MessageTest do
     end
   end
 
-  describe "types!/1" do
-    test "returns the declared types" do
-      assert DMEx.Message.types!([OrderPlaced, OrderShipped]) ==
-               MapSet.new(["order_placed", "order_shipped"])
+  describe "index!/1" do
+    test "keys the modules by their declared type" do
+      assert DMEx.Message.index!([OrderPlaced, OrderShipped]) ==
+               %{"order_placed" => OrderPlaced, "order_shipped" => OrderShipped}
     end
 
-    test "raises on a collision rather than collapsing it into the set" do
-      # The failure this exists to prevent: a MapSet of types alone would return
-      # a set of size one here, leaving the losing module permanently
-      # unreachable and every row of its type silently skipped.
+    test "raises on a collision rather than letting the second module win" do
+      # The failure this exists to prevent: a plain `Map.new/2` would return a
+      # map of size one here, leaving the losing module permanently unreachable
+      # and every row of its type silently skipped.
       twin = compile_message(~s|type: "order_placed"|)
 
       assert_raise ArgumentError, ~r/declared by both.*give one of them a different/s, fn ->
-        DMEx.Message.types!([OrderPlaced, twin])
+        DMEx.Message.index!([OrderPlaced, twin])
       end
     end
   end

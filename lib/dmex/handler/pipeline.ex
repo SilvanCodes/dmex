@@ -18,7 +18,7 @@ defmodule DMEx.Handler.Pipeline do
 
   ## 2. A message no clause matches is skipped, not an error
 
-  Two rows land here. One whose `message_type` resolves to no module at all: a
+  Two rows land here. One whose `type` resolves to no module at all: a
   filter false positive admits one, and a whole-log handler is sent every type
   its log holds, including those its application has never heard of. And one
   whose type *does* resolve but whose value no clause head accepts, because
@@ -212,7 +212,7 @@ defmodule DMEx.Handler.Pipeline do
   @spec deliver(t(), row(), (-> any())) :: verdict()
   def deliver(state, row, commit) do
     id = Map.fetch!(row, "id")
-    type = Map.fetch!(row, "message_type")
+    type = Map.fetch!(row, "type")
     metadata = Map.get(row, "metadata") || %{}
 
     case state.handler.__dmex_cast__(type, Map.fetch!(row, "data"), metadata) do
@@ -222,7 +222,7 @@ defmodule DMEx.Handler.Pipeline do
       message ->
         attempt(
           state,
-          %{id: id, message_type: type, message: message, metadata: metadata},
+          %{id: id, type: type, message: message, metadata: metadata},
           commit,
           1
         )
@@ -255,7 +255,7 @@ defmodule DMEx.Handler.Pipeline do
 
   The message set was derived and validated at compile time, so there is nothing
   left for this to check but the handler itself — and nothing to carry, since
-  resolving a `message_type` is the handler's own `__dmex_cast__/3`, compiled
+  resolving a `type` is the handler's own `__dmex_cast__/3`, compiled
   from that set. Never `String.to_atom/1` on whatever the log sent, which would
   be an unbounded-atom-table risk on attacker-controlled input.
   """
@@ -303,7 +303,7 @@ defmodule DMEx.Handler.Pipeline do
     telemetry = %{
       subscription: state.subscription,
       handler: state.handler,
-      message_type: delivery.message_type,
+      type: delivery.type,
       origin: state.origin,
       id: delivery.id,
       attempt: attempt
@@ -392,7 +392,7 @@ defmodule DMEx.Handler.Pipeline do
       state.storage.dead_message(state.storage_opts, %{
         subscription: state.subscription,
         id: id,
-        message_type: Map.fetch!(row, "message_type"),
+        type: Map.fetch!(row, "type"),
         data: encode(Map.get(row, "data")),
         metadata: encode(Map.get(row, "metadata"))
       })
@@ -406,7 +406,7 @@ defmodule DMEx.Handler.Pipeline do
   defp report(state, row, id, exception, attempts, mode) do
     Logger.error(fn ->
       "DMEx #{state.subscription} (#{inspect(state.handler)}) gave up on message #{id} " <>
-        "(#{Map.fetch!(row, "message_type")}) from #{inspect(state.origin)} after #{attempts} " <>
+        "(#{Map.fetch!(row, "type")}) from #{inspect(state.origin)} after #{attempts} " <>
         "attempt(s): #{Exception.message(exception)} — on_failure: #{mode}"
     end)
 
@@ -416,7 +416,7 @@ defmodule DMEx.Handler.Pipeline do
       %{
         subscription: state.subscription,
         handler: state.handler,
-        message_type: Map.fetch!(row, "message_type"),
+        type: Map.fetch!(row, "type"),
         origin: state.origin,
         on_failure: mode,
         reason: Exception.message(exception)
@@ -424,14 +424,14 @@ defmodule DMEx.Handler.Pipeline do
     )
   end
 
-  defp skip(state, id, message_type) do
+  defp skip(state, id, type) do
     :telemetry.execute(
       [:dmex, :handler, :skip],
       %{id: id},
       %{
         subscription: state.subscription,
         handler: state.handler,
-        message_type: message_type,
+        type: type,
         origin: state.origin
       }
     )
