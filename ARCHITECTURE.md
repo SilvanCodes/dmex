@@ -261,7 +261,7 @@ write an `EventSource` against a typed stream. `curl -N` shows the type on its o
 
 **Heartbeats** are SSE comment frames (`: hb`) on an idle interval, ignored by
 every spec-compliant client. `retry:` is sent at stream open carrying the
-**effective** interval — `heartbeat_ms` plus one batch interval, because the
+**effective** interval — `heartbeat_interval` plus one batch interval, because the
 send loop's throttle runs after the heartbeat branch and that sum is the real
 upper bound on silence. A generic client reads it as a reconnect delay; a DMEx
 consumer reads it as "expect a frame or a comment within this window" and

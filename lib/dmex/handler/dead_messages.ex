@@ -42,7 +42,7 @@ defmodule DMEx.Handler.DeadMessages do
   ## Options
 
   `repo:` (required), plus optional `storage:`, `prefix:` and — for a multi-log
-  handler — `log:`. See `DMEx.Supervisor.storage!/1`.
+  handler — `for:`. See `DMEx.Supervisor.storage!/1`.
   """
 
   alias DMEx.Config

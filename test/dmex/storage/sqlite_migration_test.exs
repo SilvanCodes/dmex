@@ -155,11 +155,11 @@ defmodule DMEx.Storage.SQLiteMigrationTest do
       # SQLite has no schemas. Silently dropping it would put the tables
       # somewhere other than where the operator wrote them.
       assert_raise ArgumentError, ~r/SQLite has no schemas/, fn ->
-        Migration.up([:log], "reporting")
+        Migration.up([:messages], "reporting")
       end
 
       assert_raise ArgumentError, ~r/SQLite has no schemas/, fn ->
-        Migration.down([:log], "reporting")
+        Migration.down([:messages], "reporting")
       end
     end
   end

@@ -20,7 +20,7 @@ defmodule DMEx.Test.IntegrationLog do
 
   use DMEx.Log,
     repo: DMEx.Test.IntegrationRepo,
-    app: :dmex_integration
+    app_key: :dmex_integration
 end
 
 defmodule DMEx.Test.HeartbeatLog do
@@ -34,8 +34,8 @@ defmodule DMEx.Test.HeartbeatLog do
 
   use DMEx.Log,
     repo: DMEx.Test.IntegrationRepo,
-    app: :dmex_heartbeat,
-    heartbeat_ms: 150,
+    app_key: :dmex_heartbeat,
+    heartbeat_interval: 150,
     poll_interval: 100
 end
 
@@ -51,7 +51,7 @@ defmodule DMEx.Test.SQLiteLog do
   use DMEx.Log,
     repo: DMEx.Test.SQLiteIntegrationRepo,
     storage: DMEx.Storage.SQLite,
-    app: :dmex_sqlite
+    app_key: :dmex_sqlite
 end
 
 defmodule DMEx.Test.StallLog do
@@ -64,8 +64,8 @@ defmodule DMEx.Test.StallLog do
 
   use DMEx.Log,
     repo: DMEx.Test.IntegrationRepo,
-    app: :dmex_stall,
-    heartbeat_ms: 60_000,
+    app_key: :dmex_stall,
+    heartbeat_interval: 60_000,
     max_batch_bytes: 16_384,
     stall_timeout: 300,
     stall_check_interval: 50
@@ -76,7 +76,7 @@ defmodule DMEx.Test.PatientLog do
 
   use DMEx.Log,
     repo: DMEx.Test.IntegrationRepo,
-    app: :dmex_stall_patient,
+    app_key: :dmex_stall_patient,
     stall_timeout: :infinity
 end
 

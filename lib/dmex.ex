@@ -9,7 +9,7 @@ defmodule DMEx do
   ## Installing
 
   DMEx's tables live in your database, so they are yours to migrate. Pass
-  `tables: [:log]` or `tables: [:subscriptions]` if the application only plays
+  `tables: [:messages]` or `tables: [:cursors, :dead_messages]` if the application only plays
   one of the two roles; see `DMEx.Storage.Migration`.
 
       defmodule MyApp.Repo.Migrations.AddDMEx do
@@ -49,7 +49,7 @@ defmodule DMEx do
   name, and — from the structs its clauses match on — which message types.
 
       defmodule MyApp.OrderProjection do
-        use DMEx.Handler, logs: [:orders], id: :order_projection
+        use DMEx.Handler, logs: [:orders], name: :order_projection
 
         @impl true
         def handle_message(%MyApp.Messages.OrderPlaced{} = message, _metadata) do
@@ -111,13 +111,13 @@ defmodule DMEx do
   `DMEx.Telemetry` documents every event DMEx emits.
   """
 
-  # A log name, a handler's `id:`, and a log's `app:` are all the same kind of
+  # A log name, a handler's `name:`, and a log's `app_key:` are all the same kind of
   # name, and the errors for each say so — so the rule is written once.
   @identifier ~r/\A[a-z][a-z0-9_]*\z/
 
   @doc """
-  The charset every DMEx identifier shares — a log name, a handler `id:`, a log
-  `app:`. Exposed so the three call sites cannot drift, and so each can quote it
+  The charset every DMEx identifier shares — a log name, a handler `name:`, a log
+  `app_key:`. Exposed so the three call sites cannot drift, and so each can quote it
   in its own error.
   """
   @spec identifier_format() :: Regex.t()

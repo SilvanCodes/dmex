@@ -93,7 +93,7 @@ defmodule DMEx.Log.SendLoopTest do
     end
 
     test "asks for a heartbeat when a wait expires with nothing to send", %{opts: opts} do
-      start_loop(opts, transport: StubTransport, heartbeat_ms: 10, chunks: 5)
+      start_loop(opts, transport: StubTransport, heartbeat_interval: 10, chunks: 5)
 
       assert_receive :heartbeat, 1_000
     end
@@ -115,7 +115,7 @@ defmodule DMEx.Log.SendLoopTest do
     test "an empty read sends no frame at all", %{opts: opts} do
       # Nothing at all, not a zero-row frame. The heartbeat interval is long here
       # so that nothing is owed on the liveness side either.
-      start_loop(opts, heartbeat_ms: 60_000)
+      start_loop(opts, heartbeat_interval: 60_000)
 
       refute_receive {:chunk, _}, 50
 
@@ -130,7 +130,7 @@ defmodule DMEx.Log.SendLoopTest do
     test "reads before waiting, so a backlog starts draining at once", %{opts: opts} do
       Stub.put_rows(opts, 10)
 
-      start_loop(opts, chunks: 1, heartbeat_ms: 60_000)
+      start_loop(opts, chunks: 1, heartbeat_interval: 60_000)
 
       assert_receive {:chunk, _}, 1_000
     end
@@ -140,7 +140,7 @@ defmodule DMEx.Log.SendLoopTest do
       # frames must take three batch_windows, not three heartbeats.
       Stub.put_rows(opts, 10)
 
-      start_loop(opts, chunks: 3, max_batch_size: 2, heartbeat_ms: 60_000, batch_window: 1)
+      start_loop(opts, chunks: 3, max_batch_size: 2, heartbeat_interval: 60_000, batch_window: 1)
 
       assert_receive {:done, _}, 1_000
       assert length(Stub.reads(opts)) == 3
@@ -203,7 +203,7 @@ defmodule DMEx.Log.SendLoopTest do
     # Comment lines are ignored by every spec-compliant SSE client, so this
     # never pollutes the message stream or needs consumer-side handling.
     test "an idle stream sends a comment frame rather than nothing", %{opts: opts} do
-      start_loop(opts, chunks: 5, heartbeat_ms: 10)
+      start_loop(opts, chunks: 5, heartbeat_interval: 10)
 
       assert_receive {:chunk, ": hb\n\n"}, 1_000
     end
@@ -213,7 +213,7 @@ defmodule DMEx.Log.SendLoopTest do
       # would say nothing further.
       Stub.put_rows(opts, 1)
 
-      run(opts, chunks: 1, heartbeat_ms: 10)
+      run(opts, chunks: 1, heartbeat_interval: 10)
 
       assert_received {:chunk, write}
       assert ids(write) == [1]
@@ -221,7 +221,7 @@ defmodule DMEx.Log.SendLoopTest do
     end
 
     test "a wakeup cancels the heartbeat owed for that interval", %{opts: opts} do
-      pid = start_loop(opts, chunks: 5, heartbeat_ms: 60_000)
+      pid = start_loop(opts, chunks: 5, heartbeat_interval: 60_000)
 
       eventually(fn -> Stub.reads(opts) != [] end)
       send(pid, :wakeup)
@@ -233,7 +233,7 @@ defmodule DMEx.Log.SendLoopTest do
 
     test "stops when the socket closes under a heartbeat", %{opts: opts} do
       # chunks: 1 makes the very first write fail, and that write is a heartbeat.
-      assert %Plug.Conn{} = run(opts, chunks: 1, heartbeat_ms: 10)
+      assert %Plug.Conn{} = run(opts, chunks: 1, heartbeat_interval: 10)
 
       assert_received {:chunk, ": hb\n\n"}
     end
@@ -241,7 +241,7 @@ defmodule DMEx.Log.SendLoopTest do
     test "reports heartbeats in telemetry", %{opts: opts} do
       ref = :telemetry_test.attach_event_handlers(self(), [[:dmex, :stream, :heartbeat]])
 
-      start_loop(opts, chunks: 5, heartbeat_ms: 10)
+      start_loop(opts, chunks: 5, heartbeat_interval: 10)
 
       assert_receive {[:dmex, :stream, :heartbeat], ^ref, _measurements, metadata}, 1_000
       assert metadata.log == __MODULE__
@@ -252,10 +252,10 @@ defmodule DMEx.Log.SendLoopTest do
     test "a wakeup short-circuits the idle wait", %{opts: opts} do
       Stub.put_rows(opts, 1)
 
-      pid = start_loop(opts, chunks: 1, heartbeat_ms: 60_000)
+      pid = start_loop(opts, chunks: 1, heartbeat_interval: 60_000)
       send(pid, :wakeup)
 
-      # heartbeat_ms is a minute, so a frame arriving at all — let alone within
+      # heartbeat_interval is a minute, so a frame arriving at all — let alone within
       # a second — proves the receive returned on the wakeup, not its timeout.
       assert_receive {:chunk, _}, 1_000
     end
@@ -267,7 +267,7 @@ defmodule DMEx.Log.SendLoopTest do
     # it. End-to-end p50 was 201ms against a 200ms window, where the design
     # expects about half of one.
     test "a wakeup on a long-idle stream is not delayed by the batch window", %{opts: opts} do
-      pid = start_loop(opts, chunks: 1, heartbeat_ms: 60_000, batch_interval: 2_000)
+      pid = start_loop(opts, chunks: 1, heartbeat_interval: 60_000, batch_interval: 2_000)
 
       # Let the loop do its connect read and park with nothing to send.
       eventually(fn -> Stub.reads(opts) != [] end)
@@ -301,7 +301,7 @@ defmodule DMEx.Log.SendLoopTest do
     test "many queued wakeups cost one read, not one read each", %{opts: opts} do
       # An empty log and a minute-long heartbeat, so once the loop is parked in
       # await_wakeup/1 a wakeup is the *only* thing that can cause another read.
-      pid = start_loop(opts, chunks: 1, heartbeat_ms: 60_000, batch_interval: 100)
+      pid = start_loop(opts, chunks: 1, heartbeat_interval: 60_000, batch_interval: 100)
 
       # The loop always reads once on connect — that is what lets a consumer
       # with a backlog start draining immediately — so wait it out and measure
@@ -405,7 +405,7 @@ defmodule DMEx.Log.SendLoopTest do
     test "an idle wait is budgeted for the interval it is waiting out", %{opts: opts} do
       status = Status.new(1)
 
-      start_loop(opts, status: status, stall_timeout: 5_000, heartbeat_ms: 60_000)
+      start_loop(opts, status: status, stall_timeout: 5_000, heartbeat_interval: 60_000)
 
       # A stream parked in `await_wakeup/1` is idle, not stuck: its deadline
       # covers the heartbeat interval as well as the budget.
@@ -418,7 +418,7 @@ defmodule DMEx.Log.SendLoopTest do
       status = Status.new(60_000)
       Stub.hang(opts)
 
-      start_loop(opts, status: status, stall_timeout: 20, heartbeat_ms: 60_000)
+      start_loop(opts, status: status, stall_timeout: 20, heartbeat_interval: 60_000)
 
       # The socket is fine; the query never comes back. Nothing but the armed
       # deadline distinguishes this from a healthy stream.
@@ -532,7 +532,7 @@ defmodule DMEx.Log.SendLoopTest do
       config:
         DMEx.Config.log!(
           max_batch_size: Keyword.get(test_opts, :max_batch_size, 500),
-          heartbeat_ms: Keyword.get(test_opts, :heartbeat_ms, 60_000),
+          heartbeat_interval: Keyword.get(test_opts, :heartbeat_interval, 60_000),
           max_batch_bytes: Keyword.get(test_opts, :max_batch_bytes, 1_048_576),
           stall_timeout: Keyword.get(test_opts, :stall_timeout, 30_000)
         ),

@@ -44,7 +44,7 @@ MyApp.Log.append(%MyApp.Messages.OrderPlaced{order_id: 7})
 
 ```elixir
 defmodule MyApp.OrderProjection do
-  use DMEx.Handler, logs: [:orders], id: :order_projection
+  use DMEx.Handler, logs: [:orders], name: :order_projection
 
   @impl true
   def handle_message(%MyApp.Messages.OrderPlaced{} = message, _metadata), do: :ok

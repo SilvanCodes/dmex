@@ -66,12 +66,12 @@ defmodule DMEx.LogTest do
     end
 
     test "an explicit atom or string wins" do
-      assert define!("AppKeyAtom", "repo: DMEx.Test.Repo, app: :orders").app_key == "orders"
-      assert define!("AppKeyString", ~s(repo: DMEx.Test.Repo, app: "orders")).app_key == "orders"
+      assert define!("AppKeyAtom", "repo: DMEx.Test.Repo, app_key: :orders").app_key == "orders"
+      assert define!("AppKeyString", ~s(repo: DMEx.Test.Repo, app_key: "orders")).app_key == "orders"
     end
 
     test "names the notification channel" do
-      assert define!("AppKeyChannel", "repo: DMEx.Test.Repo, app: :orders").channel ==
+      assert define!("AppKeyChannel", "repo: DMEx.Test.Repo, app_key: :orders").channel ==
                "dmex_orders"
     end
 
@@ -80,7 +80,7 @@ defmodule DMEx.LogTest do
         assert_raise ArgumentError, ~r/is not a legal identifier/, fn ->
           define!(
             "AppKeyBad#{:erlang.unique_integer([:positive])}",
-            "repo: DMEx.Test.Repo, app: #{app}"
+            "repo: DMEx.Test.Repo, app_key: #{app}"
           )
         end
       end
@@ -91,25 +91,27 @@ defmodule DMEx.LogTest do
       long = String.duplicate("a", 59)
 
       assert_raise ArgumentError, ~r/59 bytes; the limit is 58/, fn ->
-        define!("AppKeyLong", ~s(repo: DMEx.Test.Repo, app: "#{long}"))
+        define!("AppKeyLong", ~s(repo: DMEx.Test.Repo, app_key: "#{long}"))
       end
 
-      assert byte_size(define!("AppKeyAtLimit", ~s(repo: DMEx.Test.Repo, app: "#{String.duplicate("a", 58)}")).app_key) ==
+      assert byte_size(
+               define!("AppKeyAtLimit", ~s(repo: DMEx.Test.Repo, app_key: "#{String.duplicate("a", 58)}")).app_key
+             ) ==
                58
     end
   end
 
   describe "the advisory lock key" do
     test "is stable for a given app key" do
-      first = define!("LockStableA", "repo: DMEx.Test.Repo, app: :same_key").lock
-      second = define!("LockStableB", "repo: DMEx.Test.Repo, app: :same_key").lock
+      first = define!("LockStableA", "repo: DMEx.Test.Repo, app_key: :same_key").lock
+      second = define!("LockStableB", "repo: DMEx.Test.Repo, app_key: :same_key").lock
 
       assert first == second
     end
 
     test "differs between app keys, but shares one DMEx namespace" do
-      {classid_a, objid_a} = define!("LockDiffA", "repo: DMEx.Test.Repo, app: :one").lock
-      {classid_b, objid_b} = define!("LockDiffB", "repo: DMEx.Test.Repo, app: :two").lock
+      {classid_a, objid_a} = define!("LockDiffA", "repo: DMEx.Test.Repo, app_key: :one").lock
+      {classid_b, objid_b} = define!("LockDiffB", "repo: DMEx.Test.Repo, app_key: :two").lock
 
       # The classid is DMEx's own namespace, keeping its lock space disjoint
       # from any other library sharing the database; the objid is the app.
@@ -128,7 +130,7 @@ defmodule DMEx.LogTest do
   describe "options" do
     test "requires a repo" do
       assert_raise ArgumentError, ~r/requires a `:repo`/, fn ->
-        define!("NoRepo", "app: :thing")
+        define!("NoRepo", "app_key: :thing")
       end
     end
 

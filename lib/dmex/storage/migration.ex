@@ -15,9 +15,9 @@ defmodule DMEx.Storage.Migration do
   An application usually appends, subscribes, or both, and only needs the tables
   for the roles it plays:
 
-      DMEx.Storage.Migration.up(tables: [:log])            # dmex_messages
-      DMEx.Storage.Migration.up(tables: [:subscriptions])  # dmex_cursors, dmex_dead_messages
-      DMEx.Storage.Migration.up()                          # both, the default
+      DMEx.Storage.Migration.up(tables: [:messages])                  # a producer
+      DMEx.Storage.Migration.up(tables: [:cursors, :dead_messages])   # a consumer
+      DMEx.Storage.Migration.up()                                     # all three, the default
 
   The DDL itself comes from the repo's adapter — `DMEx.Storage.Postgres.Migration`
   or `DMEx.Storage.SQLite.Migration` — so those two lines are the same whatever
@@ -25,7 +25,9 @@ defmodule DMEx.Storage.Migration do
 
   ## Options
 
-    * `:tables` — `[:log, :subscriptions]` (default both)
+    * `:tables` — any of `[:messages, :cursors, :dead_messages]`, named for the
+      tables they create (default all three). A pure producer needs `:messages`
+      alone; a pure consumer needs the other two.
     * `:prefix` — a Postgres schema to create the tables in, created if absent.
       SQLite has no schemas and raises on it.
 
@@ -54,7 +56,10 @@ defmodule DMEx.Storage.Migration do
 
   use Ecto.Migration
 
-  @tables [:log, :subscriptions]
+  @typedoc "One DMEx table, named as `:tables` names it."
+  @type table :: :messages | :cursors | :dead_messages
+
+  @tables [:messages, :cursors, :dead_messages]
 
   @doc "Creates the DMEx tables. See the module documentation for options."
   @spec up(keyword()) :: :ok

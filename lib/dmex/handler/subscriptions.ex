@@ -6,7 +6,7 @@ defmodule DMEx.Handler.Subscriptions do
   is specified to crash-loop on a poison message forever, and a
   `DynamicSupervisor`'s default three-in-five would blow in under a second —
   killing this supervisor and every sibling subscription with it. The rate
-  limiting that matters is the jittered `reconnect_backoff` pause
+  limiting that matters is the jittered `reconnect_backoff_base` pause
   `DMEx.Handler.Pipeline` takes before re-raising, since a restart itself is
   immediate.
   """

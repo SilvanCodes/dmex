@@ -3,7 +3,7 @@ defmodule DMEx.Handler do
   Declares what a subscription consumes, from whom, and what it does with it.
 
       defmodule MyApp.OrderProjection do
-        use DMEx.Handler, logs: [:orders], id: :order_projection
+        use DMEx.Handler, logs: [:orders], name: :order_projection
 
         @impl true
         def handle_message(%MyApp.Messages.OrderPlaced{} = message, _metadata) do
@@ -85,7 +85,7 @@ defmodule DMEx.Handler do
     * `:logs` — required; the logical names of the logs to read, as atoms or
       strings, resolved against `logs:` on `DMEx.Supervisor`. A bare name is
       accepted for the single-log case.
-    * `:id` — required; this handler's own name. The same for every log, since
+    * `:name` — required; this handler's own name. The same for every log, since
       the log name is the other half of each subscription's identity.
     * any `DMEx.Config` handler setting — validated here at compile time;
       `DMEx.Supervisor.subscribe/2` may override one per subscription.
@@ -98,7 +98,7 @@ defmodule DMEx.Handler do
   a dash. Atoms and strings render identically.
 
   **Renaming this module is free**, since identity is the declared pair.
-  Changing `id:` or the log's key in `DMEx.Supervisor` does reset a cursor;
+  Changing `name:` or the log's key in `DMEx.Supervisor` does reset a cursor;
   `DMEx.Handler.Cursors.rename!/3` migrates those. Adding a clause does not: the
   new type is handled from the tip onward and its history is *not* replayed, so
   ask for it deliberately with `DMEx.Handler.Cursors.move!/3`.
@@ -119,7 +119,7 @@ defmodule DMEx.Handler do
   alias DMEx.Config
   alias DMEx.Handler.Fingerprint
 
-  @handler_opts [:logs, :id]
+  @handler_opts [:logs, :name]
 
   @typedoc """
   A handler's compile-time declaration, as returned by its `__dmex__/0`.
@@ -145,7 +145,7 @@ defmodule DMEx.Handler do
   @type declaration :: %{
           handler: module(),
           logs: [String.t()],
-          id: String.t(),
+          name: String.t(),
           messages: MapSet.t(module()),
           fingerprint: String.t() | nil,
           config: keyword()
@@ -237,7 +237,7 @@ defmodule DMEx.Handler do
   @doc false
   @spec __declared__(module(), keyword()) :: %{
           logs: [String.t()],
-          id: String.t(),
+          name: String.t(),
           config: keyword()
         }
   def __declared__(module, opts) do
@@ -245,7 +245,7 @@ defmodule DMEx.Handler do
 
     %{
       logs: logs!(module, opts),
-      id: fetch_identifier!(module, opts, :id),
+      name: fetch_identifier!(module, opts, :name),
       config: config!(module, opts)
     }
   end
@@ -253,14 +253,14 @@ defmodule DMEx.Handler do
   @doc false
   @spec __declaration__(Macro.Env.t()) :: declaration()
   def __declaration__(env) do
-    %{logs: logs, id: id, config: config} = Module.get_attribute(env.module, :dmex_declared)
+    %{logs: logs, name: name, config: config} = Module.get_attribute(env.module, :dmex_declared)
 
     {messages, selective?} = messages!(env)
 
     %{
       handler: env.module,
       logs: logs,
-      id: id,
+      name: name,
       messages: messages,
       config: config,
       # Whether the clauses named a type for every case they handle, which is the
@@ -313,7 +313,7 @@ defmodule DMEx.Handler do
 
     if log not in declaration.logs, do: raise_unknown_log(declaration, log)
 
-    log <> "/" <> declaration.id
+    log <> "/" <> declaration.name
   end
 
   @doc "Every subscription `handler` declares — one per log it reads."
@@ -326,7 +326,7 @@ defmodule DMEx.Handler do
   end
 
   @doc """
-  The subscription a `log:` option addresses, for the operator-facing modules.
+  The subscription a `for:` option addresses, for the operator-facing modules.
 
   `DMEx.Handler.Cursors` and `DMEx.Handler.DeadMessages` resolve the same option
   the same way, so they cannot drift.
@@ -337,7 +337,7 @@ defmodule DMEx.Handler do
   end
 
   @doc """
-  Resolves which of `handler`'s logs a `log:` option means.
+  Resolves which of `handler`'s logs a `for:` option means.
 
   A handler reading one log needs no option; one reading several has to be told,
   since every operator-facing call addresses exactly one cursor.
@@ -346,14 +346,14 @@ defmodule DMEx.Handler do
   def log!(handler, opts) when is_atom(handler) and is_list(opts) do
     declaration = declaration!(handler)
 
-    case {Keyword.get(opts, :log), declaration.logs} do
+    case {Keyword.get(opts, :for), declaration.logs} do
       {nil, [only]} ->
         only
 
       {nil, logs} ->
         raise ArgumentError,
               "#{inspect(handler)} reads #{length(logs)} logs (#{Enum.join(logs, ", ")}), so " <>
-                "this call has to say which one it means: pass `log: :#{hd(logs)}`."
+                "this call has to say which one it means: pass `for: :#{hd(logs)}`."
 
       {log, _logs} ->
         log = to_string(log)
@@ -706,7 +706,7 @@ defmodule DMEx.Handler do
   defp raise_no_logs(module) do
     raise ArgumentError,
           "`logs:` in #{inspect(module)} names no log, so there is no subscription to start. " <>
-            "A handler reads at least one: `use DMEx.Handler, logs: [:orders], id: :projection`"
+            "A handler reads at least one: `use DMEx.Handler, logs: [:orders], name: :projection`"
   end
 
   # Atoms and binaries must render identically — otherwise a config style change
@@ -734,7 +734,7 @@ defmodule DMEx.Handler do
   defp raise_missing(module, key) do
     raise ArgumentError,
           "`use DMEx.Handler` requires #{inspect(key)} in #{inspect(module)}, e.g. " <>
-            "`use DMEx.Handler, logs: [:orders], id: :order_projection`"
+            "`use DMEx.Handler, logs: [:orders], name: :order_projection`"
   end
 
   defp raise_identifier(module, key, value) do

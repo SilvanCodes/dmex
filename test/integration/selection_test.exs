@@ -13,7 +13,7 @@ end
 
 defmodule DMEx.Integration.SelectionTest.AheadOfLog do
   @moduledoc false
-  use DMEx.Handler, logs: [:test], id: :ahead_of_log
+  use DMEx.Handler, logs: [:test], name: :ahead_of_log
 
   @impl true
   def handle_message(%DMEx.Integration.SelectionTest.NotYetPublished{}, _metadata), do: :ok

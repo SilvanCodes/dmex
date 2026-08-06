@@ -69,7 +69,7 @@ killed, which is why (b) and (c) never ran.
 Fixed by counting `data: {"data":` — one per row frame, absent from heartbeats
 and the `retry:` frame — carrying the chunk tail across boundaries so a marker
 split by a chunk boundary is not lost, and shortening the timeout below
-`heartbeat_ms` so a miscount reports instead of hanging.
+`heartbeat_interval` so a miscount reports instead of hanging.
 
 ### 1f. The coalescing ratio was fabricated when no checkpoint fired — fixed (not in the original report)
 
@@ -179,7 +179,7 @@ drifting apart again.
 Consequences, all deliberate:
 
 - Added latency `1 / 2f` drops from 100 ms to 5 ms.
-- `effective_heartbeat` drops from `heartbeat_ms + 200` to `+ 10`.
+- `effective_heartbeat` drops from `heartbeat_interval + 200` to `+ 10`.
 - **Worst-case reads per second per connection goes up 20×.** This is the same
   pressure 1b measured queueing at, so the default now sits on the near side of
   the pool ceiling: fine for a handful of streams, and the first thing to lower

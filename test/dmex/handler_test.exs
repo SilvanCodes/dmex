@@ -28,11 +28,11 @@ defmodule DMEx.HandlerTest do
       refute Handler.handler?(NoSuchModuleAnywhere)
     end
 
-    test "carries the logs, the id, the module and the derived message set" do
+    test "carries the logs, the name, the module and the derived message set" do
       assert %{
                handler: Handlers.EchoAll,
                logs: ["test"],
-               id: "echo_all",
+               name: "echo_all",
                messages: messages
              } = Handlers.EchoAll.__dmex__()
 
@@ -178,19 +178,19 @@ defmodule DMEx.HandlerTest do
     end
 
     test "refuses to guess for a handler reading several" do
-      assert_raise ArgumentError, ~r/reads 2 logs \(test, other\).*`log: :test`/s, fn ->
+      assert_raise ArgumentError, ~r/reads 2 logs \(test, other\).*`for: :test`/s, fn ->
         Handler.log!(Handlers.Fanned, [])
       end
     end
 
     test "takes the one the call names, as an atom or a string" do
-      assert Handler.log!(Handlers.Fanned, log: :other) == "other"
-      assert Handler.log!(Handlers.Fanned, log: "test") == "test"
+      assert Handler.log!(Handlers.Fanned, for: :other) == "other"
+      assert Handler.log!(Handlers.Fanned, for: "test") == "test"
     end
 
     test "rejects a log the handler does not read, even when it reads one" do
       assert_raise ArgumentError, ~r/does not read "elsewhere"/, fn ->
-        Handler.log!(Handlers.Echo, log: :elsewhere)
+        Handler.log!(Handlers.Echo, for: :elsewhere)
       end
     end
   end
@@ -216,14 +216,14 @@ defmodule DMEx.HandlerTest do
 
     test "renders atoms and strings identically" do
       # Otherwise a config style change would silently mint a second identity.
-      assert declare(logs: [:orders], id: :order_projection) ==
-               declare(logs: ["orders"], id: "order_projection")
+      assert declare(logs: [:orders], name: :order_projection) ==
+               declare(logs: ["orders"], name: "order_projection")
     end
 
     test "does not depend on the module's name" do
       # The substance of the whole design: renaming a handler is free.
-      first = declare(logs: [:orders], id: :order_projection)
-      second = declare(logs: [:orders], id: :order_projection)
+      first = declare(logs: [:orders], name: :order_projection)
+      second = declare(logs: [:orders], name: :order_projection)
 
       assert first == second
       assert first == ["orders/order_projection"]
@@ -264,7 +264,7 @@ defmodule DMEx.HandlerTest do
 
     test "rejects a handler with no handle_message/2 at all" do
       assert_raise ArgumentError, ~r/defines no handle_message\/2/, fn ->
-        compile_raw("logs: [:orders], id: :some_id", "")
+        compile_raw("logs: [:orders], name: :some_id", "")
       end
     end
   end
@@ -412,7 +412,7 @@ defmodule DMEx.HandlerTest do
         defmodule DMEx.HandlerTest.Late#{System.unique_integer([:positive])} do
           def handle_message(%DMEx.Test.Messages.OrderPlaced{}, _metadata), do: :ok
 
-          use DMEx.Handler, logs: [:orders], id: :some_id
+          use DMEx.Handler, logs: [:orders], name: :some_id
         end
         """)
       end
@@ -422,35 +422,35 @@ defmodule DMEx.HandlerTest do
   describe "validating the options" do
     test "requires :logs" do
       assert_raise ArgumentError, ~r/requires :logs/, fn ->
-        compile_raw("id: :some_id", clause())
+        compile_raw("name: :some_id", clause())
       end
     end
 
-    test "requires :id" do
-      assert_raise ArgumentError, ~r/requires :id/, fn ->
+    test "requires :name" do
+      assert_raise ArgumentError, ~r/requires :name/, fn ->
         compile_raw("logs: [:orders]", clause())
       end
     end
 
     test "accepts a bare name as a one-log list" do
-      assert declare(logs: :orders, id: :order_projection) == ["orders/order_projection"]
+      assert declare(logs: :orders, name: :order_projection) == ["orders/order_projection"]
     end
 
     test "rejects an empty :logs" do
       assert_raise ArgumentError, ~r/names no log/, fn ->
-        compile_raw("logs: [], id: :some_id", clause())
+        compile_raw("logs: [], name: :some_id", clause())
       end
     end
 
     test "rejects a log named twice" do
       assert_raise ArgumentError, ~r/names "orders" twice/, fn ->
-        compile_raw("logs: [:orders, :orders], id: :some_id", clause())
+        compile_raw("logs: [:orders, :orders], name: :some_id", clause())
       end
     end
 
     test "rejects an unknown option" do
       assert_raise ArgumentError, ~r/unknown option \[:url\]/, fn ->
-        compile_raw(~s(logs: [:orders], id: :some_id, url: "https://x.test"), clause())
+        compile_raw(~s(logs: [:orders], name: :some_id, url: "https://x.test"), clause())
       end
     end
 
@@ -463,16 +463,16 @@ defmodule DMEx.HandlerTest do
           {"a leading digit", ":\"1st\""},
           {"a slash", ":\"orders/projection\""}
         ] do
-      test "rejects #{label} in :id" do
+      test "rejects #{label} in :name" do
         assert_raise ArgumentError, ~r/must be an atom or a string matching/, fn ->
-          compile_raw("logs: [:orders], id: #{unquote(value)}", clause())
+          compile_raw("logs: [:orders], name: #{unquote(value)}", clause())
         end
       end
     end
 
     test "rejects a non-identifier log name" do
       assert_raise ArgumentError, ~r/:logs.*must be an atom or a string matching/s, fn ->
-        compile_raw(~s(logs: ["Orders"], id: :some_id), clause())
+        compile_raw(~s(logs: ["Orders"], name: :some_id), clause())
       end
     end
   end
@@ -489,12 +489,12 @@ defmodule DMEx.HandlerTest do
     opts
     |> Enum.map_join(", ", fn {key, value} -> "#{key}: #{inspect(value)}" end)
     |> compile_raw(clause())
-    |> then(&Enum.map(&1.logs, fn log -> log <> "/" <> &1.id end))
+    |> then(&Enum.map(&1.logs, fn log -> log <> "/" <> &1.name end))
   end
 
-  defp compile(body), do: compile_raw("logs: [:orders], id: :some_id", body)
+  defp compile(body), do: compile_raw("logs: [:orders], name: :some_id", body)
 
-  defp compile_module(body), do: compile_module_raw("logs: [:orders], id: :some_id", body)
+  defp compile_module(body), do: compile_module_raw("logs: [:orders], name: :some_id", body)
 
   defp messages_of(body), do: body |> compile() |> Map.fetch!(:messages)
 

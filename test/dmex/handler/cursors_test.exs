@@ -7,7 +7,7 @@ defmodule DMEx.Handler.CursorsTest do
 
   defmodule Old do
     @moduledoc false
-    use DMEx.Handler, logs: [:orders], id: :old
+    use DMEx.Handler, logs: [:orders], name: :old
 
     @impl true
     def handle_message(%OrderPlaced{}, _metadata), do: :ok
@@ -15,7 +15,7 @@ defmodule DMEx.Handler.CursorsTest do
 
   defmodule New do
     @moduledoc false
-    use DMEx.Handler, logs: [:orders], id: :new
+    use DMEx.Handler, logs: [:orders], name: :new
 
     @impl true
     def handle_message(%OrderPlaced{}, _metadata), do: :ok
@@ -23,7 +23,7 @@ defmodule DMEx.Handler.CursorsTest do
 
   defmodule Both do
     @moduledoc "Two logs, so every call here has to say which cursor it means."
-    use DMEx.Handler, logs: [:orders, :returns], id: :both
+    use DMEx.Handler, logs: [:orders, :returns], name: :both
 
     @impl true
     def handle_message(%OrderPlaced{}, _metadata), do: :ok
@@ -56,7 +56,7 @@ defmodule DMEx.Handler.CursorsTest do
     # so an ordinary rename carries its cursor with it.
     defmodule Renamed do
       @moduledoc false
-      use DMEx.Handler, logs: [:orders], id: :old
+      use DMEx.Handler, logs: [:orders], name: :old
 
       @impl true
       def handle_message(%OrderPlaced{}, _metadata), do: :ok
@@ -112,7 +112,7 @@ defmodule DMEx.Handler.CursorsTest do
 
   describe "rename!/3" do
     # Not for a module rename — that is free. This is for the migration surface
-    # that remains: changing a handler's `id:`, or a log's key in the
+    # that remains: changing a handler's `name:`, or a log's key in the
     # consumer's map, mints a new identity. Hence the id strings — the old
     # identity is the one no module declares.
     test "carries the position over and removes the old row", ctx do
@@ -169,11 +169,11 @@ defmodule DMEx.Handler.CursorsTest do
       assert_raise ArgumentError, ~r/reads 2 logs/, fn -> Cursors.reset!(Both, ctx.opts) end
     end
 
-    test "addresses the cursor `log:` names, and only that one", ctx do
-      :ok = Cursors.move!(Both, 7, [log: :returns] ++ ctx.opts)
+    test "addresses the cursor `for:` names, and only that one", ctx do
+      :ok = Cursors.move!(Both, 7, [for: :returns] ++ ctx.opts)
 
-      assert {:ok, %{last_seen: 7}} = Cursors.position(Both, [log: :returns] ++ ctx.opts)
-      assert {:ok, nil} = Cursors.position(Both, [log: :orders] ++ ctx.opts)
+      assert {:ok, %{last_seen: 7}} = Cursors.position(Both, [for: :returns] ++ ctx.opts)
+      assert {:ok, nil} = Cursors.position(Both, [for: :orders] ++ ctx.opts)
     end
   end
 end

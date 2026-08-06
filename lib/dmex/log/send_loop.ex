@@ -109,12 +109,12 @@ defmodule DMEx.Log.SendLoop do
   # consumer a liveness signal. The one step whose whole purpose is to block, so
   # its budget carries the interval it is waiting out.
   defp await_wakeup(state) do
-    arm(state, state.config.heartbeat_ms)
+    arm(state, state.config.heartbeat_interval)
 
     receive do
       :wakeup -> false
     after
-      state.config.heartbeat_ms -> true
+      state.config.heartbeat_interval -> true
     end
   end
 

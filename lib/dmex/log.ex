@@ -45,7 +45,7 @@ defmodule DMEx.Log do
       `DMEx.Storage.Postgres`.
     * `:notifier` — the `DMEx.Notifier`. Defaults to whatever the storage
       adapter names, which is `DMEx.Notifier.Postgres` for the Postgres one.
-    * `:app` — the app key (see below). Defaults to a name derived from this
+    * `:app_key` — the app key (see below). Defaults to a name derived from this
       module.
     * `:prefix` — a Postgres schema the DMEx tables live in.
       `DMEx.Storage.SQLite` raises on it, since SQLite has no schemas.
@@ -64,7 +64,7 @@ defmodule DMEx.Log do
 
   It defaults to this module's own name, underscored and flattened — `MyApp.Log`
   becomes `my_app_log` — which needs no Mix at compile time, works inside
-  umbrellas, and stays stable in a release. Pass `app: :orders` to choose your
+  umbrellas, and stays stable in a release. Pass `app_key: :orders` to choose your
   own; it must match `~r/\A[a-z][a-z0-9_]*\z/` and fit in 58 bytes, Postgres's
   63-byte identifier limit less the `dmex_` prefix.
 
@@ -95,7 +95,7 @@ defmodule DMEx.Log do
   alias DMEx.Config
   alias DMEx.Log.Streams
 
-  @log_opts [:repo, :storage, :notifier, :app, :prefix]
+  @log_opts [:repo, :storage, :notifier, :app_key, :prefix]
   @app_key_max_bytes 58
 
   # How long a start waits for a name held by a previous incarnation. Only ever
@@ -432,17 +432,17 @@ defmodule DMEx.Log do
 
   defp app_key!(module, opts) do
     key =
-      case Keyword.get(opts, :app) do
+      case Keyword.get(opts, :app_key) do
         nil -> derive_app_key(module)
         app when is_atom(app) -> Atom.to_string(app)
         app when is_binary(app) -> app
-        other -> raise ArgumentError, ":app must be an atom or a string, got: #{inspect(other)}"
+        other -> raise ArgumentError, ":app_key must be an atom or a string, got: #{inspect(other)}"
       end
 
     if !DMEx.identifier?(key) do
       raise ArgumentError,
             "the app key #{inspect(key)} derived for #{inspect(module)} is not a legal " <>
-              "identifier. It must match #{inspect(DMEx.identifier_format())} — pass `app: :your_key`."
+              "identifier. It must match #{inspect(DMEx.identifier_format())} — pass `app_key: :your_key`."
     end
 
     if byte_size(key) > @app_key_max_bytes do
@@ -450,7 +450,7 @@ defmodule DMEx.Log do
             "the app key #{inspect(key)} derived for #{inspect(module)} is " <>
               "#{byte_size(key)} bytes; the limit is #{@app_key_max_bytes}, which is " <>
               "Postgres's 63-byte identifier limit less the \"dmex_\" channel prefix. " <>
-              "Pass a shorter `app: :your_key`."
+              "Pass a shorter `app_key: :your_key`."
     end
 
     key

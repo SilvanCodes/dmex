@@ -183,12 +183,12 @@ defmodule DMEx.Handler.PipelineFailureTest do
     # another application's log as fast as the supervisor can restart this
     # process — which is what `DMEx.Handler.Subscriptions`'s absent restart budget
     # assumes is not happening.
-    test "pauses for reconnect_backoff before re-raising", ctx do
+    test "pauses for reconnect_backoff_base before re-raising", ctx do
       state =
         state(ctx,
           handler: Handlers.Raising,
           on_failure: :crash,
-          reconnect_backoff: 200,
+          reconnect_backoff_base: 200,
           reconnect_backoff_max: 200
         )
 
@@ -430,7 +430,7 @@ defmodule DMEx.Handler.PipelineFailureTest do
       state(ctx,
         handler: Handlers.Raising,
         on_failure: :crash,
-        reconnect_backoff: 200,
+        reconnect_backoff_base: 200,
         reconnect_backoff_max: 200
       )
 
@@ -448,9 +448,9 @@ defmodule DMEx.Handler.PipelineFailureTest do
       cursor: 0,
       config:
         Config.handler!(
-          retry_backoff: 1,
+          retry_backoff_base: 1,
           retry_backoff_max: 2,
-          reconnect_backoff: 1,
+          reconnect_backoff_base: 1,
           reconnect_backoff_max: 2,
           max_attempts: Keyword.fetch!(opts, :max_attempts)
         )
@@ -465,7 +465,7 @@ defmodule DMEx.Handler.PipelineFailureTest do
 
   defp state(ctx, opts) do
     {config_opts, opts} =
-      Keyword.split(opts, [:on_failure, :max_attempts, :reconnect_backoff, :reconnect_backoff_max])
+      Keyword.split(opts, [:on_failure, :max_attempts, :reconnect_backoff_base, :reconnect_backoff_max])
 
     Pipeline.build(
       storage: Postgres,
@@ -474,15 +474,15 @@ defmodule DMEx.Handler.PipelineFailureTest do
       origin: @url,
       cursor: 0,
       # A short backoff: these tests are about which terminal action runs, not
-      # about how long the schedule waits. `reconnect_backoff` matters here too —
+      # about how long the schedule waits. `reconnect_backoff_base` matters here too —
       # `:crash` pauses on it before re-raising, and at the 500 ms default three
       # tests would sit in `Process.sleep/1` for no reason.
       config:
         Config.handler!(
           [
-            retry_backoff: 1,
+            retry_backoff_base: 1,
             retry_backoff_max: 2,
-            reconnect_backoff: 1,
+            reconnect_backoff_base: 1,
             reconnect_backoff_max: 2
           ] ++ config_opts
         )

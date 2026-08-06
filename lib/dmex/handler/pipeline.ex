@@ -110,7 +110,7 @@ defmodule DMEx.Handler.Pipeline do
   *before* this one — and the log's range scan re-streams the message that
   killed it, forever. Choose it when later messages must not be processed
   without this one, or when a loud alarm beats a growing table nobody watches.
-  A jittered `reconnect_backoff` pause before the re-raise keeps the loop off the
+  A jittered `reconnect_backoff_base` pause before the re-raise keeps the loop off the
   log's database and off its siblings; `DMEx.Handler.Subscriptions` deliberately
   sets no restart budget.
 
@@ -334,7 +334,7 @@ defmodule DMEx.Handler.Pipeline do
         # message at a time, so there is nothing else it could usefully do, and
         # pausing it applies backpressure to the log while a handler struggles.
         attempt
-        |> DMEx.backoff(state.config.retry_backoff, state.config.retry_backoff_max)
+        |> DMEx.backoff(state.config.retry_backoff_base, state.config.retry_backoff_max)
         |> Process.sleep()
 
         attempt(state, delivery, commit, attempt + 1)
@@ -368,7 +368,7 @@ defmodule DMEx.Handler.Pipeline do
   # A flat jittered draw rather than an escalating one: the counter an escalating
   # schedule needs cannot survive the restart it is meant to pace.
   defp crash_backoff(config) do
-    DMEx.backoff(1, config.reconnect_backoff, config.reconnect_backoff_max)
+    DMEx.backoff(1, config.reconnect_backoff_base, config.reconnect_backoff_max)
   end
 
   defp give_up(state, row, id, exception, attempts, mode) do

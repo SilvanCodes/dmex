@@ -21,7 +21,7 @@ defmodule DMEx.Integration.VerticalSliceTest do
 
   defmodule SecondHandler do
     @moduledoc false
-    use DMEx.Handler, logs: [:test], id: :second
+    use DMEx.Handler, logs: [:test], name: :second
 
     @impl true
     def handle_message(%OrderPlaced{} = message, _metadata) do
@@ -113,7 +113,7 @@ defmodule DMEx.Integration.VerticalSliceTest do
     # free: the module's name, and the message set.
     defmodule Slice do
       @moduledoc false
-      use DMEx.Handler, logs: [:test], id: :slice
+      use DMEx.Handler, logs: [:test], name: :slice
 
       @impl true
       def handle_message(%OrderPlaced{} = message, _metadata) do
@@ -125,7 +125,7 @@ defmodule DMEx.Integration.VerticalSliceTest do
 
     defmodule SliceRenamed do
       @moduledoc "Slice after an ordinary module rename — same declaration."
-      use DMEx.Handler, logs: [:test], id: :slice
+      use DMEx.Handler, logs: [:test], name: :slice
 
       @impl true
       def handle_message(%OrderPlaced{} = message, _metadata) do
@@ -137,7 +137,7 @@ defmodule DMEx.Integration.VerticalSliceTest do
 
     defmodule SliceWidened do
       @moduledoc "Slice with a clause added for a second type — same identity."
-      use DMEx.Handler, logs: [:test], id: :slice
+      use DMEx.Handler, logs: [:test], name: :slice
 
       @impl true
       def handle_message(%OrderPlaced{} = message, _metadata), do: report(message)

@@ -29,7 +29,7 @@ defmodule DMEx.Handler.DeadMessagesTest do
     this one — and a discovered pair sharing an id is exactly what
     `DMEx.Supervisor.__startable__!/2` refuses.
     """
-    use DMEx.Handler, logs: [:test], id: :fail_times
+    use DMEx.Handler, logs: [:test], name: :fail_times
 
     alias DMEx.Test.Messages.OrderShipped
 
@@ -48,7 +48,7 @@ defmodule DMEx.Handler.DeadMessagesTest do
     Decoding them works; no clause wants the result. A stream skips such a
     message, so replay has to answer for it too.
     """
-    use DMEx.Handler, logs: [:test], id: :fail_times
+    use DMEx.Handler, logs: [:test], name: :fail_times
 
     @impl true
     def handle_message(%OrderPlaced{customer_id: 7} = message, _metadata) do
@@ -222,7 +222,7 @@ defmodule DMEx.Handler.DeadMessagesTest do
       Handlers.FailTimes.set(2)
 
       assert %{replayed: 1, failed: 0} =
-               DeadMessages.replay!(@handler, ctx.replay ++ [retry_backoff: 1])
+               DeadMessages.replay!(@handler, ctx.replay ++ [retry_backoff_base: 1])
 
       assert attempts() == 3
       assert {:ok, []} = DeadMessages.list(@handler, ctx.opts)
@@ -233,7 +233,7 @@ defmodule DMEx.Handler.DeadMessagesTest do
       Handlers.FailTimes.set(10)
 
       assert %{replayed: 0, failed: 1} =
-               DeadMessages.replay!(@handler, ctx.replay ++ [retry_backoff: 1])
+               DeadMessages.replay!(@handler, ctx.replay ++ [retry_backoff_base: 1])
 
       assert attempts() == 3
     end

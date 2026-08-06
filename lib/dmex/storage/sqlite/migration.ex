@@ -62,6 +62,7 @@ defmodule DMEx.Storage.SQLite.Migration do
 
   use Ecto.Migration
 
+  alias DMEx.Storage.Migration
   alias DMEx.Storage.SQLite
 
   # From the behaviour, not restated: see `DMEx.Storage.__table__/1`. The same
@@ -78,29 +79,26 @@ defmodule DMEx.Storage.SQLite.Migration do
   @now SQLite.__now__()
 
   @doc false
-  @spec up([:log | :subscriptions], String.t() | nil) :: :ok
+  @spec up([Migration.table()], String.t() | nil) :: :ok
   def up(tables, prefix) do
     refuse_prefix!(prefix)
 
-    if :log in tables, do: up_log()
-    if :subscriptions in tables, do: up_subscriptions()
+    if :messages in tables, do: up_messages()
+    if :cursors in tables, do: up_cursors()
+    if :dead_messages in tables, do: up_dead_messages()
 
     :ok
   end
 
   @doc false
-  @spec down([:log | :subscriptions], String.t() | nil) :: :ok
+  @spec down([Migration.table()], String.t() | nil) :: :ok
   def down(tables, prefix) do
     refuse_prefix!(prefix)
 
-    if :subscriptions in tables do
-      execute("DROP TABLE IF EXISTS #{@dead_messages}")
-      execute("DROP TABLE IF EXISTS #{@cursors}")
-    end
-
-    if :log in tables do
-      execute("DROP TABLE IF EXISTS #{@messages}")
-    end
+    if :dead_messages in tables, do: execute("DROP TABLE IF EXISTS #{@dead_messages}")
+    if :cursors in tables, do: execute("DROP TABLE IF EXISTS #{@cursors}")
+    ## The DDL
+    if :messages in tables, do: execute("DROP TABLE IF EXISTS #{@messages}")
 
     :ok
   end
@@ -114,9 +112,7 @@ defmodule DMEx.Storage.SQLite.Migration do
             "its own — which is what a schema would have bought."
   end
 
-  ## The DDL
-
-  defp up_log do
+  defp up_messages do
     execute("""
     CREATE TABLE IF NOT EXISTS #{@messages} (
       id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -138,7 +134,7 @@ defmodule DMEx.Storage.SQLite.Migration do
     :ok
   end
 
-  defp up_subscriptions do
+  defp up_cursors do
     # `NOT NULL` spelled out: SQLite lets a rowid table's declared PRIMARY KEY
     # hold NULL, for backwards compatibility with a long-ago bug.
     execute("""
@@ -149,9 +145,13 @@ defmodule DMEx.Storage.SQLite.Migration do
     )
     """)
 
-    # From `id` down this is `dmex_messages`, so a dead row *is* a log row and
-    # replay needs no reshaping. `inserted_at` is the exception: here it records
-    # when the row landed, not when the message was appended.
+    :ok
+  end
+
+  # From `id` down this is `dmex_messages`, so a dead row *is* a log row and
+  # replay needs no reshaping. `inserted_at` is the exception: here it records
+  # when the row landed, not when the message was appended.
+  defp up_dead_messages do
     execute("""
     CREATE TABLE IF NOT EXISTS #{@dead_messages} (
       subscription TEXT NOT NULL,

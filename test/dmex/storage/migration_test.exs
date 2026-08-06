@@ -7,7 +7,7 @@ defmodule DMEx.Storage.MigrationTest do
   describe "option validation" do
     test "rejects an unknown table" do
       assert_raise ArgumentError, ~r/:tables must be a non-empty list/, fn ->
-        Migration.up(tables: [:log, :nonsense])
+        Migration.up(tables: [:messages, :nonsense])
       end
     end
 
@@ -19,7 +19,7 @@ defmodule DMEx.Storage.MigrationTest do
 
     test "rejects a non-list" do
       assert_raise ArgumentError, ~r/:tables must be a non-empty list/, fn ->
-        Migration.down(tables: :log)
+        Migration.down(tables: :messages)
       end
     end
   end

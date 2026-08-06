@@ -8,7 +8,7 @@ defmodule DMEx.ConfigTest do
       assert %{
                max_batch_frequency: 100,
                max_batch_size: 500,
-               heartbeat_ms: 15_000,
+               heartbeat_interval: 15_000,
                poll_interval: 1_000,
                max_batch_bytes: 1_048_576,
                stall_timeout: 30_000,
@@ -17,10 +17,10 @@ defmodule DMEx.ConfigTest do
     end
 
     test "overrides only the settings it is given" do
-      config = Config.log!(max_batch_frequency: 50, heartbeat_ms: 30_000)
+      config = Config.log!(max_batch_frequency: 50, heartbeat_interval: 30_000)
 
       assert config.max_batch_frequency == 50
-      assert config.heartbeat_ms == 30_000
+      assert config.heartbeat_interval == 30_000
       assert config.max_batch_size == Config.log!([]).max_batch_size
     end
 
@@ -28,7 +28,7 @@ defmodule DMEx.ConfigTest do
       # `use DMEx.Log` hands its whole option list over; rejecting typos is
       # its job, not this one's.
       assert %{} =
-               Config.log!(repo: MyApp.Repo, storage: SomeAdapter, app: :thing, prefix: "x")
+               Config.log!(repo: MyApp.Repo, storage: SomeAdapter, app_key: :thing, prefix: "x")
     end
 
     test "raises on a non-integer or non-positive setting" do
@@ -40,8 +40,8 @@ defmodule DMEx.ConfigTest do
         Config.log!(max_batch_size: 0)
       end
 
-      assert_raise ArgumentError, ~r/:heartbeat_ms must be a positive integer/, fn ->
-        Config.log!(heartbeat_ms: -1)
+      assert_raise ArgumentError, ~r/:heartbeat_interval must be a positive integer/, fn ->
+        Config.log!(heartbeat_interval: -1)
       end
 
       assert_raise ArgumentError, ~r/:stall_check_interval must be a positive integer/, fn ->
@@ -80,9 +80,9 @@ defmodule DMEx.ConfigTest do
                last_seen: nil,
                on_failure: :dead_message,
                max_attempts: 3,
-               retry_backoff: 100,
+               retry_backoff_base: 100,
                retry_backoff_max: 5_000,
-               reconnect_backoff: 500,
+               reconnect_backoff_base: 500,
                reconnect_backoff_max: 30_000,
                max_frame_bytes: 4_194_304,
                missed_heartbeats: 3
@@ -173,7 +173,7 @@ defmodule DMEx.ConfigTest do
       # The loop sleeps out one batch interval *after* deciding whether to send
       # a heartbeat, so the sum — not the interval — is the real upper bound on
       # silence, and that is what a consumer measures against.
-      config = Config.log!(heartbeat_ms: 15_000, max_batch_frequency: 5)
+      config = Config.log!(heartbeat_interval: 15_000, max_batch_frequency: 5)
 
       assert Config.effective_heartbeat(config) == 15_200
     end

@@ -31,7 +31,7 @@ defmodule DMEx.MessageTypesSeedTest do
 
   defmodule Dep.Log do
     @moduledoc false
-    use DMEx.Log, repo: Repo, app: :dmex_fake_dep
+    use DMEx.Log, repo: Repo, app_key: :dmex_fake_dep
   end
 
   defmodule Collide.First do
@@ -46,7 +46,7 @@ defmodule DMEx.MessageTypesSeedTest do
 
   defmodule Collide.Log do
     @moduledoc false
-    use DMEx.Log, repo: Repo, app: :dmex_fake_collide
+    use DMEx.Log, repo: Repo, app_key: :dmex_fake_collide
   end
 
   # The same type as `Dep.Thing`, in an application whose scan cannot see it.

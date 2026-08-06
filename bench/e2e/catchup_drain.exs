@@ -37,7 +37,7 @@ skip_backlog = 200_000
 
 defmodule Bench.CountingHandler do
   @moduledoc false
-  use DMEx.Handler, logs: [:bench], id: :counting
+  use DMEx.Handler, logs: [:bench], name: :counting
 
   @impl true
   def handle_message(%OrderPlaced{}, _metadata) do
@@ -169,7 +169,7 @@ discard = fn discard, conn, seen, held ->
             seen
         end
     after
-      # Shorter than `heartbeat_ms`, so a stream that has gone quiet ends this
+      # Shorter than `heartbeat_interval`, so a stream that has gone quiet ends this
       # stage. A timeout longer than the heartbeat interval never fires: the
       # heartbeats themselves keep resetting it, and a miscount would hang here
       # forever rather than reporting.
@@ -219,7 +219,7 @@ defmodule Bench.SkippingHandler do
   # expands filters over *compiled* application modules (`DMEx.Message.types/0`)
   # — the filter would match zero types, the connect would 404, and this stage
   # would retry forever.
-  use DMEx.Handler, logs: [:bench], id: :skipping
+  use DMEx.Handler, logs: [:bench], name: :skipping
 
   @impl true
   def handle_message(%Bench.UnusedMessage{}, _metadata), do: :ok

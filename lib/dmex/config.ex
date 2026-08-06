@@ -19,7 +19,7 @@ defmodule DMEx.Config do
   | `max_batch_frequency` | `100` | reads per second — **how hard one connection may hammer the database**. A hundred puts added latency (`1 / 2f`) at 5 ms, low enough to be invisible next to the network hop. The cost is at the pool, not the connection: worst-case reads per second is `open streams x this`, so it is the first setting to lower when many streams share one pool. Measured, a 10-connection pool starts queueing checkouts somewhere between 50 and 200 busy streams at this rate — see ARCHITECTURE's *What has been measured* and `guides/deployment.md`. Any positive number: `0.2` is one read every five seconds. |
   | `max_batch_size` | `500` | rows per read. Bounds the **per-row** heap cost — about a kilobyte each once decoded and framed, which no byte budget can see — and bounds the running sum enforcing `max_batch_bytes`. Also subject to the sizing rule in `guides/deployment.md`: one write must drain in well under `stall_timeout` at the slowest handler's rate. |
   | `max_batch_bytes` | `1_048_576` | **payload** bytes per read, enforced inside the query (see `c:DMEx.Storage.read/5`). Bounds the half of the heap cost that scales with message size: 500 rows is half a megabyte at 1 KB each and half a gigabyte at 1 MB each. One row larger than this is still delivered on its own, since refusing it would wedge the stream permanently. |
-  | `heartbeat_ms` | `15_000` | ms; half the most common 30 s proxy idle timeout, so two heartbeats fit inside every window. |
+  | `heartbeat_interval` | `15_000` | ms; half the most common 30 s proxy idle timeout, so two heartbeats fit inside every window. |
   | `poll_interval` | `1_000` | ms; Oban stager parity. The worst-case wakeup latency when a `NOTIFY` is lost, costing one `max(id)` index descent per app per second. |
   | `stall_timeout` | `30_000` | ms; the budget for any one blocking step of the send loop. Generous on purpose: killing a healthy slow handler costs a reconnect and a fresh catch-up read, where a wedged connection lingering 30 s costs one request process. At the 1 MiB write cap it tolerates a handler draining a full write at ~280 kbit/s. `:infinity` runs no watcher at all. |
   | `stall_check_interval` | `1_000` | ms; how often `DMEx.Log.Watcher` sweeps, so a stall is reclaimed within `stall_timeout + stall_check_interval`. A sweep is one atomics read per connection and no query. |
@@ -40,15 +40,15 @@ defmodule DMEx.Config do
   | `checkpoint_interval` | `1_000` | ms; the longest a coalesced run of *skipped* rows may go unpersisted. Skips run no handler, so this bounds only how much re-skipping a crash costs. A handled message commits its own advance immediately. |
   | `on_failure` | `:dead_message` | what happens after local retries are exhausted. Recording the message and moving on keeps one poison message from wedging a subscription, and from vanishing; `:crash` is there when a stuck subscription is the better failure. |
   | `max_attempts` | `3` | total attempts — enough to ride out a transient deadlock, few enough that a poison message reaches its terminal action in under a second of backoff. |
-  | `retry_backoff` | `100` | ms; base for `100 × 2^(attempt - 1)` with full jitter. |
+  | `retry_backoff_base` | `100` | ms; base for `100 × 2^(attempt - 1)` with full jitter. |
   | `retry_backoff_max` | `5_000` | ms; cap on that schedule. |
-  | `reconnect_backoff` | `500` | ms; base for the jittered reconnect schedule, and the flat jittered pause `on_failure: :crash` takes before re-raising. Bounds a crash-loop's reconnect rate against a *different application's* database. |
+  | `reconnect_backoff_base` | `500` | ms; base for the jittered reconnect schedule, and the flat jittered pause `on_failure: :crash` takes before re-raising. Bounds a crash-loop's reconnect rate against a *different application's* database. |
   | `reconnect_backoff_max` | `30_000` | ms; cap on that schedule. |
   | `max_frame_bytes` | `4_194_304` | bytes; the largest unterminated frame the decoder buffers. A frame is **one row**, so this has to exceed the largest single message any log sends, not its whole batch. Exceeding it drops the connection, which costs only a re-read. |
   | `missed_heartbeats` | `3` | silences of the log's advertised interval before giving up — long enough that one GC pause on the log is not a disconnect. |
 
-  `retry_backoff`/`retry_backoff_max` and
-  `reconnect_backoff`/`reconnect_backoff_max` are validated independently and
+  `retry_backoff_base`/`retry_backoff_max` and
+  `reconnect_backoff_base`/`reconnect_backoff_max` are validated independently and
   deliberately not against each other: `DMEx.backoff/3` takes
   `min(max, base * 2 ^ (attempt - 1))`, so the pair is unordered and the cap
   always wins. A `max` below its `base` is not an error — it is a constant delay
@@ -78,7 +78,7 @@ defmodule DMEx.Config do
   @log_defaults [
     max_batch_frequency: 100,
     max_batch_size: 500,
-    heartbeat_ms: 15_000,
+    heartbeat_interval: 15_000,
     poll_interval: 1_000,
     max_batch_bytes: 1_048_576,
     stall_timeout: 30_000,
@@ -90,9 +90,9 @@ defmodule DMEx.Config do
     checkpoint_interval: 1_000,
     on_failure: :dead_message,
     max_attempts: 3,
-    retry_backoff: 100,
+    retry_backoff_base: 100,
     retry_backoff_max: 5_000,
-    reconnect_backoff: 500,
+    reconnect_backoff_base: 500,
     reconnect_backoff_max: 30_000,
     max_frame_bytes: 4_194_304,
     missed_heartbeats: 3
@@ -102,7 +102,7 @@ defmodule DMEx.Config do
   @type log :: %{
           max_batch_frequency: number(),
           max_batch_size: pos_integer(),
-          heartbeat_ms: pos_integer(),
+          heartbeat_interval: pos_integer(),
           poll_interval: pos_integer(),
           max_batch_bytes: pos_integer(),
           stall_timeout: pos_integer() | :infinity,
@@ -115,9 +115,9 @@ defmodule DMEx.Config do
           checkpoint_interval: pos_integer(),
           on_failure: :crash | :skip | :dead_message,
           max_attempts: pos_integer(),
-          retry_backoff: pos_integer(),
+          retry_backoff_base: pos_integer(),
           retry_backoff_max: pos_integer(),
-          reconnect_backoff: pos_integer(),
+          reconnect_backoff_base: pos_integer(),
           reconnect_backoff_max: pos_integer(),
           max_frame_bytes: pos_integer(),
           missed_heartbeats: pos_integer()
@@ -156,13 +156,13 @@ defmodule DMEx.Config do
   @doc """
   The effective heartbeat interval a log advertises, in ms.
 
-  `heartbeat_ms + batch_interval(config)`, because the loop's throttle runs
+  `heartbeat_interval + batch_interval(config)`, because the loop's throttle runs
   *after* the heartbeat branch — so the sum, not the interval, is the real upper
   bound on silence. It travels as SSE's `retry:`.
   """
   @spec effective_heartbeat(log()) :: pos_integer()
   def effective_heartbeat(config) do
-    config.heartbeat_ms + batch_interval(config)
+    config.heartbeat_interval + batch_interval(config)
   end
 
   @doc """
@@ -212,7 +212,7 @@ defmodule DMEx.Config do
 
     for field <- [
           :max_batch_size,
-          :heartbeat_ms,
+          :heartbeat_interval,
           :poll_interval,
           :max_batch_bytes,
           :stall_check_interval
@@ -228,9 +228,9 @@ defmodule DMEx.Config do
   defp validate_handler!(config) do
     for field <- [
           :max_attempts,
-          :retry_backoff,
+          :retry_backoff_base,
           :retry_backoff_max,
-          :reconnect_backoff,
+          :reconnect_backoff_base,
           :reconnect_backoff_max,
           :max_frame_bytes,
           :missed_heartbeats,

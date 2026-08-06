@@ -82,9 +82,9 @@ defmodule DMEx.Integration.HeartbeatTest do
     test "the advertised retry: is the effective interval, not the raw one", ctx do
       body = collect(ctx, 300)
 
-      # heartbeat_ms + one batch interval, because the loop's throttle runs after the
+      # heartbeat_interval + one batch interval, because the loop's throttle runs after the
       # heartbeat branch — that sum is the real upper bound on silence, and a
-      # consumer measuring against heartbeat_ms alone would disconnect a healthy
+      # consumer measuring against heartbeat_interval alone would disconnect a healthy
       # log.
       assert body =~ "retry: #{effective_heartbeat()}"
     end
@@ -190,7 +190,7 @@ defmodule DMEx.Integration.HeartbeatTest do
         DMEx.Supervisor.subscribe(Handlers.Echo,
           supervisor: PersistentHandler,
           missed_heartbeats: 1,
-          reconnect_backoff: 50,
+          reconnect_backoff_base: 50,
           reconnect_backoff_max: 100
         )
 
@@ -203,7 +203,7 @@ defmodule DMEx.Integration.HeartbeatTest do
 
   ## Helpers
 
-  # `heartbeat_ms` plus one batch interval. Derived rather than written out,
+  # `heartbeat_interval` plus one batch interval. Derived rather than written out,
   # because the batch interval follows `max_batch_frequency`'s default: a
   # literal here states the right thing only until that default moves, and then
   # states the wrong one loudly.

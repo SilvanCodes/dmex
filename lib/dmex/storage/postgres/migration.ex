@@ -11,6 +11,7 @@ defmodule DMEx.Storage.Postgres.Migration do
 
   use Ecto.Migration
 
+  alias DMEx.Storage.Migration
   alias DMEx.Storage.Postgres
 
   # From the behaviour, not restated: see `DMEx.Storage.__table__/1`. The same
@@ -20,32 +21,28 @@ defmodule DMEx.Storage.Postgres.Migration do
   @dead_messages DMEx.Storage.__table__(:dead_messages)
 
   @doc false
-  @spec up([:log | :subscriptions], String.t() | nil) :: :ok
+  @spec up([Migration.table()], String.t() | nil) :: :ok
   def up(tables, prefix) do
     if prefix, do: execute("CREATE SCHEMA IF NOT EXISTS \"#{prefix}\"")
 
-    if :log in tables, do: up_log(prefix)
-    if :subscriptions in tables, do: up_subscriptions(prefix)
+    if :messages in tables, do: up_messages(prefix)
+    if :cursors in tables, do: up_cursors(prefix)
+    if :dead_messages in tables, do: up_dead_messages(prefix)
 
     :ok
   end
 
   @doc false
-  @spec down([:log | :subscriptions], String.t() | nil) :: :ok
+  @spec down([Migration.table()], String.t() | nil) :: :ok
   def down(tables, prefix) do
-    if :subscriptions in tables do
-      drop_if_exists(table(@dead_messages, prefix: prefix))
-      drop_if_exists(table(@cursors, prefix: prefix))
-    end
-
-    if :log in tables do
-      drop_if_exists(table(@messages, prefix: prefix))
-    end
+    if :dead_messages in tables, do: drop_if_exists(table(@dead_messages, prefix: prefix))
+    if :cursors in tables, do: drop_if_exists(table(@cursors, prefix: prefix))
+    if :messages in tables, do: drop_if_exists(table(@messages, prefix: prefix))
 
     :ok
   end
 
-  defp up_log(prefix) do
+  defp up_messages(prefix) do
     create_if_not_exists table(@messages, primary_key: false, prefix: prefix) do
       # bigint, not int: a log nothing deletes from outgrows 2^31, and every
       # consumer cursor in the network is denominated in this column.
@@ -109,7 +106,7 @@ defmodule DMEx.Storage.Postgres.Migration do
   # prefixed name in a query cannot disagree.
   defp qualified(name, prefix), do: Postgres.__table__(name, prefix)
 
-  defp up_subscriptions(prefix) do
+  defp up_cursors(prefix) do
     create_if_not_exists table(@cursors, primary_key: false, prefix: prefix) do
       # The `log/id` pair a handler declares, as the key rather than a surrogate
       # id: the resulting unique index enforces "one cursor per subscription" in
@@ -122,17 +119,19 @@ defmodule DMEx.Storage.Postgres.Migration do
       add(:last_seen, :bigint, null: false)
       add(:updated_at, :timestamptz, null: false, default: fragment("now()"))
     end
+  end
 
-    # **Structurally a message log.** Everything below `subscription` is
-    # `dmex_messages` — the same column names, types and meanings — so a dead
-    # row *is* a log row: replaying one needs no reshaping and no second decode
-    # path. Equal as *values*, not as bytes: the payload was decoded out of a
-    # frame and re-encoded, the same caveat that already applies to anything
-    # reading `data` back out of the log.
-    #
-    # Deliberately **not** here: the exception and the attempt count. A failure
-    # is an event, not a property of the message, so it goes to logs and
-    # telemetry — persisting it would stop a row from simply being a message.
+  # **Structurally a message log.** Everything below `subscription` is
+  # `dmex_messages` — the same column names, types and meanings — so a dead
+  # row *is* a log row: replaying one needs no reshaping and no second decode
+  # path. Equal as *values*, not as bytes: the payload was decoded out of a
+  # frame and re-encoded, the same caveat that already applies to anything
+  # reading `data` back out of the log.
+  #
+  # Deliberately **not** here: the exception and the attempt count. A failure
+  # is an event, not a property of the message, so it goes to logs and
+  # telemetry — persisting it would stop a row from simply being a message.
+  defp up_dead_messages(prefix) do
     create_if_not_exists table(@dead_messages, primary_key: false, prefix: prefix) do
       # The table is shared across every subscription in the application, so a
       # row has to say which owns it, by the same identifier `dmex_cursors` is

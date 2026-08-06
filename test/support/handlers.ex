@@ -43,7 +43,7 @@ defmodule DMEx.Test.Handlers do
     unset — resolves to the log's tip at connect, which races those appends.
     A test wanting the default says so at its subscribe call.
     """
-    use DMEx.Handler, logs: [:test], id: :echo, last_seen: 0
+    use DMEx.Handler, logs: [:test], name: :echo, last_seen: 0
 
     alias DMEx.Test.Handlers
     alias DMEx.Test.Messages.OrderPlaced
@@ -70,7 +70,7 @@ defmodule DMEx.Test.Handlers do
 
     Both clauses report, so a test can tell which one a row reached.
     """
-    use DMEx.Handler, logs: [:test], id: :echo_whole_log
+    use DMEx.Handler, logs: [:test], name: :echo_whole_log
 
     alias DMEx.Test.Handlers
     alias DMEx.Test.Messages.OrderPlaced
@@ -98,7 +98,7 @@ defmodule DMEx.Test.Handlers do
     and what `[:dmex, :handler, :skip]` says together describe everything the log
     is emitting.
     """
-    use DMEx.Handler, logs: [:test], id: :sink
+    use DMEx.Handler, logs: [:test], name: :sink
 
     alias DMEx.Test.Handlers
 
@@ -119,7 +119,7 @@ defmodule DMEx.Test.Handlers do
     where accepting a message is the whole head, so a whole-log cast still has to
     ask whether some clause wants this one.
     """
-    use DMEx.Handler, logs: [:test], id: :whole_log_narrowed
+    use DMEx.Handler, logs: [:test], name: :whole_log_narrowed
 
     alias DMEx.Test.Handlers
     alias DMEx.Test.Messages.OrderPlaced
@@ -146,7 +146,7 @@ defmodule DMEx.Test.Handlers do
     declaration now: a handler subscribed to a list that does not contain what
     it matches on is unrepresentable, and the price is a module per combination.
     """
-    use DMEx.Handler, logs: [:test], id: :echo_all
+    use DMEx.Handler, logs: [:test], name: :echo_all
 
     alias DMEx.Test.Handlers
     alias DMEx.Test.Messages.OrderPlaced
@@ -170,7 +170,7 @@ defmodule DMEx.Test.Handlers do
     Selection is by type, so the log sends every `OrderPlaced`; the ones this
     clause turns down are skipped rather than raising.
     """
-    use DMEx.Handler, logs: [:test], id: :narrowed
+    use DMEx.Handler, logs: [:test], name: :narrowed
 
     alias DMEx.Test.Handlers
     alias DMEx.Test.Messages.OrderPlaced
@@ -185,7 +185,7 @@ defmodule DMEx.Test.Handlers do
 
   defmodule Guarded do
     @moduledoc "Narrows with a guard rather than with a pattern."
-    use DMEx.Handler, logs: [:test], id: :guarded
+    use DMEx.Handler, logs: [:test], name: :guarded
 
     alias DMEx.Test.Handlers
     alias DMEx.Test.Messages.OrderPlaced
@@ -205,7 +205,7 @@ defmodule DMEx.Test.Handlers do
     The distinction the skip path has to keep: a clause head that did not match
     means the handler was never entered, while this one was and failed.
     """
-    use DMEx.Handler, logs: [:test], id: :raises_function_clause
+    use DMEx.Handler, logs: [:test], name: :raises_function_clause
 
     alias DMEx.Test.Messages.OrderPlaced
 
@@ -223,7 +223,7 @@ defmodule DMEx.Test.Handlers do
     only thing they share is this module. `:other` is bound alongside `:test`
     wherever a test starts a supervisor that discovers this file.
     """
-    use DMEx.Handler, logs: [:test, :other], id: :fanned, last_seen: 0
+    use DMEx.Handler, logs: [:test, :other], name: :fanned, last_seen: 0
 
     alias DMEx.Test.Handlers
     alias DMEx.Test.Messages.OrderPlaced
@@ -238,7 +238,7 @@ defmodule DMEx.Test.Handlers do
 
   defmodule Careful do
     @moduledoc "Declares its own failure policy, for the config-on-the-module path."
-    use DMEx.Handler, logs: [:test], id: :careful, on_failure: :crash, max_attempts: 5
+    use DMEx.Handler, logs: [:test], name: :careful, on_failure: :crash, max_attempts: 5
 
     alias DMEx.Test.Handlers
     alias DMEx.Test.Messages.OrderPlaced
@@ -253,7 +253,7 @@ defmodule DMEx.Test.Handlers do
 
   defmodule Raising do
     @moduledoc "Always raises, for the failure paths."
-    use DMEx.Handler, logs: [:test], id: :raising
+    use DMEx.Handler, logs: [:test], name: :raising
 
     alias DMEx.Test.Handlers
     alias DMEx.Test.Messages.OrderPlaced
@@ -273,7 +273,7 @@ defmodule DMEx.Test.Handlers do
     The rollback probe: if the row is gone afterwards, the callback and the
     cursor advance really did share one transaction.
     """
-    use DMEx.Handler, logs: [:test], id: :writes_then_raises
+    use DMEx.Handler, logs: [:test], name: :writes_then_raises
 
     alias DMEx.Test.Messages.OrderPlaced
     alias DMEx.Test.Repo
@@ -293,7 +293,7 @@ defmodule DMEx.Test.Handlers do
 
   defmodule ChecksTransaction do
     @moduledoc "Reports whether it was invoked inside a transaction."
-    use DMEx.Handler, logs: [:test], id: :checks_transaction
+    use DMEx.Handler, logs: [:test], name: :checks_transaction
 
     alias DMEx.Test.Handlers
     alias DMEx.Test.Messages.OrderPlaced
@@ -309,7 +309,7 @@ defmodule DMEx.Test.Handlers do
 
   defmodule Slow do
     @moduledoc "Sleeps before reporting, for tests that need a drain in progress."
-    use DMEx.Handler, logs: [:test], id: :slow
+    use DMEx.Handler, logs: [:test], name: :slow
 
     alias DMEx.Test.Handlers
     alias DMEx.Test.Messages.OrderPlaced
@@ -330,7 +330,7 @@ defmodule DMEx.Test.Handlers do
     The transient failure retries exist for — a deadlock, a blipped downstream —
     as opposed to a handler that is simply broken.
     """
-    use DMEx.Handler, logs: [:test], id: :fail_times
+    use DMEx.Handler, logs: [:test], name: :fail_times
 
     alias DMEx.Test.Handlers
     alias DMEx.Test.Messages.OrderPlaced
@@ -376,7 +376,7 @@ defmodule DMEx.Test.Handlers do
     suppression cannot cover, and the reason delivery is at-least-once rather
     than exactly-once. Killing the stream on receipt lands squarely inside it.
     """
-    use DMEx.Handler, logs: [:test], id: :slow_commit
+    use DMEx.Handler, logs: [:test], name: :slow_commit
 
     alias DMEx.Test.Handlers
     alias DMEx.Test.Messages.OrderPlaced

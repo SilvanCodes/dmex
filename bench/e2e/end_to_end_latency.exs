@@ -28,7 +28,7 @@ Helper.section("end_to_end_latency — append to handler, percentiles")
 
 defmodule Bench.LatencyHandler do
   @moduledoc false
-  use DMEx.Handler, logs: [:bench], id: :latency
+  use DMEx.Handler, logs: [:bench], name: :latency
 
   @impl true
   def handle_message(%OrderPlaced{order_id: sent_at}, _metadata) do

@@ -81,7 +81,7 @@ defmodule DMEx.Supervisor do
   @storage_opts Keyword.keys(@storage_defaults)
   # `:handler` is deliberately absent: it is the positional argument, so a stray
   # `handler:` in the options is a mistake worth raising on.
-  @subscription_opts [:supervisor, :logs, :log]
+  @subscription_opts [:supervisor, :logs]
 
   @doc false
   @spec child_spec(keyword()) :: Supervisor.child_spec()
@@ -191,7 +191,8 @@ defmodule DMEx.Supervisor do
 
   Everything about *what* is consumed comes off the module, as do its defaults
   for how it runs. The options here override those, and say where the cursor is
-  written and which supervisor to attach to. `log:` narrows the call to one log.
+  written and which supervisor to attach to — never *which* logs, which is the
+  module's to declare.
 
   Returns `{:error, {:already_subscribed, id}}` if one already has a live stream.
   Subscriptions started before it stay up: each is independent, and tearing down
@@ -212,8 +213,7 @@ defmodule DMEx.Supervisor do
     storage = Map.to_list(resolve_storage!(opts, supervisor))
     config = Config.handler!(Keyword.merge(declaration.config, opts))
 
-    declaration
-    |> logs_of(opts)
+    declaration.logs
     |> Enum.reduce_while({:ok, []}, fn log, {:ok, pids} ->
       {transport, origin} = transport!(declaration, log, bound)
 
@@ -240,7 +240,7 @@ defmodule DMEx.Supervisor do
   end
 
   @doc """
-  Stops the subscriptions `handler` declares, or the one `log:` names.
+  Stops every subscription `handler` declares.
 
   `{:error, :not_found}` when none of them is running.
   """
@@ -251,7 +251,7 @@ defmodule DMEx.Supervisor do
     stopped =
       handler
       |> Handler.declaration!()
-      |> logs_of(opts)
+      |> Map.fetch!(:logs)
       |> Enum.flat_map(fn log ->
         Registry.lookup(
           registry(supervisor),
@@ -263,14 +263,6 @@ defmodule DMEx.Supervisor do
       end)
 
     if stopped == [], do: {:error, :not_found}, else: :ok
-  end
-
-  # Every log the handler declares, or the single one this call named.
-  defp logs_of(declaration, opts) do
-    case Keyword.get(opts, :log) do
-      nil -> declaration.logs
-      log -> [Handler.log!(declaration.handler, log: log)]
-    end
   end
 
   @doc """
@@ -344,7 +336,7 @@ defmodule DMEx.Supervisor do
                   "#{inspect(already)} and #{inspect(handler)} both declare the subscription " <>
                     "#{inspect(id)}. A subscription id keys the cursor, so two handlers " <>
                     "sharing one would clobber each other's position — give one of them a " <>
-                    "different `id:`."
+                    "different `name:`."
 
           _ ->
             Map.put(seen, id, handler)
@@ -437,7 +429,7 @@ defmodule DMEx.Supervisor do
     if !DMEx.identifier?(name) do
       raise ArgumentError,
             "the log name #{inspect(name)} is not a legal identifier: it must match " <>
-              "#{inspect(DMEx.identifier_format())}, the same charset a handler's `logs:` and `id:` use, " <>
+              "#{inspect(DMEx.identifier_format())}, the same charset a handler's `logs:` and `name:` use, " <>
               "so \"/\" can join them with no escaping."
     end
 

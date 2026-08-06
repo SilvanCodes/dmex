@@ -271,7 +271,7 @@ defmodule DMEx.Handler.Subscription do
     attempt = state.attempt + 1
 
     delay =
-      DMEx.backoff(attempt, state.config.reconnect_backoff, state.config.reconnect_backoff_max)
+      DMEx.backoff(attempt, state.config.reconnect_backoff_base, state.config.reconnect_backoff_max)
 
     Logger.debug(fn ->
       "DMEx #{state.subscription} (#{inspect(state.handler)}) reconnecting to " <>

@@ -144,7 +144,7 @@ It is a fallback, not a substitute for configuring the proxy:
 location /stream {
     proxy_pass http://app;
     proxy_buffering off;        # the important one
-    proxy_read_timeout 300s;    # must exceed heartbeat_ms + one batch interval
+    proxy_read_timeout 300s;    # must exceed heartbeat_interval + one batch interval
     proxy_http_version 1.1;
 }
 ```
@@ -156,7 +156,7 @@ healthy stream looks dead to both the consumer's liveness check and the proxy's
 own idle timeout.
 
 `proxy_read_timeout` must comfortably exceed the producer's **effective**
-heartbeat interval, `heartbeat_ms` plus one batch interval (15 010 ms with the
+heartbeat interval, `heartbeat_interval` plus one batch interval (15 010 ms with the
 defaults), because the loop's throttle runs after the heartbeat branch. The
 producer advertises that figure as SSE's `retry:`, so you can read it off the
 wire rather than recomputing it.

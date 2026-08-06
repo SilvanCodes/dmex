@@ -11,7 +11,7 @@ end
 
 defmodule DMEx.Integration.MessageTypeTest.RenamedConsumer do
   @moduledoc false
-  use DMEx.Handler, logs: [:test], id: :renamed_consumer
+  use DMEx.Handler, logs: [:test], name: :renamed_consumer
 
   alias DMEx.Integration.MessageTypeTest.Renamed
   alias DMEx.Test.Handlers

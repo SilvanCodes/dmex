@@ -24,7 +24,7 @@ defmodule DMEx.SupervisorTest do
   # discovered handler is not allowed to.
   defmodule OtherHandler do
     @moduledoc false
-    use Handler, logs: [:test], id: :other
+    use Handler, logs: [:test], name: :other
 
     @impl true
     def handle_message(%OrderPlaced{}, _metadata), do: :ok
@@ -32,7 +32,7 @@ defmodule DMEx.SupervisorTest do
 
   defmodule EchoTwin do
     @moduledoc "Declares Handlers.Echo's identity, for the duplicate check."
-    use Handler, logs: [:test], id: :echo
+    use Handler, logs: [:test], name: :echo
 
     @impl true
     def handle_message(%OrderPlaced{}, _metadata), do: :ok
@@ -40,7 +40,7 @@ defmodule DMEx.SupervisorTest do
 
   defmodule ElsewhereHandler do
     @moduledoc "Names a log nothing binds."
-    use Handler, logs: [:elsewhere], id: :elsewhere
+    use Handler, logs: [:elsewhere], name: :elsewhere
 
     @impl true
     def handle_message(%OrderPlaced{}, _metadata), do: :ok
@@ -48,7 +48,7 @@ defmodule DMEx.SupervisorTest do
 
   defmodule FannedTwin do
     @moduledoc "Collides with Handlers.Fanned on one of its two logs."
-    use Handler, logs: [:other], id: :fanned
+    use Handler, logs: [:other], name: :fanned
 
     @impl true
     def handle_message(%OrderPlaced{}, _metadata), do: :ok
@@ -182,7 +182,7 @@ defmodule DMEx.SupervisorTest do
   end
 
   # Validated where the names are declared rather than at first connect, because
-  # a typo in a key and a typo in a handler's `log:` are the same bug and only
+  # a typo in a key and a typo in a handler's `logs:` are the same bug and only
   # one of them shows up in the "unknown log" message.
   describe "logs:" do
     test "rejects a name that is not a legal identifier" do

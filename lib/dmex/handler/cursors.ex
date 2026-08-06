@@ -9,7 +9,7 @@ defmodule DMEx.Handler.Cursors do
 
   ## Changing a declaration costs a migration
 
-  A different `id:`, or a different key for that log in `DMEx.Supervisor`'s
+  A different `name:`, or a different key for that log in `DMEx.Supervisor`'s
   `logs:`, mints a new identity with no cursor, which then begins wherever its
   `last_seen:` says. (Renaming the module does not — see `DMEx.Handler`.) Migrate it
   next to the code change that causes it:
@@ -29,7 +29,7 @@ defmodule DMEx.Handler.Cursors do
   ## Options
 
   `repo:` (required), plus optional `storage:`, `prefix:` and — for a multi-log
-  handler — `log:`. See `DMEx.Supervisor.storage!/1`.
+  handler — `for:`. See `DMEx.Supervisor.storage!/1`.
 
   ## These do not touch a running subscription
 
