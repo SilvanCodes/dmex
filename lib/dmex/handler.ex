@@ -172,7 +172,7 @@ defmodule DMEx.Handler do
       # Only what was written at the `use` site. The message set is read off the
       # callback's clauses, which cannot happen until they all exist — hence
       # @before_compile, and hence carrying these across in an attribute.
-      @dmex_declared DMEx.Handler.__declared__(__MODULE__, opts)
+      @dmex_declared_opts DMEx.Handler.__declared_opts__(__MODULE__, opts)
 
       # The clause heads *as written*. `Module.get_definition/2` has them too,
       # but expanded and normalized past the point of being reinjectable, and
@@ -235,12 +235,12 @@ defmodule DMEx.Handler do
   end
 
   @doc false
-  @spec __declared__(module(), keyword()) :: %{
+  @spec __declared_opts__(module(), keyword()) :: %{
           logs: [String.t()],
           name: String.t(),
           config: keyword()
         }
-  def __declared__(module, opts) do
+  def __declared_opts__(module, opts) do
     validate_keys!(module, opts)
 
     %{
@@ -253,7 +253,7 @@ defmodule DMEx.Handler do
   @doc false
   @spec __declaration__(Macro.Env.t()) :: declaration()
   def __declaration__(env) do
-    %{logs: logs, name: name, config: config} = Module.get_attribute(env.module, :dmex_declared)
+    %{logs: logs, name: name, config: config} = Module.get_attribute(env.module, :dmex_declared_opts)
 
     {messages, selective?} = messages!(env)
 
@@ -306,8 +306,8 @@ defmodule DMEx.Handler do
   The one place a declaration becomes the string `dmex_cursors` and
   `dmex_dead_messages` are keyed by.
   """
-  @spec subscription_id(module(), atom() | String.t()) :: String.t()
-  def subscription_id(handler, log) when is_atom(handler) do
+  @spec subscription_id!(module(), atom() | String.t()) :: String.t()
+  def subscription_id!(handler, log) when is_atom(handler) do
     declaration = declaration!(handler)
     log = to_string(log)
 
@@ -322,7 +322,7 @@ defmodule DMEx.Handler do
     handler
     |> declaration!()
     |> Map.fetch!(:logs)
-    |> Enum.map(&subscription_id(handler, &1))
+    |> Enum.map(&subscription_id!(handler, &1))
   end
 
   @doc """
@@ -331,9 +331,9 @@ defmodule DMEx.Handler do
   `DMEx.Handler.Cursors` and `DMEx.Handler.DeadMessages` resolve the same option
   the same way, so they cannot drift.
   """
-  @spec subscription_id!(module(), keyword()) :: String.t()
-  def subscription_id!(handler, opts) when is_atom(handler) and is_list(opts) do
-    subscription_id(handler, log!(handler, opts))
+  @spec resolve_subscription_id!(module(), keyword()) :: String.t()
+  def resolve_subscription_id!(handler, opts) when is_atom(handler) and is_list(opts) do
+    subscription_id!(handler, log!(handler, opts))
   end
 
   @doc """

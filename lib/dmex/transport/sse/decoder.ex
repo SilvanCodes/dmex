@@ -8,7 +8,7 @@ defmodule DMEx.Transport.SSE.Decoder do
   accumulates and dispatches on the blank-line delimiter.
 
   **Blocks carrying no row are dropped**: heartbeat comments, the `retry:` frame
-  at stream open, and anything `DMEx.Transport.SSE.Frame.parse/1` finds
+  at stream open, and anything `DMEx.Transport.SSE.Frame.decode/1` finds
   incomplete. The `retry:` value is kept (see `retry/1`), because it is how a
   consumer learns the interval to measure silence against.
 
@@ -25,7 +25,7 @@ defmodule DMEx.Transport.SSE.Decoder do
   accumulated buffer, so that is linear only while terminators are *rare* inside
   a frame: DMEx puts the whole payload on one `data:` line, so every interior
   chunk of a large frame skips both. A producer splitting `data:` over many
-  lines — which `Frame.parse/1` accepts — makes it quadratic in pushes again.
+  lines — which `Frame.decode/1` accepts — makes it quadratic in pushes again.
   """
 
   alias DMEx.Transport.SSE.Frame
@@ -62,7 +62,7 @@ defmodule DMEx.Transport.SSE.Decoder do
           retry: pos_integer() | nil
         }
 
-  # `extract/2` passes a parse failure through untouched, so the two types are
+  # `extract/2` passes a decode failure through untouched, so the two types are
   # structurally coupled and composing them says so.
   @type error :: :frame_too_large | Frame.error()
 
@@ -120,7 +120,7 @@ defmodule DMEx.Transport.SSE.Decoder do
         rest = binary_part(binary, start + length, byte_size(binary) - start - length)
         decoder = %{decoder | buffer: [rest], size: byte_size(rest)}
 
-        case Frame.parse(block) do
+        case Frame.decode(block) do
           {:ok, {:message, row}} -> extract(decoder, [row | acc])
           {:ok, {:retry, retry}} -> extract(%{decoder | retry: retry}, acc)
           {:ok, :ignore} -> extract(decoder, acc)
@@ -129,7 +129,7 @@ defmodule DMEx.Transport.SSE.Decoder do
     end
   end
 
-  # Both error paths — this one and `Frame.parse/1`'s above — throw away the
+  # Both error paths — this one and `Frame.decode/1`'s above — throw away the
   # rows the same `push/2` already decoded. That is the **opposite** of what
   # `DMEx.Transport.SSE.responses/3` decides for the same question one layer up,
   # where rows ahead of a terminal response are returned and the terminal is

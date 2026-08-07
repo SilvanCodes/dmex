@@ -331,22 +331,22 @@ for {storage, repo, tag} <- [
       end
 
       test "advance/3 sets the cursor and last_seen/2 reads it back", %{opts: opts} do
-        assert :ok = @storage.advance(opts, @some, 42)
+        assert :ok = @storage.advance_cursor(opts, @some, 42)
 
         assert {:ok, 42} = @storage.last_seen(opts, @some)
       end
 
       test "advance/3 upserts rather than duplicating", %{opts: opts} do
-        :ok = @storage.advance(opts, @some, 42)
-        :ok = @storage.advance(opts, @some, 43)
+        :ok = @storage.advance_cursor(opts, @some, 42)
+        :ok = @storage.advance_cursor(opts, @some, 43)
 
         assert {:ok, 43} = @storage.last_seen(opts, @some)
         assert count(opts, "dmex_cursors") == 1
       end
 
       test "cursors are keyed per subscription", %{opts: opts} do
-        :ok = @storage.advance(opts, @one, 10)
-        :ok = @storage.advance(opts, @two, 20)
+        :ok = @storage.advance_cursor(opts, @one, 10)
+        :ok = @storage.advance_cursor(opts, @two, 20)
 
         assert {:ok, 10} = @storage.last_seen(opts, @one)
         assert {:ok, 20} = @storage.last_seen(opts, @two)
@@ -355,8 +355,8 @@ for {storage, repo, tag} <- [
       # Duplicate suppression happens in the pipeline, which is the authority, and
       # an operator resetting a cursor deliberately needs this to go both ways.
       test "advance/3 does not refuse to move backwards", %{opts: opts} do
-        :ok = @storage.advance(opts, @some, 100)
-        :ok = @storage.advance(opts, @some, 5)
+        :ok = @storage.advance_cursor(opts, @some, 100)
+        :ok = @storage.advance_cursor(opts, @some, 5)
 
         assert {:ok, 5} = @storage.last_seen(opts, @some)
       end
@@ -364,7 +364,7 @@ for {storage, repo, tag} <- [
       test "stores the identifier verbatim, with no inspect/1 in the way", %{opts: opts} do
         # The id arrives as a string and goes straight into the query — there is
         # nothing left to render, and nothing that could ever be atomized back.
-        :ok = @storage.advance(opts, @some, 1)
+        :ok = @storage.advance_cursor(opts, @some, 1)
 
         assert [[@some]] = raw(opts, "SELECT subscription FROM dmex_cursors")
       end
@@ -379,7 +379,7 @@ for {storage, repo, tag} <- [
       # operator's — when did this last move? — so the timestamp is a DateTime
       # on every adapter rather than whatever the driver happened to hand back.
       test "cursor/2 reports the position and when it last moved", %{opts: opts} do
-        :ok = @storage.advance(opts, @some, 42)
+        :ok = @storage.advance_cursor(opts, @some, 42)
 
         assert {:ok, %{last_seen: 42, updated_at: %DateTime{}}} = @storage.cursor(opts, @some)
       end
@@ -387,7 +387,7 @@ for {storage, repo, tag} <- [
       # Distinct from advancing to 0: with no row at all, `last_seen:` applies
       # again on the subscription's next start.
       test "delete_cursor/2 removes the row entirely", %{opts: opts} do
-        :ok = @storage.advance(opts, @some, 42)
+        :ok = @storage.advance_cursor(opts, @some, 42)
 
         assert :ok = @storage.delete_cursor(opts, @some)
         assert {:ok, nil} = @storage.last_seen(opts, @some)
@@ -407,7 +407,7 @@ for {storage, repo, tag} <- [
       test "a raise rolls back and propagates", %{opts: opts} do
         assert_raise RuntimeError, "boom", fn ->
           @storage.transaction(opts, fn ->
-            :ok = @storage.advance(opts, @some, 42)
+            :ok = @storage.advance_cursor(opts, @some, 42)
 
             raise "boom"
           end)

@@ -53,7 +53,7 @@ defmodule DMEx.Handler.Cursors do
   def position(handler, opts) when is_atom(handler) do
     {storage, storage_opts} = DMEx.Supervisor.storage!(opts)
 
-    storage.cursor(storage_opts, Handler.subscription_id!(handler, opts))
+    storage.cursor(storage_opts, Handler.resolve_subscription_id!(handler, opts))
   end
 
   @doc """
@@ -75,11 +75,11 @@ defmodule DMEx.Handler.Cursors do
   @spec move!(module(), non_neg_integer(), keyword()) :: :ok
   def move!(handler, last_seen, opts) when is_atom(handler) and is_integer(last_seen) and last_seen >= 0 do
     {storage, storage_opts} = DMEx.Supervisor.storage!(opts)
-    subscription = Handler.subscription_id!(handler, opts)
+    subscription = Handler.resolve_subscription_id!(handler, opts)
 
     # No transaction: one statement is already atomic, and `rename!/3` — which
     # genuinely needs one, for two — is the contrast.
-    :ok = storage.advance(storage_opts, subscription, last_seen)
+    :ok = storage.advance_cursor(storage_opts, subscription, last_seen)
   end
 
   @doc """
@@ -93,7 +93,7 @@ defmodule DMEx.Handler.Cursors do
   def reset!(handler, opts) when is_atom(handler) do
     {storage, storage_opts} = DMEx.Supervisor.storage!(opts)
 
-    :ok = storage.delete_cursor(storage_opts, Handler.subscription_id!(handler, opts))
+    :ok = storage.delete_cursor(storage_opts, Handler.resolve_subscription_id!(handler, opts))
   end
 
   @doc """
@@ -124,7 +124,7 @@ defmodule DMEx.Handler.Cursors do
                     "subscription's position — reset one of them first if that is what you want."
 
           {{:ok, %{last_seen: id}}, {:ok, nil}} ->
-            :ok = storage.advance(storage_opts, to, id)
+            :ok = storage.advance_cursor(storage_opts, to, id)
             :ok = storage.delete_cursor(storage_opts, from)
         end
       end)

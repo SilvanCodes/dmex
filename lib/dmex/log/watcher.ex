@@ -87,7 +87,7 @@ defmodule DMEx.Log.Watcher do
   @impl GenServer
   def handle_info(:sweep, state) do
     schedule(state)
-    sweep_now(state)
+    reclaim_overdue(state)
 
     {:noreply, state}
   end
@@ -96,13 +96,13 @@ defmodule DMEx.Log.Watcher do
   def handle_info(_message, state), do: {:noreply, state}
 
   @impl GenServer
-  def handle_call(:sweep, _from, state), do: {:reply, sweep_now(state), state}
+  def handle_call(:sweep, _from, state), do: {:reply, reclaim_overdue(state), state}
 
   ## Internals
 
   # One clock reading for the whole pass, so every connection is judged against
   # the same instant however long the walk takes.
-  defp sweep_now(state) do
+  defp reclaim_overdue(state) do
     now = System.monotonic_time(:millisecond)
     reclaimed = :counters.new(1, [])
 

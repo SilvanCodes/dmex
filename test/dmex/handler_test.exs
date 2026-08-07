@@ -200,7 +200,7 @@ defmodule DMEx.HandlerTest do
     # database. Changing the separator, the charset or the normalization resets
     # every cursor everywhere, so the literal is asserted rather than derived.
     test "is exactly \"log/id\"" do
-      assert Handler.subscription_id(Handlers.Echo, :test) == "test/echo"
+      assert Handler.subscription_id!(Handlers.Echo, :test) == "test/echo"
     end
 
     test "is one per log the handler reads" do
@@ -210,7 +210,7 @@ defmodule DMEx.HandlerTest do
 
     test "rejects a log the handler does not read" do
       assert_raise ArgumentError, ~r/does not read "elsewhere"/, fn ->
-        Handler.subscription_id(Handlers.Echo, :elsewhere)
+        Handler.subscription_id!(Handlers.Echo, :elsewhere)
       end
     end
 

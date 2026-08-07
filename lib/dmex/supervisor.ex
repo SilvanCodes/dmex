@@ -220,7 +220,7 @@ defmodule DMEx.Supervisor do
       child =
         [
           handler: handler,
-          subscription: Handler.subscription_id(handler, log),
+          subscription: Handler.subscription_id!(handler, log),
           fingerprint: declaration.fingerprint,
           transport: transport,
           origin: origin,
@@ -255,7 +255,7 @@ defmodule DMEx.Supervisor do
       |> Enum.flat_map(fn log ->
         Registry.lookup(
           registry(supervisor),
-          {:subscription, Handler.subscription_id(handler, log)}
+          {:subscription, Handler.subscription_id!(handler, log)}
         )
       end)
       |> Enum.map(fn {pid, _} ->

@@ -73,7 +73,7 @@ defmodule DMEx.Handler.DeadMessages do
   def list(handler, opts) when is_atom(handler) do
     {storage, storage_opts} = DMEx.Supervisor.storage!(opts)
 
-    storage.list_dead_messages(storage_opts, Handler.subscription_id!(handler, opts))
+    storage.list_dead_messages(storage_opts, Handler.resolve_subscription_id!(handler, opts))
   end
 
   @doc """
@@ -97,10 +97,10 @@ defmodule DMEx.Handler.DeadMessages do
   def replay!(handler, opts) when is_atom(handler) do
     {storage, storage_opts} = DMEx.Supervisor.storage!(opts)
 
-    subscription = Handler.subscription_id!(handler, opts)
+    subscription = Handler.resolve_subscription_id!(handler, opts)
 
     state =
-      Pipeline.build(
+      Pipeline.new(
         storage: storage,
         storage_opts: storage_opts,
         handler: handler,
@@ -129,7 +129,7 @@ defmodule DMEx.Handler.DeadMessages do
   def discard!(handler, id, opts) when is_atom(handler) and is_integer(id) do
     {storage, storage_opts} = DMEx.Supervisor.storage!(opts)
 
-    :ok = storage.delete_dead_message(storage_opts, Handler.subscription_id!(handler, opts), id)
+    :ok = storage.delete_dead_message(storage_opts, Handler.resolve_subscription_id!(handler, opts), id)
   end
 
   ## Internals

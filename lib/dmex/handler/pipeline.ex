@@ -259,8 +259,8 @@ defmodule DMEx.Handler.Pipeline do
   from that set. Never `String.to_atom/1` on whatever the log sent, which would
   be an unbounded-atom-table risk on attacker-controlled input.
   """
-  @spec build(keyword()) :: t()
-  def build(opts) do
+  @spec new(keyword()) :: t()
+  def new(opts) do
     handler = Keyword.fetch!(opts, :handler)
 
     if !Handler.handler?(handler) do
@@ -286,9 +286,9 @@ defmodule DMEx.Handler.Pipeline do
   # `DMEx.Handler.Subscription` always names the subscription it runs, since it is one
   # of possibly several. A caller that did not — a test — only has an answer
   # when there is exactly one, and it renders that answer through
-  # `Handler.subscription_id/2` rather than concatenating its own.
+  # `Handler.subscription_id!/2` rather than concatenating its own.
   defp subscription!(%{logs: [only], handler: handler}) do
-    Handler.subscription_id(handler, only)
+    Handler.subscription_id!(handler, only)
   end
 
   defp subscription!(%{logs: logs, handler: handler}) do
@@ -451,6 +451,6 @@ defmodule DMEx.Handler.Pipeline do
   end
 
   defp advance!(state, last_seen) do
-    :ok = state.storage.advance(state.storage_opts, state.subscription, last_seen)
+    :ok = state.storage.advance_cursor(state.storage_opts, state.subscription, last_seen)
   end
 end

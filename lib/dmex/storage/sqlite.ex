@@ -72,7 +72,7 @@ defmodule DMEx.Storage.SQLite do
   @now "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')"
 
   # Public so `DMEx.Storage.SQLite.Migration` stamps its defaults with the same
-  # expression `advance/3` writes with — the counterpart to
+  # expression `advance_cursor/3` writes with — the counterpart to
   # `DMEx.Storage.Postgres.__table__/2`, shared for the same reason.
   @doc false
   @spec __now__() :: String.t()
@@ -307,7 +307,7 @@ defmodule DMEx.Storage.SQLite do
   end
 
   @impl DMEx.Storage
-  def advance(opts, subscription, last_seen) when is_binary(subscription) and is_integer(last_seen) do
+  def advance_cursor(opts, subscription, last_seen) when is_binary(subscription) and is_integer(last_seen) do
     sql = """
     INSERT INTO #{@cursors} (subscription, last_seen, updated_at)
          VALUES (?1, ?2, #{@now})

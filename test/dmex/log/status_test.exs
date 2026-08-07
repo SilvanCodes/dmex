@@ -11,9 +11,9 @@ defmodule DMEx.Log.StatusTest do
   test "the first flip says send, the second says nothing more" do
     ref = Status.new(5_000)
 
-    assert Status.flip(ref)
-    refute Status.flip(ref)
-    refute Status.flip(ref)
+    assert Status.mark_pending(ref)
+    refute Status.mark_pending(ref)
+    refute Status.mark_pending(ref)
   end
 
   # This is the whole point: a stalled connection is blocked in chunk/2 and
@@ -22,7 +22,7 @@ defmodule DMEx.Log.StatusTest do
   test "a stalled connection accumulates one wakeup, not one per append" do
     ref = Status.new(5_000)
 
-    sent = Enum.count(1..1_000, fn _ -> Status.flip(ref) end)
+    sent = Enum.count(1..1_000, fn _ -> Status.mark_pending(ref) end)
 
     assert sent == 1
   end
@@ -30,10 +30,10 @@ defmodule DMEx.Log.StatusTest do
   test "clearing re-arms it" do
     ref = Status.new(5_000)
 
-    assert Status.flip(ref)
+    assert Status.mark_pending(ref)
     :ok = Status.clear(ref)
 
-    assert Status.flip(ref)
+    assert Status.mark_pending(ref)
   end
 
   test "clearing something already clear is fine" do
@@ -52,9 +52,9 @@ defmodule DMEx.Log.StatusTest do
     one = Status.new(5_000)
     two = Status.new(5_000)
 
-    assert Status.flip(one)
-    assert Status.flip(two)
-    refute Status.flip(one)
+    assert Status.mark_pending(one)
+    assert Status.mark_pending(two)
+    refute Status.mark_pending(one)
   end
 
   # `:atomics.exchange/3` is a test-and-set rather than a read then a write, so
@@ -64,7 +64,7 @@ defmodule DMEx.Log.StatusTest do
 
     winners =
       1..50
-      |> Task.async_stream(fn _ -> Status.flip(ref) end, max_concurrency: 50)
+      |> Task.async_stream(fn _ -> Status.mark_pending(ref) end, max_concurrency: 50)
       |> Enum.count(fn {:ok, flipped?} -> flipped? end)
 
     assert winners == 1
@@ -137,7 +137,7 @@ defmodule DMEx.Log.StatusTest do
       ref = Status.new(5_000)
       deadline = Status.deadline(ref)
 
-      assert Status.flip(ref)
+      assert Status.mark_pending(ref)
       assert Status.deadline(ref) == deadline
 
       :ok = Status.arm(ref, 10_000)
@@ -162,7 +162,7 @@ defmodule DMEx.Log.StatusTest do
       assert {:ok, ref} = Streams.register(FakeLog, 5_000, :all)
 
       refute Status.pending?(ref)
-      assert Status.flip(ref)
+      assert Status.mark_pending(ref)
       refute Status.overdue?(ref, now)
     end
 
@@ -170,7 +170,7 @@ defmodule DMEx.Log.StatusTest do
       {:ok, mine} = Streams.register(FakeLog, 5_000, :all)
 
       Streams.each(FakeLog, fn _pid, status, _selection ->
-        Status.flip(status)
+        Status.mark_pending(status)
       end)
 
       # Same flag, reached from another code path — which is what lets the

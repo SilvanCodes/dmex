@@ -200,7 +200,7 @@ defmodule DMEx.Test.Storage do
   def transaction(_opts, fun), do: {:ok, fun.()}
 
   @impl DMEx.Storage
-  def advance(opts, subscription, last_seen) when is_binary(subscription) do
+  def advance_cursor(opts, subscription, last_seen) when is_binary(subscription) do
     update(opts, &%{&1 | cursors: Map.put(&1.cursors, subscription, last_seen)})
   end
 

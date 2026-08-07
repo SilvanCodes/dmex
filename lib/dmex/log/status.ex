@@ -66,8 +66,8 @@ defmodule DMEx.Log.Status do
   Returns `true` when this call flipped the flag from clear to pending — that
   is, when the caller should actually send.
   """
-  @spec flip(t()) :: boolean()
-  def flip(ref), do: :atomics.exchange(ref, @flag, 1) == 0
+  @spec mark_pending(t()) :: boolean()
+  def mark_pending(ref), do: :atomics.exchange(ref, @flag, 1) == 0
 
   @doc "Clears the flag. Called by the stream itself, before every read."
   @spec clear(t() | nil) :: :ok

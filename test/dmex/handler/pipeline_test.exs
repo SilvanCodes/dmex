@@ -204,7 +204,7 @@ defmodule DMEx.Handler.PipelineTest do
       assert {:ok, 50} = Postgres.last_seen(ctx.storage_opts, "test/echo")
     end
 
-    # `advance/3` sets last_seen absolutely, so a handled row's own transaction
+    # `advance_cursor/3` sets last_seen absolutely, so a handled row's own transaction
     # already carries every skip below it. That is what keeps "flush handled
     # messages immediately" from costing a second write.
     test "a handled message subsumes the pending run rather than adding a write", ctx do
@@ -432,7 +432,7 @@ defmodule DMEx.Handler.PipelineTest do
   # a poison message — the terminal action is `DMEx.Handler.PipelineFailureTest`'s
   # subject, and the default is `:dead_message`.
   defp state(ctx, opts) do
-    Pipeline.build(
+    Pipeline.new(
       storage: Postgres,
       storage_opts: ctx.storage_opts,
       handler: Keyword.fetch!(opts, :handler),

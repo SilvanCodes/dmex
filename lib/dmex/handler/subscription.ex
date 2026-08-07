@@ -99,7 +99,7 @@ defmodule DMEx.Handler.Subscription do
           # a log this application owns.
           origin: Keyword.fetch!(opts, :origin),
           config: Keyword.fetch!(opts, :config),
-          pipeline: Pipeline.build(opts),
+          pipeline: Pipeline.new(opts),
           storage: Keyword.fetch!(opts, :storage),
           storage_opts: Keyword.fetch!(opts, :storage_opts),
           source: nil,

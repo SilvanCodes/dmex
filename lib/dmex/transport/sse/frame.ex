@@ -41,7 +41,7 @@ defmodule DMEx.Transport.SSE.Frame do
   @type row :: DMEx.Storage.row()
 
   @typedoc """
-  A log row on the reader's side, as `parse/1` yields it.
+  A log row on the reader's side, as `decode/1` yields it.
 
   String-keyed and one level decoded; turning `data` into a message struct is
   the message module's job, later, in the pipeline.
@@ -49,13 +49,13 @@ defmodule DMEx.Transport.SSE.Frame do
   @type decoded_row :: DMEx.Handler.Pipeline.decoded_row()
 
   @typedoc """
-  One parsed frame block.
+  One decoded frame block.
 
   `:message` is the only kind that carries a row. `:retry` is the producer's
   advertised interval. `:ignore` is everything else: a heartbeat comment, a
   block with an empty `data:` buffer, a field vocabulary this does not know.
   """
-  @type parsed :: {:message, decoded_row()} | {:retry, pos_integer()} | :ignore
+  @type decoded :: {:message, decoded_row()} | {:retry, pos_integer()} | :ignore
 
   @type error :: {:invalid_json, term()} | {:invalid_data_shape, term()}
 
@@ -123,8 +123,8 @@ defmodule DMEx.Transport.SSE.Frame do
   `id:` is one integer; anything else leaves the block without an id, so it is
   `:ignore`.
   """
-  @spec parse(binary()) :: {:ok, parsed()} | {:error, error()}
-  def parse(block) when is_binary(block) do
+  @spec decode(binary()) :: {:ok, decoded()} | {:error, error()}
+  def decode(block) when is_binary(block) do
     fields =
       block
       |> split_lines()

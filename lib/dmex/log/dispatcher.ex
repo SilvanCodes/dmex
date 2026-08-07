@@ -206,13 +206,13 @@ defmodule DMEx.Log.Dispatcher do
 
     # Two gates, and they answer different questions. `Selection.concerns?/2`
     # asks whether this append is any of this connection's business at all;
-    # `Status.flip/1` asks whether it already has a wakeup queued. The second is
+    # `Status.mark_pending/1` asks whether it already has a wakeup queued. The second is
     # what bounds a stalled connection's mailbox at one wakeup rather than at the
     # append rate times the stall duration, however long it stalls.
     Streams.each(state.log, fn pid, status, selection ->
       :counters.add(tally, @streams, 1)
 
-      if Selection.concerns?(selection, types) and Status.flip(status) do
+      if Selection.concerns?(selection, types) and Status.mark_pending(status) do
         send(pid, :wakeup)
         :counters.add(tally, @woken, 1)
       end

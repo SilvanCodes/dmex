@@ -252,7 +252,7 @@ defmodule DMEx.Storage.Postgres do
   end
 
   @impl DMEx.Storage
-  def advance(opts, subscription, last_seen) when is_binary(subscription) and is_integer(last_seen) do
+  def advance_cursor(opts, subscription, last_seen) when is_binary(subscription) and is_integer(last_seen) do
     repo = Map.fetch!(opts, :repo)
 
     sql = """

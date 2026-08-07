@@ -116,7 +116,7 @@ defmodule DMEx.Integration.WireContractTest do
 
       order_ids =
         for frame <- frames,
-            {:ok, {:message, row}} = Frame.parse(frame),
+            {:ok, {:message, row}} = Frame.decode(frame),
             do: row["data"]["order_id"]
 
       assert order_ids == [1, 2, 3, 4, 5]

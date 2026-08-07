@@ -104,7 +104,7 @@ defmodule DMEx.Transport.SSE.FrameTest do
 
   describe "parse/1" do
     test "decodes exactly one level — rows stay as maps, not structs" do
-      assert {:ok, {:message, message}} = Frame.parse(block(encode(row(1042))))
+      assert {:ok, {:message, message}} = Frame.decode(block(encode(row(1042))))
 
       assert message["type"] == "MyApp.Messages.OrderPlaced"
       assert message["data"] == %{"order_id" => 7}
@@ -115,29 +115,29 @@ defmodule DMEx.Transport.SSE.FrameTest do
       crlf = ~s(id: 5\r\nevent: T\r\ndata: {"data":{}})
       cr = ~s(id: 5\revent: T\rdata: {"data":{}})
 
-      assert {:ok, {:message, %{"id" => 5, "type" => "T"}}} = Frame.parse(crlf)
-      assert {:ok, {:message, %{"id" => 5, "type" => "T"}}} = Frame.parse(cr)
+      assert {:ok, {:message, %{"id" => 5, "type" => "T"}}} = Frame.decode(crlf)
+      assert {:ok, {:message, %{"id" => 5, "type" => "T"}}} = Frame.decode(cr)
     end
 
     test "joins consecutive data: lines with LF, as the SSE spec requires" do
       block = ~s(id: 5\nevent: T\ndata: {"data":\ndata: {"a":1}})
 
-      assert {:ok, {:message, %{"data" => %{"a" => 1}}}} = Frame.parse(block)
+      assert {:ok, {:message, %{"data" => %{"a" => 1}}}} = Frame.decode(block)
     end
 
     test "accepts a field with no space after the colon" do
-      assert {:ok, {:message, %{"id" => 5}}} = Frame.parse(~s(id:5\nevent:T\ndata:{"data":{}}))
+      assert {:ok, {:message, %{"id" => 5}}} = Frame.decode(~s(id:5\nevent:T\ndata:{"data":{}}))
     end
 
     test "preserves further leading spaces, stripping only the first" do
       assert {:ok, {:message, %{"type" => " padded"}}} =
-               Frame.parse(~s(id: 1\nevent:  padded\ndata: {"data":{}}))
+               Frame.decode(~s(id: 1\nevent:  padded\ndata: {"data":{}}))
     end
 
     test "ignores comment lines and unknown fields" do
       block = ~s(: a comment\nid: 5\nevent: T\nunknown: whatever\ndata: {"data":{}})
 
-      assert {:ok, {:message, %{"id" => 5}}} = Frame.parse(block)
+      assert {:ok, {:message, %{"id" => 5}}} = Frame.decode(block)
     end
 
     # A message needs all three, so a block missing any of them is not one. That
@@ -145,29 +145,29 @@ defmodule DMEx.Transport.SSE.FrameTest do
     # the data buffer is non-empty, and a log may send whatever else it
     # likes.
     test "a block short of id, event or data is ignored rather than rejected" do
-      assert {:ok, :ignore} = Frame.parse(~s(event: T\ndata: {"data":{}}))
-      assert {:ok, :ignore} = Frame.parse(~s(id: 5\ndata: {"data":{}}))
-      assert {:ok, :ignore} = Frame.parse(~s(id: 5\nevent: T))
-      assert {:ok, :ignore} = Frame.parse("")
+      assert {:ok, :ignore} = Frame.decode(~s(event: T\ndata: {"data":{}}))
+      assert {:ok, :ignore} = Frame.decode(~s(id: 5\ndata: {"data":{}}))
+      assert {:ok, :ignore} = Frame.decode(~s(id: 5\nevent: T))
+      assert {:ok, :ignore} = Frame.decode("")
     end
 
     # Including the `previous/current` pair the wire used to carry: a position
     # is one integer now, so the old spelling is simply not an id.
     test "a non-integer id is not an id, so the block is not a message" do
-      assert {:ok, :ignore} = Frame.parse(~s(id: abc\nevent: T\ndata: {"data":{}}))
-      assert {:ok, :ignore} = Frame.parse(~s(id: 4/5\nevent: T\ndata: {"data":{}}))
+      assert {:ok, :ignore} = Frame.decode(~s(id: abc\nevent: T\ndata: {"data":{}}))
+      assert {:ok, :ignore} = Frame.decode(~s(id: 4/5\nevent: T\ndata: {"data":{}}))
     end
 
     test "rejects malformed JSON" do
-      assert {:error, {:invalid_json, _}} = Frame.parse(~s(id: 1\nevent: T\ndata: {not json}))
+      assert {:error, {:invalid_json, _}} = Frame.decode(~s(id: 1\nevent: T\ndata: {not json}))
     end
 
     test "rejects a data payload that does not carry the row's data" do
       assert {:error, {:invalid_data_shape, _}} =
-               Frame.parse(~s(id: 1\nevent: T\ndata: [1,2,3]))
+               Frame.decode(~s(id: 1\nevent: T\ndata: [1,2,3]))
 
       assert {:error, {:invalid_data_shape, _}} =
-               Frame.parse(~s(id: 1\nevent: T\ndata: {"metadata":{}}))
+               Frame.decode(~s(id: 1\nevent: T\ndata: {"metadata":{}}))
     end
   end
 
@@ -186,7 +186,7 @@ defmodule DMEx.Transport.SSE.FrameTest do
             metadata: JSON.encode!(metadata)
           )
 
-        assert {:ok, {:message, message}} = Frame.parse(block(encode(row)))
+        assert {:ok, {:message, message}} = Frame.decode(block(encode(row)))
 
         assert message["id"] == id
         assert message["type"] == "T" <> type
@@ -203,7 +203,7 @@ defmodule DMEx.Transport.SSE.FrameTest do
   end
 
   defp reparse(encoded) do
-    {:ok, parsed} = encoded |> block() |> Frame.parse()
+    {:ok, parsed} = encoded |> block() |> Frame.decode()
     parsed
   end
 end

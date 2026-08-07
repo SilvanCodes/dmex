@@ -228,7 +228,7 @@ defmodule DMEx.Storage do
   `DMEx.Storage.Error`, raised by `DMEx.Handler.Pipeline`, and nothing here
   reports it.
   """
-  @callback advance(opts(), subscription :: String.t(), last_seen :: non_neg_integer()) :: :ok
+  @callback advance_cursor(opts(), subscription :: String.t(), last_seen :: non_neg_integer()) :: :ok
 
   @doc """
   Records a message its handler gave up on.

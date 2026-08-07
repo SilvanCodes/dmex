@@ -65,7 +65,7 @@ defmodule DMEx.Handler.PipelineFailureTest.FlakyStorage do
   @impl DMEx.Storage
   defdelegate delete_cursor(opts, subscription), to: Storage
   @impl DMEx.Storage
-  defdelegate advance(opts, subscription, id), to: Storage
+  defdelegate advance_cursor(opts, subscription, last_seen), to: Storage
   @impl DMEx.Storage
   defdelegate record_dead_message(opts, attrs), to: Storage
   @impl DMEx.Storage
@@ -327,7 +327,7 @@ defmodule DMEx.Handler.PipelineFailureTest do
       # Now rewind the cursor to 1 and feed message 2 again. Its dead-message
       # insert will conflict on (subscription, id), which aborts the transaction
       # the cursor advance is sharing.
-      :ok = Postgres.advance(ctx.storage_opts, "test/raising", 1)
+      :ok = Postgres.advance_cursor(ctx.storage_opts, "test/raising", 1)
 
       assert catch_error(Pipeline.run(row(2), %{state | cursor: 1}))
 
@@ -440,7 +440,7 @@ defmodule DMEx.Handler.PipelineFailureTest do
   end
 
   defp stub_state(storage_opts, opts) do
-    Pipeline.build(
+    Pipeline.new(
       storage: FlakyStorage,
       storage_opts: storage_opts,
       handler: Keyword.fetch!(opts, :handler),
@@ -467,7 +467,7 @@ defmodule DMEx.Handler.PipelineFailureTest do
     {config_opts, opts} =
       Keyword.split(opts, [:on_failure, :max_attempts, :reconnect_backoff_base, :reconnect_backoff_max])
 
-    Pipeline.build(
+    Pipeline.new(
       storage: Postgres,
       storage_opts: ctx.storage_opts,
       handler: Keyword.fetch!(opts, :handler),

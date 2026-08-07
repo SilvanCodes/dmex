@@ -42,7 +42,7 @@ defmodule DMEx.Storage.SQLite.Migration do
 
   All three tables' defaults render `DMEx.Storage.SQLite.__now__/0` rather than
   spelling the expression out, because the adapter is a fourth writer of the
-  format: `advance/3` stamps `dmex_cursors.updated_at` itself. One statement, so
+  format: `advance_cursor/3` stamps `dmex_cursors.updated_at` itself. One statement, so
   the invariant cannot hold for one table and not another.
 
   ## The `type` CHECK, in GLOB
@@ -72,7 +72,7 @@ defmodule DMEx.Storage.SQLite.Migration do
   @dead_messages DMEx.Storage.__table__(:dead_messages)
 
   # The one statement of the timestamp format is `DMEx.Storage.SQLite`'s, because
-  # the adapter writes it too — `advance/3` stamps `updated_at` with the same
+  # the adapter writes it too — `advance_cursor/3` stamps `updated_at` with the same
   # expression. Rendered here rather than repeated, so the fixed-width invariant
   # this module's documentation argues for cannot hold in one table and not
   # another.

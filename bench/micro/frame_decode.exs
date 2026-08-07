@@ -6,14 +6,14 @@
 # cannot keep up.
 #
 # It also checks the claim that stopping the parse one level deep is cheaper
-# than decoding all the way into structs: `Frame.parse/1` yields a string-keyed
+# than decoding all the way into structs: `Frame.decode/1` yields a string-keyed
 # row whose `data` is still a plain map, and casting happens later, per row, in
 # the pipeline.
 
 alias DMEx.BenchHelper, as: Helper
 alias DMEx.Transport.SSE.Frame
 
-Helper.section("frame_parse — consumer-side decode ceiling")
+Helper.section("frame_decode — consumer-side decode ceiling")
 
 # One frame per row: a block is a row.
 inputs =
@@ -23,7 +23,7 @@ inputs =
 
 Benchee.run(
   %{
-    "Frame.parse (one level deep)" => fn bytes -> {:ok, _} = Frame.parse(bytes) end,
+    "Frame.decode (one level deep)" => fn bytes -> {:ok, _} = Frame.decode(bytes) end,
 
     # The whole payload through JSON.decode!, which is the bulk of the work
     # above — so the gap between these two is the framing overhead, not the JSON.
