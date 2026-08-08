@@ -714,15 +714,18 @@ defmodule DMEx.Handler do
     end
   end
 
-  defp identifier!(module, key, value) do
-    value =
-      case value do
-        value when is_atom(value) and not is_nil(value) -> Atom.to_string(value)
-        value when is_binary(value) -> value
-        other -> raise_identifier(module, key, other)
-      end
+  defp identifier!(module, key, value) when is_atom(value) and not is_nil(value) do
+    identifier!(module, key, Atom.to_string(value))
+  end
 
-    if !DMEx.identifier?(value), do: raise_identifier(module, key, value)
+  defp identifier!(module, key, value) do
+    if !DMEx.identifier?(value) do
+      raise ArgumentError,
+            "#{inspect(key)} in #{inspect(module)} must be an atom or a string matching " <>
+              "#{inspect(DMEx.identifier_format())}, got: #{inspect(value)}. Both halves of a subscription " <>
+              "identifier are restricted to that charset so \"/\" can separate them with no " <>
+              "escaping — which rules out UUIDs, dots and dashes."
+    end
 
     value
   end
@@ -731,13 +734,5 @@ defmodule DMEx.Handler do
     raise ArgumentError,
           "`use DMEx.Handler` requires #{inspect(key)} in #{inspect(module)}, e.g. " <>
             "`use DMEx.Handler, logs: [:orders], name: :order_projection`"
-  end
-
-  defp raise_identifier(module, key, value) do
-    raise ArgumentError,
-          "#{inspect(key)} in #{inspect(module)} must be an atom or a string matching " <>
-            "#{inspect(DMEx.identifier_format())}, got: #{inspect(value)}. Both halves of a subscription " <>
-            "identifier are restricted to that charset so \"/\" can separate them with no " <>
-            "escaping — which rules out UUIDs, dots and dashes."
   end
 end
