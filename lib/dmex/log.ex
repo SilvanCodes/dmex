@@ -171,7 +171,11 @@ defmodule DMEx.Log do
   @doc false
   @spec __config__(module(), keyword()) :: config()
   def __config__(module, opts) do
-    validate_keys!(module, opts)
+    DMEx.validate_keys!(
+      opts,
+      @log_opts ++ Config.log_keys(),
+      "`use DMEx.Log` in #{inspect(module)}"
+    )
 
     repo = fetch_repo!(module, opts)
     prefix = Keyword.get(opts, :prefix)
@@ -394,14 +398,6 @@ defmodule DMEx.Log do
   end
 
   ## Compile-time validation
-
-  defp validate_keys!(module, opts) do
-    DMEx.validate_keys!(
-      opts,
-      @log_opts ++ Config.log_keys(),
-      "`use DMEx.Log` in #{inspect(module)}"
-    )
-  end
 
   defp fetch_repo!(module, opts) do
     case Keyword.fetch(opts, :repo) do

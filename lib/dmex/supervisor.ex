@@ -75,7 +75,7 @@ defmodule DMEx.Supervisor do
 
   @default_name __MODULE__
   # Every storage option and its default, in one list: `storage/1` reads it and
-  # `validate_keys!/1` accepts it, so a fourth one cannot be added to the reader
+  # `subscribe/2` accepts it, so a fourth one cannot be added to the reader
   # and forgotten in the vocabulary — which would reject a legal option.
   @storage_defaults [storage: DMEx.Storage.Postgres, repo: nil, prefix: nil]
   @storage_opts Keyword.keys(@storage_defaults)
@@ -208,7 +208,15 @@ defmodule DMEx.Supervisor do
     # caller rejects a non-handler identically.
     declaration = Handler.declaration!(handler)
 
-    validate_keys!(opts)
+    DMEx.validate_keys!(
+      opts,
+      @subscription_opts ++ @storage_opts ++ Config.handler_keys(),
+      "`DMEx.Supervisor.subscribe/2`",
+      " Note there is no filter or selection option here: the logs, the id, the " <>
+        "message types and whether the log narrows the stream all belong to the " <>
+        "handler module, not here."
+    )
+
     bound = resolve_logs!(opts, supervisor)
     storage = Map.to_list(resolve_storage!(opts, supervisor))
     config = Config.handler!(Keyword.merge(declaration.config, opts))
@@ -538,17 +546,6 @@ defmodule DMEx.Supervisor do
 
         {DMEx.Supervisor, repo: MyApp.Repo, logs: [...]}
     """
-  end
-
-  defp validate_keys!(opts) do
-    DMEx.validate_keys!(
-      opts,
-      @subscription_opts ++ @storage_opts ++ Config.handler_keys(),
-      "`DMEx.Supervisor.subscribe/2`",
-      " Note there is no filter or selection option here: the logs, the id, the " <>
-        "message types and whether the log narrows the stream all belong to the " <>
-        "handler module, not here."
-    )
   end
 end
 

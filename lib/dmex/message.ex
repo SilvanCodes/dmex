@@ -123,7 +123,7 @@ defmodule DMEx.Message do
   defmacro __using__(opts) do
     module = __CALLER__.module
 
-    validate_keys!(module, opts)
+    DMEx.validate_keys!(opts, @message_opts, "`use DMEx.Message` in #{inspect(module)}")
 
     type = fetch_type!(module, opts)
     fields = opts |> Keyword.get(:fields, []) |> validate_fields!()
@@ -150,14 +150,6 @@ defmodule DMEx.Message do
 
       defoverridable cast: 1
     end
-  end
-
-  defp validate_keys!(module, opts) do
-    source = "`use DMEx.Message` in #{inspect(module)}"
-
-    opts
-    |> DMEx.keyword!(source)
-    |> DMEx.validate_keys!(@message_opts, source)
   end
 
   # Atoms and binaries must render identically — otherwise a style change at the

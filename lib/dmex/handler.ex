@@ -241,7 +241,11 @@ defmodule DMEx.Handler do
           config: keyword()
         }
   def __declared_opts__(module, opts) do
-    validate_keys!(module, opts)
+    DMEx.validate_keys!(
+      opts,
+      @handler_opts ++ Config.handler_keys(),
+      "`use DMEx.Handler` in #{inspect(module)}"
+    )
 
     %{
       logs: logs!(module, opts),
@@ -655,14 +659,6 @@ defmodule DMEx.Handler do
   end
 
   ## Compile-time validation
-
-  defp validate_keys!(module, opts) do
-    source = "`use DMEx.Handler` in #{inspect(module)}"
-
-    opts
-    |> DMEx.keyword!(source)
-    |> DMEx.validate_keys!(@handler_opts ++ Config.handler_keys(), source)
-  end
 
   # Kept as the declared keyword rather than the resolved map, so DMEx's
   # defaults are not compiled into every handler — but resolved once here and
