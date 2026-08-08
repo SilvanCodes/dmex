@@ -291,6 +291,6 @@ defmodule DMEx.Integration.SelectionTest do
   end
 
   defp cursor(subscription) do
-    Postgres.last_seen(%{repo: DMEx.Test.IntegrationRepo, prefix: nil}, subscription)
+    Postgres.last_seen(subscription, %{repo: DMEx.Test.IntegrationRepo, prefix: nil})
   end
 end

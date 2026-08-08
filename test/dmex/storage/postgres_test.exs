@@ -18,7 +18,7 @@ defmodule DMEx.Storage.PostgresTest do
     setup %{opts: opts} do
       big = String.duplicate("x", 1_000)
 
-      for n <- 1..20, do: append(opts, "A", %{n: n, note: big})
+      for n <- 1..20, do: append("A", %{n: n, note: big}, opts)
 
       :ok
     end
@@ -29,7 +29,7 @@ defmodule DMEx.Storage.PostgresTest do
     # bounded read. Asserted through the plan rather than through a stopwatch.
     test "the running sum is computed over the limited batch, not the whole log",
          %{opts: opts} do
-      plan = explain(opts, 0, 3, 10_000_000)
+      plan = explain(0, 3, 10_000_000, opts)
 
       assert plan =~ ~r/Limit/
       assert plan =~ ~r/WindowAgg/
@@ -49,10 +49,10 @@ defmodule DMEx.Storage.PostgresTest do
     # succeeds, the row is valid jsonb, and only a consumer decoding the payload
     # ever notices — so it has to be asserted structurally.
     test "payloads are stored as JSON objects, not as JSON strings", %{opts: opts} do
-      {:ok, _} = append(opts, "A", %{order_id: 7}, %{trace_id: "abc"})
+      {:ok, _} = append("A", %{order_id: 7}, %{trace_id: "abc"}, opts)
 
       assert [["object", "object"]] =
-               raw(opts, "SELECT jsonb_typeof(data), jsonb_typeof(metadata) FROM dmex_messages")
+               raw("SELECT jsonb_typeof(data), jsonb_typeof(metadata) FROM dmex_messages", opts)
     end
 
     test "normalization drops duplicate keys but still yields valid JSON", %{opts: opts} do
@@ -60,9 +60,9 @@ defmodule DMEx.Storage.PostgresTest do
       # produce a duplicate key. This is the documented cost of the jsonb
       # column: stored bytes are not the publisher's bytes. `DMEx.Storage.SQLite`
       # stores text and does not pay it — see its inverse of this test.
-      {:ok, id} = Postgres.append(opts, "A", ~s({"a":1,"a":2}), "{}")
+      {:ok, id} = Postgres.append("A", ~s({"a":1,"a":2}), "{}", opts)
 
-      assert {:ok, [row]} = Postgres.read(opts, id - 1, 1, 1_048_576, :all)
+      assert {:ok, [row]} = Postgres.read(id - 1, 1, 1_048_576, :all, opts)
       assert JSON.decode!(row.data) == %{"a" => 2}
     end
   end
@@ -71,10 +71,10 @@ defmodule DMEx.Storage.PostgresTest do
     # The error term is the driver's, not DMEx's — the behaviour promises
     # `{:error, term()}` and nothing about its shape.
     test "one subscription cannot record the same message twice", %{opts: opts} do
-      assert :ok = Postgres.record_dead_message(opts, dead_attrs())
+      assert :ok = Postgres.record_dead_message(dead_row(), opts)
 
       assert {:error, %Postgrex.Error{postgres: %{code: :unique_violation}}} =
-               Postgres.record_dead_message(opts, dead_attrs())
+               Postgres.record_dead_message(dead_row(), opts)
     end
   end
 
@@ -115,18 +115,18 @@ defmodule DMEx.Storage.PostgresTest do
 
   ## Helpers
 
-  defp append(opts, type, data, metadata \\ %{}) do
-    Postgres.append(opts, type, JSON.encode!(data), JSON.encode!(metadata))
+  defp append(type, data, metadata \\ %{}, opts) do
+    Postgres.append(type, JSON.encode!(data), JSON.encode!(metadata), opts)
   end
 
-  defp raw(%{repo: repo}, sql), do: SQL.query!(repo, sql, []).rows
+  defp raw(sql, %{repo: repo}), do: SQL.query!(repo, sql, []).rows
 
   # The read's own SQL, run through EXPLAIN, so the plan shape is asserted
   # rather than assumed. Reaches into the adapter's private query builder
   # deliberately: what is under test is that statement, and no restatement of it
   # would prove anything.
-  defp explain(%{repo: repo} = opts, cursor, limit, max_bytes) do
-    sql = :erlang.apply(Postgres, :__read_sql__, [opts, ""])
+  defp explain(cursor, limit, max_bytes, %{repo: repo} = opts) do
+    sql = :erlang.apply(Postgres, :__read_sql__, ["", opts])
 
     repo
     |> SQL.query!("EXPLAIN " <> sql, [cursor, limit, max_bytes])
@@ -135,13 +135,13 @@ defmodule DMEx.Storage.PostgresTest do
     |> Enum.join("\n")
   end
 
-  defp dead_attrs do
+  defp dead_row do
     %{
-      subscription: @some,
-      id: 1042,
-      type: "MyApp.Messages.OrderPlaced",
-      data: ~s({"order_id":7}),
-      metadata: ~s({"trace_id":"abc"})
+      "subscription" => @some,
+      "id" => 1042,
+      "type" => "MyApp.Messages.OrderPlaced",
+      "data" => %{"order_id" => 7},
+      "metadata" => %{"trace_id" => "abc"}
     }
   end
 end

@@ -112,30 +112,30 @@ defmodule DMEx.Transport.SSE.FrameTest do
     end
 
     test "tolerates CRLF and CR line terminators" do
-      crlf = ~s(id: 5\r\nevent: T\r\ndata: {"data":{}})
-      cr = ~s(id: 5\revent: T\rdata: {"data":{}})
+      crlf = ~s(id: 5\r\nevent: T\r\ndata: {"data":{},"metadata":{}})
+      cr = ~s(id: 5\revent: T\rdata: {"data":{},"metadata":{}})
 
       assert {:ok, {:message, %{"id" => 5, "type" => "T"}}} = Frame.decode(crlf)
       assert {:ok, {:message, %{"id" => 5, "type" => "T"}}} = Frame.decode(cr)
     end
 
     test "joins consecutive data: lines with LF, as the SSE spec requires" do
-      block = ~s(id: 5\nevent: T\ndata: {"data":\ndata: {"a":1}})
+      block = ~s(id: 5\nevent: T\ndata: {"data":\ndata: {"a":1},"metadata":{}})
 
       assert {:ok, {:message, %{"data" => %{"a" => 1}}}} = Frame.decode(block)
     end
 
     test "accepts a field with no space after the colon" do
-      assert {:ok, {:message, %{"id" => 5}}} = Frame.decode(~s(id:5\nevent:T\ndata:{"data":{}}))
+      assert {:ok, {:message, %{"id" => 5}}} = Frame.decode(~s(id:5\nevent:T\ndata:{"data":{},"metadata":{}}))
     end
 
     test "preserves further leading spaces, stripping only the first" do
       assert {:ok, {:message, %{"type" => " padded"}}} =
-               Frame.decode(~s(id: 1\nevent:  padded\ndata: {"data":{}}))
+               Frame.decode(~s(id: 1\nevent:  padded\ndata: {"data":{},"metadata":{}}))
     end
 
     test "ignores comment lines and unknown fields" do
-      block = ~s(: a comment\nid: 5\nevent: T\nunknown: whatever\ndata: {"data":{}})
+      block = ~s(: a comment\nid: 5\nevent: T\nunknown: whatever\ndata: {"data":{},"metadata":{}})
 
       assert {:ok, {:message, %{"id" => 5}}} = Frame.decode(block)
     end
@@ -145,8 +145,8 @@ defmodule DMEx.Transport.SSE.FrameTest do
     # the data buffer is non-empty, and a log may send whatever else it
     # likes.
     test "a block short of id, event or data is ignored rather than rejected" do
-      assert {:ok, :ignore} = Frame.decode(~s(event: T\ndata: {"data":{}}))
-      assert {:ok, :ignore} = Frame.decode(~s(id: 5\ndata: {"data":{}}))
+      assert {:ok, :ignore} = Frame.decode(~s(event: T\ndata: {"data":{},"metadata":{}}))
+      assert {:ok, :ignore} = Frame.decode(~s(id: 5\ndata: {"data":{},"metadata":{}}))
       assert {:ok, :ignore} = Frame.decode(~s(id: 5\nevent: T))
       assert {:ok, :ignore} = Frame.decode("")
     end
@@ -154,8 +154,8 @@ defmodule DMEx.Transport.SSE.FrameTest do
     # Including the `previous/current` pair the wire used to carry: a position
     # is one integer now, so the old spelling is simply not an id.
     test "a non-integer id is not an id, so the block is not a message" do
-      assert {:ok, :ignore} = Frame.decode(~s(id: abc\nevent: T\ndata: {"data":{}}))
-      assert {:ok, :ignore} = Frame.decode(~s(id: 4/5\nevent: T\ndata: {"data":{}}))
+      assert {:ok, :ignore} = Frame.decode(~s(id: abc\nevent: T\ndata: {"data":{},"metadata":{}}))
+      assert {:ok, :ignore} = Frame.decode(~s(id: 4/5\nevent: T\ndata: {"data":{},"metadata":{}}))
     end
 
     test "rejects malformed JSON" do
@@ -168,6 +168,22 @@ defmodule DMEx.Transport.SSE.FrameTest do
 
       assert {:error, {:invalid_data_shape, _}} =
                Frame.decode(~s(id: 1\nevent: T\ndata: {"metadata":{}}))
+    end
+
+    # Both slots are mandatory and both are objects, at worst `{}`: a message
+    # short of that is malformed, not a row for the pipeline to patch up.
+    test "rejects a payload whose data or metadata is not an object" do
+      for payload <- [
+            ~s({"data":{}}),
+            ~s({"data":{},"metadata":null}),
+            ~s({"data":{},"metadata":[]}),
+            ~s({"data":{},"metadata":7}),
+            ~s({"data":null,"metadata":{}}),
+            ~s({"data":[1,2,3],"metadata":{}})
+          ] do
+        assert {:error, {:invalid_data_shape, _}} =
+                 Frame.decode(~s(id: 1\nevent: T\ndata: #{payload}))
+      end
     end
   end
 

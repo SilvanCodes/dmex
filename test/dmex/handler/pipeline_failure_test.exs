@@ -21,7 +21,7 @@ defmodule DMEx.Handler.PipelineFailureTest.FlakyStorage do
   end
 
   @impl DMEx.Storage
-  def transaction(opts, fun) do
+  def transaction(fun, opts) do
     case next_fault(opts) do
       # A checkout that timed out: the callback never ran.
       :timeout ->
@@ -37,7 +37,7 @@ defmodule DMEx.Handler.PipelineFailureTest.FlakyStorage do
         {:error, :serialization_failure}
 
       :ok ->
-        Storage.transaction(opts, fun)
+        Storage.transaction(fun, opts)
     end
   end
 
@@ -51,27 +51,27 @@ defmodule DMEx.Handler.PipelineFailureTest.FlakyStorage do
   defp store(opts), do: Map.fetch!(opts, :store)
 
   @impl DMEx.Storage
-  defdelegate append(opts, type, data, metadata), to: Storage
+  defdelegate append(type, data, metadata, opts), to: Storage
   @impl DMEx.Storage
-  defdelegate read(opts, cursor, limit, max_bytes, types), to: Storage
+  defdelegate read(cursor, limit, max_bytes, types, opts), to: Storage
   @impl DMEx.Storage
   defdelegate max_id(opts), to: Storage
   @impl DMEx.Storage
-  defdelegate appended_since(opts, cursor), to: Storage
+  defdelegate appended_since(cursor, opts), to: Storage
   @impl DMEx.Storage
-  defdelegate last_seen(opts, subscription), to: Storage
+  defdelegate last_seen(subscription, opts), to: Storage
   @impl DMEx.Storage
-  defdelegate cursor(opts, subscription), to: Storage
+  defdelegate cursor(subscription, opts), to: Storage
   @impl DMEx.Storage
-  defdelegate delete_cursor(opts, subscription), to: Storage
+  defdelegate delete_cursor(subscription, opts), to: Storage
   @impl DMEx.Storage
-  defdelegate advance_cursor(opts, subscription, last_seen), to: Storage
+  defdelegate advance_cursor(subscription, last_seen, opts), to: Storage
   @impl DMEx.Storage
-  defdelegate record_dead_message(opts, attrs), to: Storage
+  defdelegate record_dead_message(row, opts), to: Storage
   @impl DMEx.Storage
-  defdelegate list_dead_messages(opts, subscription), to: Storage
+  defdelegate list_dead_messages(subscription, opts), to: Storage
   @impl DMEx.Storage
-  defdelegate delete_dead_message(opts, subscription, id), to: Storage
+  defdelegate delete_dead_message(subscription, id, opts), to: Storage
 end
 
 defmodule DMEx.Handler.PipelineFailureTest do
@@ -131,7 +131,7 @@ defmodule DMEx.Handler.PipelineFailureTest do
       state = state(ctx, handler: Handlers.FailTimes, max_attempts: 3)
 
       assert {:ok, %{cursor: 1}} = Pipeline.run(row(1), state)
-      assert {:ok, 1} = Postgres.last_seen(ctx.storage_opts, "test/fail_times")
+      assert {:ok, 1} = Postgres.last_seen("test/fail_times", ctx.storage_opts)
     end
 
     test "each attempt gets its own telemetry span", ctx do
@@ -166,7 +166,7 @@ defmodule DMEx.Handler.PipelineFailureTest do
 
       catch_error(Pipeline.run(row(1), state))
 
-      assert {:ok, nil} = Postgres.last_seen(ctx.storage_opts, "test/raising")
+      assert {:ok, nil} = Postgres.last_seen("test/raising", ctx.storage_opts)
     end
 
     test "writes no dead message", ctx do
@@ -207,7 +207,7 @@ defmodule DMEx.Handler.PipelineFailureTest do
       state = state(ctx, handler: Handlers.Raising, on_failure: :skip)
 
       assert {:ok, %{cursor: 1}} = Pipeline.run(row(1), state)
-      assert {:ok, 1} = Postgres.last_seen(ctx.storage_opts, "test/raising")
+      assert {:ok, 1} = Postgres.last_seen("test/raising", ctx.storage_opts)
     end
 
     test "does not stop the rest of the batch", ctx do
@@ -243,7 +243,7 @@ defmodule DMEx.Handler.PipelineFailureTest do
       state = state(ctx, handler: Handlers.Raising, on_failure: :dead_message)
 
       assert {:ok, %{cursor: 1}} = Pipeline.run(row(1), state)
-      assert {:ok, 1} = Postgres.last_seen(ctx.storage_opts, "test/raising")
+      assert {:ok, 1} = Postgres.last_seen("test/raising", ctx.storage_opts)
       assert dead_count() == 1
     end
 
@@ -327,7 +327,7 @@ defmodule DMEx.Handler.PipelineFailureTest do
       # Now rewind the cursor to 1 and feed message 2 again. Its dead-message
       # insert will conflict on (subscription, id), which aborts the transaction
       # the cursor advance is sharing.
-      :ok = Postgres.advance_cursor(ctx.storage_opts, "test/raising", 1)
+      :ok = Postgres.advance_cursor("test/raising", 1, ctx.storage_opts)
 
       assert catch_error(Pipeline.run(row(2), %{state | cursor: 1}))
 
@@ -335,7 +335,7 @@ defmodule DMEx.Handler.PipelineFailureTest do
       # its own — which is the whole reason they share a transaction. Without
       # that, the cursor would now read 2 and the message would be both skipped
       # and unrecorded.
-      assert {:ok, 1} = Postgres.last_seen(ctx.storage_opts, "test/raising")
+      assert {:ok, 1} = Postgres.last_seen("test/raising", ctx.storage_opts)
       assert dead_count() == 1
     end
 
@@ -371,8 +371,8 @@ defmodule DMEx.Handler.PipelineFailureTest do
 
       assert_raise Error, fn -> Pipeline.run(row(1), state) end
 
-      assert stub_dead(opts, "test/echo") == []
-      assert {:ok, nil} = FlakyStorage.last_seen(opts, "test/echo")
+      assert stub_dead("test/echo", opts) == []
+      assert {:ok, nil} = FlakyStorage.last_seen("test/echo", opts)
     end
 
     test "does not consume the handler's retry attempts" do
@@ -394,8 +394,8 @@ defmodule DMEx.Handler.PipelineFailureTest do
       assert_raise Error, ~r/pool_timeout/, fn -> Pipeline.run(row(1), state) end
 
       refute_received {:handled, _, _}
-      assert stub_dead(opts, "test/echo") == []
-      assert {:ok, nil} = FlakyStorage.last_seen(opts, "test/echo")
+      assert stub_dead("test/echo", opts) == []
+      assert {:ok, nil} = FlakyStorage.last_seen("test/echo", opts)
     end
 
     # The two commits answer the same event the same way. Here the handler
@@ -407,8 +407,8 @@ defmodule DMEx.Handler.PipelineFailureTest do
 
       assert_raise Error, fn -> Pipeline.run(row(1), state) end
 
-      assert stub_dead(opts, "test/raising") == []
-      assert {:ok, nil} = FlakyStorage.last_seen(opts, "test/raising")
+      assert stub_dead("test/raising", opts) == []
+      assert {:ok, nil} = FlakyStorage.last_seen("test/raising", opts)
     end
 
     test "in flush/1 is not silently swallowed either" do
@@ -457,8 +457,8 @@ defmodule DMEx.Handler.PipelineFailureTest do
     )
   end
 
-  defp stub_dead(storage_opts, subscription) do
-    {:ok, rows} = FlakyStorage.list_dead_messages(storage_opts, subscription)
+  defp stub_dead(subscription, storage_opts) do
+    {:ok, rows} = FlakyStorage.list_dead_messages(subscription, storage_opts)
 
     rows
   end

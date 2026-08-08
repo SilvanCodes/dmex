@@ -30,13 +30,13 @@ defmodule DMEx.Log.AppendTest do
     test "reads the wire type off the message's own module", %{opts: opts} do
       {:ok, id} = Log.append(%OrderPlaced{order_id: 7})
 
-      assert %{type: "order_placed"} = fetch!(opts, id)
+      assert %{type: "order_placed"} = fetch!(id, opts)
     end
 
     test "serializes the struct, not a wrapper around it", %{opts: opts} do
       {:ok, id} = Log.append(%OrderPlaced{order_id: 7, total: 1999})
 
-      assert %{data: data} = fetch!(opts, id)
+      assert %{data: data} = fetch!(id, opts)
 
       assert JSON.decode!(data) == %{"order_id" => 7, "customer_id" => nil, "total" => 1999}
     end
@@ -44,7 +44,7 @@ defmodule DMEx.Log.AppendTest do
     test "passes metadata through untouched", %{opts: opts} do
       {:ok, id} = Log.append(%OrderPlaced{order_id: 7}, metadata: %{trace_id: "abc"})
 
-      assert %{metadata: metadata} = fetch!(opts, id)
+      assert %{metadata: metadata} = fetch!(id, opts)
       assert JSON.decode!(metadata) == %{"trace_id" => "abc"}
     end
 
@@ -54,21 +54,21 @@ defmodule DMEx.Log.AppendTest do
       # application, which is why nothing needs recording here.
       {:ok, id} = Log.append(%OrderPlaced{order_id: 7}, metadata: %{a: 1})
 
-      assert %{metadata: metadata} = fetch!(opts, id)
+      assert %{metadata: metadata} = fetch!(id, opts)
       assert JSON.decode!(metadata) == %{"a" => 1}
     end
 
     test "defaults metadata to an empty map", %{opts: opts} do
       {:ok, id} = Log.append(%OrderPlaced{order_id: 7})
 
-      assert %{metadata: "{}"} = fetch!(opts, id)
+      assert %{metadata: "{}"} = fetch!(id, opts)
     end
 
     test "distinguishes message types on the same log", %{opts: opts} do
       {:ok, _} = Log.append(%OrderPlaced{order_id: 7})
       {:ok, _} = Log.append(%OrderShipped{order_id: 7, carrier: "dhl"})
 
-      assert {:ok, rows} = Postgres.read(opts, 0, 10, 1_048_576, :all)
+      assert {:ok, rows} = Postgres.read(0, 10, 1_048_576, :all, opts)
 
       assert Enum.map(rows, & &1.type) == [
                "order_placed",
@@ -81,7 +81,7 @@ defmodule DMEx.Log.AppendTest do
 
       assert ids == Enum.sort(ids)
 
-      {:ok, rows} = Postgres.read(opts, 0, 10, 1_048_576, :all)
+      {:ok, rows} = Postgres.read(0, 10, 1_048_576, :all, opts)
       assert Enum.map(rows, &JSON.decode!(&1.data)["order_id"]) == [1, 2, 3, 4, 5]
     end
   end
@@ -93,7 +93,7 @@ defmodule DMEx.Log.AppendTest do
       assert {:ok, _} = Log.append(%OrderPlaced{order_id: 7}, metadata: %{a: 1})
       assert {:ok, _} = log.append(%OrderPlaced{order_id: 7}, metadata: %{a: 1})
 
-      assert {:ok, [first, second]} = Postgres.read(opts, 0, 10, 1_048_576, :all)
+      assert {:ok, [first, second]} = Postgres.read(0, 10, 1_048_576, :all, opts)
 
       assert Map.take(first, [:type, :data, :metadata]) ==
                Map.take(second, [:type, :data, :metadata])
@@ -157,8 +157,8 @@ defmodule DMEx.Log.AppendTest do
     end
   end
 
-  defp fetch!(opts, id) do
-    {:ok, [row]} = Postgres.read(opts, id - 1, 1, 1_048_576, :all)
+  defp fetch!(id, opts) do
+    {:ok, [row]} = Postgres.read(id - 1, 1, 1_048_576, :all, opts)
     row
   end
 end

@@ -9,10 +9,11 @@ defmodule DMEx.Storage do
   a second abstraction for the consumer's half would double the surface an
   engine has to implement for no gain.
 
-  Every callback takes an `t:opts/0` map, built once and threaded through. There
-  is no adapter process and no adapter state, so the same adapter serves every
-  log and every subscription in an application without any of them sharing
-  anything.
+  Every callback takes an `t:opts/0` map **as its last argument**, built once and
+  threaded through — the subject of the call comes first, the ambient config
+  last, here and in `DMEx.Notifier`. There is no adapter process and no adapter
+  state, so the same adapter serves every log and every subscription in an
+  application without any of them sharing anything.
 
   ## Three contracts that are correctness, not style
 
@@ -118,7 +119,7 @@ defmodule DMEx.Storage do
   transaction's lifetime, serializing every other append in the app for its
   duration. A documented consequence, not a bug.
   """
-  @callback append(opts(), type :: String.t(), data :: binary(), metadata :: binary()) ::
+  @callback append(type :: String.t(), data :: binary(), metadata :: binary(), opts()) ::
               {:ok, pos_integer()} | {:error, term()}
 
   @doc """
@@ -154,11 +155,11 @@ defmodule DMEx.Storage do
   level as the `LIMIT`, which computes it over every matching row first.
   """
   @callback read(
-              opts(),
               cursor :: non_neg_integer(),
               max_rows :: pos_integer(),
               max_bytes :: pos_integer(),
-              types :: :all | [String.t()]
+              types :: :all | [String.t()],
+              opts()
             ) :: {:ok, [row()]} | {:error, term()}
 
   @doc """
@@ -179,7 +180,7 @@ defmodule DMEx.Storage do
   needs the types to route it. The empty case is the common one on an idle log
   and must stay cheap: it runs once per poll interval per app.
   """
-  @callback appended_since(opts(), cursor :: non_neg_integer()) ::
+  @callback appended_since(cursor :: non_neg_integer(), opts()) ::
               {:ok, {non_neg_integer() | nil, [String.t()]}} | {:error, term()}
 
   @doc """
@@ -190,7 +191,7 @@ defmodule DMEx.Storage do
   module, so renaming the module does not mint a new subscription. See the
   module documentation for why `nil` and `0` must not be conflated.
   """
-  @callback last_seen(opts(), subscription :: String.t()) ::
+  @callback last_seen(subscription :: String.t(), opts()) ::
               {:ok, non_neg_integer() | nil} | {:error, term()}
 
   @doc """
@@ -200,7 +201,7 @@ defmodule DMEx.Storage do
   atomic: they share one transaction, so DMEx's bookkeeping cannot drift from
   the callback. A raise inside `fun` must roll back and propagate.
   """
-  @callback transaction(opts(), (-> result)) :: {:ok, result} | {:error, term()} when result: var
+  @callback transaction((-> result), opts()) :: {:ok, result} | {:error, term()} when result: var
 
   @doc """
   Moves a subscription's cursor to `last_seen` — the column it writes, and the
@@ -228,7 +229,23 @@ defmodule DMEx.Storage do
   `DMEx.Storage.Error`, raised by `DMEx.Handler.Pipeline`, and nothing here
   reports it.
   """
-  @callback advance_cursor(opts(), subscription :: String.t(), last_seen :: non_neg_integer()) :: :ok
+  @callback advance_cursor(subscription :: String.t(), last_seen :: non_neg_integer(), opts()) :: :ok
+
+  @typedoc """
+  A message on its way into `dmex_dead_messages`.
+
+  The `t:DMEx.Handler.Pipeline.decoded_row/0` the pipeline was holding, handed
+  over whole — string-keyed `"id"`, `"type"`, `"data"`, `"metadata"` — plus the
+  `"subscription"` that gave up on it, since the table is shared across the
+  application. No `"inserted_at"`: here it records when the row landed, and that
+  is the adapter's to stamp.
+
+  So `"data"` and `"metadata"` are **terms, not column text** — the one place the
+  two directions differ, and deliberately: a consumer holds decoded maps, and
+  what a column wants them to look like is the adapter's business, not a
+  caller's. Both are objects, at worst `%{}`.
+  """
+  @type dead_row :: DMEx.Handler.Pipeline.decoded_row()
 
   @doc """
   Records a message its handler gave up on.
@@ -236,15 +253,14 @@ defmodule DMEx.Storage do
   Written in the same transaction as the `last_seen` advance past it, so the two
   commit together or not at all.
 
-  `attrs` carries `:subscription` — the table is shared across the application —
-  plus the log row itself: `:id`, `:type`, `:data`, `:metadata`, as the
-  consumer received them. Not `:inserted_at`, which here records when the row
-  landed and is the adapter's to stamp.
+  The adapter encodes `"data"` and `"metadata"` for its own columns — see
+  `t:dead_row/0`. Both shipped ones match the whole shape in the function head, so
+  a row short of a key raises rather than being written half-formed.
 
   **Nothing about the failure is stored**, which is what lets
   `c:list_dead_messages/2` return the row as an ordinary `t:row/0`.
   """
-  @callback record_dead_message(opts(), attrs :: map()) :: :ok | {:error, term()}
+  @callback record_dead_message(dead_row(), opts()) :: :ok | {:error, term()}
 
   @doc """
   Lists every message `subscription` gave up on, oldest first, as log rows.
@@ -252,7 +268,7 @@ defmodule DMEx.Storage do
   `t:row/0` shape — what `c:read/5` returns and the pipeline consumes — because
   the stored columns are the log's columns, so replay needs no reshaping.
   """
-  @callback list_dead_messages(opts(), subscription :: String.t()) ::
+  @callback list_dead_messages(subscription :: String.t(), opts()) ::
               {:ok, [row()]} | {:error, term()}
 
   @doc """
@@ -261,7 +277,7 @@ defmodule DMEx.Storage do
   Called inside `c:transaction/2` by a replay, so a message is dropped exactly
   when its handler finally accepted it.
   """
-  @callback delete_dead_message(opts(), subscription :: String.t(), id :: non_neg_integer()) ::
+  @callback delete_dead_message(subscription :: String.t(), id :: non_neg_integer(), opts()) ::
               :ok | {:error, term()}
 
   @doc """
@@ -271,7 +287,7 @@ defmodule DMEx.Storage do
   only the id. This answers an operator's: when did this last move? Used by
   `DMEx.Handler.Cursors`, not by the stream.
   """
-  @callback cursor(opts(), subscription :: String.t()) ::
+  @callback cursor(subscription :: String.t(), opts()) ::
               {:ok, %{required(:last_seen) => non_neg_integer(), optional(atom()) => term()} | nil}
               | {:error, term()}
 
@@ -281,7 +297,7 @@ defmodule DMEx.Storage do
   Distinct from advancing it to 0: with no row at all the subscription's
   `last_seen:` option applies again on its next start.
   """
-  @callback delete_cursor(opts(), subscription :: String.t()) :: :ok | {:error, term()}
+  @callback delete_cursor(subscription :: String.t(), opts()) :: :ok | {:error, term()}
 
   @doc """
   The `DMEx.Notifier` to use when a log names none.

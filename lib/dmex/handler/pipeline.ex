@@ -128,6 +128,10 @@ defmodule DMEx.Handler.Pipeline do
   One row as a transport yields it: string-keyed, with `data` and `metadata`
   decoded one level.
 
+  All four keys are always present, and `data` and `metadata` are objects — at
+  least `%{}`, never `nil`. A message short of that is malformed and a transport
+  rejects it there, so nothing here re-checks or defaults.
+
   Turning `data` into a message struct is the message module's job, here, per
   row — so a transport produces the same shape whether it parsed a frame or read
   the columns directly.
@@ -164,9 +168,7 @@ defmodule DMEx.Handler.Pipeline do
   failed — that one at once, and whatever `on_failure` says.
   """
   @spec run(decoded_row(), t()) :: {:ok, t()}
-  def run(row, state) do
-    id = Map.fetch!(row, "id")
-
+  def run(%{"id" => id} = row, state) do
     if id <= state.cursor, do: {:ok, state}, else: settle(row, state, id)
   end
 
@@ -210,12 +212,8 @@ defmodule DMEx.Handler.Pipeline do
   which those terminal actions are meaningless does not inherit them.
   """
   @spec deliver(t(), decoded_row(), (-> any())) :: verdict()
-  def deliver(state, row, commit) do
-    id = Map.fetch!(row, "id")
-    type = Map.fetch!(row, "type")
-    metadata = Map.get(row, "metadata") || %{}
-
-    case state.handler.__dmex_cast__(type, Map.fetch!(row, "data"), metadata) do
+  def deliver(state, %{"id" => id, "type" => type, "data" => data, "metadata" => metadata}, commit) do
+    case state.handler.__dmex_cast__(type, data, metadata) do
       nil ->
         skip(state, id, type)
 
@@ -377,7 +375,7 @@ defmodule DMEx.Handler.Pipeline do
     # message. The record and the advance are one transaction, so a failure here
     # means neither happened and the restart re-delivers the row.
     commit!(state, fn ->
-      if mode == :dead_message, do: record_dead!(state, row, id)
+      if mode == :dead_message, do: record_dead!(state, row)
 
       advance!(state, id)
     end)
@@ -387,26 +385,16 @@ defmodule DMEx.Handler.Pipeline do
     {:ok, %{state | cursor: id, pending: false}}
   end
 
-  defp record_dead!(state, row, id) do
-    :ok =
-      state.storage.record_dead_message(state.storage_opts, %{
-        subscription: state.subscription,
-        id: id,
-        type: Map.fetch!(row, "type"),
-        data: encode(Map.get(row, "data")),
-        metadata: encode(Map.get(row, "metadata"))
-      })
+  defp record_dead!(state, row) do
+    dead = Map.put(row, "subscription", state.subscription)
+
+    :ok = state.storage.record_dead_message(dead, state.storage_opts)
   end
 
-  # The transport decoded the row one level, so these are terms here and the
-  # storage adapter wants JSON text.
-  defp encode(nil), do: "{}"
-  defp encode(value), do: JSON.encode!(value)
-
-  defp report(state, row, id, exception, attempts, mode) do
+  defp report(state, %{"type" => type}, id, exception, attempts, mode) do
     Logger.error(fn ->
       "DMEx #{state.subscription} (#{inspect(state.handler)}) gave up on message #{id} " <>
-        "(#{Map.fetch!(row, "type")}) from #{inspect(state.origin)} after #{attempts} " <>
+        "(#{type}) from #{inspect(state.origin)} after #{attempts} " <>
         "attempt(s): #{Exception.message(exception)} — on_failure: #{mode}"
     end)
 
@@ -416,7 +404,7 @@ defmodule DMEx.Handler.Pipeline do
       %{
         subscription: state.subscription,
         handler: state.handler,
-        type: Map.fetch!(row, "type"),
+        type: type,
         origin: state.origin,
         on_failure: mode,
         reason: Exception.message(exception)
@@ -444,13 +432,13 @@ defmodule DMEx.Handler.Pipeline do
   # the message, so it gets its own exception rather than whatever a failed
   # match would have produced, and every caller lets it through.
   defp commit!(state, fun) do
-    case state.storage.transaction(state.storage_opts, fun) do
+    case state.storage.transaction(fun, state.storage_opts) do
       {:ok, result} -> result
       {:error, reason} -> raise Error, reason
     end
   end
 
   defp advance!(state, last_seen) do
-    :ok = state.storage.advance_cursor(state.storage_opts, state.subscription, last_seen)
+    :ok = state.storage.advance_cursor(state.subscription, last_seen, state.storage_opts)
   end
 end

@@ -235,7 +235,7 @@ defmodule DMEx.Log.Dispatcher do
   # answer must not take the dispatcher down, and leaving `polled_through`
   # untouched means the next poll asks the same question over the same window.
   defp appended_since(%{storage: storage, storage_opts: opts, polled_through: last}) do
-    case storage.appended_since(opts, last) do
+    case storage.appended_since(last, opts) do
       {:ok, {max_id, types}} -> {max_id, types}
       {:error, _reason} -> {nil, []}
     end

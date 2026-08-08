@@ -238,6 +238,11 @@ data: {"data":{"order_id":7},"metadata":{"trace_id":"abc"}}
 | `metadata` | inside `data:` | the publisher's metadata, verbatim |
 | `inserted_at` | nowhere | observability only, and a field on every frame for a signal most consumers never read |
 
+Inside `data:`, **both slots are mandatory and both are JSON objects**, at worst
+`{}`: a payload missing one, or carrying `null` or a non-object, is a malformed
+message and the transport rejects it. That is what lets a consumer-side row be
+total — nothing below a transport defaults or re-checks either field.
+
 - **No batch envelope and no `max_id`.** Batching is a *write* batch, not a wire
   construct, so nothing on the consumer side has to know it happened. That lets
   `id:` be the row's own id, and makes a frame mean the same thing whether one

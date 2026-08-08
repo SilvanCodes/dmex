@@ -54,8 +54,8 @@ defmodule DMEx.Test.Storage do
   end
 
   @doc "Replaces the stub's rows."
-  @spec put_rows(DMEx.Storage.opts(), [DMEx.Storage.row()] | non_neg_integer()) :: :ok
-  def put_rows(opts, rows), do: update(opts, &%{&1 | rows: rows(rows)})
+  @spec put_rows([DMEx.Storage.row()] | non_neg_integer(), DMEx.Storage.opts()) :: :ok
+  def put_rows(rows, opts), do: update(&%{&1 | rows: rows(rows)}, opts)
 
   @doc "Every `{cursor, max_rows, types}` triple `read/5` was called with, oldest first."
   @spec reads(DMEx.Storage.opts()) :: [
@@ -68,8 +68,8 @@ defmodule DMEx.Test.Storage do
   def read_bytes(opts), do: opts |> get() |> Map.fetch!(:read_bytes) |> Enum.reverse()
 
   @doc "Makes the next `read/5` return `{:error, reason}`."
-  @spec fail(DMEx.Storage.opts(), term()) :: :ok
-  def fail(opts, reason \\ :boom), do: update(opts, &%{&1 | fail: reason})
+  @spec fail(term(), DMEx.Storage.opts()) :: :ok
+  def fail(reason \\ :boom, opts), do: update(&%{&1 | fail: reason}, opts)
 
   @doc """
   Makes every subsequent `read/5` block its caller forever.
@@ -82,7 +82,7 @@ defmodule DMEx.Test.Storage do
   naming a callback that is never consulted is a silent no-op.
   """
   @spec hang(DMEx.Storage.opts()) :: :ok
-  def hang(opts), do: update(opts, &%{&1 | hang: true})
+  def hang(opts), do: update(&%{&1 | hang: true}, opts)
 
   @doc """
   Makes `max_id/1` return `{:error, reason}`, for as long as it is set.
@@ -91,13 +91,13 @@ defmodule DMEx.Test.Storage do
   the *connect* path, where the question is whether a failure to resolve the tip
   is fatal or silently becomes "from the beginning".
   """
-  @spec fail_max_id(DMEx.Storage.opts(), term()) :: :ok
-  def fail_max_id(opts, reason \\ :boom), do: update(opts, &%{&1 | fail_max_id: reason})
+  @spec fail_max_id(term(), DMEx.Storage.opts()) :: :ok
+  def fail_max_id(reason \\ :boom, opts), do: update(&%{&1 | fail_max_id: reason}, opts)
 
   ## DMEx.Storage
 
   @impl DMEx.Storage
-  def append(opts, type, data, metadata) do
+  def append(type, data, metadata, opts) do
     Agent.get_and_update(store(opts), fn state ->
       id = length(state.rows) + 1
       row = row(id, type: type, data: data, metadata: metadata)
@@ -107,7 +107,7 @@ defmodule DMEx.Test.Storage do
   end
 
   @impl DMEx.Storage
-  def read(opts, cursor, max_rows, max_bytes, types) do
+  def read(cursor, max_rows, max_bytes, types, opts) do
     # Before the agent call, so the caller wedges rather than the stub.
     maybe_hang(opts)
 
@@ -167,7 +167,7 @@ defmodule DMEx.Test.Storage do
   end
 
   @impl DMEx.Storage
-  def appended_since(opts, cursor) do
+  def appended_since(cursor, opts) do
     Agent.get(store(opts), fn state ->
       case Enum.filter(state.rows, &(&1.id > cursor)) do
         [] -> {:ok, {nil, []}}
@@ -177,12 +177,12 @@ defmodule DMEx.Test.Storage do
   end
 
   @impl DMEx.Storage
-  def last_seen(opts, subscription) when is_binary(subscription) do
+  def last_seen(subscription, opts) when is_binary(subscription) do
     Agent.get(store(opts), fn state -> {:ok, Map.get(state.cursors, subscription)} end)
   end
 
   @impl DMEx.Storage
-  def cursor(opts, subscription) when is_binary(subscription) do
+  def cursor(subscription, opts) when is_binary(subscription) do
     Agent.get(store(opts), fn state ->
       case Map.get(state.cursors, subscription) do
         nil -> {:ok, nil}
@@ -192,29 +192,39 @@ defmodule DMEx.Test.Storage do
   end
 
   @impl DMEx.Storage
-  def delete_cursor(opts, subscription) when is_binary(subscription) do
-    update(opts, &%{&1 | cursors: Map.delete(&1.cursors, subscription)})
+  def delete_cursor(subscription, opts) when is_binary(subscription) do
+    update(&%{&1 | cursors: Map.delete(&1.cursors, subscription)}, opts)
   end
 
   @impl DMEx.Storage
-  def transaction(_opts, fun), do: {:ok, fun.()}
+  def transaction(fun, _opts), do: {:ok, fun.()}
 
   @impl DMEx.Storage
-  def advance_cursor(opts, subscription, last_seen) when is_binary(subscription) do
-    update(opts, &%{&1 | cursors: Map.put(&1.cursors, subscription, last_seen)})
+  def advance_cursor(subscription, last_seen, opts) when is_binary(subscription) do
+    update(&%{&1 | cursors: Map.put(&1.cursors, subscription, last_seen)}, opts)
   end
 
-  # `:inserted_at` records when the row landed here, so it is the adapter's to
-  # stamp — the caller never sends one.
+  # A dead row arrives as the consumer held it, so this stores what a real
+  # adapter's columns would: JSON text, plus the `:inserted_at` it stamps itself.
   @impl DMEx.Storage
-  def record_dead_message(opts, attrs) do
-    attrs = Map.put(attrs, :inserted_at, DateTime.utc_now())
+  def record_dead_message(
+        %{"subscription" => subscription, "id" => id, "type" => type, "data" => data, "metadata" => metadata},
+        opts
+      ) do
+    dead = %{
+      subscription: subscription,
+      id: id,
+      type: type,
+      data: JSON.encode!(data),
+      metadata: JSON.encode!(metadata),
+      inserted_at: DateTime.utc_now()
+    }
 
-    update(opts, &%{&1 | dead: [attrs | &1.dead]})
+    update(&%{&1 | dead: [dead | &1.dead]}, opts)
   end
 
   @impl DMEx.Storage
-  def list_dead_messages(opts, subscription) when is_binary(subscription) do
+  def list_dead_messages(subscription, opts) when is_binary(subscription) do
     Agent.get(store(opts), fn state ->
       rows =
         state.dead
@@ -227,13 +237,16 @@ defmodule DMEx.Test.Storage do
   end
 
   @impl DMEx.Storage
-  def delete_dead_message(opts, subscription, id) when is_binary(subscription) do
-    update(opts, fn state ->
-      %{
-        state
-        | dead: Enum.reject(state.dead, &(&1.subscription == subscription and &1.id == id))
-      }
-    end)
+  def delete_dead_message(subscription, id, opts) when is_binary(subscription) do
+    update(
+      fn state ->
+        %{
+          state
+          | dead: Enum.reject(state.dead, &(&1.subscription == subscription and &1.id == id))
+        }
+      end,
+      opts
+    )
   end
 
   # An in-memory log has no database to notify through, so it takes the one that
@@ -258,7 +271,7 @@ defmodule DMEx.Test.Storage do
     :ok
   end
 
-  defp update(opts, fun) do
+  defp update(fun, opts) do
     Agent.update(store(opts), fun)
   end
 

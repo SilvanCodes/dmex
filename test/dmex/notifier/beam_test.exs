@@ -40,7 +40,7 @@ defmodule DMEx.Notifier.BeamTest do
       start_scope!(opts)
       {:ok, _pid} = Beam.listen(opts)
 
-      assert :ok = Beam.notify(opts, "MyApp.Messages.OrderPlaced")
+      assert :ok = Beam.notify("MyApp.Messages.OrderPlaced", opts)
 
       channel = opts.channel
 
@@ -71,7 +71,7 @@ defmodule DMEx.Notifier.BeamTest do
 
       for _ <- 1..3, do: assert_receive({:ready, _pid})
 
-      assert :ok = Beam.notify(opts, "A")
+      assert :ok = Beam.notify("A", opts)
 
       assert_receive {:got, first, "A"}
       assert_receive {:got, second, "A"}
@@ -85,7 +85,7 @@ defmodule DMEx.Notifier.BeamTest do
     # It runs after the row is written, so it may not raise — and with nothing
     # started there is no scope to look a group up in.
     test "is a no-op when the scope is not running", %{opts: opts} do
-      assert :ok = Beam.notify(opts, "A")
+      assert :ok = Beam.notify("A", opts)
     end
   end
 

@@ -149,7 +149,7 @@ defmodule DMEx.Integration.ResumptionTest do
   end
 
   defp cursor do
-    Postgres.last_seen(%{repo: DMEx.Test.IntegrationRepo, prefix: nil}, "test/echo")
+    Postgres.last_seen("test/echo", %{repo: DMEx.Test.IntegrationRepo, prefix: nil})
   end
 
   defp drain(count) do

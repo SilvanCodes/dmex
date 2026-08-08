@@ -44,7 +44,7 @@ defmodule DMEx.Integration.LocalSliceTest do
     assert message == %OrderPlaced{order_id: 7, customer_id: nil, total: 1999}
     assert metadata == %{"who" => "me"}
 
-    eventually(fn -> Postgres.last_seen(consumer_opts(), "test/echo") == {:ok, id} end)
+    eventually(fn -> Postgres.last_seen("test/echo", consumer_opts()) == {:ok, id} end)
   end
 
   test "delivers a backlog appended before anything subscribed, in order" do
@@ -97,8 +97,8 @@ defmodule DMEx.Integration.LocalSliceTest do
     assert_receive {:handled, %OrderPlaced{order_id: 1}, _}, 5_000
 
     eventually(fn ->
-      Postgres.last_seen(consumer_opts(), "test/echo") != {:ok, nil} and
-        Postgres.last_seen(consumer_opts(), "test/echo_whole_log") != {:ok, nil}
+      Postgres.last_seen("test/echo", consumer_opts()) != {:ok, nil} and
+        Postgres.last_seen("test/echo_whole_log", consumer_opts()) != {:ok, nil}
     end)
   end
 

@@ -94,5 +94,5 @@ defmodule DMEx.Notifier do
   is wrong — the round trip is what buys reach past this cluster — but on a hot
   append path the difference is the thing to choose on.
   """
-  @callback notify(opts(), type :: String.t()) :: :ok
+  @callback notify(type :: String.t(), opts()) :: :ok
 end

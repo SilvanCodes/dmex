@@ -57,7 +57,7 @@ defmodule DMEx.Notifier.PostgresTest do
     # this pins is the contract the append path depends on — the call is `:ok`
     # and it does not raise, because by the time it runs the row is written.
     test "returns :ok", %{opts: opts} do
-      assert :ok = Postgres.notify(opts, "MyApp.Messages.OrderPlaced")
+      assert :ok = Postgres.notify("MyApp.Messages.OrderPlaced", opts)
     end
   end
 end

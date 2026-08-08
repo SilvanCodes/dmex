@@ -46,7 +46,7 @@ defmodule DMEx.Integration.VerticalSliceTest do
     assert metadata == %{}
 
     # The cursor is durable, not in-memory: this is a real committed row.
-    eventually(fn -> Postgres.last_seen(consumer_opts(), "test/echo") == {:ok, id} end)
+    eventually(fn -> Postgres.last_seen("test/echo", consumer_opts()) == {:ok, id} end)
   end
 
   test "delivers a backlog appended before the consumer ever connected", _ctx do
@@ -100,8 +100,8 @@ defmodule DMEx.Integration.VerticalSliceTest do
     assert_receive {:second, %OrderPlaced{order_id: 1}}, 5_000
 
     eventually(fn ->
-      Postgres.last_seen(consumer_opts(), "test/echo") == {:ok, id} and
-        Postgres.last_seen(consumer_opts(), "test/second") == {:ok, id}
+      Postgres.last_seen("test/echo", consumer_opts()) == {:ok, id} and
+        Postgres.last_seen("test/second", consumer_opts()) == {:ok, id}
     end)
   end
 
@@ -247,7 +247,7 @@ defmodule DMEx.Integration.VerticalSliceTest do
   end
 
   defp await_cursor(id) do
-    eventually(fn -> Postgres.last_seen(consumer_opts(), "test/slice") == {:ok, id} end)
+    eventually(fn -> Postgres.last_seen("test/slice", consumer_opts()) == {:ok, id} end)
   end
 
   defp cursor_rows do

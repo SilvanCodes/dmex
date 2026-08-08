@@ -61,7 +61,7 @@ defmodule DMEx.Transport.SSE.DecoderTest do
 
   describe "line terminators" do
     test "accepts LF, CRLF and CR blank lines" do
-      body = ~s(id: 1\nevent: T\ndata: {"data":{}})
+      body = ~s(id: 1\nevent: T\ndata: {"data":{},"metadata":{}})
 
       for delimiter <- ["\n\n", "\r\n\r\n", "\r\r"] do
         assert {:ok, [%{"id" => 1}], _} = push(Decoder.new(), body <> delimiter)
@@ -71,7 +71,7 @@ defmodule DMEx.Transport.SSE.DecoderTest do
     # CR, LF and CRLF are each a terminator, so a blank line is any two of them
     # back to back — including the mixed pairs a producer using both emits.
     test "accepts blank lines mixing two different terminators" do
-      body = ~s(id: 1\nevent: T\ndata: {"data":{}})
+      body = ~s(id: 1\nevent: T\ndata: {"data":{},"metadata":{}})
 
       for delimiter <- ["\r\r\n", "\n\r\n", "\r\n\r", "\r\n\n", "\n\r"] do
         assert {:ok, [%{"id" => 1}], _} = push(Decoder.new(), body <> delimiter)
@@ -81,7 +81,7 @@ defmodule DMEx.Transport.SSE.DecoderTest do
     # CR+LF is the one pair that is *not* a blank line: the grammar reads it as
     # one CRLF, so this frame is still in flight.
     test "a single CRLF does not end a frame" do
-      body = ~s(id: 1\nevent: T\ndata: {"data":{}})
+      body = ~s(id: 1\nevent: T\ndata: {"data":{},"metadata":{}})
 
       assert {:ok, [], _} = push(Decoder.new(), body <> "\r\n")
     end
@@ -90,7 +90,7 @@ defmodule DMEx.Transport.SSE.DecoderTest do
     # or the trailing LF would open the next frame.
     test "a CRLF frame is not split early by the shorter CRLF+CR delimiter" do
       bytes =
-        ~s(id: 1\nevent: T\ndata: {"data":{}}\r\n\r\nid: 2\nevent: T\ndata: {"data":{}}\r\n\r\n)
+        ~s(id: 1\nevent: T\ndata: {"data":{},"metadata":{}}\r\n\r\nid: 2\nevent: T\ndata: {"data":{},"metadata":{}}\r\n\r\n)
 
       assert {:ok, [%{"id" => 1}, %{"id" => 2}], _} = push(Decoder.new(), bytes)
     end

@@ -80,10 +80,7 @@ defmodule DMEx.Notifier.Postgres do
   end
 
   @impl DMEx.Notifier
-  def notify(opts, type) when is_binary(type) do
-    repo = Map.fetch!(opts, :repo)
-    channel = Map.fetch!(opts, :channel)
-
+  def notify(type, %{repo: repo, channel: channel}) when is_binary(type) do
     # The append has already committed, so a failed hint is a latency cost and
     # nothing more — see `c:DMEx.Notifier.notify/2`.
     _ = SQL.query(repo, "SELECT pg_notify($1, $2)", [channel, type])

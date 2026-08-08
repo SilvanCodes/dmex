@@ -56,12 +56,12 @@ defmodule DMEx.Transport.Local do
 
   # The pipeline reads `id`, `type`, `data` and `metadata` — the same
   # shape a parsed frame has, minus the trip through JSON text.
-  defp row(row) do
+  defp row(%{id: id, type: type, data: data, metadata: metadata}) do
     %{
-      "id" => row.id,
-      "type" => row.type,
-      "data" => JSON.decode!(row.data),
-      "metadata" => JSON.decode!(row.metadata)
+      "id" => id,
+      "type" => type,
+      "data" => JSON.decode!(data),
+      "metadata" => JSON.decode!(metadata)
     }
   end
 

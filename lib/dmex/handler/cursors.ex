@@ -53,7 +53,7 @@ defmodule DMEx.Handler.Cursors do
   def position(handler, opts) when is_atom(handler) do
     {storage, storage_opts} = DMEx.Supervisor.storage!(opts)
 
-    storage.cursor(storage_opts, Handler.resolve_subscription_id!(handler, opts))
+    storage.cursor(Handler.resolve_subscription_id!(handler, opts), storage_opts)
   end
 
   @doc """
@@ -79,7 +79,7 @@ defmodule DMEx.Handler.Cursors do
 
     # No transaction: one statement is already atomic, and `rename!/3` — which
     # genuinely needs one, for two — is the contrast.
-    :ok = storage.advance_cursor(storage_opts, subscription, last_seen)
+    :ok = storage.advance_cursor(subscription, last_seen, storage_opts)
   end
 
   @doc """
@@ -93,7 +93,7 @@ defmodule DMEx.Handler.Cursors do
   def reset!(handler, opts) when is_atom(handler) do
     {storage, storage_opts} = DMEx.Supervisor.storage!(opts)
 
-    :ok = storage.delete_cursor(storage_opts, Handler.resolve_subscription_id!(handler, opts))
+    :ok = storage.delete_cursor(Handler.resolve_subscription_id!(handler, opts), storage_opts)
   end
 
   @doc """
@@ -112,22 +112,25 @@ defmodule DMEx.Handler.Cursors do
     {storage, storage_opts} = DMEx.Supervisor.storage!(opts)
 
     {:ok, :ok} =
-      storage.transaction(storage_opts, fn ->
-        case {storage.cursor(storage_opts, from), storage.cursor(storage_opts, to)} do
-          {{:ok, nil}, _} ->
-            :ok
+      storage.transaction(
+        fn ->
+          case {storage.cursor(from, storage_opts), storage.cursor(to, storage_opts)} do
+            {{:ok, nil}, _} ->
+              :ok
 
-          {_, {:ok, %{last_seen: existing}}} ->
-            raise ArgumentError,
-                  "#{inspect(to)} already has a cursor at #{existing}. " <>
-                    "Renaming #{inspect(from)} onto it would overwrite that " <>
-                    "subscription's position — reset one of them first if that is what you want."
+            {_, {:ok, %{last_seen: existing}}} ->
+              raise ArgumentError,
+                    "#{inspect(to)} already has a cursor at #{existing}. " <>
+                      "Renaming #{inspect(from)} onto it would overwrite that " <>
+                      "subscription's position — reset one of them first if that is what you want."
 
-          {{:ok, %{last_seen: id}}, {:ok, nil}} ->
-            :ok = storage.advance_cursor(storage_opts, to, id)
-            :ok = storage.delete_cursor(storage_opts, from)
-        end
-      end)
+            {{:ok, %{last_seen: id}}, {:ok, nil}} ->
+              :ok = storage.advance_cursor(to, id, storage_opts)
+              :ok = storage.delete_cursor(from, storage_opts)
+          end
+        end,
+        storage_opts
+      )
 
     :ok
   end

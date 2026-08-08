@@ -129,7 +129,7 @@ defmodule DMEx.Storage.SQLiteMigrationTest do
 
       # Not a raw INSERT: `dmex_cursors.updated_at` has a second writer, and it
       # is the adapter rather than the column default.
-      :ok = SQLite.advance_cursor(%{repo: Repo}, @some, 7)
+      :ok = SQLite.advance_cursor(@some, 7, %{repo: Repo})
 
       {:ok, _} =
         SQL.query(

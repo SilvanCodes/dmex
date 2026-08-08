@@ -344,7 +344,7 @@ defmodule DMEx.Log do
       [:dmex, :append],
       %{log: log, type: type},
       fn ->
-        result = storage.append(storage_opts, type, data, metadata)
+        result = storage.append(type, data, metadata, storage_opts)
 
         # Here rather than inside the adapter's transaction, because which
         # mechanism announces an append is not the storage engine's business —
@@ -352,7 +352,7 @@ defmodule DMEx.Log do
         # transaction announces a row that is not committed yet; the stream then
         # reads nothing and the dispatcher's poll picks it up.
         with {:ok, _id} <- result do
-          config.notifier.notify(config.notifier_opts, type)
+          config.notifier.notify(type, config.notifier_opts)
         end
 
         {result, %{log: log, type: type}}

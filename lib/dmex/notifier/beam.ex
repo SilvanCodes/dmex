@@ -50,7 +50,7 @@ defmodule DMEx.Notifier.Beam do
   end
 
   @impl DMEx.Notifier
-  def notify(opts, type) when is_binary(type) do
+  def notify(type, opts) when is_binary(type) do
     scope = scope(opts)
     channel = Map.fetch!(opts, :channel)
 

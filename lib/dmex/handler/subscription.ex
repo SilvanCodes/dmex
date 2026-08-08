@@ -239,7 +239,7 @@ defmodule DMEx.Handler.Subscription do
   # `:none` rather than 0 for "never committed anything" — that distinction is
   # what makes `last_seen:` apply exactly once.
   defp durable_cursor(state) do
-    case state.storage.last_seen(state.storage_opts, state.subscription) do
+    case state.storage.last_seen(state.subscription, state.storage_opts) do
       {:ok, nil} -> {:ok, :none}
       {:ok, cursor} -> {:ok, cursor}
       {:error, reason} -> {:error, reason}

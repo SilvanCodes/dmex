@@ -178,11 +178,11 @@ defmodule DMEx.Log.SendLoop do
 
     read =
       state.storage.read(
-        state.storage_opts,
         state.cursor,
         state.config.max_batch_rows,
         state.config.max_batch_bytes,
-        state.types
+        state.types,
+        state.storage_opts
       )
 
     case read do

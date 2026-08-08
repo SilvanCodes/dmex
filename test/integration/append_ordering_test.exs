@@ -147,13 +147,13 @@ defmodule DMEx.Integration.AppendOrderingTest do
   # LIMIT n`, advancing the cursor to the last id seen and never looking back.
   # That is what makes a skipped row unrecoverable, and what this observes.
   defp inserted_at(id) do
-    {:ok, [row]} = Postgres.read(storage_opts(), id - 1, 1, 1_048_576, :all)
+    {:ok, [row]} = Postgres.read(id - 1, 1, 1_048_576, :all, storage_opts())
 
     row.inserted_at
   end
 
   defp follow(parent, cursor, acc) do
-    {:ok, rows} = Postgres.read(storage_opts(), cursor, 100, 1_048_576, :all)
+    {:ok, rows} = Postgres.read(cursor, 100, 1_048_576, :all, storage_opts())
     ids = Enum.map(rows, & &1.id)
     acc = acc ++ ids
     cursor = List.last(ids) || cursor
@@ -168,7 +168,7 @@ defmodule DMEx.Integration.AppendOrderingTest do
   end
 
   defp drain(cursor, acc) do
-    {:ok, rows} = Postgres.read(storage_opts(), cursor, 1_000, 1_048_576, :all)
+    {:ok, rows} = Postgres.read(cursor, 1_000, 1_048_576, :all, storage_opts())
 
     case Enum.map(rows, & &1.id) do
       [] -> acc

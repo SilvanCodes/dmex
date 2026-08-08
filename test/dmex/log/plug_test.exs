@@ -42,7 +42,7 @@ defmodule DMEx.Log.PlugTest do
   describe "the selective path" do
     test "a filter over a known type streams and reports the count",
          %{opts: opts, plug: plug} do
-      Stub.put_rows(opts, 1)
+      Stub.put_rows(1, opts)
       {:ok, filter} = Fingerprint.build(["order_placed"])
 
       conn = stream(opts, plug, @whole_log, path_info: [Fingerprint.encode(filter)])
@@ -52,7 +52,7 @@ defmodule DMEx.Log.PlugTest do
     end
 
     test "a whole-log stream sends no matched header", %{opts: opts, plug: plug} do
-      Stub.put_rows(opts, 1)
+      Stub.put_rows(1, opts)
 
       conn = stream(opts, plug, @whole_log)
 
@@ -101,7 +101,7 @@ defmodule DMEx.Log.PlugTest do
     # a log has no business rejecting a request over a header it does not
     # define.
     test "a header DMEx does not define is ignored, not rejected", %{opts: opts, plug: plug} do
-      Stub.put_rows(opts, 1)
+      Stub.put_rows(1, opts)
 
       conn = stream(opts, plug, @whole_log ++ [{"dmex-max-batch-size", "lots"}])
 
@@ -146,7 +146,7 @@ defmodule DMEx.Log.PlugTest do
 
   describe "response headers on a 200" do
     setup %{opts: opts} do
-      Stub.put_rows(opts, 1)
+      Stub.put_rows(1, opts)
 
       :ok
     end
@@ -186,7 +186,7 @@ defmodule DMEx.Log.PlugTest do
       opts: opts,
       plug: plug
     } do
-      Stub.put_rows(opts, 1)
+      Stub.put_rows(1, opts)
 
       stream(opts, plug, @whole_log)
 
@@ -197,7 +197,7 @@ defmodule DMEx.Log.PlugTest do
     end
 
     test "then sends the log as one frame per row", %{opts: opts, plug: plug} do
-      Stub.put_rows(opts, 2)
+      Stub.put_rows(2, opts)
 
       stream(opts, plug, @whole_log)
 
@@ -210,7 +210,7 @@ defmodule DMEx.Log.PlugTest do
     # The publisher's metadata reaches the socket byte for byte: nothing DMEx
     # knows is merged into it anywhere.
     test "splices metadata exactly as stored", %{opts: opts, plug: plug} do
-      Stub.put_rows(opts, [Stub.row(1, metadata: ~s({"trace_id":"abc"}))])
+      Stub.put_rows([Stub.row(1, metadata: ~s({"trace_id":"abc"}))], opts)
 
       stream(opts, plug, @whole_log)
 
@@ -222,7 +222,7 @@ defmodule DMEx.Log.PlugTest do
     end
 
     test "registers the request process for wakeups", %{opts: opts, plug: plug} do
-      Stub.put_rows(opts, 1)
+      Stub.put_rows(1, opts)
 
       # Registered from inside the stream process — on the log side the
       # request *is* the stream, so the entry lives and dies with the connection.
@@ -237,7 +237,7 @@ defmodule DMEx.Log.PlugTest do
 
     test "emits a connect event with the resolved cursor", %{opts: opts, plug: plug} do
       ref = :telemetry_test.attach_event_handlers(self(), [[:dmex, :stream, :connect]])
-      Stub.put_rows(opts, 1)
+      Stub.put_rows(1, opts)
 
       # Resuming past the tip, so no data frame is ever sent and the connection
       # stays open — the event has to be observable without the stream ending.
@@ -255,7 +255,7 @@ defmodule DMEx.Log.PlugTest do
     # How a consumer that only cares about what happens next skips history: no
     # header, no preflight request, and no tip token to define.
     test "absent means from now on", %{opts: opts, plug: plug} do
-      Stub.put_rows(opts, 10)
+      Stub.put_rows(10, opts)
 
       pid = start_stream(opts, plug, [], chunks: 5)
 
@@ -282,7 +282,7 @@ defmodule DMEx.Log.PlugTest do
     end
 
     test "0 is the whole log", %{opts: opts, plug: plug} do
-      Stub.put_rows(opts, 3)
+      Stub.put_rows(3, opts)
 
       stream(opts, plug, @whole_log)
 
@@ -290,7 +290,7 @@ defmodule DMEx.Log.PlugTest do
     end
 
     test "an id resumes after it", %{opts: opts, plug: plug} do
-      Stub.put_rows(opts, 5)
+      Stub.put_rows(5, opts)
 
       stream(opts, plug, [{"last-event-id", "3"}])
 
@@ -301,7 +301,7 @@ defmodule DMEx.Log.PlugTest do
     # exhaustion into a whole-log replay — and every subscription with no cursor
     # yet arrives on this path, so it is the default, not an exotic case.
     test "a storage failure is a 503, not a silent replay", %{opts: opts, plug: plug} do
-      Stub.fail_max_id(opts, :pool_timeout)
+      Stub.fail_max_id(:pool_timeout, opts)
 
       conn = call(opts, plug, [])
 
@@ -315,7 +315,7 @@ defmodule DMEx.Log.PlugTest do
     # watcher reclaims a connection that never streamed — taking the next,
     # healthy stream on the same process with it.
     test "a 503 leaves nothing registered", %{opts: opts, plug: plug} do
-      Stub.fail_max_id(opts, :pool_timeout)
+      Stub.fail_max_id(:pool_timeout, opts)
       parent = self()
 
       pid =

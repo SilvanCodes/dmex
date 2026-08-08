@@ -165,10 +165,10 @@ defmodule DMEx.Integration.UnknownTypeTest do
   defp append_undecodable! do
     %{storage: storage, storage_opts: opts} = Log.__dmex__()
 
-    storage.append(opts, @undecodable, JSON.encode!(%{"order_id" => 1}), "{}")
+    storage.append(@undecodable, JSON.encode!(%{"order_id" => 1}), "{}", opts)
   end
 
   defp cursor(subscription \\ "test/echo") do
-    Postgres.last_seen(%{repo: DMEx.Test.IntegrationRepo, prefix: nil}, subscription)
+    Postgres.last_seen(subscription, %{repo: DMEx.Test.IntegrationRepo, prefix: nil})
   end
 end

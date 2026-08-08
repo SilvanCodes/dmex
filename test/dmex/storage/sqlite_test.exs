@@ -22,26 +22,26 @@ defmodule DMEx.Storage.SQLiteTest do
     test "duplicate keys and key order survive, byte for byte", %{opts: opts} do
       written = ~s({"z":1,"a":2,"z":3})
 
-      {:ok, id} = SQLite.append(opts, "A", written, "{}")
+      {:ok, id} = SQLite.append("A", written, "{}", opts)
 
-      assert {:ok, [row]} = SQLite.read(opts, id - 1, 1, @megabyte, :all)
+      assert {:ok, [row]} = SQLite.read(id - 1, 1, @megabyte, :all, opts)
       assert row.data == written
     end
 
     test "a payload that is not JSON is refused by the column", %{opts: opts} do
-      assert {:error, _reason} = SQLite.append(opts, "A", "not json", "{}")
+      assert {:error, _reason} = SQLite.append("A", "not json", "{}", opts)
     end
   end
 
   describe "the read plan" do
     setup %{opts: opts} do
-      for n <- 1..20, do: SQLite.append(opts, "A", ~s({"n":#{n}}), "{}")
+      for n <- 1..20, do: SQLite.append("A", ~s({"n":#{n}}), "{}", opts)
 
       :ok
     end
 
     test "a whole-log read walks the primary key", %{opts: opts} do
-      plan = explain(opts, "")
+      plan = explain("", opts)
 
       # `id > ?` on the rowid, which is the table itself — no index to consult
       # and no sort to do.
@@ -49,7 +49,7 @@ defmodule DMEx.Storage.SQLiteTest do
     end
 
     test "a selective read takes the (type, id) index", %{opts: opts} do
-      plan = explain(opts, "AND type IN (?4)")
+      plan = explain("AND type IN (?4)", opts)
 
       assert plan =~ "dmex_messages_type_id_index"
     end
@@ -58,7 +58,7 @@ defmodule DMEx.Storage.SQLiteTest do
     # computes windows before LIMIT within one SELECT, and it does not flatten a
     # subquery containing one — which is what keeps `page` a separate level.
     test "the running sum runs over a bounded subquery", %{opts: opts} do
-      plan = explain(opts, "")
+      plan = explain("", opts)
 
       assert plan =~ "CO-ROUTINE"
       assert plan =~ ~r/SCAN .*page|CO-ROUTINE page/
@@ -70,7 +70,7 @@ defmodule DMEx.Storage.SQLiteTest do
       types = for n <- 1..1_000, do: "T#{n}"
 
       assert_raise ArgumentError, ~r/bound-parameter limit/, fn ->
-        SQLite.read(opts, 0, 10, @megabyte, types)
+        SQLite.read(0, 10, @megabyte, types, opts)
       end
     end
   end
@@ -106,7 +106,7 @@ defmodule DMEx.Storage.SQLiteTest do
   # EXPLAIN QUERY PLAN over the adapter's real statement. Reaches for the
   # private builder deliberately: what is under test is that statement, and no
   # restatement of it would prove anything.
-  defp explain(%{repo: repo}, predicate) do
+  defp explain(predicate, %{repo: repo}) do
     sql = :erlang.apply(SQLite, :__read_sql__, [predicate])
     params = if predicate == "", do: [0, 3, 10_000_000], else: [0, 3, 10_000_000, "A"]
 

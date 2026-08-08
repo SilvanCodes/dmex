@@ -66,15 +66,15 @@ defmodule DMEx.Handler.DeadMessagesTest do
     again. Only the callbacks replay uses, so there is no `@behaviour` to
     satisfy with a dozen delegates.
     """
-    def transaction(_opts, _fun), do: {:error, :pool_timeout}
+    def transaction(_fun, _opts), do: {:error, :pool_timeout}
 
-    defdelegate list_dead_messages(opts, subscription), to: Postgres
-    defdelegate delete_dead_message(opts, subscription, id), to: Postgres
+    defdelegate list_dead_messages(subscription, opts), to: Postgres
+    defdelegate delete_dead_message(subscription, id, opts), to: Postgres
   end
 
   defmodule ReadFails do
     @moduledoc "Storage whose `list_dead_messages/2` itself fails."
-    def list_dead_messages(_opts, _subscription), do: {:error, :pool_timeout}
+    def list_dead_messages(_subscription, _opts), do: {:error, :pool_timeout}
   end
 
   setup do
@@ -197,14 +197,14 @@ defmodule DMEx.Handler.DeadMessagesTest do
 
     test "does not touch the subscription's cursor", ctx do
       kill(ctx, 1)
-      :ok = Postgres.advance_cursor(ctx.storage_opts, @subscription, 500)
+      :ok = Postgres.advance_cursor(@subscription, 500, ctx.storage_opts)
       Handlers.FailTimes.set(0)
 
       DeadMessages.replay!(@handler, ctx.replay)
 
       # A replayed message is delivered out of band; rewinding the cursor to
       # reach it would redeliver everything in between.
-      assert {:ok, 500} = Postgres.last_seen(ctx.storage_opts, @subscription)
+      assert {:ok, 500} = Postgres.last_seen(@subscription, ctx.storage_opts)
     end
 
     test "is a no-op when there is nothing dead", ctx do

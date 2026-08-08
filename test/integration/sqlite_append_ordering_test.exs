@@ -65,7 +65,7 @@ defmodule DMEx.Integration.SQLiteAppendOrderingTest do
     test "across appends that really commit" do
       for n <- 1..20, do: {:ok, _} = Log.append(%OrderPlaced{order_id: n})
 
-      {:ok, rows} = SQLite.read(storage_opts(), 0, 100, 1_048_576, :all)
+      {:ok, rows} = SQLite.read(0, 100, 1_048_576, :all, storage_opts())
 
       stamps = Enum.map(rows, & &1.inserted_at)
 
@@ -124,7 +124,7 @@ defmodule DMEx.Integration.SQLiteAppendOrderingTest do
 
       Task.await_many(writers, 60_000)
 
-      {:ok, rows} = SQLite.read(storage_opts(), 0, 1_000, 1_048_576, :all)
+      {:ok, rows} = SQLite.read(0, 1_000, 1_048_576, :all, storage_opts())
 
       assert Enum.map(rows, & &1.id) == Enum.to_list(1..40)
     end
@@ -134,7 +134,7 @@ defmodule DMEx.Integration.SQLiteAppendOrderingTest do
   # advancing to the last id seen and never looking back. That is what makes a
   # skipped row unrecoverable, and what this observes.
   defp follow(parent, cursor, acc) do
-    {:ok, rows} = SQLite.read(storage_opts(), cursor, 100, 1_048_576, :all)
+    {:ok, rows} = SQLite.read(cursor, 100, 1_048_576, :all, storage_opts())
     ids = Enum.map(rows, & &1.id)
     acc = acc ++ ids
     cursor = List.last(ids) || cursor
@@ -147,7 +147,7 @@ defmodule DMEx.Integration.SQLiteAppendOrderingTest do
   end
 
   defp drain(cursor, acc) do
-    {:ok, rows} = SQLite.read(storage_opts(), cursor, 1_000, 1_048_576, :all)
+    {:ok, rows} = SQLite.read(cursor, 1_000, 1_048_576, :all, storage_opts())
 
     case Enum.map(rows, & &1.id) do
       [] -> acc

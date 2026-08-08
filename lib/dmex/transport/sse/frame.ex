@@ -76,16 +76,16 @@ defmodule DMEx.Transport.SSE.Frame do
   JSON text.
   """
   @spec encode_row(row()) :: iodata()
-  def encode_row(row) do
+  def encode_row(%{id: id, type: type, data: data, metadata: metadata}) do
     [
       "id: ",
-      Integer.to_string(row.id),
+      Integer.to_string(id),
       "\nevent: ",
-      row.type,
+      type,
       "\ndata: {\"data\":",
-      row.data,
+      data,
       ",\"metadata\":",
-      row.metadata,
+      metadata,
       "}\n\n"
     ]
   end
@@ -122,6 +122,10 @@ defmodule DMEx.Transport.SSE.Frame do
 
   `id:` is one integer; anything else leaves the block without an id, so it is
   `:ignore`.
+
+  A `data:` payload whose `data` or `metadata` is absent, `null`, or anything
+  other than an object is `{:error, {:invalid_data_shape, payload}}` — a
+  malformed message, not a row.
   """
   @spec decode(binary()) :: {:ok, decoded()} | {:error, error()}
   def decode(block) when is_binary(block) do
@@ -148,14 +152,15 @@ defmodule DMEx.Transport.SSE.Frame do
     end
   end
 
-  # `encode_row/1` always writes `metadata`, but only `data` is required to
-  # decode: this is the liberal half of the contract, so a generic producer's
-  # frame is accepted without one and `DMEx.Handler.Pipeline` defaults it to
-  # `%{}`. Deliberate, and the reason the shape check below is nonetheless
-  # precise — a payload that is not an object at all cannot be a row.
+  # Both slots are mandatory and both must be objects — at least `{}`, never a
+  # missing key and never `null`. A payload short of that is a malformed message
+  # rather than a row to be patched up, which is what makes
+  # `t:DMEx.Handler.Pipeline.decoded_row/0` total: nothing downstream defaults
+  # anything.
   defp decode_row(payload, id, event) do
     case JSON.decode(payload) do
-      {:ok, %{"data" => _} = decoded} ->
+      {:ok, %{"data" => data, "metadata" => metadata} = decoded}
+      when is_map(data) and is_map(metadata) ->
         row = %{"id" => id, "type" => event}
 
         {:ok, {:message, Map.merge(decoded, row)}}

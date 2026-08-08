@@ -39,7 +39,7 @@ defmodule DMEx.Handler.PipelineTest do
       assert {:ok, %{cursor: 10, pending: false}} = Pipeline.run(row(3), state)
 
       # The cursor was never written, so nothing was committed for it either.
-      assert {:ok, nil} = Postgres.last_seen(ctx.storage_opts, "test/echo")
+      assert {:ok, nil} = Postgres.last_seen("test/echo", ctx.storage_opts)
     end
 
     test "makes a replayed frame harmless", ctx do
@@ -66,10 +66,10 @@ defmodule DMEx.Handler.PipelineTest do
 
       # Deferred, not written: a skip runs no handler, so its advance is atomic
       # with nothing and there is nothing to be in a transaction with.
-      assert {:ok, nil} = Postgres.last_seen(ctx.storage_opts, "test/echo")
+      assert {:ok, nil} = Postgres.last_seen("test/echo", ctx.storage_opts)
 
       assert {:ok, %{pending: false}} = Pipeline.flush(state)
-      assert {:ok, 1} = Postgres.last_seen(ctx.storage_opts, "test/echo")
+      assert {:ok, 1} = Postgres.last_seen("test/echo", ctx.storage_opts)
     end
 
     # Without the advance, a consumer would wedge forever on the first message
@@ -84,7 +84,7 @@ defmodule DMEx.Handler.PipelineTest do
 
       # Only row 2 committed, and it committed an advance to 2 — which subsumed
       # the skip at 1. Row 3 is still pending.
-      assert {:ok, 2} = Postgres.last_seen(ctx.storage_opts, "test/echo")
+      assert {:ok, 2} = Postgres.last_seen("test/echo", ctx.storage_opts)
     end
 
     # A consumer silently discarding most of a stream and one silently
@@ -113,10 +113,10 @@ defmodule DMEx.Handler.PipelineTest do
       assert {:ok, %{cursor: 1, pending: true} = state} = Pipeline.run(row, state)
 
       refute_received {:handled, _, _}
-      assert {:ok, nil} = Postgres.last_seen(ctx.storage_opts, "test/narrowed")
+      assert {:ok, nil} = Postgres.last_seen("test/narrowed", ctx.storage_opts)
 
       assert {:ok, %{pending: false}} = Pipeline.flush(state)
-      assert {:ok, 1} = Postgres.last_seen(ctx.storage_opts, "test/narrowed")
+      assert {:ok, 1} = Postgres.last_seen("test/narrowed", ctx.storage_opts)
     end
 
     test "still runs the messages it does match", ctx do
@@ -131,7 +131,7 @@ defmodule DMEx.Handler.PipelineTest do
 
       # Row 2 committed an advance to 2, subsuming the skip at 1; row 3 is still
       # pending — exactly the unknown-type shape.
-      assert {:ok, 2} = Postgres.last_seen(ctx.storage_opts, "test/narrowed")
+      assert {:ok, 2} = Postgres.last_seen("test/narrowed", ctx.storage_opts)
     end
 
     test "emits a skip event naming the type", ctx do
@@ -184,7 +184,7 @@ defmodule DMEx.Handler.PipelineTest do
 
       assert_raise FunctionClauseError, fn -> Pipeline.run(row(1), state) end
 
-      assert {:ok, nil} = Postgres.last_seen(ctx.storage_opts, "test/raises_function_clause")
+      assert {:ok, nil} = Postgres.last_seen("test/raises_function_clause", ctx.storage_opts)
     end
   end
 
@@ -198,10 +198,10 @@ defmodule DMEx.Handler.PipelineTest do
 
       assert state.pending
       assert state.cursor == 50
-      assert {:ok, nil} = Postgres.last_seen(ctx.storage_opts, "test/echo")
+      assert {:ok, nil} = Postgres.last_seen("test/echo", ctx.storage_opts)
 
       assert {:ok, %{pending: false}} = Pipeline.flush(state)
-      assert {:ok, 50} = Postgres.last_seen(ctx.storage_opts, "test/echo")
+      assert {:ok, 50} = Postgres.last_seen("test/echo", ctx.storage_opts)
     end
 
     # `advance_cursor/3` sets last_seen absolutely, so a handled row's own transaction
@@ -214,7 +214,7 @@ defmodule DMEx.Handler.PipelineTest do
       {:ok, state} = run_all(rows, state)
 
       refute state.pending
-      assert {:ok, 4} = Postgres.last_seen(ctx.storage_opts, "test/echo")
+      assert {:ok, 4} = Postgres.last_seen("test/echo", ctx.storage_opts)
 
       # And the flush that follows is a no-op, not a redundant second write.
       assert {:ok, ^state} = Pipeline.flush(state)
@@ -224,7 +224,7 @@ defmodule DMEx.Handler.PipelineTest do
       state = state(ctx, handler: Handlers.Echo, cursor: 0)
 
       assert {:ok, ^state} = Pipeline.flush(state)
-      assert {:ok, nil} = Postgres.last_seen(ctx.storage_opts, "test/echo")
+      assert {:ok, nil} = Postgres.last_seen("test/echo", ctx.storage_opts)
     end
 
     # A pending run is rows no code ran for, so losing it costs re-skipping and
@@ -237,13 +237,13 @@ defmodule DMEx.Handler.PipelineTest do
       assert crashed.cursor == 5
 
       # Restart: the durable cursor is the authority, and it never moved.
-      assert {:ok, nil} = Postgres.last_seen(ctx.storage_opts, "test/echo")
+      assert {:ok, nil} = Postgres.last_seen("test/echo", ctx.storage_opts)
 
       {:ok, resumed} = run_all(Enum.map(1..5, &unknown_row/1), state)
       {:ok, resumed} = Pipeline.flush(resumed)
 
       assert resumed.cursor == 5
-      assert {:ok, 5} = Postgres.last_seen(ctx.storage_opts, "test/echo")
+      assert {:ok, 5} = Postgres.last_seen("test/echo", ctx.storage_opts)
       refute_received {:handled, _, _}
     end
 
@@ -265,7 +265,7 @@ defmodule DMEx.Handler.PipelineTest do
 
       assert {:ok, %{cursor: 1, pending: false}} = Pipeline.run(row(1), state)
 
-      assert {:ok, 1} = Postgres.last_seen(ctx.storage_opts, "test/echo")
+      assert {:ok, 1} = Postgres.last_seen("test/echo", ctx.storage_opts)
     end
 
     # Everything else in the row stays with DMEx: the id, the type, the
@@ -306,14 +306,6 @@ defmodule DMEx.Handler.PipelineTest do
       assert_received {:handled, %OrderShipped{order_id: 2, carrier: "dhl"}, _}
     end
 
-    test "tolerates a row with no metadata", ctx do
-      state = state(ctx, handler: Handlers.Echo, cursor: 0)
-
-      Pipeline.run(Map.delete(row(1), "metadata"), state)
-
-      assert_received {:handled, _, %{}}
-    end
-
     # Casting is CPU work, not IO; holding a database connection across it would
     # inflate transaction — and therefore lock — time for nothing.
     test "casts outside the transaction", ctx do
@@ -338,7 +330,7 @@ defmodule DMEx.Handler.PipelineTest do
 
       catch_error(Pipeline.run(row(1), state))
 
-      assert {:ok, nil} = Postgres.last_seen(ctx.storage_opts, "test/raising")
+      assert {:ok, nil} = Postgres.last_seen("test/raising", ctx.storage_opts)
     end
 
     # The rollback probe. If the scratch row survived, the callback and the
@@ -350,7 +342,7 @@ defmodule DMEx.Handler.PipelineTest do
       catch_error(Pipeline.run(row(1), state))
 
       assert [[0]] = SQL.query!(Repo, "SELECT count(*) FROM dmex_test_scratch", []).rows
-      assert {:ok, nil} = Postgres.last_seen(ctx.storage_opts, "test/writes_then_raises")
+      assert {:ok, nil} = Postgres.last_seen("test/writes_then_raises", ctx.storage_opts)
     end
 
     test "stops the batch at the failing row rather than skipping past it", ctx do

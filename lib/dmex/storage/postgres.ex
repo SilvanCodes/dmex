@@ -7,11 +7,13 @@ defmodule DMEx.Storage.Postgres do
   read is that `jsonb` comes back as the text `DMEx.Transport.SSE.Frame` splices
   verbatim.
 
-  ## No JSON library is ever required
+  ## The driver never touches `jsonb`
 
   Parameters go in as **`$n::text::jsonb`** and `data`/`metadata` come back as
   `column::text`, so Postgrex is never asked to encode or decode `jsonb` and
-  DMEx never needs `config :postgrex, :json_library`.
+  DMEx never needs `config :postgrex, :json_library`. `c:DMEx.Storage.record_dead_message/2`
+  is the one call handed terms rather than column text, and encodes them here —
+  into the same text parameters, so the rule above still holds.
 
   The double cast is load-bearing and `$n::jsonb` is the trap: Postgres would
   describe the parameter as `jsonb`, at which point Postgrex encodes the binary
@@ -80,7 +82,7 @@ defmodule DMEx.Storage.Postgres do
   defp validate_lock!(_opts), do: :ok
 
   @impl DMEx.Storage
-  def append(opts, type, data, metadata) when is_binary(type) and is_binary(data) and is_binary(metadata) do
+  def append(type, data, metadata, opts) when is_binary(type) and is_binary(data) and is_binary(metadata) do
     repo = Map.fetch!(opts, :repo)
 
     repo.transaction(fn ->
@@ -88,27 +90,27 @@ defmodule DMEx.Storage.Postgres do
       # documentation for why anything shorter reintroduces silent id gaps.
       lock!(repo, opts)
 
-      insert!(repo, opts, type, data, metadata)
+      insert!(repo, type, data, metadata, opts)
     end)
   end
 
   @impl DMEx.Storage
-  def read(opts, cursor, max_rows, max_bytes, :all)
+  def read(cursor, max_rows, max_bytes, :all, opts)
       when is_integer(cursor) and cursor >= 0 and is_integer(max_rows) and max_rows > 0 and is_integer(max_bytes) and
              max_bytes > 0 do
-    query(opts, read_sql(opts, ""), [cursor, max_rows, max_bytes])
+    query(read_sql("", opts), [cursor, max_rows, max_bytes], opts)
   end
 
-  def read(opts, cursor, max_rows, max_bytes, types)
+  def read(cursor, max_rows, max_bytes, types, opts)
       when is_integer(cursor) and cursor >= 0 and is_integer(max_rows) and max_rows > 0 and is_integer(max_bytes) and
              max_bytes > 0 and is_list(types) do
     # A separate statement, not a nullable predicate — see `c:DMEx.Storage.read/5`.
-    query(opts, read_sql(opts, "AND type = ANY($4)"), [cursor, max_rows, max_bytes, types])
+    query(read_sql("AND type = ANY($4)", opts), [cursor, max_rows, max_bytes, types], opts)
   end
 
   # Public so `DMEx.Storage.PostgresTest` can EXPLAIN the real statement.
   @doc false
-  def __read_sql__(opts, predicate), do: read_sql(opts, predicate)
+  def __read_sql__(predicate, opts), do: read_sql(predicate, opts)
 
   # Four nested levels, each load-bearing.
   #
@@ -133,7 +135,7 @@ defmodule DMEx.Storage.Postgres do
   # The ORDER BY is repeated at the top because a filter over a subquery does
   # not contractually preserve its ordering, and ordering here is a delivery
   # guarantee.
-  defp read_sql(opts, predicate) do
+  defp read_sql(predicate, opts) do
     """
     SELECT id, type, data, metadata, inserted_at
       FROM (
@@ -149,7 +151,7 @@ defmodule DMEx.Storage.Postgres do
               FROM (
                 SELECT id, type, data::text AS data, metadata::text AS metadata,
                        inserted_at
-                  FROM #{table(opts, @messages)}
+                  FROM #{table(@messages, opts)}
                  WHERE id > $1 #{predicate}
                  ORDER BY id
                  LIMIT $2
@@ -161,7 +163,7 @@ defmodule DMEx.Storage.Postgres do
     """
   end
 
-  defp query(opts, sql, params) do
+  defp query(sql, params, opts) do
     case SQL.query(Map.fetch!(opts, :repo), sql, params) do
       {:ok, %{rows: rows}} -> {:ok, Enum.map(rows, &to_row/1)}
       {:error, reason} -> {:error, reason}
@@ -171,7 +173,7 @@ defmodule DMEx.Storage.Postgres do
   @impl DMEx.Storage
   def max_id(opts) do
     repo = Map.fetch!(opts, :repo)
-    sql = "SELECT coalesce(max(id), 0) FROM #{table(opts, @messages)}"
+    sql = "SELECT coalesce(max(id), 0) FROM #{table(@messages, opts)}"
 
     case SQL.query(repo, sql, []) do
       {:ok, %{rows: [[max_id]]}} -> {:ok, max_id}
@@ -180,7 +182,7 @@ defmodule DMEx.Storage.Postgres do
   end
 
   @impl DMEx.Storage
-  def appended_since(opts, cursor) when is_integer(cursor) and cursor >= 0 do
+  def appended_since(cursor, opts) when is_integer(cursor) and cursor >= 0 do
     repo = Map.fetch!(opts, :repo)
 
     # One statement for both halves the poll needs: a primary-key range scan
@@ -188,7 +190,7 @@ defmodule DMEx.Storage.Postgres do
     # is the empty case.
     sql = """
     SELECT max(id), coalesce(array_agg(DISTINCT type), '{}')
-      FROM #{table(opts, @messages)}
+      FROM #{table(@messages, opts)}
      WHERE id > $1
     """
 
@@ -200,9 +202,9 @@ defmodule DMEx.Storage.Postgres do
   end
 
   @impl DMEx.Storage
-  def last_seen(opts, subscription) when is_binary(subscription) do
+  def last_seen(subscription, opts) when is_binary(subscription) do
     repo = Map.fetch!(opts, :repo)
-    sql = "SELECT last_seen FROM #{table(opts, @cursors)} WHERE subscription = $1"
+    sql = "SELECT last_seen FROM #{table(@cursors, opts)} WHERE subscription = $1"
 
     case SQL.query(repo, sql, [subscription]) do
       {:ok, %{rows: [[last_seen]]}} -> {:ok, last_seen}
@@ -212,12 +214,12 @@ defmodule DMEx.Storage.Postgres do
   end
 
   @impl DMEx.Storage
-  def cursor(opts, subscription) when is_binary(subscription) do
+  def cursor(subscription, opts) when is_binary(subscription) do
     repo = Map.fetch!(opts, :repo)
 
     sql = """
     SELECT last_seen, updated_at
-      FROM #{table(opts, @cursors)}
+      FROM #{table(@cursors, opts)}
      WHERE subscription = $1
     """
 
@@ -234,9 +236,9 @@ defmodule DMEx.Storage.Postgres do
   end
 
   @impl DMEx.Storage
-  def delete_cursor(opts, subscription) when is_binary(subscription) do
+  def delete_cursor(subscription, opts) when is_binary(subscription) do
     repo = Map.fetch!(opts, :repo)
-    sql = "DELETE FROM #{table(opts, @cursors)} WHERE subscription = $1"
+    sql = "DELETE FROM #{table(@cursors, opts)} WHERE subscription = $1"
 
     case SQL.query(repo, sql, [subscription]) do
       {:ok, _} -> :ok
@@ -245,18 +247,18 @@ defmodule DMEx.Storage.Postgres do
   end
 
   @impl DMEx.Storage
-  def transaction(opts, fun) when is_function(fun, 0) do
+  def transaction(fun, opts) when is_function(fun, 0) do
     repo = Map.fetch!(opts, :repo)
 
     repo.transaction(fun)
   end
 
   @impl DMEx.Storage
-  def advance_cursor(opts, subscription, last_seen) when is_binary(subscription) and is_integer(last_seen) do
+  def advance_cursor(subscription, last_seen, opts) when is_binary(subscription) and is_integer(last_seen) do
     repo = Map.fetch!(opts, :repo)
 
     sql = """
-    INSERT INTO #{table(opts, @cursors)} (subscription, last_seen, updated_at)
+    INSERT INTO #{table(@cursors, opts)} (subscription, last_seen, updated_at)
          VALUES ($1, $2, now())
     ON CONFLICT (subscription)
       DO UPDATE SET last_seen = EXCLUDED.last_seen,
@@ -269,22 +271,21 @@ defmodule DMEx.Storage.Postgres do
   end
 
   @impl DMEx.Storage
-  def record_dead_message(opts, attrs) when is_map(attrs) do
+  def record_dead_message(
+        %{"subscription" => subscription, "id" => id, "type" => type, "data" => data, "metadata" => metadata},
+        opts
+      ) do
     repo = Map.fetch!(opts, :repo)
 
     sql = """
-    INSERT INTO #{table(opts, @dead_messages)}
+    INSERT INTO #{table(@dead_messages, opts)}
            (subscription, id, type, data, metadata)
          VALUES ($1, $2, $3, $4::text::jsonb, $5::text::jsonb)
     """
 
-    params = [
-      Map.fetch!(attrs, :subscription),
-      Map.fetch!(attrs, :id),
-      Map.fetch!(attrs, :type),
-      Map.fetch!(attrs, :data),
-      Map.get(attrs, :metadata) || "{}"
-    ]
+    # A dead row arrives as the consumer held it, so the encode happens here —
+    # and lands in the same `::text::jsonb` parameters an append uses.
+    params = [subscription, id, type, JSON.encode!(data), JSON.encode!(metadata)]
 
     case SQL.query(repo, sql, params) do
       {:ok, _} -> :ok
@@ -293,22 +294,22 @@ defmodule DMEx.Storage.Postgres do
   end
 
   @impl DMEx.Storage
-  def list_dead_messages(opts, subscription) when is_binary(subscription) do
+  def list_dead_messages(subscription, opts) when is_binary(subscription) do
     sql = """
     SELECT id, type, data::text, metadata::text, inserted_at
-      FROM #{table(opts, @dead_messages)}
+      FROM #{table(@dead_messages, opts)}
      WHERE subscription = $1
      ORDER BY id
     """
 
-    query(opts, sql, [subscription])
+    query(sql, [subscription], opts)
   end
 
   @impl DMEx.Storage
-  def delete_dead_message(opts, subscription, id) when is_binary(subscription) and is_integer(id) do
+  def delete_dead_message(subscription, id, opts) when is_binary(subscription) and is_integer(id) do
     repo = Map.fetch!(opts, :repo)
 
-    sql = "DELETE FROM #{table(opts, @dead_messages)} WHERE subscription = $1 AND id = $2"
+    sql = "DELETE FROM #{table(@dead_messages, opts)} WHERE subscription = $1 AND id = $2"
 
     case SQL.query(repo, sql, [subscription, id]) do
       {:ok, _} -> :ok
@@ -331,9 +332,9 @@ defmodule DMEx.Storage.Postgres do
       ])
   end
 
-  defp insert!(repo, opts, type, data, metadata) do
+  defp insert!(repo, type, data, metadata, opts) do
     sql = """
-    INSERT INTO #{table(opts, @messages)} (type, data, metadata)
+    INSERT INTO #{table(@messages, opts)} (type, data, metadata)
          VALUES ($1, $2::text::jsonb, $3::text::jsonb)
       RETURNING id
     """
@@ -361,7 +362,7 @@ defmodule DMEx.Storage.Postgres do
 
   ## Naming
 
-  defp table(opts, name), do: __table__(name, Map.get(opts, :prefix))
+  defp table(name, opts), do: __table__(name, Map.get(opts, :prefix))
 
   # Public so `DMEx.Storage.Postgres.Migration` renders qualified names the same
   # way the queries do.

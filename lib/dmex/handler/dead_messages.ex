@@ -73,7 +73,7 @@ defmodule DMEx.Handler.DeadMessages do
   def list(handler, opts) when is_atom(handler) do
     {storage, storage_opts} = DMEx.Supervisor.storage!(opts)
 
-    storage.list_dead_messages(storage_opts, Handler.resolve_subscription_id!(handler, opts))
+    storage.list_dead_messages(Handler.resolve_subscription_id!(handler, opts), storage_opts)
   end
 
   @doc """
@@ -129,7 +129,7 @@ defmodule DMEx.Handler.DeadMessages do
   def discard!(handler, id, opts) when is_atom(handler) and is_integer(id) do
     {storage, storage_opts} = DMEx.Supervisor.storage!(opts)
 
-    :ok = storage.delete_dead_message(storage_opts, Handler.resolve_subscription_id!(handler, opts), id)
+    :ok = storage.delete_dead_message(Handler.resolve_subscription_id!(handler, opts), id, storage_opts)
   end
 
   ## Internals
@@ -138,7 +138,7 @@ defmodule DMEx.Handler.DeadMessages do
   # not a verdict on any message, and the whole run has to stop rather than
   # report zero of them.
   defp dead_messages!(subscription, storage, storage_opts) do
-    case storage.list_dead_messages(storage_opts, subscription) do
+    case storage.list_dead_messages(subscription, storage_opts) do
       {:ok, rows} -> rows
       {:error, reason} -> raise DMEx.Storage.Error, reason
     end
@@ -152,7 +152,7 @@ defmodule DMEx.Handler.DeadMessages do
   # (see the module documentation).
   defp replay_one(row, state, subscription) do
     commit = fn ->
-      :ok = state.storage.delete_dead_message(state.storage_opts, subscription, row.id)
+      :ok = state.storage.delete_dead_message(subscription, row.id, state.storage_opts)
     end
 
     case Pipeline.deliver(state, pipeline_row(row), commit) do
@@ -182,12 +182,12 @@ defmodule DMEx.Handler.DeadMessages do
 
   # Same columns, different shape: a stored row is what a driver returned, a
   # pipeline row is what a transport yields.
-  defp pipeline_row(row) do
+  defp pipeline_row(%{id: id, type: type, data: data, metadata: metadata}) do
     %{
-      "id" => row.id,
-      "type" => row.type,
-      "data" => JSON.decode!(row.data),
-      "metadata" => JSON.decode!(row.metadata)
+      "id" => id,
+      "type" => type,
+      "data" => JSON.decode!(data),
+      "metadata" => JSON.decode!(metadata)
     }
   end
 end

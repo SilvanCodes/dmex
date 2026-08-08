@@ -123,7 +123,7 @@ defmodule DMEx.Storage.SQLite do
   end
 
   @impl DMEx.Storage
-  def append(opts, type, data, metadata) when is_binary(type) and is_binary(data) and is_binary(metadata) do
+  def append(type, data, metadata, opts) when is_binary(type) and is_binary(data) and is_binary(metadata) do
     sql = """
     INSERT INTO #{@messages} (type, data, metadata)
          VALUES (?1, ?2, ?3)
@@ -139,22 +139,22 @@ defmodule DMEx.Storage.SQLite do
   end
 
   @impl DMEx.Storage
-  def read(opts, cursor, max_rows, max_bytes, :all)
+  def read(cursor, max_rows, max_bytes, :all, opts)
       when is_integer(cursor) and cursor >= 0 and is_integer(max_rows) and max_rows > 0 and is_integer(max_bytes) and
              max_bytes > 0 do
-    query(opts, read_sql(""), [cursor, max_rows, max_bytes])
+    query(read_sql(""), [cursor, max_rows, max_bytes], opts)
   end
 
   # Ahead of the list clause: an empty selection admits nothing, and building
   # `IN ()` out of it would be a descending range and an unbindable statement.
   # `DMEx.Storage.Postgres` answers the same call with an empty `= ANY($4)`.
-  def read(_opts, cursor, max_rows, max_bytes, [])
+  def read(cursor, max_rows, max_bytes, [], _opts)
       when is_integer(cursor) and cursor >= 0 and is_integer(max_rows) and max_rows > 0 and is_integer(max_bytes) and
              max_bytes > 0 do
     {:ok, []}
   end
 
-  def read(opts, cursor, max_rows, max_bytes, types)
+  def read(cursor, max_rows, max_bytes, types, opts)
       when is_integer(cursor) and cursor >= 0 and is_integer(max_rows) and max_rows > 0 and is_integer(max_bytes) and
              max_bytes > 0 and is_list(types) do
     validate_types!(types)
@@ -165,11 +165,15 @@ defmodule DMEx.Storage.SQLite do
     # varying arity costs nothing: exqlite prepares every statement anyway.
     placeholders = Enum.map_join(4..(3 + length(types))//1, ",", &"?#{&1}")
 
-    query(opts, read_sql("AND type IN (#{placeholders})"), [
-      cursor,
-      max_rows,
-      max_bytes | types
-    ])
+    query(
+      read_sql("AND type IN (#{placeholders})"),
+      [
+        cursor,
+        max_rows,
+        max_bytes | types
+      ],
+      opts
+    )
   end
 
   # Public so `DMEx.Storage.SQLiteTest` can EXPLAIN the real statement.
@@ -225,7 +229,7 @@ defmodule DMEx.Storage.SQLite do
     """
   end
 
-  defp query(opts, sql, params) do
+  defp query(sql, params, opts) do
     case SQL.query(Map.fetch!(opts, :repo), sql, params) do
       {:ok, %{rows: rows}} -> {:ok, Enum.map(rows, &to_row/1)}
       {:error, reason} -> {:error, reason}
@@ -241,7 +245,7 @@ defmodule DMEx.Storage.SQLite do
   end
 
   @impl DMEx.Storage
-  def appended_since(opts, cursor) when is_integer(cursor) and cursor >= 0 do
+  def appended_since(cursor, opts) when is_integer(cursor) and cursor >= 0 do
     # One statement, because the empty case runs once per poll interval per app
     # and is the common one. `group_concat` takes DISTINCT only in its
     # single-argument form, so the separator is not ours to choose — splitting on
@@ -262,7 +266,7 @@ defmodule DMEx.Storage.SQLite do
   end
 
   @impl DMEx.Storage
-  def last_seen(opts, subscription) when is_binary(subscription) do
+  def last_seen(subscription, opts) when is_binary(subscription) do
     sql = "SELECT last_seen FROM #{@cursors} WHERE subscription = ?1"
 
     case SQL.query(Map.fetch!(opts, :repo), sql, [subscription]) do
@@ -273,7 +277,7 @@ defmodule DMEx.Storage.SQLite do
   end
 
   @impl DMEx.Storage
-  def cursor(opts, subscription) when is_binary(subscription) do
+  def cursor(subscription, opts) when is_binary(subscription) do
     sql = "SELECT last_seen, updated_at FROM #{@cursors} WHERE subscription = ?1"
 
     case SQL.query(Map.fetch!(opts, :repo), sql, [subscription]) do
@@ -289,7 +293,7 @@ defmodule DMEx.Storage.SQLite do
   end
 
   @impl DMEx.Storage
-  def delete_cursor(opts, subscription) when is_binary(subscription) do
+  def delete_cursor(subscription, opts) when is_binary(subscription) do
     sql = "DELETE FROM #{@cursors} WHERE subscription = ?1"
 
     case SQL.query(Map.fetch!(opts, :repo), sql, [subscription]) do
@@ -299,7 +303,7 @@ defmodule DMEx.Storage.SQLite do
   end
 
   @impl DMEx.Storage
-  def transaction(opts, fun) when is_function(fun, 0) do
+  def transaction(fun, opts) when is_function(fun, 0) do
     # `:immediate` here as well as in the repo's configuration, so the consumer
     # half is correct even against a repo `validate!/1` never saw. A nested call
     # becomes a SAVEPOINT and ignores the mode, which is right.
@@ -307,7 +311,7 @@ defmodule DMEx.Storage.SQLite do
   end
 
   @impl DMEx.Storage
-  def advance_cursor(opts, subscription, last_seen) when is_binary(subscription) and is_integer(last_seen) do
+  def advance_cursor(subscription, last_seen, opts) when is_binary(subscription) and is_integer(last_seen) do
     sql = """
     INSERT INTO #{@cursors} (subscription, last_seen, updated_at)
          VALUES (?1, ?2, #{@now})
@@ -322,7 +326,10 @@ defmodule DMEx.Storage.SQLite do
   end
 
   @impl DMEx.Storage
-  def record_dead_message(opts, attrs) when is_map(attrs) do
+  def record_dead_message(
+        %{"subscription" => subscription, "id" => id, "type" => type, "data" => data, "metadata" => metadata},
+        opts
+      ) do
     # Five plain parameters. The Postgres adapter's `$n::text::jsonb` exists to
     # stop its driver re-encoding an already-encoded binary; text has no such
     # trap to fall into.
@@ -331,13 +338,8 @@ defmodule DMEx.Storage.SQLite do
          VALUES (?1, ?2, ?3, ?4, ?5)
     """
 
-    params = [
-      Map.fetch!(attrs, :subscription),
-      Map.fetch!(attrs, :id),
-      Map.fetch!(attrs, :type),
-      Map.fetch!(attrs, :data),
-      Map.get(attrs, :metadata) || "{}"
-    ]
+    # A dead row arrives as the consumer held it, so the encode happens here.
+    params = [subscription, id, type, JSON.encode!(data), JSON.encode!(metadata)]
 
     case SQL.query(Map.fetch!(opts, :repo), sql, params) do
       {:ok, _} -> :ok
@@ -346,7 +348,7 @@ defmodule DMEx.Storage.SQLite do
   end
 
   @impl DMEx.Storage
-  def list_dead_messages(opts, subscription) when is_binary(subscription) do
+  def list_dead_messages(subscription, opts) when is_binary(subscription) do
     sql = """
     SELECT id, type, data, metadata, inserted_at
       FROM #{@dead_messages}
@@ -354,11 +356,11 @@ defmodule DMEx.Storage.SQLite do
      ORDER BY id
     """
 
-    query(opts, sql, [subscription])
+    query(sql, [subscription], opts)
   end
 
   @impl DMEx.Storage
-  def delete_dead_message(opts, subscription, id) when is_binary(subscription) and is_integer(id) do
+  def delete_dead_message(subscription, id, opts) when is_binary(subscription) and is_integer(id) do
     sql = "DELETE FROM #{@dead_messages} WHERE subscription = ?1 AND id = ?2"
 
     case SQL.query(Map.fetch!(opts, :repo), sql, [subscription, id]) do

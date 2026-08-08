@@ -49,7 +49,7 @@ defmodule DMEx.Log.SendLoopTest do
 
   describe "the transport seam" do
     test "hands a whole read's rows over in one write", %{opts: opts} do
-      Stub.put_rows(opts, 3)
+      Stub.put_rows(3, opts)
 
       run_with(opts, chunks: 1)
 
@@ -62,7 +62,7 @@ defmodule DMEx.Log.SendLoopTest do
     end
 
     test "leaves metadata exactly as read", %{opts: opts} do
-      Stub.put_rows(opts, [Stub.row(1, metadata: ~s({"trace_id":"abc"}))])
+      Stub.put_rows([Stub.row(1, metadata: ~s({"trace_id":"abc"}))], opts)
 
       run_with(opts, chunks: 1)
 
@@ -75,7 +75,7 @@ defmodule DMEx.Log.SendLoopTest do
 
       # Two writes: the first succeeds and is measured, the second is refused and
       # ends the loop.
-      Stub.put_rows(opts, 2)
+      Stub.put_rows(2, opts)
       run_with(opts, chunks: 2, max_batch_rows: 1)
 
       assert_receive {[:dmex, :stream, :write], ^ref, measurements, _metadata}, 1_000
@@ -85,7 +85,7 @@ defmodule DMEx.Log.SendLoopTest do
     end
 
     test "a transport that reports the sink closed ends the loop", %{opts: opts} do
-      Stub.put_rows(opts, 10)
+      Stub.put_rows(10, opts)
 
       start_loop(opts, transport: StubTransport, chunks: 1, max_batch_rows: 1)
 
@@ -103,7 +103,7 @@ defmodule DMEx.Log.SendLoopTest do
     # One frame per row, one `chunk/2` per read. Batching is a write batch and
     # nothing the consumer can observe: it sees three ordinary one-row frames.
     test "writes one frame per row, all of a read in one chunk", %{opts: opts} do
-      Stub.put_rows(opts, 3)
+      Stub.put_rows(3, opts)
 
       run(opts, chunks: 1)
 
@@ -128,7 +128,7 @@ defmodule DMEx.Log.SendLoopTest do
     # log with a backlog would sit silent for a whole heartbeat interval before
     # its first frame — 15 seconds by default, with rows already waiting.
     test "reads before waiting, so a backlog starts draining at once", %{opts: opts} do
-      Stub.put_rows(opts, 10)
+      Stub.put_rows(10, opts)
 
       start_loop(opts, chunks: 1, heartbeat_interval: 60_000)
 
@@ -138,7 +138,7 @@ defmodule DMEx.Log.SendLoopTest do
     test "drains back-to-back without waiting on a wakeup between frames", %{opts: opts} do
       # Catch-up is the ordinary loop running hot, not a distinct mode: three
       # frames must take three batch_windows, not three heartbeats.
-      Stub.put_rows(opts, 10)
+      Stub.put_rows(10, opts)
 
       start_loop(opts, chunks: 3, max_batch_rows: 2, heartbeat_interval: 60_000, batch_window: 1)
 
@@ -149,7 +149,7 @@ defmodule DMEx.Log.SendLoopTest do
     # Each frame's `id:` is its own row's id — never "the highest in this write" —
     # which is what makes a generic client's `Last-Event-ID` land exactly.
     test "each frame's id is its own row's id", %{opts: opts} do
-      Stub.put_rows(opts, 3)
+      Stub.put_rows(3, opts)
 
       run(opts, chunks: 1)
 
@@ -158,7 +158,7 @@ defmodule DMEx.Log.SendLoopTest do
     end
 
     test "the message type is the event name", %{opts: opts} do
-      Stub.put_rows(opts, 1)
+      Stub.put_rows(1, opts)
 
       run(opts, chunks: 1)
 
@@ -167,7 +167,7 @@ defmodule DMEx.Log.SendLoopTest do
     end
 
     test "never reads more than max_batch_rows", %{opts: opts} do
-      Stub.put_rows(opts, 100)
+      Stub.put_rows(100, opts)
 
       run(opts, chunks: 3, max_batch_rows: 7)
 
@@ -180,7 +180,7 @@ defmodule DMEx.Log.SendLoopTest do
     end
 
     test "advances the cursor to the last id sent", %{opts: opts} do
-      Stub.put_rows(opts, 10)
+      Stub.put_rows(10, opts)
 
       run(opts, chunks: 3, max_batch_rows: 4)
 
@@ -189,7 +189,7 @@ defmodule DMEx.Log.SendLoopTest do
     end
 
     test "starts from the cursor it was given", %{opts: opts} do
-      Stub.put_rows(opts, 10)
+      Stub.put_rows(10, opts)
 
       run(opts, chunks: 1, cursor: 6)
 
@@ -211,7 +211,7 @@ defmodule DMEx.Log.SendLoopTest do
     test "a stream with something to send does not also heartbeat", %{opts: opts} do
       # The frame's own bytes are the liveness signal; a heartbeat alongside it
       # would say nothing further.
-      Stub.put_rows(opts, 1)
+      Stub.put_rows(1, opts)
 
       run(opts, chunks: 1, heartbeat_interval: 10)
 
@@ -250,7 +250,7 @@ defmodule DMEx.Log.SendLoopTest do
 
   describe "wakeups" do
     test "a wakeup short-circuits the idle wait", %{opts: opts} do
-      Stub.put_rows(opts, 1)
+      Stub.put_rows(1, opts)
 
       pid = start_loop(opts, chunks: 1, heartbeat_interval: 60_000)
       send(pid, :wakeup)
@@ -272,7 +272,7 @@ defmodule DMEx.Log.SendLoopTest do
       # Let the loop do its connect read and park with nothing to send.
       eventually(fn -> Stub.reads(opts) != [] end)
 
-      Stub.put_rows(opts, 1)
+      Stub.put_rows(1, opts)
       sent_at = System.monotonic_time(:millisecond)
       send(pid, :wakeup)
 
@@ -287,7 +287,7 @@ defmodule DMEx.Log.SendLoopTest do
     test "still spaces frames a batch window apart when it has work", %{opts: opts} do
       # The other half of the same property: the window is a floor on frame
       # *rate*, so back-to-back frames must still be paced.
-      Stub.put_rows(opts, 10)
+      Stub.put_rows(10, opts)
 
       started = System.monotonic_time(:millisecond)
       start_loop(opts, chunks: 3, max_batch_rows: 1, batch_interval: 100)
@@ -323,7 +323,7 @@ defmodule DMEx.Log.SendLoopTest do
 
   describe "closing" do
     test "returns the conn when the socket closes mid-stream", %{opts: opts} do
-      Stub.put_rows(opts, 100)
+      Stub.put_rows(100, opts)
 
       assert %Plug.Conn{} = run(opts, chunks: 2, max_batch_rows: 1)
 
@@ -332,8 +332,8 @@ defmodule DMEx.Log.SendLoopTest do
     end
 
     test "stops without sending when the read fails", %{opts: opts} do
-      Stub.put_rows(opts, 5)
-      Stub.fail(opts, :connection_lost)
+      Stub.put_rows(5, opts)
+      Stub.fail(:connection_lost, opts)
 
       assert %Plug.Conn{} = run(opts, chunks: 5)
 
@@ -348,7 +348,7 @@ defmodule DMEx.Log.SendLoopTest do
     test "a batch cut short by bytes leaves the rest for the next read", %{opts: opts} do
       big = String.duplicate("x", 400)
       rows = for id <- 1..10, do: Stub.row(id, data: ~s({"note":"#{big}"}))
-      Stub.put_rows(opts, rows)
+      Stub.put_rows(rows, opts)
 
       run(opts, chunks: 2, max_batch_bytes: 1_000)
 
@@ -364,7 +364,7 @@ defmodule DMEx.Log.SendLoopTest do
     end
 
     test "the loop passes its configured budget to the read", %{opts: opts} do
-      Stub.put_rows(opts, 3)
+      Stub.put_rows(3, opts)
 
       run(opts, chunks: 1, max_batch_bytes: 4_242)
 
@@ -376,7 +376,7 @@ defmodule DMEx.Log.SendLoopTest do
       # Refusing it would wedge the stream on that row permanently, which is a
       # worse failure than one oversized write.
       huge = String.duplicate("x", 5_000)
-      Stub.put_rows(opts, [Stub.row(1, data: ~s({"note":"#{huge}"}))])
+      Stub.put_rows([Stub.row(1, data: ~s({"note":"#{huge}"}))], opts)
 
       run(opts, chunks: 1, max_batch_bytes: 100)
 
@@ -391,7 +391,7 @@ defmodule DMEx.Log.SendLoopTest do
   describe "deadlines" do
     test "a write is made under one", %{opts: opts} do
       status = Status.new(60_000)
-      Stub.put_rows(opts, 3)
+      Stub.put_rows(3, opts)
 
       run(opts, chunks: 1, status: status, stall_timeout: 5_000, batch_interval: 1)
 
@@ -427,7 +427,7 @@ defmodule DMEx.Log.SendLoopTest do
 
     test "a log with no stall timeout arms nothing", %{opts: opts} do
       status = Status.new(:infinity)
-      Stub.put_rows(opts, 3)
+      Stub.put_rows(3, opts)
 
       run(opts, chunks: 1, status: status, stall_timeout: :infinity)
 
@@ -439,7 +439,7 @@ defmodule DMEx.Log.SendLoopTest do
     test "reports the rows and bytes of each write", %{opts: opts} do
       ref = :telemetry_test.attach_event_handlers(self(), [[:dmex, :stream, :write]])
 
-      Stub.put_rows(opts, 10)
+      Stub.put_rows(10, opts)
 
       run(opts, chunks: 2, max_batch_rows: 4)
 
@@ -462,7 +462,7 @@ defmodule DMEx.Log.SendLoopTest do
       ref = :telemetry_test.attach_event_handlers(self(), [[:dmex, :stream, :write]])
 
       big = String.duplicate("x", 400)
-      Stub.put_rows(opts, for(id <- 1..10, do: Stub.row(id, data: ~s({"note":"#{big}"}))))
+      Stub.put_rows(for(id <- 1..10, do: Stub.row(id, data: ~s({"note":"#{big}"}))), opts)
 
       run(opts, chunks: 2, max_batch_rows: 10, max_batch_bytes: 1_000)
 
