@@ -103,7 +103,7 @@ defmodule DMEx do
       exactly-once for free. Effects that leave that transaction must be
       idempotent.
 
-    * **Appending is serialized per application.** An advisory lock held to
+    * **Appending is serialized per table.** An advisory lock held to
       COMMIT is what keeps every reader's `id > cursor` scan sound. It costs
       append concurrency, and an `append/2` inside a long enclosing transaction
       extends that lock for the transaction's lifetime.
@@ -111,14 +111,14 @@ defmodule DMEx do
   `DMEx.Telemetry` documents every event DMEx emits.
   """
 
-  # A log name, a handler's `name:`, and a log's `app_key:` are all the same kind of
-  # name, and the errors for each say so — so the rule is written once.
+  # A log name and a handler's `name:` are the same kind of name, and the errors
+  # for each say so — so the rule is written once.
   @identifier ~r/\A[a-z][a-z0-9_]*\z/
 
   @doc """
-  The charset every DMEx identifier shares — a log name, a handler `name:`, a log
-  `app_key:`. Exposed so the three call sites cannot drift, and so each can quote it
-  in its own error.
+  The charset every DMEx identifier shares — a log name, a handler `name:`.
+  Exposed so the two call sites cannot drift, and so each can quote it in its own
+  error.
   """
   @spec identifier_format() :: Regex.t()
   def identifier_format, do: @identifier

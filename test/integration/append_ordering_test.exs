@@ -15,8 +15,8 @@ defmodule DMEx.Integration.AppendOrderingTest do
   use DMEx.IntegrationCase
 
   alias DMEx.Storage.Postgres
+  alias DMEx.Test.CoTenantLog
   alias DMEx.Test.IntegrationLog, as: Log
-  alias DMEx.Test.Log, as: UnitLog
   alias DMEx.Test.Messages.OrderPlaced
   alias Ecto.Adapters.SQL
 
@@ -61,12 +61,32 @@ defmodule DMEx.Integration.AppendOrderingTest do
                ).rows
     end
 
-    test "two logs with different app keys take different locks" do
-      # Co-tenants in one database must not serialize against each other.
-      {_classid, objid} = Log.__dmex__().lock
-      {_classid, other_objid} = UnitLog.__dmex__().lock
+    test "an append through another log on the same table waits for it" do
+      # Sharing the lock is the point of keying it on the table: two log modules
+      # writing one `dmex_messages` that took *different* locks would not
+      # exclude each other, and their ids would interleave with commit order.
+      # Co-tenants that must not serialize against each other get their own
+      # schema with `:prefix`, which is what changes the key.
+      parent = self()
 
-      refute objid == other_objid
+      other =
+        Task.async(fn ->
+          assert_receive :go, 5_000
+          {:ok, id} = CoTenantLog.append(%OrderPlaced{order_id: 2})
+          send(parent, :appended)
+          id
+        end)
+
+      Repo.transaction(fn ->
+        {:ok, _id} = Log.append(%OrderPlaced{order_id: 1})
+        send(other.pid, :go)
+
+        # Blocked on this transaction's lock, and nothing releases it before
+        # COMMIT — so this is the design and not a timing accident.
+        refute_receive :appended, 500
+      end)
+
+      assert is_integer(Task.await(other, 10_000))
     end
   end
 

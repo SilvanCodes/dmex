@@ -44,8 +44,7 @@ defmodule DMEx.Test.StubLog do
       repo: Storage,
       storage: Storage,
       notifier: DMEx.Notifier.Beam,
-      app_key: "stub",
-      channel: "dmex_stub",
+      channel: "dmex_public",
       lock: {0, 0},
       prefix: nil,
       config: config,
@@ -53,7 +52,7 @@ defmodule DMEx.Test.StubLog do
       notifier_opts: %{
         repo: Storage,
         name: Module.concat(__MODULE__, "Notifications"),
-        channel: "dmex_stub"
+        channel: "dmex_public"
       }
     }
   end

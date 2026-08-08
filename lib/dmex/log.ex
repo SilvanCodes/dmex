@@ -7,9 +7,10 @@ defmodule DMEx.Log do
       end
 
   A log module is a handle, not a process pool. It carries which storage adapter
-  and repo an append goes through, and the app key that scopes both the append
-  lock and the notification channel. Name it in `DMEx.Supervisor`'s `logs:` — an
-  application may own several — and mount its endpoint:
+  and repo an append goes through, and thereby which `dmex_messages` table —
+  which is also what scopes the append lock and the notification channel. Name
+  it in `DMEx.Supervisor`'s `logs:` — an application may own several — and mount
+  its endpoint:
 
       children = [
         MyApp.Repo,
@@ -45,10 +46,9 @@ defmodule DMEx.Log do
       `DMEx.Storage.Postgres`.
     * `:notifier` — the `DMEx.Notifier`. Defaults to whatever the storage
       adapter names, which is `DMEx.Notifier.Postgres` for the Postgres one.
-    * `:app_key` — the app key (see below). Defaults to a name derived from this
-      module.
-    * `:prefix` — a Postgres schema the DMEx tables live in.
-      `DMEx.Storage.SQLite` raises on it, since SQLite has no schemas.
+    * `:prefix` — a Postgres schema the DMEx tables live in, which is also what
+      scopes the lock and the channel (see below). `DMEx.Storage.SQLite` raises
+      on it, since SQLite has no schemas.
     * any `DMEx.Config` log setting.
 
   An unrecognised option raises at compile time rather than being ignored.
@@ -56,21 +56,27 @@ defmodule DMEx.Log do
   Which applications' modules are scanned for the message types this log can
   append is `otp_app:` on `DMEx.Supervisor` — see `DMEx.Message.types/0`.
 
-  ## The app key
+  ## What scopes the lock and the channel
 
-  One string does two jobs, both scoped to the *application* rather than to this
-  module: it names the `dmex_<app>` notification channel and derives the
-  advisory lock that serializes appends.
+  Both name one `dmex_messages` table, since that is what each is about: the
+  lock buys id order for the rows in one table, and a dispatcher wants waking for
+  appends to the one it reads. A table is identified by its database and its
+  schema — the table names are fixed — and `LISTEN`/`NOTIFY` channels and
+  advisory locks are already scoped to the database. So the schema is the whole
+  of the remaining key: `:prefix`, or `public` when unset, names the
+  `dmex_<schema>` channel and derives the lock. It has to fit in 58 bytes,
+  Postgres's 63-byte identifier limit less the `dmex_` prefix.
 
-  It defaults to this module's own name, underscored and flattened — `MyApp.Log`
-  becomes `my_app_log` — which needs no Mix at compile time, works inside
-  umbrellas, and stays stable in a release. Pass `app_key: :orders` to choose your
-  own; it must match `~r/\A[a-z][a-z0-9_]*\z/` and fit in 58 bytes, Postgres's
-  63-byte identifier limit less the `dmex_` prefix.
+  Keying on the log module instead would be unsound rather than merely
+  different: two logs on one table would take different locks, fail to exclude
+  each other, interleave id assignment with commit order, and every reader's
+  `id > cursor` scan would step over whichever rows lost the race — permanently
+  and silently. Deriving from the table means sharing follows the table and
+  cannot be got wrong.
 
-  Two applications sharing one database must not share one `dmex_messages`
-  table — the single-log model assumes one writer per table. Give them separate
-  schemas with `:prefix` if they must be co-tenants.
+  What it costs is that logs sharing a table share a channel, so each
+  dispatcher wakes for the others' appends and spends a read finding nothing it
+  routes. Separate schemas with `:prefix` keep co-tenants apart.
 
   ## Why appends are serialized
 
@@ -81,7 +87,7 @@ defmodule DMEx.Log do
 
   *How* that is bought is the storage adapter's, not this module's, and the two
   shipped ones differ — `DMEx.Storage.Postgres` takes a transaction-scoped
-  advisory lock keyed on the app, `DMEx.Storage.SQLite` takes no lock because
+  advisory lock keyed on the table, `DMEx.Storage.SQLite` takes no lock because
   the engine has one writer database-wide. The requirement, both answers, and
   their consequences for a caller appending inside its own transaction are
   stated once in `DMEx.Storage`.
@@ -95,16 +101,17 @@ defmodule DMEx.Log do
   alias DMEx.Config
   alias DMEx.Log.Streams
 
-  @log_opts [:repo, :storage, :notifier, :app_key, :prefix]
-  @app_key_max_bytes 58
+  @log_opts [:repo, :storage, :notifier, :prefix]
+  @scope_max_bytes 58
 
   # How long a start waits for a name held by a previous incarnation. Only ever
   # spent when the holder is not dying, i.e. when it is a genuine duplicate.
   @start_timeout 5_000
 
   # A fixed namespace for every DMEx advisory lock, so DMEx's lock space is
-  # disjoint from any other library sharing the database. Two ints rather than
-  # one bigint follows Oban's convention for the same reason.
+  # disjoint from any other library sharing the database — the objid within it
+  # is the schema. Two ints rather than one bigint follows Oban's convention for
+  # the same reason.
   @classid rem(:erlang.crc32("dmex"), 2_147_483_648)
 
   defmacro __using__(opts) do
@@ -153,7 +160,6 @@ defmodule DMEx.Log do
           repo: module(),
           storage: module(),
           notifier: module(),
-          app_key: String.t(),
           channel: String.t(),
           lock: {integer(), integer()},
           prefix: String.t() | nil,
@@ -168,19 +174,18 @@ defmodule DMEx.Log do
     validate_keys!(module, opts)
 
     repo = fetch_repo!(module, opts)
-    app_key = app_key!(module, opts)
     prefix = Keyword.get(opts, :prefix)
     storage = Keyword.get(opts, :storage, DMEx.Storage.Postgres)
 
-    channel = "dmex_" <> app_key
-    lock = {@classid, :erlang.phash2(app_key, 2_147_483_648)}
+    scope = scope!(module, prefix)
+    channel = "dmex_" <> scope
+    lock = {@classid, :erlang.phash2(scope, 2_147_483_648)}
 
     %{
       log: module,
       repo: repo,
       storage: storage,
       notifier: notifier!(module, storage, opts),
-      app_key: app_key,
       channel: channel,
       lock: lock,
       prefix: prefix,
@@ -430,37 +435,27 @@ defmodule DMEx.Log do
     end
   end
 
-  defp app_key!(module, opts) do
-    key =
-      case Keyword.get(opts, :app_key) do
-        nil -> derive_app_key(module)
-        app when is_atom(app) -> Atom.to_string(app)
-        app when is_binary(app) -> app
-        other -> raise ArgumentError, ":app_key must be an atom or a string, got: #{inspect(other)}"
-      end
+  # An unset `:prefix` is the default schema, so it and an explicit "public"
+  # name one table and have to land on one key. The charset is the storage
+  # adapter's to police, and it does — Postgrex quotes the channel name, so
+  # anything legal as a schema is legal here, and length is the only limit this
+  # side adds.
+  defp scope!(_module, nil), do: "public"
 
-    if !DMEx.identifier?(key) do
+  defp scope!(module, prefix) when is_binary(prefix) do
+    if byte_size(prefix) > @scope_max_bytes do
       raise ArgumentError,
-            "the app key #{inspect(key)} derived for #{inspect(module)} is not a legal " <>
-              "identifier. It must match #{inspect(DMEx.identifier_format())} — pass `app_key: :your_key`."
+            "`prefix: #{inspect(prefix)}` on #{inspect(module)} is #{byte_size(prefix)} " <>
+              "bytes; the limit is #{@scope_max_bytes}, which is Postgres's 63-byte " <>
+              "identifier limit less the \"dmex_\" channel prefix."
     end
 
-    if byte_size(key) > @app_key_max_bytes do
-      raise ArgumentError,
-            "the app key #{inspect(key)} derived for #{inspect(module)} is " <>
-              "#{byte_size(key)} bytes; the limit is #{@app_key_max_bytes}, which is " <>
-              "Postgres's 63-byte identifier limit less the \"dmex_\" channel prefix. " <>
-              "Pass a shorter `app_key: :your_key`."
-    end
-
-    key
+    prefix
   end
 
-  # MyApp.Log -> "my_app/log" -> "my_app_log"
-  defp derive_app_key(module) do
-    module
-    |> inspect()
-    |> Macro.underscore()
-    |> String.replace("/", "_")
+  defp scope!(module, other) do
+    raise ArgumentError,
+          "`prefix:` on #{inspect(module)} must be a schema name as a string or nil, " <>
+            "got: #{inspect(other)}"
   end
 end

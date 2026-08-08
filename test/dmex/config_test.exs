@@ -28,7 +28,7 @@ defmodule DMEx.ConfigTest do
       # `use DMEx.Log` hands its whole option list over; rejecting typos is
       # its job, not this one's.
       assert %{} =
-               Config.log!(repo: MyApp.Repo, storage: SomeAdapter, app_key: :thing, prefix: "x")
+               Config.log!(repo: MyApp.Repo, storage: SomeAdapter, prefix: "x")
     end
 
     test "raises on a non-integer or non-positive setting" do

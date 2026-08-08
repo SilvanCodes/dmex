@@ -109,14 +109,14 @@ defmodule DMEx.Storage do
   @doc """
   Appends one message and returns its assigned id.
 
-  Runs in a transaction that takes the per-app advisory lock *first* and holds
+  Runs in a transaction that takes the per-table advisory lock *first* and holds
   it to COMMIT — see the module documentation for why that is load-bearing.
 
   `data` and `metadata` arrive as already-encoded JSON binaries, handed to the
   database without decoding, and nothing DMEx owns is merged into `metadata`.
 
   A caller already inside a transaction extends that lock for the enclosing
-  transaction's lifetime, serializing every other append in the app for its
+  transaction's lifetime, serializing every other append to that table for its
   duration. A documented consequence, not a bug.
   """
   @callback append(type :: String.t(), data :: binary(), metadata :: binary(), opts()) ::

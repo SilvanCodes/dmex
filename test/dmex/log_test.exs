@@ -11,8 +11,7 @@ defmodule DMEx.LogTest do
                repo: Repo,
                storage: DMEx.Storage.Postgres,
                notifier: DMEx.Notifier.Postgres,
-               app_key: "dm_ex_test_log",
-               channel: "dmex_dm_ex_test_log",
+               channel: "dmex_public",
                lock: {classid, objid},
                prefix: nil,
                config: %{max_batch_frequency: 100},
@@ -38,7 +37,7 @@ defmodule DMEx.LogTest do
       assert notifier_opts == %{
                repo: Repo,
                name: DMEx.Test.Log.Notifications,
-               channel: "dmex_dm_ex_test_log"
+               channel: "dmex_public"
              }
     end
 
@@ -57,64 +56,68 @@ defmodule DMEx.LogTest do
     end
   end
 
-  describe "app key derivation" do
-    test "defaults to the module name, underscored and flattened" do
-      # Every segment is underscored and the dots become underscores too, so a
-      # deeply-nested log still yields one legal identifier.
-      assert define!("AppKeyDefault", "repo: DMEx.Test.Repo").app_key ==
-               "dm_ex_log_test_generated_app_key_default"
+  describe "the schema scopes the lock and the channel" do
+    test "an unset prefix is the default schema" do
+      config = define!("ScopeDefault", "repo: DMEx.Test.Repo")
+
+      assert config.prefix == nil
+      assert config.channel == "dmex_public"
     end
 
-    test "an explicit atom or string wins" do
-      assert define!("AppKeyAtom", "repo: DMEx.Test.Repo, app_key: :orders").app_key == "orders"
-      assert define!("AppKeyString", ~s(repo: DMEx.Test.Repo, app_key: "orders")).app_key == "orders"
-    end
-
-    test "names the notification channel" do
-      assert define!("AppKeyChannel", "repo: DMEx.Test.Repo, app_key: :orders").channel ==
+    test "an explicit prefix names the channel" do
+      assert define!("ScopePrefix", ~s(repo: DMEx.Test.Repo, prefix: "orders")).channel ==
                "dmex_orders"
+
+      # Not a DMEx identifier: the charset is the storage adapter's to police,
+      # and Postgrex quotes the channel name, so anything legal as a schema is
+      # legal here.
+      assert define!("ScopeCased", ~s(repo: DMEx.Test.Repo, prefix: "Orders$1")).channel ==
+               "dmex_Orders$1"
     end
 
-    test "rejects a key that is not a legal identifier" do
-      for app <- [~s(:"Orders"), ~s(:"orders-app"), ~s(:"orders app"), ":_orders", ~s(:"9orders")] do
-        assert_raise ArgumentError, ~r/is not a legal identifier/, fn ->
-          define!(
-            "AppKeyBad#{:erlang.unique_integer([:positive])}",
-            "repo: DMEx.Test.Repo, app_key: #{app}"
-          )
-        end
-      end
+    test "an unset prefix and an explicit \"public\" are one table, so one key" do
+      implicit = define!("ScopeImplicit", "repo: DMEx.Test.Repo")
+      explicit = define!("ScopeExplicit", ~s(repo: DMEx.Test.Repo, prefix: "public"))
+
+      assert implicit.channel == explicit.channel
+      assert implicit.lock == explicit.lock
     end
 
-    test "rejects a key too long for a Postgres channel name" do
+    test "rejects a schema too long for a Postgres channel name" do
       # 63-byte identifier limit less the "dmex_" prefix leaves 58.
       long = String.duplicate("a", 59)
 
       assert_raise ArgumentError, ~r/59 bytes; the limit is 58/, fn ->
-        define!("AppKeyLong", ~s(repo: DMEx.Test.Repo, app_key: "#{long}"))
+        define!("ScopeLong", ~s(repo: DMEx.Test.Repo, prefix: "#{long}"))
       end
 
-      assert byte_size(
-               define!("AppKeyAtLimit", ~s(repo: DMEx.Test.Repo, app_key: "#{String.duplicate("a", 58)}")).app_key
-             ) ==
-               58
+      at_limit = String.duplicate("a", 58)
+
+      assert define!("ScopeAtLimit", ~s(repo: DMEx.Test.Repo, prefix: "#{at_limit}")).channel ==
+               "dmex_" <> at_limit
+    end
+
+    test "rejects a prefix that is not a schema name" do
+      assert_raise ArgumentError, ~r/must be a schema name as a string or nil/, fn ->
+        define!("ScopeAtom", "repo: DMEx.Test.Repo, prefix: :orders")
+      end
     end
   end
 
   describe "the advisory lock key" do
-    test "is stable for a given app key" do
-      first = define!("LockStableA", "repo: DMEx.Test.Repo, app_key: :same_key").lock
-      second = define!("LockStableB", "repo: DMEx.Test.Repo, app_key: :same_key").lock
+    test "is shared by two logs on one table, which is what makes it sound" do
+      first = define!("LockSameA", ~s(repo: DMEx.Test.Repo, prefix: "shared")).lock
+      second = define!("LockSameB", ~s(repo: DMEx.Test.Repo, prefix: "shared")).lock
 
       assert first == second
     end
 
-    test "differs between app keys, but shares one DMEx namespace" do
-      {classid_a, objid_a} = define!("LockDiffA", "repo: DMEx.Test.Repo, app_key: :one").lock
-      {classid_b, objid_b} = define!("LockDiffB", "repo: DMEx.Test.Repo, app_key: :two").lock
+    test "differs between schemas, but shares one DMEx namespace" do
+      {classid_a, objid_a} = define!("LockDiffA", ~s(repo: DMEx.Test.Repo, prefix: "one")).lock
+      {classid_b, objid_b} = define!("LockDiffB", ~s(repo: DMEx.Test.Repo, prefix: "two")).lock
 
       # The classid is DMEx's own namespace, keeping its lock space disjoint
-      # from any other library sharing the database; the objid is the app.
+      # from any other library sharing the database; the objid is the schema.
       assert classid_a == classid_b
       refute objid_a == objid_b
     end
@@ -130,7 +133,7 @@ defmodule DMEx.LogTest do
   describe "options" do
     test "requires a repo" do
       assert_raise ArgumentError, ~r/requires a `:repo`/, fn ->
-        define!("NoRepo", "app_key: :thing")
+        define!("NoRepo", ~s(prefix: "orders"))
       end
     end
 

@@ -8,9 +8,9 @@ defmodule DMEx.Test.IntegrationLog do
   @moduledoc """
   Log for the integration suite.
 
-  A distinct `:app` from `DMEx.Test.Log`, so the two never share an
-  advisory lock or a notification channel even though they point at the same
-  Postgres server.
+  A distinct database from `DMEx.Test.Log`'s, so the two never share an advisory
+  lock or a notification channel even though they point at the same Postgres
+  server.
 
   Takes the default pacing. It used to raise `max_batch_frequency` to 100 so
   frames arrived promptly; that is the default now, so the override would only
@@ -18,9 +18,19 @@ defmodule DMEx.Test.IntegrationLog do
   ARCHITECTURE's pacing figures drifted from what the code did.
   """
 
-  use DMEx.Log,
-    repo: DMEx.Test.IntegrationRepo,
-    app_key: :dmex_integration
+  use DMEx.Log, repo: DMEx.Test.IntegrationRepo
+end
+
+defmodule DMEx.Test.CoTenantLog do
+  @moduledoc """
+  A second log module on `DMEx.Test.IntegrationLog`'s table.
+
+  Exists so `DMEx.Integration.AppendOrderingTest` can watch two log modules
+  exclude each other, which is what keying the lock on the table rather than on
+  the module buys.
+  """
+
+  use DMEx.Log, repo: DMEx.Test.IntegrationRepo
 end
 
 defmodule DMEx.Test.HeartbeatLog do
@@ -34,7 +44,6 @@ defmodule DMEx.Test.HeartbeatLog do
 
   use DMEx.Log,
     repo: DMEx.Test.IntegrationRepo,
-    app_key: :dmex_heartbeat,
     heartbeat_interval: 150,
     poll_interval: 100
 end
@@ -50,8 +59,7 @@ defmodule DMEx.Test.SQLiteLog do
 
   use DMEx.Log,
     repo: DMEx.Test.SQLiteIntegrationRepo,
-    storage: DMEx.Storage.SQLite,
-    app_key: :dmex_sqlite
+    storage: DMEx.Storage.SQLite
 end
 
 defmodule DMEx.Test.StallLog do
@@ -64,7 +72,6 @@ defmodule DMEx.Test.StallLog do
 
   use DMEx.Log,
     repo: DMEx.Test.IntegrationRepo,
-    app_key: :dmex_stall,
     heartbeat_interval: 60_000,
     max_batch_bytes: 16_384,
     stall_timeout: 300,
@@ -76,7 +83,6 @@ defmodule DMEx.Test.PatientLog do
 
   use DMEx.Log,
     repo: DMEx.Test.IntegrationRepo,
-    app_key: :dmex_stall_patient,
     stall_timeout: :infinity
 end
 
