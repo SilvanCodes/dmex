@@ -123,9 +123,17 @@ defmodule DMEx.Message do
   defmacro __using__(opts) do
     module = __CALLER__.module
 
-    DMEx.validate_keys!(opts, @message_opts, "`use DMEx.Message` in #{inspect(module)}")
+    DMEx.validate_keys!(
+      opts,
+      @message_opts,
+      "`use DMEx.Message` in #{inspect(module)}",
+      " A message module is `use DMEx.Message, type: \"order_placed\", fields: [:order_id]`. " <>
+        "The type is the message's durable identity — the module name is deliberately not it, " <>
+        "so that renaming or moving this module never reaches the wire.",
+      [:type]
+    )
 
-    type = fetch_type!(module, opts)
+    type = type!(module, Keyword.fetch!(opts, :type))
     fields = opts |> Keyword.get(:fields, []) |> validate_fields!()
 
     quote do
@@ -155,13 +163,6 @@ defmodule DMEx.Message do
   # Atoms and binaries must render identically — otherwise a style change at the
   # declaration site would silently mint a second wire type, orphaning every row
   # already appended under the first.
-  defp fetch_type!(module, opts) do
-    case Keyword.fetch(opts, :type) do
-      {:ok, value} -> type!(module, value)
-      :error -> raise_missing_type(module)
-    end
-  end
-
   defp type!(module, value) do
     value =
       case value do
@@ -173,14 +174,6 @@ defmodule DMEx.Message do
     if !Regex.match?(@type_format, value), do: raise_type(module, value)
 
     value
-  end
-
-  defp raise_missing_type(module) do
-    raise ArgumentError,
-          "`use DMEx.Message` requires :type in #{inspect(module)}, e.g. " <>
-            "`use DMEx.Message, type: \"order_placed\", fields: [:order_id]`. The type is " <>
-            "the message's durable identity — the module name is deliberately not it, so " <>
-            "that renaming or moving this module never reaches the wire."
   end
 
   defp raise_type(module, value) do

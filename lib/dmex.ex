@@ -111,22 +111,37 @@ defmodule DMEx do
   `DMEx.Telemetry` documents every event DMEx emits.
   """
 
-  # A log name and a handler's `name:` are the same kind of name, and the errors
-  # for each say so — so the rule is written once.
+  # A log name and a handler's `name:` are the same kind of name, so the rule is
+  # written once.
   @identifier ~r/\A[a-z][a-z0-9_]*\z/
-
-  @doc """
-  The charset every DMEx identifier shares — a log name, a handler `name:`.
-  Exposed so the two call sites cannot drift, and so each can quote it in its own
-  error.
-  """
-  @spec identifier_format() :: Regex.t()
-  def identifier_format, do: @identifier
 
   @doc "Whether `value` is a well-formed DMEx identifier."
   @spec identifier?(term()) :: boolean()
   def identifier?(value) when is_binary(value), do: Regex.match?(@identifier, value)
   def identifier?(_value), do: false
+
+  # Every identifier is checked and reported here, so neither error can drift.
+  # `source` names the value ("a log name", "`:name` in MyApp.Log"); `hint` is
+  # whatever else that one site has to say. Atoms and strings render identically,
+  # and a string comes back either way.
+
+  @doc false
+  @spec validate_identifier!(term(), String.t(), String.t()) :: String.t()
+  def validate_identifier!(value, source, hint \\ "")
+
+  def validate_identifier!(value, source, hint) when is_atom(value) and not is_nil(value) do
+    validate_identifier!(Atom.to_string(value), source, hint)
+  end
+
+  def validate_identifier!(value, source, hint) do
+    if !identifier?(value) do
+      raise ArgumentError,
+            "#{source} must be an atom or a string matching #{inspect(@identifier)}, " <>
+              "got: #{inspect(value)}." <> hint
+    end
+
+    value
+  end
 
   @doc """
   Every module of every application that could hold a DMEx declaration.
@@ -182,17 +197,20 @@ defmodule DMEx do
 
   # Every option vocabulary in DMEx — `use DMEx.Log`, `use DMEx.Handler`,
   # `use DMEx.Message`, `DMEx.Supervisor.subscribe/2` — is checked here, so the
-  # four say the same thing about an unknown key and none of them can drift.
-  # `source` names the call site ("`use DMEx.Log` in MyApp.Log"); `hint` is
-  # whatever else that one site has to say.
+  # four say the same thing about a missing or unknown key and none of them can
+  # drift. `source` names the call site ("`use DMEx.Log` in MyApp.Log"); `hint`
+  # is whatever else that one site has to say. Returning means every key in
+  # `required` is present, so the code after it fetches rather than matching.
 
   @doc false
-  @spec validate_keys!(Macro.t(), [atom()], String.t(), String.t()) :: :ok
-  def validate_keys!(opts, known, source, hint \\ "") do
+  @spec validate_keys!(Macro.t(), [atom()], String.t(), String.t(), [atom()]) :: :ok
+  def validate_keys!(opts, known, source, hint \\ "", required \\ []) do
     if !Keyword.keyword?(opts) do
       raise ArgumentError, "#{source} takes a keyword list, got: #{Macro.to_string(opts)}"
     end
 
+    # Unknown before missing: a misspelled required key is one mistake, and
+    # naming the key that was actually written is what points at it.
     case Enum.reject(Keyword.keys(opts), &(&1 in known)) do
       [] ->
         :ok
@@ -201,6 +219,15 @@ defmodule DMEx do
         raise ArgumentError,
               "unknown option#{if length(unknown) > 1, do: "s"} #{inspect(unknown)} " <>
                 "passed to #{source}. Known options: #{inspect(Enum.sort(known))}." <> hint
+    end
+
+    case required -- Keyword.keys(opts) do
+      [] ->
+        :ok
+
+      missing ->
+        raise ArgumentError,
+              "#{source} requires #{Enum.map_join(missing, ", ", &inspect/1)}." <> hint
     end
   end
 

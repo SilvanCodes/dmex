@@ -1,9 +1,10 @@
 import Config
 
 # DMEx is a library; this configuration exists only for its own dev and test
-# environments. Host applications configure their repo themselves and pass it to
-# `use DMEx.Log` / the `DMEx.Supervisor` child spec explicitly — DMEx reads no
-# global application configuration of its own.
+# environments. Host applications pass their repo to `use DMEx.Log` / the
+# `DMEx.Supervisor` child spec explicitly. The one exception is the host's own
+# `:ecto_repos` — Ecto's key, read at compile time to default a log's `:repo`
+# when it names exactly one. DMEx has no configuration namespace of its own.
 
 # Build exqlite's NIF from source rather than downloading a precompiled one.
 # The published artifacts are linked against a newer glibc than this dev

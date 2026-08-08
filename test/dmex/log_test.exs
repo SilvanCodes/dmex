@@ -132,9 +132,23 @@ defmodule DMEx.LogTest do
 
   describe "options" do
     test "requires a repo" do
-      assert_raise ArgumentError, ~r/requires a `:repo`/, fn ->
+      assert_raise ArgumentError, ~r/requires :repo/, fn ->
         define!("NoRepo", ~s(prefix: "orders"))
       end
+    end
+
+    test "defaults the repo to the application's `:ecto_repos` when it names one" do
+      with_ecto_repos([Repo], fn ->
+        assert define!("DefaultRepo", ~s(prefix: "orders")).repo == Repo
+      end)
+    end
+
+    test "requires a repo when `:ecto_repos` names several" do
+      with_ecto_repos([Repo, DMEx.Test.IntegrationRepo], fn ->
+        assert_raise ArgumentError, ~r/requires :repo/, fn ->
+          define!("AmbiguousRepo", ~s(prefix: "orders"))
+        end
+      end)
     end
 
     test "carries DMEx.Config overrides through" do
@@ -161,6 +175,22 @@ defmodule DMEx.LogTest do
   ## Helpers
 
   # Defines a log module at runtime so compile-time raises are assertable.
+  # Only this file compiles a log module without a `repo:`, so the global env is
+  # safe to move for the length of one test.
+  defp with_ecto_repos(repos, fun) do
+    previous = Application.fetch_env(:dmex, :ecto_repos)
+    Application.put_env(:dmex, :ecto_repos, repos)
+
+    try do
+      fun.()
+    after
+      case previous do
+        {:ok, value} -> Application.put_env(:dmex, :ecto_repos, value)
+        :error -> Application.delete_env(:dmex, :ecto_repos)
+      end
+    end
+  end
+
   defp define!(name, opts) do
     module = Module.concat(DMEx.LogTest.Generated, name)
 

@@ -41,7 +41,9 @@ defmodule DMEx.Log do
 
   ## Options
 
-    * `:repo` — required; the Ecto repo owning `dmex_messages`.
+    * `:repo` — the Ecto repo owning `dmex_messages`. Defaults to the
+      application's `:ecto_repos` when that names exactly one, so a single-repo
+      application omits it; required otherwise.
     * `:storage` — the `DMEx.Storage` adapter. Defaults to
       `DMEx.Storage.Postgres`.
     * `:notifier` — the `DMEx.Notifier`. Defaults to whatever the storage
@@ -115,8 +117,15 @@ defmodule DMEx.Log do
   @classid rem(:erlang.crc32("dmex"), 2_147_483_648)
 
   defmacro __using__(opts) do
-    quote bind_quoted: [opts: opts] do
-      @dmex DMEx.Log.__config__(__MODULE__, opts)
+    # `Application.compile_env/3` has to be expanded *here*, in the module doing
+    # the `use`, for the compiler to record the read and recompile this log when
+    # `:ecto_repos` changes. Reading it inside `__config__/3` would be an
+    # untracked `get_env` against DMEx's own application instead.
+    app = if Code.ensure_loaded?(Mix.Project), do: Mix.Project.config()[:app]
+    ecto_repos = quote(do: Application.compile_env(unquote(app), :ecto_repos, []))
+
+    quote bind_quoted: [opts: opts, ecto_repos: ecto_repos] do
+      @dmex DMEx.Log.__config__(__MODULE__, opts, ecto_repos)
 
       @doc """
       This log's resolved configuration.
@@ -169,15 +178,16 @@ defmodule DMEx.Log do
         }
 
   @doc false
-  @spec __config__(module(), keyword()) :: config()
-  def __config__(module, opts) do
+  @spec __config__(module(), keyword(), [module()]) :: config()
+  def __config__(module, opts, ecto_repos \\ []) do
     DMEx.validate_keys!(
       opts,
       @log_opts ++ Config.log_keys(),
-      "`use DMEx.Log` in #{inspect(module)}"
+      "`use DMEx.Log` in #{inspect(module)}",
+      " A log module is `use DMEx.Log, repo: MyApp.Repo`."
     )
 
-    repo = fetch_repo!(module, opts)
+    repo = repo!(module, Keyword.get_lazy(opts, :repo, fn -> default_repo!(module, ecto_repos) end))
     prefix = Keyword.get(opts, :prefix)
     storage = Keyword.get(opts, :storage, DMEx.Storage.Postgres)
 
@@ -399,16 +409,25 @@ defmodule DMEx.Log do
 
   ## Compile-time validation
 
-  defp fetch_repo!(module, opts) do
-    case Keyword.fetch(opts, :repo) do
-      {:ok, repo} when is_atom(repo) and not is_nil(repo) ->
-        repo
+  defp repo!(_module, repo) when is_atom(repo) and not is_nil(repo), do: repo
 
-      _ ->
-        raise ArgumentError,
-              "`use DMEx.Log` requires a `:repo`, e.g. " <>
-                "`use DMEx.Log, repo: MyApp.Repo` in #{inspect(module)}"
-    end
+  defp repo!(module, other) do
+    raise ArgumentError,
+          "`:repo` in #{inspect(module)} must be an Ecto repo module, got: #{inspect(other)}. " <>
+            "A log module is `use DMEx.Log, repo: MyApp.Repo`."
+  end
+
+  # The application's own `:ecto_repos` — what `mix ecto.migrate` reads — so the
+  # single-repo application, which is nearly all of them, says nothing here. One
+  # entry is an answer; none or several is not, and guessing either would bind
+  # the log to a database silently.
+  defp default_repo!(_module, [repo]), do: repo
+
+  defp default_repo!(module, repos) do
+    raise ArgumentError,
+          "`use DMEx.Log` in #{inspect(module)} requires :repo: the application's " <>
+            "`:ecto_repos` is #{inspect(repos)}, which names no single repo to default to. " <>
+            "A log module is `use DMEx.Log, repo: MyApp.Repo`."
   end
 
   # An adapter names the mechanism that fits it (`c:DMEx.Storage.default_notifier/0`),

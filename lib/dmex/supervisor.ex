@@ -416,7 +416,13 @@ defmodule DMEx.Supervisor do
       entries when is_list(entries) or is_map(entries) ->
         Map.new(entries, fn
           {name, target} ->
-            name = log_name!(name)
+            name =
+              DMEx.validate_identifier!(
+                name,
+                "a log name",
+                " It is the same charset a handler's `logs:` and `name:` use, so \"/\" can join " <>
+                  "them with no escaping."
+              )
 
             {name, log_target!(name, target)}
 
@@ -429,23 +435,6 @@ defmodule DMEx.Supervisor do
         raise ArgumentError,
               "`logs:` must be a keyword list of name to URL or log module, got: #{inspect(other)}"
     end
-  end
-
-  defp log_name!(name) when is_atom(name) and not is_nil(name), do: log_name!(Atom.to_string(name))
-
-  defp log_name!(name) when is_binary(name) do
-    if !DMEx.identifier?(name) do
-      raise ArgumentError,
-            "the log name #{inspect(name)} is not a legal identifier: it must match " <>
-              "#{inspect(DMEx.identifier_format())}, the same charset a handler's `logs:` and `name:` use, " <>
-              "so \"/\" can join them with no escaping."
-    end
-
-    name
-  end
-
-  defp log_name!(other) do
-    raise ArgumentError, "a log name must be an atom or a string, got: #{inspect(other)}"
   end
 
   defp log_target!(name, module) when is_atom(module) and not is_nil(module) do

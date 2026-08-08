@@ -244,12 +244,14 @@ defmodule DMEx.Handler do
     DMEx.validate_keys!(
       opts,
       @handler_opts ++ Config.handler_keys(),
-      "`use DMEx.Handler` in #{inspect(module)}"
+      "`use DMEx.Handler` in #{inspect(module)}",
+      " A handler declares both: `use DMEx.Handler, logs: [:orders], name: :order_projection`.",
+      @handler_opts
     )
 
     %{
       logs: logs!(module, opts),
-      name: fetch_identifier!(module, opts, :name),
+      name: identifier!(module, :name, Keyword.fetch!(opts, :name)),
       config: config!(module, opts)
     }
   end
@@ -681,11 +683,10 @@ defmodule DMEx.Handler do
   # One name or several, in declaration order.
   defp logs!(module, opts) do
     logs =
-      case Keyword.fetch(opts, :logs) do
-        {:ok, []} -> raise_no_logs(module)
-        {:ok, logs} when is_list(logs) -> Enum.map(logs, &identifier!(module, :logs, &1))
-        {:ok, one} -> [identifier!(module, :logs, one)]
-        :error -> raise_missing(module, :logs)
+      case Keyword.fetch!(opts, :logs) do
+        [] -> raise_no_logs(module)
+        logs when is_list(logs) -> Enum.map(logs, &identifier!(module, :logs, &1))
+        one -> [identifier!(module, :logs, one)]
       end
 
     case logs -- Enum.uniq(logs) do
@@ -707,32 +708,12 @@ defmodule DMEx.Handler do
 
   # Atoms and binaries must render identically — otherwise a config style change
   # would silently mint a second identity and reset a cursor.
-  defp fetch_identifier!(module, opts, key) do
-    case Keyword.fetch(opts, key) do
-      {:ok, value} -> identifier!(module, key, value)
-      :error -> raise_missing(module, key)
-    end
-  end
-
-  defp identifier!(module, key, value) when is_atom(value) and not is_nil(value) do
-    identifier!(module, key, Atom.to_string(value))
-  end
-
   defp identifier!(module, key, value) do
-    if !DMEx.identifier?(value) do
-      raise ArgumentError,
-            "#{inspect(key)} in #{inspect(module)} must be an atom or a string matching " <>
-              "#{inspect(DMEx.identifier_format())}, got: #{inspect(value)}. Both halves of a subscription " <>
-              "identifier are restricted to that charset so \"/\" can separate them with no " <>
-              "escaping — which rules out UUIDs, dots and dashes."
-    end
-
-    value
-  end
-
-  defp raise_missing(module, key) do
-    raise ArgumentError,
-          "`use DMEx.Handler` requires #{inspect(key)} in #{inspect(module)}, e.g. " <>
-            "`use DMEx.Handler, logs: [:orders], name: :order_projection`"
+    DMEx.validate_identifier!(
+      value,
+      "#{inspect(key)} in #{inspect(module)}",
+      " Both halves of a subscription identifier are restricted to that charset so \"/\" can " <>
+        "separate them with no escaping — which rules out UUIDs, dots and dashes."
+    )
   end
 end

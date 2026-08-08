@@ -187,7 +187,7 @@ defmodule DMEx.SupervisorTest do
   describe "logs:" do
     test "rejects a name that is not a legal identifier" do
       assert start_error(logs: [{"Orders", @url}]) =~
-               ~s(log name "Orders" is not a legal identifier)
+               ~s(a log name must be an atom or a string matching)
     end
 
     test "rejects a URL with no scheme, naming the entry" do
