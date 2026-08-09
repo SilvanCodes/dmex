@@ -204,7 +204,7 @@ defmodule DMEx do
 
   @doc false
   @spec validate_keys!(Macro.t(), [atom()], String.t(), String.t(), [atom()]) :: :ok
-  def validate_keys!(opts, known, source, hint \\ "", required \\ []) do
+  def validate_keys!(opts, known, source, hint, required \\ []) do
     if !Keyword.keyword?(opts) do
       raise ArgumentError, "#{source} takes a keyword list, got: #{Macro.to_string(opts)}"
     end
