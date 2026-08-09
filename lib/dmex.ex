@@ -173,35 +173,30 @@ defmodule DMEx do
       raise ArgumentError, "#{source} takes a keyword list, got: #{Macro.to_string(opts)}"
     end
 
-    keys = opts |> Keyword.keys() |> Enum.uniq()
+    all = Keyword.keys(opts)
+    keys = Enum.uniq(all)
 
-    case keys -- known do
-      [] ->
-        :ok
+    unknown = keys -- known
+    repeated = Enum.uniq(all -- keys)
+    missing = required -- keys
 
-      unknown ->
+    cond do
+      unknown != [] ->
         raise ArgumentError,
               "unknown option#{if length(unknown) > 1, do: "s"} #{inspect(unknown)} " <>
                 "passed to #{source}. Known options: #{inspect(Enum.sort(known))}." <> hint
-    end
 
-    case Enum.uniq(Keyword.keys(opts) -- keys) do
-      [] ->
-        :ok
-
-      repeated ->
+      repeated != [] ->
         raise ArgumentError,
               "#{source} passes #{Enum.map_join(repeated, ", ", &inspect/1)} more than once. " <>
                 "Only the first is read, so a repeat could only ever mean one of them." <> hint
-    end
 
-    case required -- keys do
-      [] ->
-        :ok
-
-      missing ->
+      missing != [] ->
         raise ArgumentError,
               "#{source} requires #{Enum.map_join(missing, ", ", &inspect/1)}." <> hint
+
+      true ->
+        :ok
     end
   end
 
