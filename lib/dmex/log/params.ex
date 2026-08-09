@@ -37,20 +37,14 @@ defmodule DMEx.Log.Params do
   A parsed connect request.
 
   `:selection` is `:all` for a bare `GET /stream`, or the filter decoded from
-  the path segment. `:cursor` is `:now` when the request carried no
-  `last-event-id`, which the log resolves to its tip.
+  the path segment. `:cursor` is `:now` for a request with no `last-event-id`.
   """
   @type t :: %__MODULE__{
           cursor: non_neg_integer() | :now,
           selection: :all | Fingerprint.t()
         }
 
-  @typedoc """
-  Why a request was rejected.
-
-  `:invalid` names the offending header or path segment and its value, and is
-  answered with a `400`.
-  """
+  @typedoc "Why a request was rejected: the offending header or path segment, and its value."
   @type error :: {:invalid, source :: String.t(), value :: String.t()}
 
   @last_event_id "last-event-id"
@@ -107,7 +101,6 @@ defmodule DMEx.Log.Params do
     case fetch(req_headers, @last_event_id) do
       :error -> {:ok, :now}
       {:ok, value} -> integer(value, @last_event_id)
-      {:error, value} -> {:error, {:invalid, @last_event_id, value}}
     end
   end
 
@@ -120,12 +113,12 @@ defmodule DMEx.Log.Params do
   end
 
   # HTTP header names are case-insensitive and Plug downcases them. A header
-  # sent twice is a `400`: there is no sensible way to pick a resume position.
+  # sent twice arrives joined, which is outside every vocabulary here and so is
+  # the `400` it should be: there is no sensible way to pick a resume position.
   defp fetch(req_headers, name) do
     case for {^name, value} <- req_headers, do: value do
       [] -> :error
-      [value] -> {:ok, value}
-      values -> {:error, Enum.join(values, ", ")}
+      values -> {:ok, Enum.join(values, ", ")}
     end
   end
 end

@@ -17,7 +17,8 @@ defmodule DMEx.Handler do
   The module is the complete declaration: `DMEx.Supervisor` binds `:orders` to a
   URL and starts it, and nothing at that call site repeats what is written here.
   Each entry in `logs:` is its own subscription — its own connection, cursor and
-  dead messages — all running the same clauses. 
+  dead messages — all running the same clauses.
+
   ## The message types are read from the callback
 
   A subscription's message set is derived at compile time from the structs
@@ -25,25 +26,21 @@ defmodule DMEx.Handler do
   could only *disagree* with the clauses, silently, in either direction.
 
   That set is also the **server-side selection**, encoded as a compile-time
-  `DMEx.Handler.Fingerprint` blob in the request path so the log reads only matching
-  rows. Two consequences:
-
-    * **Inclusion is heuristic in one direction only.** No false negatives, so
-      every type you match on is delivered. A false positive admits one extra
-      type, which arrives and is skipped like any unknown type.
-    * **A filter matching none of the log's types is a `404`**, which the
-      subscription retries rather than treating as fatal: a handler deployed
-      ahead of the log that will emit its types is legitimately in that state.
+  `DMEx.Handler.Fingerprint` blob in the request path so the log reads only
+  matching rows. Inclusion is heuristic in one direction only — every type you
+  match on is delivered, and a false positive admits one extra that arrives and
+  is skipped — and a filter matching none of the log's types is a `404`, which
+  the subscription retries rather than treating as fatal. See
+  `DMEx.Handler.Fingerprint` and `DMEx.Log.Plug` for why each holds.
 
   Derivation covers **types, not values**: a clause narrowed to
   `%OrderPlaced{status: "paid"}` still declares `OrderPlaced`, so an unpaid one
-  arrives — and is skipped like any other message no clause matches, advancing
-  the cursor and emitting `[:dmex, :handler, :skip]`. Narrowing is a filter, not
-  an assertion. The heads, guards and all, are compiled into a `__dmex_cast__/3`
-  that decodes a row and returns it only if a clause accepts it — `nil` covering
-  both a type nothing declares and a value nothing wants, since they are the
-  same answer. The pipeline asks it before it opens a transaction, so a row no
-  clause wants costs a struct match.
+  arrives — and is skipped like any other message no clause matches. Narrowing
+  is a filter, not an assertion. The heads, guards and all, are compiled into a
+  `__dmex_cast__/3` that decodes a row and returns it only if a clause accepts it
+  — `nil` covering both a type nothing declares and a value nothing wants, since
+  they are the same answer. `DMEx.Handler.Pipeline` asks it before it opens a
+  transaction and specifies what a skip does.
 
   ## A clause that names no type asks for the whole log
 
@@ -63,13 +60,10 @@ defmodule DMEx.Handler do
   that has genuinely appended nothing, and it costs every row the log holds
   rather than the ones this handler wants.
 
-  It also widens what can be **decoded**. A type no clause named still resolves
-  to a module, through every message module the node knows
-  (`DMEx.Message.for_type/1`), so a catch-all receives everything this node can
-  turn back into a struct. A type *no* module declares is still skipped —
-  there is nothing to decode it into — which is what makes such a handler a
-  usable diagnostic: every row arrives, and `[:dmex, :handler, :skip]` names the
-  types nothing here understands.
+  It also widens what can be **decoded**: a type no clause named still resolves
+  through `DMEx.Message.for_type/1`, so a catch-all receives everything this
+  node can turn back into a struct, and `[:dmex, :handler, :skip]` names the
+  types nothing here understands — which is what makes it a usable diagnostic.
 
   This is the one place a subscription's set is not exactly its clauses. It is
   sound because the selection is already the whole log: what the application
@@ -98,22 +92,21 @@ defmodule DMEx.Handler do
   a dash. Atoms and strings render identically.
 
   **Renaming this module is free**, since identity is the declared pair.
-  Changing `name:` or the log's key in `DMEx.Supervisor` does reset a cursor;
-  `DMEx.Handler.Cursors.rename!/3` migrates those. Adding a clause does not: the
-  new type is handled from the tip onward and its history is *not* replayed, so
-  ask for it deliberately with `DMEx.Handler.Cursors.move!/3`.
+  Changing `name:` or the log's key in `DMEx.Supervisor` does mint a new identity
+  with no cursor — the old row survives untouched under the old id, which is what
+  `DMEx.Handler.Cursors.rename!/3` carries over and then removes. Adding a clause
+  mints nothing: the new type is handled from the tip onward and its history is
+  *not* replayed, so ask for it deliberately with `DMEx.Handler.Cursors.move!/3`.
 
   ## Succeeding is what advances the cursor
 
-  DMEx runs the callback and the `last_seen` update in **one transaction**.
-  Returning normally commits both; raising rolls both back and the message is
-  redelivered. The return value is ignored: raising is how failure is signalled.
-
-  Side effects through the handler's **own repo are exactly-once for free**,
-  because they roll back with the transaction that would have recorded them.
-  Effects that leave it must be idempotent on something in the message or its
-  metadata, since a crash between the effect landing and the commit is
-  indistinguishable from never having processed the message.
+  DMEx runs the callback and the `last_seen` update in **one transaction**:
+  returning normally commits both, raising rolls both back and the message is
+  redelivered. Side effects through the handler's **own repo are therefore
+  exactly-once for free**, because they roll back with the transaction that would
+  have recorded them; effects that leave it must be idempotent on something in
+  the message or its metadata. `DMEx.Handler.Pipeline` specifies the rest,
+  `on_failure` included.
   """
 
   alias DMEx.Config
@@ -194,7 +187,6 @@ defmodule DMEx.Handler do
   @doc false
   defmacro __before_compile__(env) do
     declaration = __declaration__(env)
-    match = matcher(env, declaration)
 
     quote do
       unquote(compile_edges(declaration.messages))
@@ -205,7 +197,7 @@ defmodule DMEx.Handler do
       @spec __dmex__() :: DMEx.Handler.declaration()
       def __dmex__, do: unquote(Macro.escape(declaration))
 
-      unquote(match)
+      unquote(matcher(env, declaration))
     end
   end
 
@@ -259,21 +251,18 @@ defmodule DMEx.Handler do
   @doc false
   @spec __declaration__(Macro.Env.t()) :: declaration()
   def __declaration__(env) do
-    %{logs: logs, name: name, config: config} = Module.get_attribute(env.module, :dmex_declared_opts)
-
+    declared = Module.get_attribute(env.module, :dmex_declared_opts)
     {messages, selective?} = messages!(env)
 
-    %{
+    # `:logs`, `:name` and `:config` come across as written at the `use` site;
+    # `selective?` is whether the clauses named a type for every case they handle,
+    # which is the whole of the question — so a handler asking for the whole log
+    # also never risks the compile error an unbuildable fingerprint would raise.
+    Map.merge(declared, %{
       handler: env.module,
-      logs: logs,
-      name: name,
       messages: messages,
-      config: config,
-      # Whether the clauses named a type for every case they handle, which is the
-      # whole of the question — so a handler asking for the whole log also never
-      # risks the compile error an unbuildable fingerprint would raise.
       fingerprint: if(selective?, do: fingerprint!(env, types(messages)))
-    }
+    })
   end
 
   # Sorted, so the fingerprint is a function of the set and not of clause order —
@@ -325,10 +314,7 @@ defmodule DMEx.Handler do
   @doc "Every subscription `handler` declares — one per log it reads."
   @spec subscription_ids(module()) :: [String.t()]
   def subscription_ids(handler) when is_atom(handler) do
-    handler
-    |> declaration!()
-    |> Map.fetch!(:logs)
-    |> Enum.map(&subscription_id!(handler, &1))
+    Enum.map(declaration!(handler).logs, &subscription_id!(handler, &1))
   end
 
   @doc """
@@ -429,9 +415,6 @@ defmodule DMEx.Handler do
 
     if length(heads) != length(clauses), do: raise_unseen_clauses(env, heads, clauses)
 
-    accepts = Enum.map(heads, &matcher_clause/1)
-    casts = Enum.map(messages, &cast_clause/1)
-
     # What turns a narrowed-away value down, including on a whole-log handler:
     # a clause naming no type still narrows if it patterns on the metadata or
     # carries a guard, and without this the test would raise rather than answer.
@@ -447,10 +430,10 @@ defmodule DMEx.Handler do
     quote do
       @doc false
       @spec __dmex_cast__(String.t(), term(), map()) :: struct() | nil
-      unquote_splicing(casts)
+      unquote_splicing(Enum.map(messages, &cast_clause/1))
       unquote(last_cast_clause(declaration))
 
-      unquote_splicing(accepts)
+      unquote_splicing(Enum.map(heads, &matcher_clause/1))
       unquote(turn_down)
     end
   end
@@ -525,10 +508,8 @@ defmodule DMEx.Handler do
   # a binding this copy has no body to use is not their mistake to be warned
   # about.
   defp generated(ast) do
-    Macro.prewalk(ast, fn node -> Macro.update_meta(node, &mark/1) end)
+    Macro.prewalk(ast, fn node -> Macro.update_meta(node, &Keyword.put(&1, :generated, true)) end)
   end
-
-  defp mark(meta), do: Keyword.put(meta, :generated, true)
 
   defp raise_unseen_clauses(env, heads, clauses) do
     raise ArgumentError, """
@@ -564,15 +545,12 @@ defmodule DMEx.Handler do
     # after `message!/2` has had its say about it. `:any` is a clause that named
     # no type, and one of those is enough to make the subscription whole-log:
     # there is no fingerprint that could admit what it is willing to accept.
-    {messages, selective?} =
-      Enum.reduce(clauses, {MapSet.new(), true}, fn clause, {messages, selective?} ->
-        case message!(env, clause) do
-          {:type, module} -> {MapSet.put(messages, module), selective?}
-          :any -> {messages, false}
-        end
-      end)
-
-    {messages, selective?}
+    Enum.reduce(clauses, {MapSet.new(), true}, fn clause, {messages, selective?} ->
+      case message!(env, clause) do
+        {:type, module} -> {MapSet.put(messages, module), selective?}
+        :any -> {messages, false}
+      end
+    end)
   end
 
   defp message!(env, {meta, [pattern | _rest], _guards, _body}) do
@@ -617,14 +595,9 @@ defmodule DMEx.Handler do
     if unnamed?(pattern), do: :any, else: raise_bad_pattern(env, meta)
   end
 
-  # The patterns that name no type, which is how a handler asks for the whole
-  # log. Two spellings, equally wide: every message is a struct, so `%module{}`
-  # admits exactly what a plain variable does — while binding the module a
-  # catch-all usually wants to report.
-  defp unnamed?({:%, _, [{name, _, context}, _fields]}) when is_atom(name) and is_atom(context) do
-    true
-  end
-
+  # The two patterns that name no type, which is how a handler asks for the whole
+  # log — equally wide, for the reason the module docs give.
+  defp unnamed?({:%, _, [{name, _, ctx}, _fields]}) when is_atom(name) and is_atom(ctx), do: true
   defp unnamed?({name, _meta, context}) when is_atom(name) and is_atom(context), do: true
   defp unnamed?(_pattern), do: false
 

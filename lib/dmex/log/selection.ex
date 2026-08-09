@@ -13,8 +13,7 @@ defmodule DMEx.Log.Selection do
 
   `expand/1` is the wire's: a `DMEx.Handler.Fingerprint` blob tested against
   every message type the node knows. Membership there is probabilistic, so the
-  set admits a type the consumer never declared at a rate of 2⁻¹⁶ per type
-  tested.
+  set admits a type the consumer never declared at 2⁻¹⁶ per type tested.
 
   `declared/2` is `DMEx.Transport.Local`'s: the handler's declared modules are
   in this VM, so no blob is built and the set is exact.
@@ -28,12 +27,7 @@ defmodule DMEx.Log.Selection do
 
   alias DMEx.Handler.Fingerprint
 
-  @typedoc """
-  Which message types a connection asked for.
-
-  `:all` is a whole-log subscription; a `MapSet` is a selective one, already
-  expanded from its filter against the node's message types.
-  """
+  @typedoc "`:all` for a whole-log subscription, or the selective one's expanded set."
   @type t :: :all | MapSet.t(String.t())
 
   @doc """
@@ -50,9 +44,7 @@ defmodule DMEx.Log.Selection do
   def expand(:all), do: :all
 
   def expand(%Fingerprint{} = filter) do
-    DMEx.Message.types()
-    |> Enum.filter(&Fingerprint.member?(filter, &1))
-    |> MapSet.new()
+    MapSet.filter(DMEx.Message.types(), &Fingerprint.member?(filter, &1))
   end
 
   @doc """

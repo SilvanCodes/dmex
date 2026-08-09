@@ -16,10 +16,8 @@ defmodule DMEx.Log.Watcher do
   So the loop states its budget before entering each blocking step (see
   `DMEx.Log.Status`) and this process enforces it from outside. That is the
   whole mechanism: no per-connection timer, no progress heuristics, no
-  inspecting another process's state. Socket options are still worth setting and
-  `guides/deployment.md` says why, but nothing here depends on them — a
-  `send_timeout` only ever sees a stalled *socket*, and a wedged query looks
-  perfectly healthy to it.
+  inspecting another process's state. Socket options are still worth setting —
+  `guides/deployment.md` says why — but nothing here depends on them.
 
   ## Why the kill is untrappable
 
@@ -75,9 +73,7 @@ defmodule DMEx.Log.Watcher do
 
   @impl GenServer
   def init(log) do
-    %{config: config} = log.__dmex__()
-
-    state = %{log: log, interval: config.stall_check_interval}
+    state = %{log: log, interval: log.__dmex__().config.stall_check_interval}
 
     schedule(state)
 

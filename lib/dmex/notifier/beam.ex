@@ -2,9 +2,8 @@ defmodule DMEx.Notifier.Beam do
   @moduledoc """
   Notification as BEAM messages, over `:pg` process groups.
 
-  The default for engines the database cannot notify through, `DMEx.Storage.SQLite`
-  among them, and available to any of them — a Postgres deployment behind a
-  transaction-pooling pooler can take this instead of `LISTEN`/`NOTIFY`.
+  The default for `DMEx.Storage.SQLite`, and available to any engine — including a
+  Postgres deployment that cannot `LISTEN`, see `DMEx.Notifier.Postgres`.
 
   The scope is per log rather than global, so two logs in one application do not
   contend for one process and cannot deliver into each other. Nothing needs
@@ -51,21 +50,19 @@ defmodule DMEx.Notifier.Beam do
 
   @impl DMEx.Notifier
   def notify(type, opts) when is_binary(type) do
-    scope = scope(opts)
     channel = Map.fetch!(opts, :channel)
 
     # Three of the five elements exist only because `c:DMEx.Notifier.listen/1`
     # fixes the delivered shape to the one Postgrex sends directly — see there
-    # for why it is not normalised. The dispatcher reads none of them; the ref is
-    # minted rather than faked with some other term because the contract types it
-    # as a `reference()`, and one allocation per notify is cheaper than a
-    # contract with an exception in it.
+    # for why. The ref is minted rather than faked with some other term because
+    # the contract types it as a `reference()`, and one allocation per notify is
+    # cheaper than a contract with an exception in it.
     ref = make_ref()
 
     # Cluster-wide: `get_members/2` returns remote members too, and a send to
     # one is an ordinary distributed send. It answers `[]` for a scope that is
     # not running, so there is nothing to guard.
-    for pid <- :pg.get_members(scope, channel) do
+    for pid <- :pg.get_members(scope(opts), channel) do
       send(pid, {:notification, self(), ref, channel, type})
     end
 

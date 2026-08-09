@@ -26,10 +26,16 @@ integration_url =
   System.get_env("DMEX_POSTGRES_INTEGRATION_URL") ||
     unit_url |> URI.parse() |> Map.put(:path, "/dmex_integration_test") |> URI.to_string()
 
+# Overridable for the same reason the URLs and the SQLite dir are: several suites
+# running at once share one server's `max_connections`, and the integration pool
+# is opened by `test_helper.exs` even on a run that excludes `:integration`.
+pool_size = String.to_integer(System.get_env("DMEX_POOL_SIZE") || "10")
+integration_pool_size = String.to_integer(System.get_env("DMEX_INTEGRATION_POOL_SIZE") || "10")
+
 config :dmex, DMEx.Test.Repo,
   url: unit_url,
   pool: Sandbox,
-  pool_size: 10,
+  pool_size: pool_size,
   log: false
 
 # The derivation cannot collide, but an explicit DMEX_POSTGRES_INTEGRATION_URL
@@ -54,7 +60,7 @@ config :dmex, DMEx.Test.DeferredRepo, database: Path.join(sqlite_dir, "dmex_defe
 
 config :dmex, DMEx.Test.IntegrationRepo,
   url: integration_url,
-  pool_size: 10,
+  pool_size: integration_pool_size,
   log: false
 
 config :dmex, DMEx.Test.SQLiteIntegrationRepo,

@@ -12,8 +12,7 @@ defmodule DMEx.Log.SendLoop do
   extra predicate, the type list its `DMEx.Log.Selection` resolved to at connect.
 
   This module reads, paces, tracks the cursor and holds the deadlines; it never
-  frames anything and never touches a socket. `c:DMEx.Transport.write/2` takes a
-  whole read's rows and reports whether the sink is still there.
+  frames anything and never touches a socket (`DMEx.Transport` is the other half).
 
   It does nothing to a row: what a read returns is what a transport writes.
 
@@ -23,19 +22,18 @@ defmodule DMEx.Log.SendLoop do
 
   ## Every blocking step is taken under a deadline
 
-  Before each step that can block — the read, either write, the idle wait, the
-  throttle — the loop arms a deadline in its `DMEx.Log.Status`, and
-  `DMEx.Log.Watcher` kills it if the step does not clear. Each budget is
-  `stall_timeout` plus however long that step is *expected* to take, so a wait
-  doing its job is never mistaken for one that is stuck.
+  The read, either write, the idle wait and the throttle each arm a deadline in
+  this connection's `DMEx.Log.Status` first; `DMEx.Log.Watcher` enforces it from
+  outside. Each budget is `stall_timeout` plus however long that step is
+  *expected* to take, so a wait doing its job is never mistaken for one that is
+  stuck.
 
   ## Pacing
 
-  `max_batch_frequency` caps how often this loop reads; `max_batch_rows` and
-  `max_batch_bytes` cap what one read returns. The loop is sequential, so
-  together they cap the connection at `max_batch_rows` rows or
-  `max_batch_bytes`, `max_batch_frequency` times a second. All three are log
-  configuration (ARCHITECTURE invariant 9).
+  The loop is sequential, so `max_batch_frequency`, `max_batch_rows` and
+  `max_batch_bytes` compose: it reads at most `max_batch_rows` rows or
+  `max_batch_bytes`, `max_batch_frequency` times a second. `DMEx.Config` says
+  what each caps, and ARCHITECTURE invariant 9 why the producer owns all three.
   """
 
   alias DMEx.Log.Selection
@@ -126,11 +124,9 @@ defmodule DMEx.Log.SendLoop do
   the measurements and the metadata from here, so neither can report a connect
   the other would report differently.
 
-  Registration is deliberately *not* here — the two paths make the same
-  `DMEx.Log.Streams.register/3` call at different moments. `DMEx.Log.Plug`
-  registers before resolving its cursor, so `DMEx.Log.Watcher` covers that query
-  too; `DMEx.Transport.Local` registers inside the reader process, which is the
-  process that must own the entry.
+  Registration is deliberately *not* here: both paths make the same
+  `DMEx.Log.Streams.register/3` call, but each at a moment only it can pick —
+  that function and `DMEx.Log.Plug` say why.
 
   ## Options
 
@@ -160,8 +156,6 @@ defmodule DMEx.Log.SendLoop do
       storage_opts: storage_opts,
       cursor: cursor,
       config: config,
-      # The reciprocal of `max_batch_frequency`, taken once rather than per
-      # iteration: the operator chooses a rate, the loop sleeps out a period.
       batch_interval: DMEx.Config.batch_interval(config),
       last_sent_at: nil,
       status: Keyword.get(opts, :status),
@@ -176,16 +170,13 @@ defmodule DMEx.Log.SendLoop do
   defp read_and_send(conn, state) do
     arm(state)
 
-    read =
-      state.storage.read(
-        state.cursor,
-        state.config.max_batch_rows,
-        state.config.max_batch_bytes,
-        state.types,
-        state.storage_opts
-      )
-
-    case read do
+    case state.storage.read(
+           state.cursor,
+           state.config.max_batch_rows,
+           state.config.max_batch_bytes,
+           state.types,
+           state.storage_opts
+         ) do
       {:ok, []} ->
         {:empty, conn, state}
 
@@ -205,7 +196,7 @@ defmodule DMEx.Log.SendLoop do
   # A whole read's rows in one call, so syscalls and deadline arming do not
   # multiply by `max_batch_rows`.
   defp send_rows(conn, state, rows) do
-    last_id = rows |> List.last() |> Map.fetch!(:id)
+    last_id = List.last(rows).id
 
     case write(conn, state, rows) do
       {:ok, conn, measurements} ->
@@ -249,10 +240,7 @@ defmodule DMEx.Log.SendLoop do
 
     if remaining > 0 do
       arm(state, remaining)
-
       Process.sleep(remaining)
-    else
-      :ok
     end
   end
 
@@ -277,9 +265,7 @@ defmodule DMEx.Log.SendLoop do
   # long the step is legitimately expected to sit there first.
   defp arm(state, extra \\ 0)
 
-  defp arm(%{config: %{stall_timeout: :infinity}} = state, _extra) do
-    Status.arm(state.status, :infinity)
-  end
+  defp arm(%{config: %{stall_timeout: :infinity}} = state, _extra), do: Status.arm(state.status, :infinity)
 
   defp arm(state, extra), do: Status.arm(state.status, state.config.stall_timeout + extra)
 end

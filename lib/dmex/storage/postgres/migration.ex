@@ -5,8 +5,6 @@ defmodule DMEx.Storage.Postgres.Migration do
   Reached through that module, which picks a migration by the repo's adapter —
   a host application writes `DMEx.Storage.Migration.up()` and never names this
   one.
-
-  `:prefix` here is a Postgres schema, created if absent.
   """
 
   use Ecto.Migration
@@ -14,8 +12,7 @@ defmodule DMEx.Storage.Postgres.Migration do
   alias DMEx.Storage.Migration
   alias DMEx.Storage.Postgres
 
-  # From the behaviour, not restated: see `DMEx.Storage.__table__/1`. The same
-  # three names `DMEx.Storage.Postgres` writes its queries against.
+  # From the behaviour, not restated: see `DMEx.Storage.__table__/1`.
   @messages DMEx.Storage.__table__(:messages)
   @cursors DMEx.Storage.__table__(:cursors)
   @dead_messages DMEx.Storage.__table__(:dead_messages)
@@ -80,10 +77,9 @@ defmodule DMEx.Storage.Postgres.Migration do
       add(:inserted_at, :timestamptz, null: false, default: fragment("clock_timestamp()"))
     end
 
-    # For exactly one query shape — see the moduledoc for when the planner takes
-    # it. It is also the reason a whole-log read is a *separate statement* (see
-    # `DMEx.Storage.Postgres.read/5`): folding both into one query with a
-    # nullable predicate would defeat this index and the primary key at once.
+    # For exactly one query shape — `DMEx.Storage.Migration` covers when the
+    # planner takes it, and `c:DMEx.Storage.read/5` why that makes a selective
+    # read a *separate statement* rather than one nullable predicate.
     create_if_not_exists(index(@messages, [:type, :id], prefix: prefix))
 
     # Written out rather than through `constraint/3`, because Ecto has no
@@ -92,19 +88,13 @@ defmodule DMEx.Storage.Postgres.Migration do
     # re-runnable, which is worth keeping for the whole migration.
     execute("""
     DO $$ BEGIN
-      ALTER TABLE #{qualified(@messages, prefix)}
+      ALTER TABLE #{Postgres.__table__(@messages, prefix)}
         ADD CONSTRAINT #{@messages}_type_charset
         CHECK (type ~ '^[A-Za-z0-9_.]+$');
     EXCEPTION WHEN duplicate_object THEN NULL;
     END $$;
     """)
-
-    :ok
   end
-
-  # One renderer for both halves of the adapter, so a prefixed name in DDL and a
-  # prefixed name in a query cannot disagree.
-  defp qualified(name, prefix), do: Postgres.__table__(name, prefix)
 
   defp up_cursors(prefix) do
     create_if_not_exists table(@cursors, primary_key: false, prefix: prefix) do
@@ -124,9 +114,8 @@ defmodule DMEx.Storage.Postgres.Migration do
   # **Structurally a message log.** Everything below `subscription` is
   # `dmex_messages` — the same column names, types and meanings — so a dead
   # row *is* a log row: replaying one needs no reshaping and no second decode
-  # path. Equal as *values*, not as bytes: the payload was decoded out of a
-  # frame and re-encoded, the same caveat that already applies to anything
-  # reading `data` back out of the log.
+  # path. Equal as *values*, not as bytes: `data` carries the jsonb caveat
+  # above.
   #
   # Deliberately **not** here: the exception and the attempt count. A failure
   # is an event, not a property of the message, so it goes to logs and
@@ -156,7 +145,5 @@ defmodule DMEx.Storage.Postgres.Migration do
       # the publisher's metadata, never the row's timestamps.
       add(:inserted_at, :timestamptz, null: false, default: fragment("now()"))
     end
-
-    :ok
   end
 end

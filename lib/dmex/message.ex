@@ -83,10 +83,9 @@ defmodule DMEx.Message do
   written and before the `[:dmex, :append, :start]` event. Enrichment past that
   line belongs on the read side, in `cast/1`.
 
-  The derivation itself is replaceable, just not with a second `@derive` — that
-  one lands after `defstruct` and is a no-op. An explicit
-  `defimpl JSON.Encoder, for: __MODULE__` wins over it, whichever order the two
-  compile in, and is the only way to change what a message encodes to.
+  The derivation itself is replaceable, just not with a second `@derive`. An
+  explicit `defimpl JSON.Encoder, for: __MODULE__` wins over it, whichever order
+  the two compile in, and is the only way to change what a message encodes to.
 
   **Atom safety.** The default `cast/1` walks the struct's *own* fields and
   looks each up in the incoming map, rather than converting the incoming map's
@@ -102,8 +101,7 @@ defmodule DMEx.Message do
   # construction rather than merely never written.
   @type_format ~r/\A[A-Za-z0-9_]+(\.[A-Za-z0-9_]+)*\z/
 
-  # One key for the node: a type is unique node-wide, so there is nothing an
-  # application-scoped key would separate. See `types/0`.
+  # One key for the node, not one per application: see `types/0`.
   @index_key {__MODULE__, :index}
 
   @doc """
@@ -164,16 +162,11 @@ defmodule DMEx.Message do
   # declaration site would silently mint a second wire type, orphaning every row
   # already appended under the first.
   defp type!(module, value) do
-    value =
-      case value do
-        value when is_atom(value) and not is_nil(value) -> Atom.to_string(value)
-        value when is_binary(value) -> value
-        other -> raise_type(module, other)
-      end
+    type = if is_atom(value) and not is_nil(value), do: Atom.to_string(value), else: value
 
-    if !Regex.match?(@type_format, value), do: raise_type(module, value)
+    if !(is_binary(type) and Regex.match?(@type_format, type)), do: raise_type(module, type)
 
-    value
+    type
   end
 
   defp raise_type(module, value) do
@@ -217,9 +210,7 @@ defmodule DMEx.Message do
   def cast_default(module, data) when is_atom(module) and is_map(data) do
     base = module.__struct__()
 
-    base
-    |> Map.from_struct()
-    |> Enum.reduce(base, fn {field, _default}, acc ->
+    Enum.reduce(Map.from_struct(base), base, fn {field, _default}, acc ->
       # `Atom.to_string/1` per field per row is the one cost here.
       # `bench/micro/message_cast.exs`: precomputing the field-name strings at
       # `use` time is 1.1-2.1x faster, saving 120-570 ns per row. Not acted on,
@@ -336,9 +327,7 @@ defmodule DMEx.Message do
   an umbrella parent — is only ever reached by being named.
   """
   @spec types() :: MapSet.t(String.t())
-  def types do
-    index() |> Map.keys() |> MapSet.new()
-  end
+  def types, do: index() |> Map.keys() |> MapSet.new()
 
   @doc """
   The module declaring `type`, or `nil`.
@@ -354,9 +343,7 @@ defmodule DMEx.Message do
   than the log's contents.
   """
   @spec for_type(String.t()) :: module() | nil
-  def for_type(type) when is_binary(type) do
-    Map.get(index(), type)
-  end
+  def for_type(type) when is_binary(type), do: Map.get(index(), type)
 
   @doc """
   Rescans an application's message modules into the node's index, raising if two
@@ -381,8 +368,7 @@ defmodule DMEx.Message do
     scanned = otp_app |> discover() |> index!()
 
     # Read raw rather than through `index/0`, whose miss branch is this function.
-    cached = :persistent_term.get(@index_key, %{})
-    merged = Map.merge(cached, scanned, &collision!/3)
+    merged = Map.merge(:persistent_term.get(@index_key, %{}), scanned, &collision!/3)
 
     :persistent_term.put(@index_key, merged)
 

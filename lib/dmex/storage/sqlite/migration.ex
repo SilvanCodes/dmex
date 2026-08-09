@@ -71,11 +71,6 @@ defmodule DMEx.Storage.SQLite.Migration do
   @cursors DMEx.Storage.__table__(:cursors)
   @dead_messages DMEx.Storage.__table__(:dead_messages)
 
-  # The one statement of the timestamp format is `DMEx.Storage.SQLite`'s, because
-  # the adapter writes it too — `advance_cursor/3` stamps `updated_at` with the same
-  # expression. Rendered here rather than repeated, so the fixed-width invariant
-  # this module's documentation argues for cannot hold in one table and not
-  # another.
   @now SQLite.__now__()
 
   @doc false
@@ -97,7 +92,6 @@ defmodule DMEx.Storage.SQLite.Migration do
 
     if :dead_messages in tables, do: execute("DROP TABLE IF EXISTS #{@dead_messages}")
     if :cursors in tables, do: execute("DROP TABLE IF EXISTS #{@cursors}")
-    ## The DDL
     if :messages in tables, do: execute("DROP TABLE IF EXISTS #{@messages}")
 
     :ok
@@ -116,8 +110,7 @@ defmodule DMEx.Storage.SQLite.Migration do
     execute("""
     CREATE TABLE IF NOT EXISTS #{@messages} (
       id           INTEGER PRIMARY KEY AUTOINCREMENT,
-      type TEXT NOT NULL
-                   CHECK (type <> '' AND type NOT GLOB '*[^A-Za-z0-9_.]*'),
+      type         TEXT NOT NULL CHECK (type <> '' AND type NOT GLOB '*[^A-Za-z0-9_.]*'),
       data         TEXT NOT NULL CHECK (json_valid(data)),
       metadata     TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(metadata)),
       inserted_at  TEXT NOT NULL DEFAULT (#{@now})
@@ -130,8 +123,6 @@ defmodule DMEx.Storage.SQLite.Migration do
     CREATE INDEX IF NOT EXISTS #{@messages}_type_id_index
         ON #{@messages} (type, id)
     """)
-
-    :ok
   end
 
   defp up_cursors do
@@ -144,8 +135,6 @@ defmodule DMEx.Storage.SQLite.Migration do
       updated_at   TEXT NOT NULL DEFAULT (#{@now})
     )
     """)
-
-    :ok
   end
 
   # From `id` down this is `dmex_messages`, so a dead row *is* a log row and
@@ -156,14 +145,12 @@ defmodule DMEx.Storage.SQLite.Migration do
     CREATE TABLE IF NOT EXISTS #{@dead_messages} (
       subscription TEXT NOT NULL,
       id           INTEGER NOT NULL,
-      type TEXT NOT NULL,
+      type         TEXT NOT NULL,
       data         TEXT NOT NULL CHECK (json_valid(data)),
       metadata     TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(metadata)),
       inserted_at  TEXT NOT NULL DEFAULT (#{@now}),
       PRIMARY KEY (subscription, id)
     )
     """)
-
-    :ok
   end
 end

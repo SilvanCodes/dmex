@@ -14,7 +14,7 @@ defmodule DMEx.Handler.Pipeline do
   within a subscription is strictly ordered and `last_seen` is durable, so
   "already processed" is exactly "id not greater than the cursor". It cannot
   cover a crash between a handler's side effects landing and its transaction
-  committing, because it is that commit that records the message as processed.
+  committing — see ARCHITECTURE's *Delivery semantics*.
 
   ## 2. A message no clause matches is skipped, not an error
 
@@ -51,7 +51,7 @@ defmodule DMEx.Handler.Pipeline do
   re-reads the durable cursor.
 
   **A handled message commits immediately and needs no flush.**
-  `c:DMEx.Storage.advance/3` sets `last_seen` absolutely, so advancing to a
+  `c:DMEx.Storage.advance_cursor/3` sets `last_seen` absolutely, so advancing to a
   handled row's id *subsumes* every pending skip below it — skips at 5, 6, 7
   followed by a handled 8 leave the cursor at 8 either way. So coalescing leaves
   the handler/cursor transaction untouched.
@@ -102,17 +102,16 @@ defmodule DMEx.Handler.Pipeline do
   skipped. The default because it is the only mode refusing both bad outcomes:
   one message a handler cannot process is not a reason for every *later* message
   to stop arriving, nor a reason to lose the failing one. What is stored is the
-  message and only the message — see `c:DMEx.Storage.dead_message/2`.
+  message and only the message — see `c:DMEx.Storage.record_dead_message/2`.
 
-  **`:crash`** re-raises with the original stacktrace and without advancing, so a
-  pending run of skips is re-skipped after the restart. The supervisor restarts
-  the stream, it re-reads its persisted cursor — still pointing at the message
-  *before* this one — and the log's range scan re-streams the message that
-  killed it, forever. Choose it when later messages must not be processed
-  without this one, or when a loud alarm beats a growing table nobody watches.
-  A jittered `reconnect_backoff_base` pause before the re-raise keeps the loop off the
-  log's database and off its siblings; `DMEx.Handler.Subscriptions` deliberately
-  sets no restart budget.
+  **`:crash`** re-raises with the original stacktrace and without advancing, so
+  section 4's restart-and-resume happens here too — a pending run of skips is
+  re-skipped, and the log's range scan re-streams the message that killed it,
+  forever. Choose it when later messages must not be processed without this one,
+  or when a loud alarm beats a growing table nobody watches. A jittered
+  `reconnect_backoff_base` pause before the re-raise keeps the loop off the log's
+  database and off its siblings; `DMEx.Handler.Subscriptions` deliberately sets
+  no restart budget.
 
   **`:skip`** advances past the failing message without the handler having
   succeeded. Nothing durable is recorded: the log line and
@@ -218,12 +217,7 @@ defmodule DMEx.Handler.Pipeline do
         skip(state, id, type)
 
       message ->
-        attempt(
-          state,
-          %{id: id, type: type, message: message, metadata: metadata},
-          commit,
-          1
-        )
+        attempt(state, %{id: id, type: type, message: message, metadata: metadata}, commit, 1)
     end
   end
 
@@ -254,8 +248,7 @@ defmodule DMEx.Handler.Pipeline do
   The message set was derived and validated at compile time, so there is nothing
   left for this to check but the handler itself — and nothing to carry, since
   resolving a `type` is the handler's own `__dmex_cast__/3`, compiled
-  from that set. Never `String.to_atom/1` on whatever the log sent, which would
-  be an unbounded-atom-table risk on attacker-controlled input.
+  from that set.
   """
   @spec new(keyword()) :: t()
   def new(opts) do
@@ -267,13 +260,11 @@ defmodule DMEx.Handler.Pipeline do
               "Add `use DMEx.Handler` to it."
     end
 
-    declaration = handler.__dmex__()
-
     %{
       storage: Keyword.fetch!(opts, :storage),
       storage_opts: Keyword.fetch!(opts, :storage_opts),
       handler: handler,
-      subscription: Keyword.get_lazy(opts, :subscription, fn -> subscription!(declaration) end),
+      subscription: Keyword.get_lazy(opts, :subscription, fn -> subscription!(handler.__dmex__()) end),
       origin: Keyword.fetch!(opts, :origin),
       cursor: Keyword.get(opts, :cursor, 0),
       pending: false,
@@ -317,16 +308,13 @@ defmodule DMEx.Handler.Pipeline do
       {{:handled, attempt}, telemetry}
     end)
   rescue
-    # Storage failing is not the handler failing. Retrying re-runs side effects
-    # that never failed, and `on_failure` would dead-letter a message the
-    # handler accepted — so this leaves by the same door `give_up/6` and
-    # `flush/1` use, with the cursor still below the message.
+    # Storage failing is not the handler failing (section 4), so this leaves by
+    # the same door `give_up/6` and `flush/1` use, with the cursor still below
+    # the message.
     storage_error in Error ->
       reraise storage_error, __STACKTRACE__
 
     exception ->
-      stacktrace = __STACKTRACE__
-
       if attempt < state.config.max_attempts do
         # Blocking here is correct rather than lazy: the stream processes one
         # message at a time, so there is nothing else it could usefully do, and
@@ -337,7 +325,7 @@ defmodule DMEx.Handler.Pipeline do
 
         attempt(state, delivery, commit, attempt + 1)
       else
-        {:failed, exception, stacktrace, attempt}
+        {:failed, exception, __STACKTRACE__, attempt}
       end
   end
 
@@ -346,12 +334,9 @@ defmodule DMEx.Handler.Pipeline do
   defp resolve(state, row, id, exception, stacktrace, attempts) do
     case state.config.on_failure do
       :crash ->
-        # The pause has to happen *here*, in the process that is about to die.
-        # A restart builds fresh state and connects straight away, so nothing
-        # after the crash is in a position to pace the loop — and without this a
-        # poison message reconnects to another application's log as fast as the
-        # supervisor can restart this process, which is why
-        # `DMEx.Handler.Subscriptions` can afford to set no restart budget.
+        # The pause has to happen *here*, in the process that is about to die: a
+        # restart builds fresh state and connects straight away, so nothing
+        # after the crash is in a position to pace the loop (section 6).
         state.config
         |> crash_backoff()
         |> Process.sleep()
@@ -427,9 +412,8 @@ defmodule DMEx.Handler.Pipeline do
     :skipped
   end
 
-  # `{:error, reason}` is storage saying *it* failed — a checkout that timed
-  # out, a connection that dropped, a serialization failure. Not a verdict on
-  # the message, so it gets its own exception rather than whatever a failed
+  # `{:error, reason}` is storage saying *it* failed (section 4), not a verdict
+  # on the message — so it gets its own exception rather than whatever a failed
   # match would have produced, and every caller lets it through.
   defp commit!(state, fun) do
     case state.storage.transaction(fun, state.storage_opts) do

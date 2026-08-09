@@ -18,11 +18,10 @@ defmodule DMEx.Telemetry do
   ### `[:dmex, :stream, :connect]`
 
   A consumer opened a stream. Measurements: `:cursor`, the resolved starting
-  position, and `:matched`, how many types a selective connection admitted
-  (`nil` for a whole-log one) — the application's types the filter matched over
-  SSE, the handler's declared types for a local reader, which needs no
-  resolution and so has no `404` for an empty one. Metadata: `:log`,
-  `:selective`.
+  position, and `:matched`, the types the connection admits as
+  `DMEx.Log.Selection.size/1` counts them — `nil` for a whole-log one, and for a
+  local reader the handler's own declared types, which need no resolution and so
+  have no `404` for an empty one. Metadata: `:log`, `:selective`.
 
   ### `[:dmex, :stream, :write]`
 
@@ -32,17 +31,16 @@ defmodule DMEx.Telemetry do
 
   ### `[:dmex, :stream, :heartbeat]`
 
-  A liveness tick on an idle connection — a `: hb` comment frame over SSE, nothing on the wire for a local reader. Metadata: `:log`. Heartbeats
-  stopping while connections remain open means loops are wedged.
+  A liveness tick on an idle connection — an SSE comment frame, nothing on the
+  wire for a local reader. Metadata: `:log`. Heartbeats stopping while
+  connections remain open means loops are wedged.
 
   ### `[:dmex, :stream, :reclaim]`
 
   `DMEx.Log.Watcher` killed a connection that blew its deadline. Measurements:
-  `:overdue_by` in ms. Metadata: `:log`.
-
-  Occasional ones are a slow consumer and cost nothing but a reconnect; a steady
-  rate means either a consumer that cannot keep up or a `stall_timeout` tighter
-  than the links it serves deserve.
+  `:overdue_by` in ms. Metadata: `:log`. `guides/deployment.md` covers what an
+  occasional one costs, what a steady rate means, and how to size
+  `stall_timeout` against it.
 
   ### `[:dmex, :dispatcher, :broadcast]`
 
@@ -54,11 +52,11 @@ defmodule DMEx.Telemetry do
   ## Handler
 
   Every handler event carries `:subscription`, `:handler` and `:origin`.
-  `:subscription` is the durable identifier — `"orders/order_projection"` — and
-  is what a dashboard should group and alert on, since it survives renaming the
-  module. `:handler` is the module, which is what a human reads in a log line.
-  After one refactor they usually differ. `:origin` is where the rows came from:
-  a URL, or the module of a log this application owns.
+  `:subscription` — `"orders/order_projection"` — is the durable identity
+  (`DMEx.Handler`), so it is what a dashboard should group and alert on;
+  `:handler` is the module, which is what a human reads in a log line. After one
+  refactor they usually differ. `:origin` is where the rows came from: a URL, or
+  the module of a log this application owns.
 
   ### `[:dmex, :handler, :message, :start | :stop | :exception]`
 
@@ -73,9 +71,8 @@ defmodule DMEx.Telemetry do
 
   ### `[:dmex, :handler, :skip]`
 
-  A row no clause matched: either its `type` names no declared module,
-  or the type is declared but a clause narrowed to a field's value turned it
-  down. Neither reached a handler, so neither is inside a `:message` span.
+  A row no clause matched — `DMEx.Handler.Pipeline` covers the two ways that
+  happens. Neither reached a handler, so neither is inside a `:message` span.
   Measurements: `:id`. Extra metadata: `:type`.
 
   **Worth a dashboard even though it is not a fault**: a consumer silently
@@ -86,10 +83,10 @@ defmodule DMEx.Telemetry do
 
   A coalesced run of skipped rows was written to `dmex_cursors`. Measurements:
   `:cursor`, the position persisted — named for what it is, since `:id` on the
-  sibling handler events is a log row's own id. Never fires on a stream whose rows are all
-  handled. Its rate against `[:dmex, :handler, :skip]` is the coalescing ratio:
-  one per thousand skips is the mechanism working, one per skip means runs are
-  being broken up by handled rows.
+  sibling handler events is a log row's own id. Never fires on a stream whose
+  rows are all handled. Its rate against `[:dmex, :handler, :skip]` is the
+  coalescing ratio: one per thousand skips is the mechanism working, one per skip
+  means runs are being broken up by handled rows.
 
   ### `[:dmex, :handler, :failed]`
 
@@ -101,11 +98,11 @@ defmodule DMEx.Telemetry do
   the default the subscription keeps running, so this event and a growing
   `dmex_dead_messages` are the only signs something is being given up on.
 
-  There is deliberately **no socket-gating event and no lag event**. Backpressure
-  is not a decision this side makes, it is what happens when the process is busy
-  in a handler and therefore not re-arming the socket. And "how far behind am I"
-  is not a question the wire can answer — it carries no `max_id` to subtract
-  from, and no clock.
+  There is deliberately **no socket-gating event and no lag event**:
+  backpressure is not a decision this side makes but what happens while the
+  process is in a handler (ARCHITECTURE invariant 8), and "how far behind am I"
+  is not answerable from a frame (ARCHITECTURE's *wire contract* — no `max_id`,
+  no clock).
 
   ### `[:dmex, :handler, :reconnect]`
 
@@ -115,9 +112,8 @@ defmodule DMEx.Telemetry do
   `:reason` distinguishes a log restart from a poison message crash-looping from
   a stream dropped for silence.
 
-  **One reason deserves an alert of its own.** `{:no_matching_types, url}` means
-  the log answered `404`: the subscription's message types match nothing that
-  log knows about. It clears itself when the log deploys those types, so a
-  steady rate is a subscription pointed at the wrong log.
+  **One reason deserves an alert of its own.** `{:no_matching_types, url}` is
+  the log's `404` (`DMEx.Log.Plug`), which clears itself when the log deploys
+  those types — so a steady rate is a subscription pointed at the wrong log.
   """
 end

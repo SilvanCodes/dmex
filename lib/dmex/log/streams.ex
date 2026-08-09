@@ -8,9 +8,8 @@ defmodule DMEx.Log.Streams do
 
   That emptiness is the point: a wakeup is a hint that work may exist, never a
   carrier of work, so this registry holds no message data on any connection's
-  behalf. What an entry *does* carry is the connection's `DMEx.Log.Status` — two
-  machine words the dispatcher and `DMEx.Log.Watcher` read without messaging the
-  stream process, which matters most when it is wedged and would not answer —
+  behalf. What an entry *does* carry is the connection's `DMEx.Log.Status`, read
+  by the dispatcher and `DMEx.Log.Watcher` without messaging the stream process,
   and its `DMEx.Log.Selection`, the message types it asked for.
 
   **The selection lives in the entry, not the key.** One entry per connection, so
@@ -23,8 +22,8 @@ defmodule DMEx.Log.Streams do
   process and a live stream needs no cleanup.
 
   The one exception is a connect that registers and then fails before it becomes
-  a stream: over HTTP/1.1 keep-alive the request process is the *connection*
-  process and outlives its response, so that path calls `unregister/1`.
+  a stream, which calls `unregister/1` — `DMEx.Log.Plug` covers why its entry
+  cannot be left to die with its process.
 
   It runs the other way too, which is what a registry crash means for the
   connections in it: `Registry` links to every process it holds an entry for, so
@@ -43,10 +42,7 @@ defmodule DMEx.Log.Streams do
 
   @key :streams
 
-  @doc """
-  The registry name for a log module — `<Log>.Registry`, deliberately not
-  `<Log>.Streams`. It names the running Elixir `Registry`, not this module.
-  """
+  @doc "The registry name for a log module — `<Log>.Registry`, deliberately not `<Log>.Streams`."
   @spec name(module()) :: atom()
   def name(log) when is_atom(log), do: Module.concat(log, "Registry")
 
@@ -62,9 +58,8 @@ defmodule DMEx.Log.Streams do
   Through `DMEx.Log.__start__/1` rather than `Registry.start_link/1` directly,
   because a `Registry` is itself a subtree: its partition traps exits, so it
   releases its registered name only once it has been *scheduled* to handle the
-  kill. A restart racing that would fail `{:already_started, _}` on the
-  partition, spend the log supervisor's restart intensity in a few hundred
-  microseconds, and take the tree above down with it.
+  kill — exactly the `{:already_started, _}` restart race `DMEx.Log.__start__/1`
+  waits out.
 
   **`:partitions` is omitted deliberately** — it defaults to 1, and `Registry`'s
   own docs recommend raising it under write concurrency, so this is a plausible
@@ -90,8 +85,7 @@ defmodule DMEx.Log.Streams do
   *write*, so the watcher covers the connect path too.
 
   Returns the connection's `DMEx.Log.Status`, armed for `budget` and stored in
-  the entry alongside `selection`. Keeping both there rather than in a table
-  of their own is what makes cleanup free.
+  the entry alongside `selection`.
   """
   @spec register(module(), Status.budget(), Selection.t()) :: {:ok, Status.t()}
   def register(log, budget, selection) when is_atom(log) do
@@ -141,7 +135,5 @@ defmodule DMEx.Log.Streams do
   nothing on the hot path calls this.
   """
   @spec count(module()) :: non_neg_integer()
-  def count(log) when is_atom(log) do
-    Registry.count(name(log))
-  end
+  def count(log) when is_atom(log), do: Registry.count(name(log))
 end

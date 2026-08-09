@@ -10,9 +10,8 @@ defmodule DMEx.Handler.Cursors do
   ## Changing a declaration costs a migration
 
   A different `name:`, or a different key for that log in `DMEx.Supervisor`'s
-  `logs:`, mints a new identity with no cursor, which then begins wherever its
-  `last_seen:` says. (Renaming the module does not — see `DMEx.Handler`.) Migrate it
-  next to the code change that causes it:
+  `logs:`, mints a new identity with no cursor — `DMEx.Handler` covers what does
+  and does not change one. Migrate it next to the code change that causes it:
 
       defmodule MyApp.Repo.Migrations.RenameOrderProjection do
         use Ecto.Migration
@@ -33,9 +32,9 @@ defmodule DMEx.Handler.Cursors do
 
   ## These do not touch a running subscription
 
-  A live `DMEx.Handler.Subscription` holds its cursor in memory and re-reads the
-  durable one only on connect, so a move takes effect at its next reconnect. Do
-  this while it is stopped, or restart it afterwards.
+  A live `DMEx.Handler.Subscription` re-reads the durable cursor only on
+  connect, so a move takes effect at its next reconnect. Do this while it is
+  stopped, or restart it afterwards.
   """
 
   alias DMEx.Handler
@@ -59,10 +58,9 @@ defmodule DMEx.Handler.Cursors do
   @doc """
   Moves `handler`'s cursor to `last_seen`, so the next connect resumes after it.
 
-  A cursor is **exclusive**, which is exactly what the `last_seen:` option is —
-  one domain, one unit, one name, so `move!(h, 41)` and `last_seen: 41` name the
-  same place. The difference is only durability: this writes the row, the option
-  stands in for one until there is a row.
+  `move!(h, 41)` and `last_seen: 41` name the same exclusive position in the
+  same units — `DMEx.Config` covers that vocabulary. The difference is only
+  durability: this writes the row, the option stands in for one until there is a row.
 
   `0` replays the whole log — not the same as `reset!/2`, since a cursor at 0
   still exists and `last_seen:` stays ignored. Every message after that position
@@ -75,19 +73,17 @@ defmodule DMEx.Handler.Cursors do
   @spec move!(module(), non_neg_integer(), keyword()) :: :ok
   def move!(handler, last_seen, opts) when is_atom(handler) and is_integer(last_seen) and last_seen >= 0 do
     {storage, storage_opts} = DMEx.Supervisor.storage!(opts)
-    subscription = Handler.resolve_subscription_id!(handler, opts)
 
     # No transaction: one statement is already atomic, and `rename!/3` — which
     # genuinely needs one, for two — is the contrast.
-    :ok = storage.advance_cursor(subscription, last_seen, storage_opts)
+    :ok = storage.advance_cursor(Handler.resolve_subscription_id!(handler, opts), last_seen, storage_opts)
   end
 
   @doc """
   Removes `handler`'s cursor entirely.
 
   Distinct from moving it to 0: with no row at all, the subscription's
-  `last_seen:` option applies again on its next start. That is the difference between "replay
-  everything" and "begin however this subscription was configured to begin".
+  `last_seen:` option applies again on its next start.
   """
   @spec reset!(module(), keyword()) :: :ok
   def reset!(handler, opts) when is_atom(handler) do

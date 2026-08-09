@@ -2,15 +2,14 @@ defmodule DMEx.Notifier.Postgres do
   @moduledoc """
   `LISTEN`/`NOTIFY` over a dedicated `Postgrex.Notifications` connection.
 
-  The default for `DMEx.Storage.Postgres`. A `LISTEN` connection must stay
-  checked out for its whole life, so it cannot come from the repo's pool and
-  gets a supervised connection of its own per log.
+  The default for `DMEx.Storage.Postgres`. One supervised connection per log,
+  outside the repo's pool — `c:DMEx.Notifier.child_specs/1` covers why.
 
   `pg_notify/2` rather than `NOTIFY <channel>`, so neither a derived channel
   name nor a message type needs identifier quoting or can be an injection site.
-  The payload is the message type, which `DMEx.Message`'s `[A-Za-z0-9_.]+` rule
-  keeps well inside Postgres' 8000-byte notification cap in practice — and an
-  over-long one costs a swallowed error and one poll interval, nothing more.
+  The payload is the message type, which `DMEx.Message` keeps to dot-separated
+  identifier segments — well inside Postgres' 8000-byte notification cap in
+  practice, and an over-long one costs a swallowed error and one poll interval.
 
   **Not usable behind a transaction-pooling connection pooler.** `LISTEN` is
   session state and PgBouncer in transaction mode hands the session back after
@@ -24,7 +23,6 @@ defmodule DMEx.Notifier.Postgres do
   @impl DMEx.Notifier
   def child_specs(opts) do
     name = name(opts)
-    repo = Map.fetch!(opts, :repo)
 
     # Hand-maintained, because Postgrex exports no list of its own connect
     # options — there is no `Postgrex.start_option/0` to derive this from, so
@@ -40,7 +38,7 @@ defmodule DMEx.Notifier.Postgres do
     # `DMEx.Log.Dispatcher` covers it at one poll interval of latency and logs a
     # warning once. Add the key here when that happens.
     conn_opts =
-      repo.config()
+      Map.fetch!(opts, :repo).config()
       |> Keyword.take([
         :hostname,
         :port,

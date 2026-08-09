@@ -8,12 +8,11 @@ defmodule DMEx.Storage.SQLite do
 
   ## `append/4` takes no lock, because the engine is the lock
 
-  Postgres allocates a sequence value at INSERT and makes the row visible at
-  COMMIT, so two appends can invert and DMEx has to serialize them itself with
-  an advisory lock. SQLite has one write transaction database-wide: a second
-  writer cannot execute its INSERT — cannot draw a rowid — until the first has
-  committed. Assignment order *is* commit order, and the interleaving the
-  Postgres adapter guards against is unrepresentable.
+  `DMEx.Storage` covers why id assignment order must equal commit order, and why
+  an engine with one database-wide write transaction satisfies it without a
+  lock: a second writer cannot execute its INSERT — cannot draw a rowid — until
+  the first has committed, so the interleaving the Postgres adapter guards
+  against is unrepresentable.
 
   So an append is one statement, `INSERT ... RETURNING id`, which is its own
   implicit write transaction. Wrapping it in `repo.transaction/1` would
@@ -33,16 +32,13 @@ defmodule DMEx.Storage.SQLite do
 
   `data` and `metadata` are TEXT holding JSON, so the bytes read back are the
   bytes the publisher wrote — key order and duplicate keys included, where
-  Postgres's `jsonb` normalizes both away. Nothing is cast on the way in or out,
-  so `c:DMEx.Storage.read/5`'s splice-verbatim contract is free rather than
-  bought with a `::text` render per row. A `json_valid` CHECK keeps the one
+  Postgres's `jsonb` normalizes both away. A `json_valid` CHECK keeps the one
   guarantee `jsonb` gave. See `DMEx.Storage.SQLite.Migration`.
 
   ## Timestamps are millisecond text
 
   `inserted_at` is fixed-width ISO-8601 to the millisecond, so byte order is
-  time order, and `datetime!/1` turns it back into the `%DateTime{}`
-  `t:DMEx.Storage.row/0` promises.
+  time order.
 
   ## No `:prefix`
 
@@ -165,15 +161,7 @@ defmodule DMEx.Storage.SQLite do
     # varying arity costs nothing: exqlite prepares every statement anyway.
     placeholders = Enum.map_join(4..(3 + length(types))//1, ",", &"?#{&1}")
 
-    query(
-      read_sql("AND type IN (#{placeholders})"),
-      [
-        cursor,
-        max_rows,
-        max_bytes | types
-      ],
-      opts
-    )
+    query(read_sql("AND type IN (#{placeholders})"), [cursor, max_rows, max_bytes | types], opts)
   end
 
   # Public so `DMEx.Storage.SQLiteTest` can EXPLAIN the real statement.

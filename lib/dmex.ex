@@ -182,7 +182,7 @@ defmodule DMEx do
       repeated != [] ->
         raise ArgumentError,
               "#{source} passes #{Enum.map_join(repeated, ", ", &inspect/1)} more than once. " <>
-                "Only the first is read, so a repeat could only ever mean one of them." <> hint
+                "Only one of them can take effect, so a repeat could only ever mean one of them." <> hint
 
       missing != [] ->
         raise ArgumentError,

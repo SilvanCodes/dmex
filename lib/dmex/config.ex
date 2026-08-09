@@ -5,32 +5,27 @@ defmodule DMEx.Config do
   DMEx reads **no global application config**. A log's settings are `use`
   options on its log module, a subscription's are `use DMEx.Handler` or
   `DMEx.Supervisor.subscribe/2` options, and both are resolved exactly once —
-  never per append, per request, or per row. `log!/1` and `handler!/1` copy across only keys they
-  know and validate what they copied, so an unrecognised key cannot silently
-  become a setting.
+  never per append, per request, or per row.
 
-  Nothing is negotiated: every setting has exactly one owner, so there is no
-  "requested" value anywhere to drift from an "effective" one.
+  Nothing is negotiated: every setting has exactly one owner — ARCHITECTURE
+  invariant 9.
 
   ## Log defaults
 
   | setting | default | why |
   | --- | --- | --- |
-  | `max_batch_frequency` | `100` | reads per second — **how hard one connection may hammer the database**. A hundred puts added latency (`1 / 2f`) at 5 ms, low enough to be invisible next to the network hop. The cost is at the pool, not the connection: worst-case reads per second is `open streams x this`, so it is the first setting to lower when many streams share one pool. Measured, a 10-connection pool starts queueing checkouts somewhere between 50 and 200 busy streams at this rate — see ARCHITECTURE's *What has been measured* and `guides/deployment.md`. Any positive number: `0.2` is one read every five seconds. |
-  | `max_batch_rows` | `500` | rows per read. Bounds the **per-row** heap cost — about a kilobyte each once decoded and framed, which no byte budget can see — and bounds the running sum enforcing `max_batch_bytes`. Also subject to the sizing rule in `guides/deployment.md`: one write must drain in well under `stall_timeout` at the slowest handler's rate. |
-  | `max_batch_bytes` | `1_048_576` | **payload** bytes per read, enforced inside the query (see `c:DMEx.Storage.read/5`). Bounds the half of the heap cost that scales with message size: 500 rows is half a megabyte at 1 KB each and half a gigabyte at 1 MB each. One row larger than this is still delivered on its own, since refusing it would wedge the stream permanently. |
+  | `max_batch_frequency` | `100` | reads per second. A hundred puts added latency (`1 / 2f`) at 5 ms, low enough to be invisible next to the network hop. The first setting to lower when many streams share one pool — `guides/deployment.md` has the pool arithmetic and the measurements. Any positive number: `0.2` is one read every five seconds. |
+  | `max_batch_rows` | `500` | rows per read. Bounds the **per-row** heap cost — about a kilobyte each once decoded and framed, which no byte budget can see — and bounds the running sum enforcing `max_batch_bytes`. `guides/deployment.md` sizes it against `stall_timeout`, since a write does not complete until the slowest handler has drained it. |
+  | `max_batch_bytes` | `1_048_576` | **payload** bytes per read, enforced inside the query (see `c:DMEx.Storage.read/5`, which also covers the single oversized row). Bounds the half of the heap cost that scales with message size: 500 rows is half a megabyte at 1 KB each and half a gigabyte at 1 MB each. |
   | `heartbeat_interval` | `15_000` | ms; half the most common 30 s proxy idle timeout, so two heartbeats fit inside every window. |
   | `poll_interval` | `1_000` | ms; Oban stager parity. The worst-case wakeup latency when a `NOTIFY` is lost, costing one `max(id)` index descent per app per second. |
-  | `stall_timeout` | `30_000` | ms; the budget for any one blocking step of the send loop. Generous on purpose: killing a healthy slow handler costs a reconnect and a fresh catch-up read, where a wedged connection lingering 30 s costs one request process. At the 1 MiB write cap it tolerates a handler draining a full write at ~280 kbit/s. `:infinity` runs no watcher at all. |
+  | `stall_timeout` | `30_000` | ms; the budget for any one blocking step of the send loop. Generous on purpose: killing a healthy slow handler costs a reconnect and a fresh catch-up read, where a wedged connection lingering 30 s costs one request process. `guides/deployment.md` sizes it against link speed. `:infinity` runs no watcher at all. |
   | `stall_check_interval` | `1_000` | ms; how often `DMEx.Log.Watcher` sweeps, so a stall is reclaimed within `stall_timeout + stall_check_interval`. A sweep is one atomics read per connection and no query. |
 
-  `max_batch_rows` and `max_batch_bytes` are not two spellings of one limit: a
-  row costs heap both as payload, which the byte bound counts, and as a fixed
-  ~1 KB of terms the database cannot see. At a 50-byte payload the 1 MiB budget
-  admits ~21 000 rows whose fixed cost alone is ~22 MB, and the row bound is
-  what closes that end. It is also what makes the byte bound cheap — a running
-  sum needs a bounded input, or it visits every row after the cursor to find
-  where to stop.
+  `max_batch_rows` and `max_batch_bytes` are not two spellings of one limit —
+  ARCHITECTURE invariant 2 has the two heap costs and the arithmetic. The row
+  bound is also what makes the byte bound cheap: a running sum needs a bounded
+  input, or it visits every row after the cursor to find where to stop.
 
   ## Handler defaults
 
@@ -49,10 +44,12 @@ defmodule DMEx.Config do
 
   `retry_backoff_base`/`retry_backoff_max` and
   `reconnect_backoff_base`/`reconnect_backoff_max` are validated independently and
-  deliberately not against each other: `DMEx.backoff/3` takes
-  `min(max, base * 2 ^ (attempt - 1))`, so the pair is unordered and the cap
-  always wins. A `max` below its `base` is not an error — it is a constant delay
-  of `max`, with the base ignored.
+  deliberately not against each other: the cap always wins in `DMEx.backoff/3`,
+  so the pair is unordered. A `max` below its `base` is not an error — it is a
+  constant delay of `max`, with the base ignored.
+
+  Whether the pacing defaults are right *under real load* is an open question —
+  see ARCHITECTURE's *Open questions*.
 
   ### `last_seen`
 
@@ -61,8 +58,7 @@ defmodule DMEx.Config do
   out as: exclusive, so delivery starts *after* it. Two forms:
 
     * **a non-negative id** — deliver everything above it. `0` is the whole log,
-      since ids start at 1. There is no conversion anywhere between this and
-      what the wire carries — that is the point of naming it after the column.
+      since ids start at 1.
     * **`nil`** — unset, and the default: from now on. The subscription sends no
       `last-event-id`, and the log answers an absent one with its tip, so
       nothing already appended is delivered. "Now" is the log's, resolved on
@@ -70,9 +66,6 @@ defmodule DMEx.Config do
       reconnects before handling anything does not see what was appended while
       it was down. That is what "from now on" means with no cursor; a
       subscription that must not miss those names a cursor instead.
-
-  Whether these are right *under real load* is still open: most have only been
-  exercised against benchmarks and a deliberately slow test handler.
   """
 
   @log_defaults [
@@ -161,9 +154,7 @@ defmodule DMEx.Config do
   bound on silence. It travels as SSE's `retry:`.
   """
   @spec effective_heartbeat(log()) :: pos_integer()
-  def effective_heartbeat(config) do
-    config.heartbeat_interval + batch_interval(config)
-  end
+  def effective_heartbeat(config), do: config.heartbeat_interval + batch_interval(config)
 
   @doc """
   The minimum gap between one connection's reads, in ms.
@@ -192,13 +183,12 @@ defmodule DMEx.Config do
   So the tables above can be tested against the code rather than trusted.
   """
   @spec defaults() :: %{log: keyword(), handler: keyword()}
-  def defaults do
-    %{log: Enum.sort(@log_defaults), handler: Enum.sort(@handler_defaults)}
-  end
+  def defaults, do: %{log: Enum.sort(@log_defaults), handler: Enum.sort(@handler_defaults)}
 
   ## Casting
 
-  # Only known keys are copied, so an unknown one cannot become a setting.
+  # Only known keys are copied, so an unknown one cannot become a setting. Later
+  # duplicates win, so a caller may prepend its own defaults to an option list.
   defp cast!(defaults, opts) do
     Enum.reduce(opts, Map.new(defaults), fn {key, value}, acc ->
       if Map.has_key?(acc, key), do: %{acc | key => value}, else: acc
@@ -210,15 +200,8 @@ defmodule DMEx.Config do
   defp validate_log!(config) do
     positive_number!(config, :max_batch_frequency)
 
-    for field <- [
-          :max_batch_rows,
-          :heartbeat_interval,
-          :poll_interval,
-          :max_batch_bytes,
-          :stall_check_interval
-        ] do
-      positive_integer!(config, field)
-    end
+    for field <- [:max_batch_rows, :heartbeat_interval, :poll_interval, :max_batch_bytes, :stall_check_interval],
+        do: positive_integer!(config, field)
 
     validate_stall_timeout!(config.stall_timeout)
 

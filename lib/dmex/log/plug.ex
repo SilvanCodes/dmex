@@ -18,8 +18,7 @@ defmodule DMEx.Log.Plug do
       consumer's filter admits. See `DMEx.Handler.Fingerprint` for the blob and
       `DMEx.Message.types/0` for what it is resolved against.
 
-  There is no application segment and no query string: one mount serves exactly
-  one log.
+  ARCHITECTURE.md's wire contract covers the rest of the URL vocabulary.
 
   ## `log_module:`, and not `log:`
 
@@ -40,10 +39,8 @@ defmodule DMEx.Log.Plug do
 
   A filter cannot be pushed into a SQL index — membership is a computation, not
   something an index can seek on — so `DMEx.Log.Selection` expands it against
-  the log's compiled message modules before the send loop starts, turning it
-  into the concrete type list the read path's `type = ANY($1)` wants.
-  The resulting set also routes wakeups, so an append only disturbs the
-  connections that asked for that type.
+  the log's compiled message modules before the send loop starts.
+  `DMEx.Message.types/0` covers what the resulting set is then used for.
 
   **A filter that matches nothing is a `404`.** An empty expansion is
   indistinguishable on the wire from a healthy stream on a quiet log, so the
@@ -59,10 +56,8 @@ defmodule DMEx.Log.Plug do
 
   No per-connection `GenServer` and no log-side supervisor: this plug registers
   the request process for wakeups and runs the send loop inline for the life of
-  the connection. In both Bandit and Cowboy the connection process owns the
-  socket, so writing chunks from another process is awkward at best — and
-  reclaiming a stalled connection means killing whichever process is blocked in
-  the write, so it had better be the one the connection dies with.
+  the connection. ARCHITECTURE invariant 4 covers why the process holding the
+  socket has to be the one the loop runs in.
 
   Registration happens before anything that can block, and hands back the
   connection's `DMEx.Log.Status`, which puts even the connect path under
@@ -72,12 +67,11 @@ defmodule DMEx.Log.Plug do
 
   ## Response headers
 
-  Beyond the ordinary SSE set:
-
-    * **`x-accel-buffering: no`** — nginx-specific; stops it buffering the
-      stream. See `guides/deployment.md`.
-    * **`dmex-matched-types`** — on a selective stream only, how many of the
-      application's types the filter admitted.
+  Beyond the ordinary SSE set: **`x-accel-buffering: no`**, nginx-specific and
+  stopping it buffering the stream (see `guides/deployment.md`), and, on a
+  selective stream only, **`dmex-matched-types`**, how many of the application's
+  types the filter admitted — ARCHITECTURE.md's wire contract covers what it is
+  for.
 
   `connection: keep-alive` is set only on HTTP/1.1, where it means something; it
   is illegal on HTTP/2.
@@ -105,8 +99,6 @@ defmodule DMEx.Log.Plug do
 
   require Logger
 
-  # Sent only on a selective stream, saying how many of the application's types
-  # the filter admitted.
   @matched "dmex-matched-types"
 
   @impl Plug
@@ -133,10 +125,8 @@ defmodule DMEx.Log.Plug do
   end
 
   def call(conn, %{log: log}) do
-    config = log.__dmex__().config
-
     case Params.parse(conn.path_info, conn.req_headers) do
-      {:ok, params} -> select(conn, log, params, config)
+      {:ok, params} -> select(conn, log, params, log.__dmex__().config)
       {:error, error} -> bad_request(conn, error)
     end
   end
@@ -149,8 +139,6 @@ defmodule DMEx.Log.Plug do
   defp select(conn, log, params, config) do
     selection = Selection.expand(params.selection)
 
-    ## Streaming
-
     if Selection.size(selection) == 0 do
       not_found(conn)
     else
@@ -158,14 +146,16 @@ defmodule DMEx.Log.Plug do
     end
   end
 
+  ## Streaming
+
   defp stream(conn, log, params, config, selection) do
     # The request process registers *itself*, so a stream's entry dies with it.
     # Before the first read, so an append landing in between is picked up by
     # that read; before the first *write*, so the connect path is under the
     # watcher too, since resolving a cursor and sending headers can block
-    # exactly as the send loop can. The selection rides along so
-    # `DMEx.Log.Dispatcher` can decide whether an append is worth waking this
-    # connection for without messaging it.
+    # exactly as the send loop can. The selection rides along for
+    # `DMEx.Log.Dispatcher`'s routing — see `DMEx.Log.Streams` on what an entry
+    # carries.
     {:ok, status} = Streams.register(log, config.stall_timeout, selection)
 
     case resolve_cursor(log, params.cursor) do
@@ -263,16 +253,10 @@ defmodule DMEx.Log.Plug do
     end
   end
 
-  defp bad_request(conn, error) do
-    respond(conn, 400, Params.describe(error))
-  end
+  defp bad_request(conn, error), do: respond(conn, 400, Params.describe(error))
 
   defp not_found(conn) do
-    respond(
-      conn,
-      404,
-      "this filter matched none of the message types this application knows about"
-    )
+    respond(conn, 404, "this filter matched none of the message types this application knows about")
   end
 
   # 503, not 500: the request was well-formed and the log's storage is momentarily

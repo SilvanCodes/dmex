@@ -8,14 +8,13 @@ defmodule DMEx.Handler.Fingerprint do
   `guides/fingerprint-spec.md` is the normative encoding, which a non-Elixir
   consumer has to reproduce exactly.
 
-  **A filter rather than the types themselves**, because a namespaced type runs
-  to 25–40 bytes and sixty of them already overrun a conservative request line.
-  An
-  [XOR filter](https://arxiv.org/abs/1912.08258) (Graf & Lemire) encodes the same
-  set at ~2.46 bytes per type, which is what makes the URL — and therefore a bare
-  browser `EventSource` with real server-side selection — viable at all. XOR
-  rather than Bloom or cuckoo because the set is **static**: built once, never
-  added to, which is exactly the constraint XOR filters trade mutability for.
+  **A filter rather than the types themselves**: ARCHITECTURE.md has the sizing
+  argument that rules out spelling them out, and the spec why a **static** set —
+  built once, never added to — makes an
+  [XOR filter](https://arxiv.org/abs/1912.08258) (Graf & Lemire) the right family
+  rather than Bloom or cuckoo. That compression is what makes a bare browser
+  `EventSource`, whose URL is the only thing it controls, capable of real
+  server-side selection at all.
 
   **No false negatives**: every type the consumer selected is delivered. A false
   positive costs one unwanted type crossing the wire, which the consumer's skip
@@ -31,7 +30,7 @@ defmodule DMEx.Handler.Fingerprint do
 
   `build/1` and `encode/1` run **only at compile time**, in `DMEx.Handler`;
   `decode/1` runs at connect in `DMEx.Log.Params` and `member?/2` in
-  `DMEx.Log.Plug`. So a filter that cannot be constructed is a compile error
+  `DMEx.Log.Selection`. So a filter that cannot be constructed is a compile error
   rather than a runtime fallback.
   """
 
@@ -91,9 +90,7 @@ defmodule DMEx.Handler.Fingerprint do
         {:error, :empty}
 
       types ->
-        keys = Enum.map(types, &key_hash/1)
-
-        attempt(keys, seed(types), capacity(length(types)), 1)
+        attempt(Enum.map(types, &key_hash/1), seed(types), capacity(length(types)), 1)
     end
   end
 
@@ -116,9 +113,6 @@ defmodule DMEx.Handler.Fingerprint do
   its alphabet is entirely unreserved in a path segment under
   [RFC 3986](https://www.rfc-editor.org/rfc/rfc3986#section-2.3), so the blob
   needs no percent-encoding and no part of it can be read as a path separator.
-
-  No length field is carried: at a fixed fingerprint width the array length
-  falls out of the decoded byte count, and the block length out of that.
   """
   @spec encode(t()) :: String.t()
   def encode(%__MODULE__{seed: seed, fingerprints: fps}) do
@@ -261,7 +255,7 @@ defmodule DMEx.Handler.Fingerprint do
     Enum.each(stack, fn {hash, slot} ->
       value =
         hash
-        |> each_position(block, fn other -> :atomics.get(fps, other) end)
+        |> each_position(block, &:atomics.get(fps, &1))
         |> Enum.reduce(fingerprint(hash), &bxor/2)
 
       :atomics.put(fps, slot, band(value, @fingerprint_mask))
@@ -297,7 +291,7 @@ defmodule DMEx.Handler.Fingerprint do
   end
 
   defp capacity(count) do
-    slots = trunc(Float.ceil(@overhead * count)) + @slack
+    slots = ceil(@overhead * count) + @slack
 
     # Three equal blocks, so the rounding is up to the next multiple of three.
     slots + rem(3 - rem(slots, 3), 3)

@@ -16,9 +16,9 @@ defmodule DMEx.Notifier do
   Left out, the storage adapter picks — `c:DMEx.Storage.default_notifier/0`.
 
   **Nothing here is load-bearing for correctness.** A notification is a hint
-  that carries a message type and no data; `DMEx.Log.Dispatcher` polls in
-  parallel and that poll is what makes dispatch robust. A notifier that is down,
-  slow, or `:unsupported` costs latency and never a stuck consumer.
+  carrying a message type and no data, and `DMEx.Log.Dispatcher`'s poll is what
+  makes dispatch robust: a notifier that is down, slow, or `:unsupported` costs
+  latency and never a stuck consumer.
   """
 
   @typedoc """
@@ -27,8 +27,9 @@ defmodule DMEx.Notifier do
   `:name` is the registered name for whatever `c:child_specs/1` starts, which is
   what `c:listen/1` then looks up — derived once by the log so no adapter
   re-derives it, and unique per log because it is built from the log module.
-  `:channel` is the log's own `dmex_<app>` topic. `:repo` is there for an engine
-  that notifies *through* the database; one that does not simply ignores it.
+  `:channel` is the `dmex_<schema>` topic, which co-tenants on one table share —
+  see `DMEx.Log`. `:repo` is there for an engine that notifies *through* the
+  database; one that does not simply ignores it.
   """
   @type opts :: %{
           required(:name) => atom(),
@@ -41,9 +42,8 @@ defmodule DMEx.Notifier do
   Returns the processes this notifier needs running alongside a log.
 
   Started by the log's supervisor, before `DMEx.Log.Dispatcher`, and registered
-  under `opts.name`. Postgres puts a `Postgrex.Notifications` connection here,
-  since a `LISTEN` connection must stay checked out for its whole life and
-  cannot be pooled; `DMEx.Notifier.Beam` puts a `:pg` scope.
+  under `opts.name`. `DMEx.Notifier.Postgres` puts its dedicated
+  `Postgrex.Notifications` connection here; `DMEx.Notifier.Beam` a `:pg` scope.
   """
   @callback child_specs(opts()) :: [Supervisor.child_spec() | {module(), term()} | module()]
 
@@ -83,9 +83,9 @@ defmodule DMEx.Notifier do
   into an error, so this returns `:ok` regardless. The lost notification costs
   one poll interval.
 
-  The payload is the `type` and nothing else — what the *dispatcher*
-  routes on, never a carrier of work. No notifier routes on it: `:channel` is
-  the only dimension a notifier selects by, and every stream reads for itself.
+  The payload is the `type` and nothing else — what the *dispatcher* routes on,
+  never a carrier of work. No notifier routes on it: `:channel` is the only
+  dimension a notifier selects by.
 
   **Cost is per append and differs by an order of magnitude between adapters.**
   `append/2` calls this once per message, so this is the append path's own cost.

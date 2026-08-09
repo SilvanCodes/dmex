@@ -7,8 +7,7 @@ defmodule DMEx.Log do
       end
 
   A log module is a handle, not a process pool. It carries which storage adapter
-  and repo an append goes through, and thereby which `dmex_messages` table —
-  which is also what scopes the append lock and the notification channel. Name
+  and repo an append goes through, and thereby which `dmex_messages` table. Name
   it in `DMEx.Supervisor`'s `logs:` — an application may own several — and mount
   its endpoint:
 
@@ -32,8 +31,6 @@ defmodule DMEx.Log do
     * The wire type comes from the message's **own module**
       (`c:DMEx.Message.type/0`), never from a call argument, so it cannot
       disagree with the struct it describes.
-    * `metadata` passes through **untouched**, all the way to the handler that
-      receives it. Nothing DMEx knows is ever written into it.
     * Nothing records which log appended the message. Whether a `type` says
       where it came from is the producer's choice of a namespaced one — see
       `DMEx.Message`, which is also where the collision that follows from
@@ -88,16 +85,12 @@ defmodule DMEx.Log do
   silently.
 
   *How* that is bought is the storage adapter's, not this module's, and the two
-  shipped ones differ — `DMEx.Storage.Postgres` takes a transaction-scoped
-  advisory lock keyed on the table, `DMEx.Storage.SQLite` takes no lock because
-  the engine has one writer database-wide. The requirement, both answers, and
-  their consequences for a caller appending inside its own transaction are
-  stated once in `DMEx.Storage`.
+  shipped ones differ. `DMEx.Storage` states both answers and what they mean for
+  a caller appending inside its own transaction.
 
   ## Telemetry
 
-  `append/2` emits `[:dmex, :append, :start | :stop | :exception]` with
-  `%{log: module, type: String.t()}` metadata.
+  `append/2` emits a `[:dmex, :append, ...]` span — see `DMEx.Telemetry`.
   """
 
   alias DMEx.Config
@@ -297,9 +290,8 @@ defmodule DMEx.Log do
   # waits on that process dying rather than on a duration. The deadline is only
   # for the case where the name is held by a genuine duplicate, which never dies.
   @spec __start__((-> Supervisor.on_start())) :: Supervisor.on_start()
-  def __start__(start) when is_function(start, 0) do
-    await_start(start, System.monotonic_time(:millisecond) + @start_timeout)
-  end
+  def __start__(start) when is_function(start, 0),
+    do: await_start(start, System.monotonic_time(:millisecond) + @start_timeout)
 
   defp await_start(start, deadline) do
     case start.() do

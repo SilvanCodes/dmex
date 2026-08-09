@@ -4,14 +4,13 @@ defmodule DMEx.Transport.SSE do
 
   Both ends of the wire DMEx defines. The send side encodes rows as
   `DMEx.Transport.SSE.Frame` blocks and chunks them down a `Plug.Conn`; the
-  receive side owns a Mint connection, decodes what comes back, and turns HTTP
-  into the small vocabulary `DMEx.Handler.Subscription` acts on.
+  receive side owns a Mint connection, decodes what comes back
+  (`DMEx.Transport.SSE.Decoder`), and turns HTTP into the small vocabulary
+  `DMEx.Handler.Subscription` acts on.
 
   Chosen for a `logs:` entry that is a URL. Everything true of a *wire* and of
   nothing else lives here:
 
-    * framing and decoding (`DMEx.Transport.SSE.Frame`,
-      `DMEx.Transport.SSE.Decoder`)
     * the request contract (`DMEx.Handler.Request`)
     * HTTP status policy: `2xx` proceeds, `404` retries, other `4xx` is fatal,
       everything else reconnects
@@ -40,9 +39,8 @@ defmodule DMEx.Transport.SSE do
   def write(conn, rows) do
     frames = Enum.map(rows, &Frame.encode_row/1)
 
-    case Plug.Conn.chunk(conn, frames) do
-      {:ok, conn} -> {:ok, conn, %{bytes: IO.iodata_length(frames)}}
-      {:error, reason} -> {:error, reason}
+    with {:ok, conn} <- Plug.Conn.chunk(conn, frames) do
+      {:ok, conn, %{bytes: IO.iodata_length(frames)}}
     end
   end
 
@@ -100,9 +98,7 @@ defmodule DMEx.Transport.SSE do
   def liveness(source) do
     # Until the log has advertised its own, assume a generous interval rather
     # than drop a healthy connection from a log that paces itself slowly.
-    interval = Decoder.retry(source.decoder) || @assumed_retry
-
-    source.config.missed_heartbeats * interval
+    source.config.missed_heartbeats * (Decoder.retry(source.decoder) || @assumed_retry)
   end
 
   # Nothing parked is `:unknown`, which is what `c:DMEx.Transport.handle_message/2`
@@ -111,9 +107,7 @@ defmodule DMEx.Transport.SSE do
   @impl DMEx.Transport
   def handle_message(:continue, %{pending: []}), do: :unknown
 
-  def handle_message(:continue, source) do
-    responses(source.pending, %{source | pending: []}, [])
-  end
+  def handle_message(:continue, source), do: responses(source.pending, %{source | pending: []}, [])
 
   def handle_message(message, source) do
     case Mint.HTTP.stream(source.conn, message) do
@@ -188,9 +182,7 @@ defmodule DMEx.Transport.SSE do
 
   defp response({:done, ref}, %{ref: ref} = source), do: {:halt, {:disconnect, :closed, source}}
 
-  defp response({:error, ref, reason}, %{ref: ref} = source) do
-    {:halt, {:disconnect, reason, source}}
-  end
+  defp response({:error, ref, reason}, %{ref: ref} = source), do: {:halt, {:disconnect, reason, source}}
 
   defp response(_other, source), do: {:cont, source}
 end

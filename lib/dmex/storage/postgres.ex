@@ -2,10 +2,9 @@ defmodule DMEx.Storage.Postgres do
   @moduledoc """
   The Postgres implementation of `DMEx.Storage`.
 
-  Raw SQL through `Ecto.Adapters.SQL.query/4` rather than Ecto schemas:
-  `data::text` cannot be expressed as a schema load, and the whole point of the
-  read is that `jsonb` comes back as the text `DMEx.Transport.SSE.Frame` splices
-  verbatim.
+  Raw SQL through `Ecto.Adapters.SQL.query/4` rather than Ecto schemas: the
+  `data::text` that `c:DMEx.Storage.read/5` requires cannot be expressed as a
+  schema load.
 
   ## The driver never touches `jsonb`
 
@@ -164,49 +163,42 @@ defmodule DMEx.Storage.Postgres do
   end
 
   defp query(sql, params, opts) do
-    case SQL.query(Map.fetch!(opts, :repo), sql, params) do
-      {:ok, %{rows: rows}} -> {:ok, Enum.map(rows, &to_row/1)}
-      {:error, reason} -> {:error, reason}
+    with {:ok, %{rows: rows}} <- SQL.query(Map.fetch!(opts, :repo), sql, params) do
+      {:ok, Enum.map(rows, &to_row/1)}
     end
   end
 
   @impl DMEx.Storage
   def max_id(opts) do
-    repo = Map.fetch!(opts, :repo)
     sql = "SELECT coalesce(max(id), 0) FROM #{table(@messages, opts)}"
 
-    case SQL.query(repo, sql, []) do
-      {:ok, %{rows: [[max_id]]}} -> {:ok, max_id}
-      {:error, reason} -> {:error, reason}
+    with {:ok, %{rows: [[max_id]]}} <- SQL.query(Map.fetch!(opts, :repo), sql, []) do
+      {:ok, max_id}
     end
   end
 
   @impl DMEx.Storage
   def appended_since(cursor, opts) when is_integer(cursor) and cursor >= 0 do
-    repo = Map.fetch!(opts, :repo)
-
     # One statement for both halves the poll needs: a primary-key range scan
-    # over one poll interval of appends. On an idle log `max(id)` is NULL, which
-    # is the empty case.
+    # over one poll interval of appends. On an idle log `max(id)` is NULL and
+    # the coalesce makes the types `[]`, which is already the empty case — no
+    # arm of its own.
     sql = """
     SELECT max(id), coalesce(array_agg(DISTINCT type), '{}')
       FROM #{table(@messages, opts)}
      WHERE id > $1
     """
 
-    case SQL.query(repo, sql, [cursor]) do
-      {:ok, %{rows: [[nil, _types]]}} -> {:ok, {nil, []}}
-      {:ok, %{rows: [[max_id, types]]}} -> {:ok, {max_id, types}}
-      {:error, reason} -> {:error, reason}
+    with {:ok, %{rows: [[max_id, types]]}} <- SQL.query(Map.fetch!(opts, :repo), sql, [cursor]) do
+      {:ok, {max_id, types}}
     end
   end
 
   @impl DMEx.Storage
   def last_seen(subscription, opts) when is_binary(subscription) do
-    repo = Map.fetch!(opts, :repo)
     sql = "SELECT last_seen FROM #{table(@cursors, opts)} WHERE subscription = $1"
 
-    case SQL.query(repo, sql, [subscription]) do
+    case SQL.query(Map.fetch!(opts, :repo), sql, [subscription]) do
       {:ok, %{rows: [[last_seen]]}} -> {:ok, last_seen}
       {:ok, %{rows: []}} -> {:ok, nil}
       {:error, reason} -> {:error, reason}
@@ -215,48 +207,31 @@ defmodule DMEx.Storage.Postgres do
 
   @impl DMEx.Storage
   def cursor(subscription, opts) when is_binary(subscription) do
-    repo = Map.fetch!(opts, :repo)
-
     sql = """
     SELECT last_seen, updated_at
       FROM #{table(@cursors, opts)}
      WHERE subscription = $1
     """
 
-    case SQL.query(repo, sql, [subscription]) do
-      {:ok, %{rows: [[last_seen, updated_at]]}} ->
-        {:ok, %{last_seen: last_seen, updated_at: updated_at}}
-
-      {:ok, %{rows: []}} ->
-        {:ok, nil}
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
-  @impl DMEx.Storage
-  def delete_cursor(subscription, opts) when is_binary(subscription) do
-    repo = Map.fetch!(opts, :repo)
-    sql = "DELETE FROM #{table(@cursors, opts)} WHERE subscription = $1"
-
-    case SQL.query(repo, sql, [subscription]) do
-      {:ok, _} -> :ok
+    case SQL.query(Map.fetch!(opts, :repo), sql, [subscription]) do
+      {:ok, %{rows: [[last_seen, updated_at]]}} -> {:ok, %{last_seen: last_seen, updated_at: updated_at}}
+      {:ok, %{rows: []}} -> {:ok, nil}
       {:error, reason} -> {:error, reason}
     end
   end
 
   @impl DMEx.Storage
-  def transaction(fun, opts) when is_function(fun, 0) do
-    repo = Map.fetch!(opts, :repo)
+  def delete_cursor(subscription, opts) when is_binary(subscription) do
+    sql = "DELETE FROM #{table(@cursors, opts)} WHERE subscription = $1"
 
-    repo.transaction(fun)
+    with {:ok, _} <- SQL.query(Map.fetch!(opts, :repo), sql, [subscription]), do: :ok
   end
 
   @impl DMEx.Storage
-  def advance_cursor(subscription, last_seen, opts) when is_binary(subscription) and is_integer(last_seen) do
-    repo = Map.fetch!(opts, :repo)
+  def transaction(fun, opts) when is_function(fun, 0), do: Map.fetch!(opts, :repo).transaction(fun)
 
+  @impl DMEx.Storage
+  def advance_cursor(subscription, last_seen, opts) when is_binary(subscription) and is_integer(last_seen) do
     sql = """
     INSERT INTO #{table(@cursors, opts)} (subscription, last_seen, updated_at)
          VALUES ($1, $2, now())
@@ -265,7 +240,7 @@ defmodule DMEx.Storage.Postgres do
                     updated_at = now()
     """
 
-    {:ok, _} = SQL.query(repo, sql, [subscription, last_seen])
+    {:ok, _} = SQL.query(Map.fetch!(opts, :repo), sql, [subscription, last_seen])
 
     :ok
   end
@@ -275,22 +250,15 @@ defmodule DMEx.Storage.Postgres do
         %{"subscription" => subscription, "id" => id, "type" => type, "data" => data, "metadata" => metadata},
         opts
       ) do
-    repo = Map.fetch!(opts, :repo)
-
     sql = """
     INSERT INTO #{table(@dead_messages, opts)}
            (subscription, id, type, data, metadata)
          VALUES ($1, $2, $3, $4::text::jsonb, $5::text::jsonb)
     """
 
-    # A dead row arrives as the consumer held it, so the encode happens here —
-    # and lands in the same `::text::jsonb` parameters an append uses.
     params = [subscription, id, type, JSON.encode!(data), JSON.encode!(metadata)]
 
-    case SQL.query(repo, sql, params) do
-      {:ok, _} -> :ok
-      {:error, reason} -> {:error, reason}
-    end
+    with {:ok, _} <- SQL.query(Map.fetch!(opts, :repo), sql, params), do: :ok
   end
 
   @impl DMEx.Storage
@@ -307,14 +275,9 @@ defmodule DMEx.Storage.Postgres do
 
   @impl DMEx.Storage
   def delete_dead_message(subscription, id, opts) when is_binary(subscription) and is_integer(id) do
-    repo = Map.fetch!(opts, :repo)
-
     sql = "DELETE FROM #{table(@dead_messages, opts)} WHERE subscription = $1 AND id = $2"
 
-    case SQL.query(repo, sql, [subscription, id]) do
-      {:ok, _} -> :ok
-      {:error, reason} -> {:error, reason}
-    end
+    with {:ok, _} <- SQL.query(Map.fetch!(opts, :repo), sql, [subscription, id]), do: :ok
   end
 
   @impl DMEx.Storage
@@ -325,11 +288,7 @@ defmodule DMEx.Storage.Postgres do
   defp lock!(repo, opts) do
     {classid, objid} = Map.fetch!(opts, :lock)
 
-    {:ok, _} =
-      SQL.query(repo, "SELECT pg_advisory_xact_lock($1, $2)", [
-        classid,
-        objid
-      ])
+    {:ok, _} = SQL.query(repo, "SELECT pg_advisory_xact_lock($1, $2)", [classid, objid])
   end
 
   defp insert!(repo, type, data, metadata, opts) do
@@ -350,15 +309,8 @@ defmodule DMEx.Storage.Postgres do
   # changing the head and the rows come out mis-keyed. Not silently —
   # `test/dmex/storage/conformance_test.exs` value-pins `type`, so the
   # mismatch is a failing suite rather than a wrong wire frame.
-  defp to_row([id, type, data, metadata, inserted_at]) do
-    %{
-      id: id,
-      type: type,
-      data: data,
-      metadata: metadata,
-      inserted_at: inserted_at
-    }
-  end
+  defp to_row([id, type, data, metadata, inserted_at]),
+    do: %{id: id, type: type, data: data, metadata: metadata, inserted_at: inserted_at}
 
   ## Naming
 

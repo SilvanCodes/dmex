@@ -14,17 +14,14 @@ defmodule DMEx.Log.Dispatcher do
 
   **It never reads rows or fans out data.** Each stream reads for itself,
   bounded by its own `max_batch_rows`, so this shared per-app process holds no
-  message data on any connection's behalf. A notification carries a routing key
-  and nothing else — never a range, an id, or a row. Missing a hint costs
-  latency, never correctness, so the send loop stays correct with this process
-  down.
+  message data on any connection's behalf. `c:DMEx.Notifier.notify/2` covers
+  what a notification carries.
 
   **The poll must not wake connections for nothing.** Unconditional broadcast
   re-creates a thundering herd: a thousand connections at a one-second interval
   is a thousand reads per second on a completely idle log. So the poll asks what
   has been appended past `polled_through`, its own cursor, and broadcasts only
-  if anything was — one cheap query per interval per *app*, zero wakeups when
-  nothing was appended.
+  if anything was — one cheap query per interval per *app*.
 
   **Both signals route.** A wakeup goes only to connections whose selection
   contains the appended type; a whole-log subscription matches everything. That
@@ -47,11 +44,7 @@ defmodule DMEx.Log.Dispatcher do
   @streams 1
   @woken 2
 
-  @doc """
-  Starts a dispatcher for `log:`.
-
-  Done automatically by the log's own supervisor.
-  """
+  @doc "Starts a dispatcher for `log:`."
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
     log = Keyword.fetch!(opts, :log)
@@ -105,9 +98,7 @@ defmodule DMEx.Log.Dispatcher do
     # Collapse a burst of appends into one broadcast pass. Payloads accumulate
     # rather than being discarded, because the union of the types in a burst is
     # exactly the routing key set for the one pass that replaces it.
-    types = drain_notifications([payload])
-
-    {:noreply, broadcast(state, types)}
+    {:noreply, broadcast(state, drain_notifications([payload]))}
   end
 
   @impl GenServer

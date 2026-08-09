@@ -76,11 +76,10 @@ defmodule DMEx.Storage do
   @typedoc """
   One row of a log, as `c:read/5` returns it.
 
-  `:data` and `:metadata` are JSON text as **binaries**: a transport that puts
-  them on a wire splices them verbatim into its own iodata, and one that hands
-  them to a pipeline passes them straight to `JSON.decode!/1`. Iodata belongs to
-  the frame, which is bytes on their way out; a row's fields are stored values, so
-  they are one type and it is this one.
+  `:data` and `:metadata` are JSON text as **binaries**, never iodata: iodata
+  belongs to the frame, which is bytes on their way out, where a row's fields are
+  stored values. One type serves both readers — a transport splices it into its
+  own iodata, a pipeline hands it to `JSON.decode!/1`.
 
   `:inserted_at` is a `DateTime.t()` and never a `NaiveDateTime.t()`: a naive
   timestamp renders without the trailing `Z`, which would silently change every
@@ -90,11 +89,11 @@ defmodule DMEx.Storage do
 
   **`:inserted_at` means two different things, by table.** From `c:read/5` it is
   when the message was appended; from `c:list_dead_messages/2` it is when the row
-  landed in `dmex_dead_messages`, since a dead row's append time is deliberately
-  not carried over — see `DMEx.Storage.Migration`. The column keeps one name
-  because that is what makes a dead row *structurally* a log row, which is what
-  lets a replay go straight back through the pipeline with no reshaping and no
-  second decode path. Nothing in DMEx reads the field either way; it is
+  landed in `dmex_dead_messages`. A dead row's append time is deliberately not
+  carried over — pruning that table needs an axis answering "how long has this
+  been sitting here", which append time cannot. The column keeps one name anyway,
+  which is what makes a dead row *structurally* a log row; see
+  `c:list_dead_messages/2`. Nothing in DMEx reads the field either way; it is
   observability, and `DMEx.Handler.DeadMessages.list/2` is the one place a
   reader has to know which of the two it is holding.
   """
@@ -109,13 +108,15 @@ defmodule DMEx.Storage do
   @doc """
   Appends one message and returns its assigned id.
 
-  Runs in a transaction that takes the per-table advisory lock *first* and holds
-  it to COMMIT — see the module documentation for why that is load-bearing.
+  Must make id assignment order equal commit order — see the module
+  documentation for why that is load-bearing, and for the two ways the shipped
+  adapters buy it.
 
   `data` and `metadata` arrive as already-encoded JSON binaries, handed to the
   database without decoding, and nothing DMEx owns is merged into `metadata`.
 
-  A caller already inside a transaction extends that lock for the enclosing
+  A caller already inside a transaction holds whichever of those two an adapter
+  uses — the advisory lock, the write transaction — for the enclosing
   transaction's lifetime, serializing every other append to that table for its
   duration. A documented consequence, not a bug.
   """
@@ -126,15 +127,14 @@ defmodule DMEx.Storage do
   Reads rows with `id > cursor` in ascending id order, bounded by **both** a row
   count and a byte budget, optionally narrowed to a set of message types.
 
-  Four things an adapter must get right:
+  Three things an adapter must get right:
 
     * **Both bounds are applied inside the query.** `max_bytes` caps
       `octet_length(data) + octet_length(metadata) + octet_length(type)`
       summed across the returned rows. Reading `max_rows` rows and trimming the
       surplus afterwards has already spent the memory the bound exists to cap.
-      `max_rows` is not advisory either: it bounds the fixed ~1 KB per-row cost of
-      turning a row into terms, which no budget in database octets can see, and
-      it is what makes the running sum cheap by giving it a bounded input.
+      `max_rows` is not advisory either — see `max_batch_rows` in `DMEx.Config`
+      for what it buys that a budget in database octets cannot.
 
     * **The byte bound is inclusive, with one exception.** The rows never total
       more than `max_bytes` — except that at least one row must always come
@@ -226,8 +226,8 @@ defmodule DMEx.Storage do
   frame later; it survives because those three are also called outside a
   transaction, from `DMEx.Handler.Cursors` and `DMEx.Handler.DeadMessages`.
   A `c:transaction/2` that fails as *infrastructure* is neither — that is
-  `DMEx.Storage.Error`, raised by `DMEx.Handler.Pipeline`, and nothing here
-  reports it.
+  `DMEx.Storage.Error`, raised at the call site by `DMEx.Handler.Pipeline` and
+  `DMEx.Handler.DeadMessages`, and nothing here reports it.
   """
   @callback advance_cursor(subscription :: String.t(), last_seen :: non_neg_integer(), opts()) :: :ok
 
@@ -294,8 +294,8 @@ defmodule DMEx.Storage do
   @doc """
   Removes a subscription's cursor entirely.
 
-  Distinct from advancing it to 0: with no row at all the subscription's
-  `last_seen:` option applies again on its next start.
+  Distinct from advancing it to 0 — `DMEx.Handler.Cursors.reset!/2` covers the
+  difference.
   """
   @callback delete_cursor(subscription :: String.t(), opts()) :: :ok | {:error, term()}
 
@@ -337,10 +337,7 @@ defmodule DMEx.Storage do
   """
   @spec validate!(module(), opts()) :: :ok
   def validate!(adapter, opts) do
-    if function_exported?(adapter, :validate!, 1) do
-      adapter.validate!(opts)
-    end
-
+    if function_exported?(adapter, :validate!, 1), do: adapter.validate!(opts)
     :ok
   end
 

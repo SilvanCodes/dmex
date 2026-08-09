@@ -17,7 +17,5 @@ defmodule DMEx.Storage.Error do
   def exception(reason), do: %__MODULE__{reason: reason}
 
   @impl true
-  def message(%__MODULE__{reason: reason}) do
-    "storage transaction failed: #{inspect(reason)}"
-  end
+  def message(%__MODULE__{reason: reason}), do: "storage transaction failed: #{inspect(reason)}"
 end

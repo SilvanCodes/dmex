@@ -8,13 +8,11 @@ defmodule DMEx.Handler.Request do
   `position/2` is the one part `DMEx.Transport.Local` shares.
 
   The only header DMEx contributes is `last-event-id`, alongside the `accept`
-  every SSE client sends. It carries one non-negative integer — the exclusive
-  cursor to resume after — or it is absent, which asks the log for its tip.
+  every SSE client sends; `DMEx.Log.Params` documents its vocabulary.
 
   **Nothing here converts anything.** A durable cursor, a configured
-  `last_seen:` and the header are one domain in one unit: exclusive, delivery
-  starting above it. `position/2` is a choice between two of them and no
-  arithmetic at all.
+  `last_seen:` and the header are one domain in one unit, so `position/2` is a
+  choice between two of them and no arithmetic at all.
   """
 
   alias DMEx.Config
@@ -34,9 +32,7 @@ defmodule DMEx.Handler.Request do
   @doc """
   Builds the `last-event-id` header for a cursor, or none at all.
 
-  An empty list is the whole of "from now on": the header's absence is what says
-  it, so there is no token to define and a browser `EventSource` that has never
-  received a frame asks for the same thing.
+  An empty list is the whole of "from now on": the header's absence is what says it.
   """
   @spec last_event_id(cursor(), Config.handler()) :: [{String.t(), String.t()}]
   def last_event_id(cursor, config) do
@@ -50,13 +46,10 @@ defmodule DMEx.Handler.Request do
   Where this subscription is asking to start.
 
   A durable cursor wins over `last_seen:` whenever there is one — that is the
-  whole of resumption. `DMEx.Transport.Local` resolves the same two answers
-  against the log directly rather than over a wire, which is why this is the one
-  function in this module a transport with no wire has any use for.
+  whole of resumption.
   """
   @spec position(cursor(), Config.handler()) :: position()
-  def position(:none, %{last_seen: nil}), do: :now
-  def position(:none, %{last_seen: cursor}) when is_integer(cursor), do: cursor
+  def position(:none, config), do: config.last_seen || :now
   def position(cursor, _config) when is_integer(cursor), do: cursor
 
   @doc """
@@ -68,10 +61,7 @@ defmodule DMEx.Handler.Request do
   contract in `ARCHITECTURE.md` for why.
   """
   @spec path(URI.t(), String.t() | nil) :: String.t()
-  def path(uri, fingerprint \\ nil)
-
-  def path(%URI{path: nil}, fingerprint), do: join("/", fingerprint)
-  def path(%URI{path: path}, fingerprint), do: join(path, fingerprint)
+  def path(%URI{path: path}, fingerprint \\ nil), do: join(path || "/", fingerprint)
 
   defp join(path, nil), do: path
   defp join(path, fingerprint), do: String.trim_trailing(path, "/") <> "/" <> fingerprint

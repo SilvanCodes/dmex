@@ -35,10 +35,10 @@ defmodule DMEx.Supervisor do
       or a stream URL (remote).
     * `:otp_app` — the application whose modules are scanned for handlers, and
       for the message types a *pure consumer* can see. Defaults to the Mix
-      project; worth stating in a release, though every application depending on
-      `:dmex` is scanned regardless. `otp_app: nil` scans nothing beyond those.
-      The application owning each owned log module is scanned too, which is this
-      one only for a single-app host.
+      project; worth stating in a release. `DMEx.discovery/1` covers what is
+      reached without it, and `otp_app: nil` scans nothing beyond that. Each
+      application owning an owned log is scanned too — this one only, for a
+      single-app host.
     * `:repo` — the Ecto repo holding `dmex_cursors`.
     * `:storage` — the `DMEx.Storage` adapter; defaults to `DMEx.Storage.Postgres`.
       `DMEx.Storage.SQLite` is the other shipped one.
@@ -57,10 +57,9 @@ defmodule DMEx.Supervisor do
   resolve it from the supervisor named by `supervisor:`; with neither it raises
   and names both fixes. `logs:` resolves the same way.
 
-  **Two subscriptions cannot share one identity.** `{log, id}` keys the cursor,
-  so two handlers declaring the same pair would clobber each other's position.
-  Checked across every discovered handler before any child starts; a dynamic
-  `subscribe/2` for a live id gets `{:error, {:already_subscribed, id}}`.
+  **Two subscriptions cannot share one identity** — `DMEx.Handler` covers the
+  `{log, id}` pair. Checked across every discovered handler before any child
+  starts, so a clash refuses the boot rather than clobbering a cursor.
   """
 
   use Supervisor
@@ -144,9 +143,7 @@ defmodule DMEx.Supervisor do
 
   # The applications owning the logs this supervisor starts — the ones a scan
   # cannot reach on its own unless they are named.
-  defp log_apps(logs) do
-    logs |> owned_logs() |> Enum.map(&Application.get_application/1) |> Enum.uniq()
-  end
+  defp log_apps(logs), do: logs |> owned_logs() |> Enum.map(&Application.get_application/1)
 
   @doc false
   @spec __start_discovered__(atom(), [module()]) :: :ok
@@ -179,11 +176,9 @@ defmodule DMEx.Supervisor do
   # one that does not: the host application in a release, the Mix project
   # everywhere else.
   defp otp_app(opts) do
-    Keyword.get_lazy(opts, :otp_app, &mix_app/0)
-  end
-
-  defp mix_app do
-    if Code.ensure_loaded?(Mix.Project), do: Mix.Project.config()[:app]
+    Keyword.get_lazy(opts, :otp_app, fn ->
+      if Code.ensure_loaded?(Mix.Project), do: Mix.Project.config()[:app]
+    end)
   end
 
   @doc """
@@ -257,18 +252,9 @@ defmodule DMEx.Supervisor do
     supervisor = Keyword.get(opts, :supervisor, @default_name)
 
     stopped =
-      handler
-      |> Handler.declaration!()
-      |> Map.fetch!(:logs)
-      |> Enum.flat_map(fn log ->
-        Registry.lookup(
-          registry(supervisor),
-          {:subscription, Handler.subscription_id!(handler, log)}
-        )
-      end)
-      |> Enum.map(fn {pid, _} ->
-        DynamicSupervisor.terminate_child(subscriptions(supervisor), pid)
-      end)
+      for id <- Handler.subscription_ids(handler),
+          {pid, _} <- Registry.lookup(registry(supervisor), {:subscription, id}),
+          do: DynamicSupervisor.terminate_child(subscriptions(supervisor), pid)
 
     if stopped == [], do: {:error, :not_found}, else: :ok
   end
@@ -452,11 +438,7 @@ defmodule DMEx.Supervisor do
   defp log_target!(name, url) when is_binary(url) and url != "" do
     case URI.parse(url) do
       %URI{scheme: scheme, host: host} when scheme in ["http", "https"] and is_binary(host) ->
-        if host == "" do
-          raise_log_url(name, url, "it has no host")
-        else
-          url
-        end
+        if host == "", do: raise_log_url(name, url, "it has no host"), else: url
 
       %URI{scheme: nil} ->
         raise_log_url(name, url, "it has no scheme")

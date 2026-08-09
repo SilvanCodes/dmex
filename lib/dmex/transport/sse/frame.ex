@@ -8,12 +8,9 @@ defmodule DMEx.Transport.SSE.Frame do
       event: order_shipped
       data: {"data":{"order_id":7},"metadata":{"trace_id":"abc"}}
 
-  Nothing DMEx owns rides inside `data:`: `metadata` is the publisher's, byte for
-  byte, and the row's id is already the frame's `id:`.
-
-  The column-to-slot table is in ARCHITECTURE.md's wire contract. `id:` is the
-  row's own id, which is exactly the resume position, so a client echoing it
-  back as `Last-Event-ID` — which `DMEx.Log.Params` validates — resumes after it.
+  The column-to-slot table, and why each column goes where it does, is in
+  ARCHITECTURE.md's wire contract. `id:` is the row's own id, so a client echoing
+  it back as `Last-Event-ID` — which `DMEx.Log.Params` validates — resumes after it.
 
   ## Encoding
 
@@ -29,10 +26,9 @@ defmodule DMEx.Transport.SSE.Frame do
   reaches the wire, which is what makes it safe to put a whole payload on one
   `data:` line with no escaping pass.
 
-  `type` is the constrained-charset case: it goes straight onto the
-  `event:` line, and SSE field lines have no escaping. `dmex_messages` carries a
-  CHECK restricting it to `[A-Za-z0-9_.]`, so a type that cannot be written on an
-  `event:` line cannot be appended. See `DMEx.Storage.Migration`.
+  `type` is the constrained-charset case: it goes straight onto the `event:`
+  line, and SSE field lines have no escaping. `DMEx.Storage.Migration`'s CHECK is
+  what makes a type that could not be written there unappendable.
   """
 
   @line_terminators ["\r\n", "\n", "\r"]
@@ -62,9 +58,8 @@ defmodule DMEx.Transport.SSE.Frame do
   @doc """
   The SSE line terminators: CRLF, LF and CR.
 
-  The grammar fact, stated here once. `DMEx.Transport.SSE.Decoder`'s blank-line
-  delimiters are this set crossed with itself and derive from it at compile
-  time, so neither module can be changed alone.
+  The grammar fact, stated here once: `DMEx.Transport.SSE.Decoder` derives its
+  blank-line delimiters from this set at compile time.
   """
   @spec line_terminators() :: [binary(), ...]
   def line_terminators, do: @line_terminators
@@ -98,9 +93,7 @@ defmodule DMEx.Transport.SSE.Frame do
   the blank line arrives.
   """
   @spec encode_retry(pos_integer()) :: iodata()
-  def encode_retry(ms) when is_integer(ms) and ms > 0 do
-    ["retry: ", Integer.to_string(ms), "\n\n"]
-  end
+  def encode_retry(ms) when is_integer(ms) and ms > 0, do: ["retry: ", Integer.to_string(ms), "\n\n"]
 
   @doc """
   Encodes a heartbeat, as an SSE comment frame.
@@ -129,12 +122,7 @@ defmodule DMEx.Transport.SSE.Frame do
   """
   @spec decode(binary()) :: {:ok, decoded()} | {:error, error()}
   def decode(block) when is_binary(block) do
-    fields =
-      block
-      |> split_lines()
-      |> Enum.reduce(%{data: []}, &collect_field/2)
-
-    case fields do
+    case block |> split_lines() |> Enum.reduce(%{data: []}, &collect_field/2) do
       %{id: id, event: event, data: [_ | _] = lines} ->
         # SSE joins consecutive `data:` lines with LF. DMEx always emits one,
         # but a generic producer may not.
@@ -152,18 +140,14 @@ defmodule DMEx.Transport.SSE.Frame do
     end
   end
 
-  # Both slots are mandatory and both must be objects — at least `{}`, never a
-  # missing key and never `null`. A payload short of that is a malformed message
-  # rather than a row to be patched up, which is what makes
-  # `t:DMEx.Handler.Pipeline.decoded_row/0` total: nothing downstream defaults
-  # anything.
+  # Rejecting a payload short of two objects rather than patching it up is what
+  # makes `t:DMEx.Handler.Pipeline.decoded_row/0` total: nothing downstream
+  # defaults anything.
   defp decode_row(payload, id, event) do
     case JSON.decode(payload) do
       {:ok, %{"data" => data, "metadata" => metadata} = decoded}
       when is_map(data) and is_map(metadata) ->
-        row = %{"id" => id, "type" => event}
-
-        {:ok, {:message, Map.merge(decoded, row)}}
+        {:ok, {:message, Map.merge(decoded, %{"id" => id, "type" => event})}}
 
       {:ok, other} ->
         {:error, {:invalid_data_shape, other}}

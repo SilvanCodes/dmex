@@ -7,10 +7,10 @@ defmodule DMEx.Transport.SSE.Decoder do
   reads and a read can contain several frames plus part of another. This
   accumulates and dispatches on the blank-line delimiter.
 
-  **Blocks carrying no row are dropped**: heartbeat comments, the `retry:` frame
-  at stream open, and anything `DMEx.Transport.SSE.Frame.decode/1` finds
-  incomplete. The `retry:` value is kept (see `retry/1`), because it is how a
-  consumer learns the interval to measure silence against.
+  **Blocks carrying no row are dropped** — every block `Frame.decode/1` reports
+  as `:ignore`, which `t:DMEx.Transport.SSE.Frame.decoded/0` enumerates. The
+  `retry:` value is kept (see `retry/1`), because it is how a consumer learns
+  the interval to measure silence against.
 
   **The buffer is bounded.** A producer that never emits a blank line — broken,
   hostile, or simply mid-frame when it wedged — would grow it without limit.
@@ -40,7 +40,7 @@ defmodule DMEx.Transport.SSE.Decoder do
   # vocabulary has one home: these eight are that set crossed with itself, minus
   # the pairs the set already contains.
   #
-  # `:binary.match/2` takes the leftmost match and the longest of those, which
+  # `:binary.split/2` splits on the leftmost match and the longest of those, which
   # is what these need: "\r\n\r\n" wins over the "\r\n\r" starting at the same
   # byte, and "\r\n\n" wins over the "\n\n" one byte later — and it is why the
   # generated order does not matter.
@@ -111,13 +111,11 @@ defmodule DMEx.Transport.SSE.Decoder do
   end
 
   defp extract(%{buffer: [binary]} = decoder, acc) do
-    case :binary.match(binary, @delimiters) do
-      :nomatch ->
+    case :binary.split(binary, @delimiters) do
+      [_unterminated] ->
         check_size(decoder, Enum.reverse(acc))
 
-      {start, length} ->
-        block = binary_part(binary, 0, start)
-        rest = binary_part(binary, start + length, byte_size(binary) - start - length)
+      [block, rest] ->
         decoder = %{decoder | buffer: [rest], size: byte_size(rest)}
 
         case Frame.decode(block) do

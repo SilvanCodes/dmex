@@ -22,9 +22,9 @@ defmodule DMEx.Transport do
   ## What a transport must preserve
 
   **No buffer.** At most one batch may be in flight, and producing the next must
-  be blocked until the current one has been handled. A transport that queues
-  rows for later has replaced a structural guarantee with a bound somebody has
-  to choose.
+  be blocked until the current one has been handled — ARCHITECTURE invariant 8.
+  A transport that queues rows for later has replaced a structural guarantee
+  with a bound somebody has to choose.
 
   **Rows are handled in the process that owns the cursor.** `c:handle_message/2`
   runs inside `DMEx.Handler.Subscription` and its rows are run inline there. A
@@ -86,13 +86,12 @@ defmodule DMEx.Transport do
   owns the cursor.
 
   `:origin` is the option every transport reads, and it is deliberately the
-  *general* name: `DMEx.Supervisor` resolves a `logs:` binding to either a URL or
-  a log module, and only the transport knows which it got. So each one narrows it
-  on the way in — `DMEx.Transport.SSE` keeps a `url`, `DMEx.Transport.Local` a
-  `log`. That is specialization rather than drift; renaming either to `origin`
-  would trade a name that says what the value *is* for one that says where the
-  slot came from, and renaming `:origin` itself to `url` would be wrong for the
-  local half, where it is a module.
+  *general* name: only the transport knows whether the binding resolved to a URL
+  or a log module, so each narrows it on the way in — `DMEx.Transport.SSE` keeps
+  a `url`, `DMEx.Transport.Local` a `log`. That is specialization rather than
+  drift; renaming either to `origin` would trade a name that says what the value
+  *is* for one that says where the slot came from, and renaming `:origin` itself
+  to `url` would be wrong for the local half, where it is a module.
   """
   @callback connect(keyword()) :: {:ok, source()} | {:error, term()}
 

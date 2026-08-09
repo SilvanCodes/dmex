@@ -35,23 +35,24 @@ defmodule DMEx.Storage.Migration do
 
   **The primary key on `id`** serves every whole-log read directly: those are
   `id > cursor` range scans and nothing else. **`(type, id)`** serves a
-  selective subscription's `id > cursor` plus a type predicate, and the
-  planner takes it when the selection is rare — measured on a 500k-row skewed
-  log, at 0.1% of rows yes, at 1% and above it prefers the primary key, which is
-  genuinely cheaper there. It costs one index entry per append, paid whether or
-  not anyone selects against it, because the alternative is that server-side
-  selection saves bandwidth and no database work at all.
+  selective subscription's `id > cursor` plus a type predicate, and the planner
+  takes it only when the selection is rare enough to be cheaper — see
+  *What has been measured* in `ARCHITECTURE.md` for the numbers. It costs one
+  index entry per append, paid whether or not anyone selects against it, because
+  the alternative is that server-side selection saves bandwidth and no database
+  work at all.
 
   ## The `type` CHECK
 
   `type` is restricted to `[A-Za-z0-9_.]+` because it goes on the wire as
   an SSE `event:` line and SSE field lines have no escaping. Everything else on
   the wire is spliced JSON, whose grammar already forbids raw control characters
-  inside strings. `use DMEx.Message` enforces the same charset on a declared
-  `type:` at compile time; this is the same rule for every other writer.
+  inside strings.
 
   A database constraint rather than a check in the append path, because it has
-  to hold for every writer of the table, including a backfill or a psql session.
+  to hold for every writer of the table: `use DMEx.Message` enforces the same
+  charset on a declared `type:` at compile time, a backfill or a psql session
+  goes nowhere near it.
   """
 
   use Ecto.Migration
@@ -65,7 +66,6 @@ defmodule DMEx.Storage.Migration do
   @spec up(keyword()) :: :ok
   def up(opts \\ []) when is_list(opts) do
     %{tables: tables, prefix: prefix} = validate!(opts)
-
     migration!().up(tables, prefix)
   end
 
@@ -82,12 +82,9 @@ defmodule DMEx.Storage.Migration do
   @spec down(keyword()) :: :ok
   def down(opts \\ []) when is_list(opts) do
     %{tables: tables, prefix: prefix} = validate!(opts)
-
     migration!().down(tables, prefix)
   end
 
-  # The repo the host's migration is running against, asked for its adapter —
-  # so `up/1` and `down/1` are the same two lines whatever the database is.
   # `repo/0` reads the migrator's process dictionary, and that is this process:
   # the host's `up/0` calls straight through to here.
   defp migration! do

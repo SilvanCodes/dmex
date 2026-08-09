@@ -23,15 +23,14 @@ defmodule DMEx.Handler.Subscription do
   crash loop is paced by `DMEx.Handler.Pipeline` instead, before it re-raises.
 
   One retry policy covers every transport: a transport says only whether an
-  event ends this connection (`{:disconnect, reason, source}`) or the
-  subscription (`{:stop, reason}`), and when to try again is decided here.
+  event ends this connection or the subscription (`t:DMEx.Transport.action/0`),
+  and when to try again is decided here.
 
   ## Liveness
 
   A connection can die without either end noticing — a vanished peer, a NAT
-  rebind, a dropped flow — and simply never deliver anything again.
-  `c:DMEx.Transport.liveness/1` is how long total silence may last before this
-  process gives up; `:infinity` arms no timer at all.
+  rebind, a dropped flow — and simply never deliver anything again, so this
+  process gives up on the deadline `c:DMEx.Transport.liveness/1` names.
 
   Silence means *no bytes at all*, not no messages. A heartbeat is activity, so
   a caught-up stream on an idle log stays healthy indefinitely.
@@ -51,8 +50,7 @@ defmodule DMEx.Handler.Subscription do
   ## Backpressure is the absence of a buffer
 
   Rows run through the pipeline **inline**, one at a time, as the transport
-  yields them: no queue, no drain loop, at most one batch in flight —
-  ARCHITECTURE invariant 8.
+  yields them: no queue, no drain loop — ARCHITECTURE invariant 8.
   """
 
   use GenServer
@@ -165,14 +163,10 @@ defmodule DMEx.Handler.Subscription do
   defp act({:noreply, source}, state), do: {:noreply, touch(%{state | source: source})}
 
   defp act({:rows, rows, source}, state) do
-    state = touch(%{state | source: source})
-
-    drive(:continue, Enum.reduce(rows, state, &run/2))
+    drive(:continue, Enum.reduce(rows, touch(%{state | source: source}), &run/2))
   end
 
-  defp act({:disconnect, reason, source}, state) do
-    {:noreply, reconnect(%{state | source: source}, reason)}
-  end
+  defp act({:disconnect, reason, source}, state), do: {:noreply, reconnect(%{state | source: source}, reason)}
 
   defp act({:stop, reason}, state), do: {:stop, reason, state}
 
@@ -180,9 +174,7 @@ defmodule DMEx.Handler.Subscription do
   # makes the reader block until it is done.
   @impl GenServer
   def handle_call({:rows, rows}, _from, state) do
-    state = touch(state)
-
-    {:reply, :ok, Enum.reduce(rows, state, &run/2)}
+    {:reply, :ok, Enum.reduce(rows, touch(state), &run/2)}
   end
 
   # A clean stop should not throw away skips already made. Rescued because the
@@ -197,8 +189,6 @@ defmodule DMEx.Handler.Subscription do
     end
 
     close(state)
-
-    :ok
   end
 
   ## Connecting
@@ -241,8 +231,7 @@ defmodule DMEx.Handler.Subscription do
   defp durable_cursor(state) do
     case state.storage.last_seen(state.subscription, state.storage_opts) do
       {:ok, nil} -> {:ok, :none}
-      {:ok, cursor} -> {:ok, cursor}
-      {:error, reason} -> {:error, reason}
+      other -> other
     end
   end
 
@@ -270,8 +259,7 @@ defmodule DMEx.Handler.Subscription do
 
     attempt = state.attempt + 1
 
-    delay =
-      DMEx.backoff(attempt, state.config.reconnect_backoff_base, state.config.reconnect_backoff_max)
+    delay = DMEx.backoff(attempt, state.config.reconnect_backoff_base, state.config.reconnect_backoff_max)
 
     Logger.debug(fn ->
       "DMEx #{state.subscription} (#{inspect(state.handler)}) reconnecting to " <>
@@ -318,9 +306,7 @@ defmodule DMEx.Handler.Subscription do
     # Re-armed on every sign of life rather than only on connect, because the
     # deadline itself can change: an SSE transport does not know the log's
     # advertised interval until the log has spoken.
-    state
-    |> Map.put(:last_activity, System.monotonic_time(:millisecond))
-    |> schedule_liveness()
+    schedule_liveness(%{state | last_activity: System.monotonic_time(:millisecond)})
   end
 
   # Checked twice per deadline, so a dead connection is noticed within about
@@ -332,13 +318,8 @@ defmodule DMEx.Handler.Subscription do
     if state.liveness_timer, do: Process.cancel_timer(state.liveness_timer)
 
     case state.transport.liveness(state.source) do
-      :infinity ->
-        %{state | liveness_timer: nil}
-
-      deadline ->
-        interval = max(div(deadline, 2), 250)
-
-        %{state | liveness_timer: Process.send_after(self(), :liveness, interval)}
+      :infinity -> %{state | liveness_timer: nil}
+      deadline -> %{state | liveness_timer: Process.send_after(self(), :liveness, max(div(deadline, 2), 250))}
     end
   end
 

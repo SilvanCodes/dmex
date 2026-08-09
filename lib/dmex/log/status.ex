@@ -6,28 +6,24 @@ defmodule DMEx.Log.Status do
   because the interesting case is precisely the one where that process is not
   running: whether it already has a wakeup queued, and by when it expects to be
   past whatever it is blocked in. Both are single machine words written far more
-  often than read, and neither may cost a round trip to a process that might be
-  wedged — so both live in one `:atomics` reference of two slots.
+  often than read, so both live in one `:atomics` reference of two slots.
 
   **The wakeup flag** is what keeps mailbox depth O(1) rather than O(append rate
   × stall duration): a stalled connection is blocked inside `chunk/2` and cannot
   service its mailbox while appends keep arriving, and since a wakeup carries no
   information, N of them and one are the same instruction. So the dispatcher
   only sends when the flag flips from clear to pending. `:atomics.exchange/3`
-  makes `flip/1` a test-and-set, so two dispatchers cannot both conclude they
-  should send.
-
-  `DMEx.Log.SendLoop` clears its own flag before each read, never after — see
-  `clear/1`.
+  makes `mark_pending/1` a test-and-set, so two dispatchers cannot both conclude
+  they should send.
 
   **The deadline** is what `DMEx.Log.Watcher` enforces from outside: the loop
   calls `arm/2` before each blocking step, and a deadline in the past means it
   did not clear one. `System.monotonic_time(:millisecond)`, so it is immune to
   wall-clock adjustment and comparable between the writer and the reader.
 
-  Both live in the connection's registry entry. The two slots are written by
-  different processes — the dispatcher flips the flag, the stream arms its
-  deadline — and never contend, since `:atomics` operations are per element.
+  The two slots are written by different processes — the dispatcher flips the
+  flag, the stream arms its deadline — and never contend, since `:atomics`
+  operations are per element. `DMEx.Log.Streams` holds the reference.
   """
 
   @flag 1
@@ -72,12 +68,7 @@ defmodule DMEx.Log.Status do
   @doc "Clears the flag. Called by the stream itself, before every read."
   @spec clear(t() | nil) :: :ok
   def clear(nil), do: :ok
-
-  def clear(ref) do
-    :atomics.put(ref, @flag, 0)
-
-    :ok
-  end
+  def clear(ref), do: :atomics.put(ref, @flag, 0)
 
   @doc "Whether a wakeup is currently queued. For tests and telemetry."
   @spec pending?(t()) :: boolean()
@@ -91,18 +82,10 @@ defmodule DMEx.Log.Status do
   """
   @spec arm(t() | nil, budget()) :: :ok
   def arm(nil, _budget), do: :ok
+  def arm(ref, :infinity), do: :atomics.put(ref, @deadline, @never)
 
-  def arm(ref, :infinity) do
-    :atomics.put(ref, @deadline, @never)
-
-    :ok
-  end
-
-  def arm(ref, budget) when is_integer(budget) and budget > 0 do
-    :atomics.put(ref, @deadline, System.monotonic_time(:millisecond) + budget)
-
-    :ok
-  end
+  def arm(ref, budget) when is_integer(budget) and budget > 0,
+    do: :atomics.put(ref, @deadline, System.monotonic_time(:millisecond) + budget)
 
   @doc """
   Drops the deadline, so nothing is overdue until the next `arm/2`.

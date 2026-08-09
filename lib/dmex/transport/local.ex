@@ -23,10 +23,11 @@ defmodule DMEx.Transport.Local do
   registration and a deadline for a stream that is not draining — the same thing
   it does to a stalled request process.
 
-  **Selection is a list, not a filter.** A remote subscription encodes its
-  message types into a `DMEx.Handler.Fingerprint` blob because they cross a wire and are
-  expanded on the other side. Here both ends are the same node, so the declared
-  modules go straight into the read as a type list.
+  **Selection is a list, not a filter.** Both ends are the same node, so the
+  handler's declared modules go straight into the read as a type list, where a
+  remote subscription would encode a `DMEx.Handler.Fingerprint` blob and expand
+  it on the other side — `DMEx.Log.Selection` owns both sets and says how they
+  differ.
   """
 
   @behaviour DMEx.Transport
@@ -105,9 +106,7 @@ defmodule DMEx.Transport.Local do
 
   # The reader is linked, so its death arrives as an exit the owner traps.
   @impl DMEx.Transport
-  def handle_message({:EXIT, reader, reason}, %{reader: reader} = source) do
-    {:disconnect, reason, source}
-  end
+  def handle_message({:EXIT, reader, reason}, %{reader: reader} = source), do: {:disconnect, reason, source}
 
   # Catches `:continue` too: nothing is ever parked, because rows arrive one
   # batch per `write/2` call and carry no terminal alongside them.
@@ -130,7 +129,7 @@ defmodule DMEx.Transport.Local do
 
   # The same two answers `DMEx.Handler.Request` puts in a `last-event-id` header
   # and `DMEx.Log.Plug` resolves back out, without the round trip — and from the
-  # same function, so the id form's `- 1` lives in exactly one place.
+  # same function, so neither side spells the position differently.
   #
   # An error ends the connect rather than falling back to 0, which would turn a
   # momentary pool exhaustion into a whole-log replay. The subscription retries

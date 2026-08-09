@@ -13,8 +13,8 @@ defmodule DMEx.Handler.DeadMessages do
   does have to restate it, though — a stored row is `t:DMEx.Storage.row/0`
   (atom keys, JSON text, as a driver returns it) while the pipeline consumes
   `t:DMEx.Handler.Pipeline.decoded_row/0` (string keys, decoded one level, as a
-  transport yields it). See `c:DMEx.Storage.dead_message/2` for the shape and
-  for what is deliberately not stored.
+  transport yields it). See `c:DMEx.Storage.record_dead_message/2` for the shape
+  and for what is deliberately not stored.
 
   ## Replay is the pipeline, minus `on_failure`
 
@@ -61,8 +61,7 @@ defmodule DMEx.Handler.DeadMessages do
   Rows come back in `t:DMEx.Storage.row/0` shape — `data` and `metadata` as JSON
   text, exactly as stored. With one field to read carefully: `:inserted_at` here
   is when the row landed in `dmex_dead_messages`, not when the message was
-  appended, which is not carried over. Same name, same shape as a log row, which
-  is what lets `replay!/2` hand one straight back to the pipeline.
+  appended, which is not carried over.
 
   Returns storage's `{:error, reason}` rather than raising, because a listing is
   something a caller inspects; `replay!/2` raises `DMEx.Storage.Error` on the same
@@ -146,10 +145,8 @@ defmodule DMEx.Handler.DeadMessages do
 
   # The delete is what `deliver/3` commits inside the handler's transaction,
   # where a stream commits the cursor advance — so a row leaves the table
-  # exactly when the handler accepts it. Nothing else here is replay's own:
-  # retries, telemetry, and letting `DMEx.Storage.Error` through are the
-  # pipeline's, and `on_failure` is the pipeline's and deliberately not applied
-  # (see the module documentation).
+  # exactly when the handler accepts it. Nothing else here is replay's own (see
+  # the module documentation).
   defp replay_one(row, state, subscription) do
     commit = fn ->
       :ok = state.storage.delete_dead_message(subscription, row.id, state.storage_opts)
