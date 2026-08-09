@@ -8,9 +8,8 @@ defmodule DMEx do
 
   ## Installing
 
-  DMEx's tables live in your database, so they are yours to migrate. Pass
-  `tables: [:messages]` or `tables: [:cursors, :dead_messages]` if the application only plays
-  one of the two roles; see `DMEx.Storage.Migration`.
+  DMEx's tables live in your database, so they are yours to migrate — see
+  `DMEx.Storage.Migration` for the per-role subsets.
 
       defmodule MyApp.Repo.Migrations.AddDMEx do
         use Ecto.Migration
@@ -39,9 +38,6 @@ defmodule DMEx do
 
       MyApp.Log.append(%MyApp.Messages.OrderPlaced{order_id: 7})
       #=> {:ok, 1042}
-
-  Generic code without a particular log module in hand calls it through a
-  variable — `log.append(message)` — rather than through a second API.
 
   ## Reading
 
@@ -73,15 +69,12 @@ defmodule DMEx do
          ]}
       ]
 
-  Handler modules are **not** listed: every one compiled into an application
-  depending on `:dmex` is discovered and started, one subscription per log it
-  names, and one naming a log that `logs:` does not bind stops the boot.
-  `DMEx.Supervisor.subscribe/2` starts one at runtime instead.
+  `DMEx.Supervisor` has the vocabulary: what each kind of binding means, why it
+  is also what chooses the transport, why handler modules are not listed, and
+  every option.
 
-  **The binding chooses the transport, and nothing else configures one.** A log
-  bound to a module is read in this VM (`DMEx.Transport.Local`) — a query and a
-  handler call, no socket and no round trip through this application's own web
-  server. A log bound to a URL is read over HTTP (`DMEx.Transport.SSE`). A
+  A log bound to a module is read in this VM — a query and a handler call, no
+  socket and no round trip through this application's own web server — and a
   handler cannot tell the difference. Those URLs are static configuration of the
   reading application: a discovery service in that path would reintroduce
   exactly the shared infrastructure DMEx exists to avoid.
@@ -103,10 +96,10 @@ defmodule DMEx do
       exactly-once for free. Effects that leave that transaction must be
       idempotent.
 
-    * **Appending is serialized per table.** An advisory lock held to
-      COMMIT is what keeps every reader's `id > cursor` scan sound. It costs
-      append concurrency, and an `append/2` inside a long enclosing transaction
-      extends that lock for the transaction's lifetime.
+    * **Appending is serialized per log table** — what keeps every reader's
+      `id > cursor` scan sound, at the price of append concurrency.
+      `DMEx.Storage` covers how each adapter buys it and what it means for an
+      `append/2` inside your own transaction.
 
   `DMEx.Telemetry` documents every event DMEx emits.
   """
@@ -210,9 +203,7 @@ defmodule DMEx do
   **Jitter is the point, not a refinement.** An event that fails many consumers
   at once — a producer restart, a network blip, a deploy — would otherwise bring
   them all back simultaneously, and DMEx has no admission control to absorb
-  that. Full jitter (a uniform draw from `[1, capped]` rather than a band around
-  the ceiling) decorrelates hardest. The draw starts at 1 so a delay is always a
-  delay.
+  that. Full jitter decorrelates hardest.
 
   The same argument applies to a producer's advertised `retry:` value, which is
   why DMEx's own client keeps its own schedule rather than reconnecting at
