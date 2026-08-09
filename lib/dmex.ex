@@ -117,8 +117,7 @@ defmodule DMEx do
 
   @doc "Whether `value` is a well-formed DMEx identifier."
   @spec identifier?(term()) :: boolean()
-  def identifier?(value) when is_binary(value), do: Regex.match?(@identifier, value)
-  def identifier?(_value), do: false
+  def identifier?(value), do: is_binary(value) and Regex.match?(@identifier, value)
 
   # Every identifier is checked and reported here, so neither error can drift.
   # `source` names the value ("a log name", "`:name` in MyApp.Log"); `hint` is
@@ -127,20 +126,16 @@ defmodule DMEx do
 
   @doc false
   @spec validate_identifier!(term(), String.t(), String.t()) :: String.t()
-  def validate_identifier!(value, source, hint \\ "")
+  def validate_identifier!(value, source, hint \\ "") do
+    name = if is_atom(value) and not is_nil(value), do: Atom.to_string(value), else: value
 
-  def validate_identifier!(value, source, hint) when is_atom(value) and not is_nil(value) do
-    validate_identifier!(Atom.to_string(value), source, hint)
-  end
-
-  def validate_identifier!(value, source, hint) do
-    if !identifier?(value) do
+    if !identifier?(name) do
       raise ArgumentError,
             "#{source} must be an atom or a string matching #{inspect(@identifier)}, " <>
-              "got: #{inspect(value)}." <> hint
+              "got: #{inspect(name)}." <> hint
     end
 
-    value
+    name
   end
 
   @doc """
