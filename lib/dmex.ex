@@ -209,15 +209,15 @@ defmodule DMEx do
       raise ArgumentError, "#{source} takes a keyword list, got: #{Macro.to_string(opts)}"
     end
 
-    keys = Keyword.keys(opts)
+    # Deduped once here rather than at either subtraction: a repeated key is
+    # legal in a keyword list, and `--` drops one occurrence per element, so a
+    # second copy of a *known* key would otherwise survive and be reported as
+    # unknown.
+    keys = opts |> Keyword.keys() |> Enum.uniq()
 
     # Unknown before missing: a misspelled required key is one mistake, and
     # naming the key that was actually written is what points at it.
-    #
-    # `Enum.uniq/1` before the `--`: a repeated key is legal in a keyword list,
-    # and `--` drops one occurrence per element, so the second copy of a *known*
-    # key would otherwise survive and be reported as unknown.
-    case Enum.uniq(keys) -- known do
+    case keys -- known do
       [] ->
         :ok
 
