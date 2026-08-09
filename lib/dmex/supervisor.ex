@@ -145,7 +145,7 @@ defmodule DMEx.Supervisor do
   # The applications owning the logs this supervisor starts — the ones a scan
   # cannot reach on its own unless they are named.
   defp log_apps(logs) do
-    logs |> owned_logs() |> Enum.map(&DMEx.owning_app/1) |> Enum.uniq()
+    logs |> owned_logs() |> Enum.map(&Application.get_application/1) |> Enum.uniq()
   end
 
   @doc false

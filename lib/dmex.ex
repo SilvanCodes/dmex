@@ -158,41 +158,10 @@ defmodule DMEx do
   """
   @spec discovery(atom() | nil) :: [module()]
   def discovery(otp_app \\ nil) do
-    otp_app
-    |> applications()
-    |> Enum.flat_map(&app_modules/1)
-  end
-
-  defp applications(otp_app) do
-    dependents =
-      for {app, _description, _vsn} <- Application.loaded_applications(),
-          depends_on_dmex?(app),
-          do: app
-
-    Enum.uniq(List.wrap(otp_app) ++ dependents)
-  end
-
-  defp depends_on_dmex?(app) do
-    case :application.get_key(app, :applications) do
-      {:ok, applications} -> :dmex in applications
-      _other -> false
-    end
-  end
-
-  defp app_modules(app) do
-    case :application.get_key(app, :modules) do
-      {:ok, modules} -> modules
-      _other -> []
-    end
-  end
-
-  @doc false
-  @spec owning_app(module()) :: atom() | nil
-  def owning_app(module) do
-    case :application.get_application(module) do
-      {:ok, app} -> app
-      :undefined -> nil
-    end
+    for {app, _description, _vsn} <- Application.loaded_applications(),
+        app == otp_app or :dmex in Application.spec(app, :applications),
+        module <- Application.spec(app, :modules),
+        do: module
   end
 
   # Every option vocabulary in DMEx — `use DMEx.Log`, `use DMEx.Handler`,
