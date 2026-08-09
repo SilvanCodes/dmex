@@ -247,7 +247,6 @@ defmodule DMEx.Storage.SQLite do
 
     case SQL.query(Map.fetch!(opts, :repo), sql, [cursor]) do
       {:ok, %{rows: [[nil, _types]]}} -> {:ok, {nil, []}}
-      {:ok, %{rows: [[max_id, ""]]}} -> {:ok, {max_id, []}}
       {:ok, %{rows: [[max_id, types]]}} -> {:ok, {max_id, String.split(types, ",")}}
       {:error, reason} -> {:error, reason}
     end

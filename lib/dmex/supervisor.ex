@@ -437,8 +437,11 @@ defmodule DMEx.Supervisor do
 
   defp log_target!(name, url) when is_binary(url) and url != "" do
     case URI.parse(url) do
-      %URI{scheme: scheme, host: host} when scheme in ["http", "https"] and is_binary(host) ->
-        if host == "", do: raise_log_url(name, url, "it has no host"), else: url
+      # `host` covers `nil` as well as `""`: `URI.parse/1` returns the first for
+      # `"http:stream"` and the second for `"http:///stream"`, and both are the
+      # missing host, not a bad scheme.
+      %URI{scheme: scheme, host: host} when scheme in ["http", "https"] ->
+        if host in [nil, ""], do: raise_log_url(name, url, "it has no host"), else: url
 
       %URI{scheme: nil} ->
         raise_log_url(name, url, "it has no scheme")

@@ -110,24 +110,42 @@ defmodule DMEx.Handler.Cursors do
     {:ok, :ok} =
       storage.transaction(
         fn ->
-          case {storage.cursor(from, storage_opts), storage.cursor(to, storage_opts)} do
-            {{:ok, nil}, _} ->
+          # `from` first, and through `cursor!/3`, so a failed read cannot be
+          # mistaken for an answer: reading both at once let a `to` that has a
+          # cursor report "already has a cursor" when what actually happened was
+          # that `from` could not be read at all.
+          with %{last_seen: id} <- cursor!(storage, from, storage_opts),
+               nil <- cursor!(storage, to, storage_opts) do
+            :ok = storage.advance_cursor(to, id, storage_opts)
+            :ok = storage.delete_cursor(from, storage_opts)
+          else
+            # Only the first read can answer `nil` here, and only the second a
+            # cursor: nothing left to move, versus a destination already taken.
+            nil ->
               :ok
 
-            {_, {:ok, %{last_seen: existing}}} ->
+            %{last_seen: existing} ->
               raise ArgumentError,
                     "#{inspect(to)} already has a cursor at #{existing}. " <>
                       "Renaming #{inspect(from)} onto it would overwrite that " <>
                       "subscription's position — reset one of them first if that is what you want."
-
-            {{:ok, %{last_seen: id}}, {:ok, nil}} ->
-              :ok = storage.advance_cursor(to, id, storage_opts)
-              :ok = storage.delete_cursor(from, storage_opts)
           end
         end,
         storage_opts
       )
 
     :ok
+  end
+
+  # Raising rather than returning: this runs inside the transaction, so a storage
+  # failure rolls the rename back and says which read failed.
+  defp cursor!(storage, subscription, storage_opts) do
+    case storage.cursor(subscription, storage_opts) do
+      {:ok, cursor} ->
+        cursor
+
+      {:error, reason} ->
+        raise ArgumentError, "could not read the cursor for #{inspect(subscription)}: #{inspect(reason)}"
+    end
   end
 end

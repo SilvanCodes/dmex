@@ -200,6 +200,14 @@ defmodule DMEx.SupervisorTest do
                ~r/URL for "test".*not http or https/s
     end
 
+    # `URI.parse/1` answers `%URI{scheme: "http", host: nil}` for this, which
+    # used to fall past the http clause and be reported as a bad scheme — a
+    # message naming the one part of the URL that was fine.
+    test "rejects an http URL with no host, saying so" do
+      assert start_error(logs: [test: "http:stream"]) =~
+               ~r/URL for "test".*no host/s
+    end
+
     test "rejects something that is neither a URL nor a module" do
       assert start_error(logs: [test: nil]) =~
                ~r/URL for "test".*neither a log module nor a non-empty string/s
