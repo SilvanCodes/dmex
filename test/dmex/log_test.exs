@@ -170,6 +170,27 @@ defmodule DMEx.LogTest do
         define!("Typo", "repo: DMEx.Test.Repo, batch_windwo: 500")
       end
     end
+
+    # A duplicate key is legal in a keyword list and loses silently: the reader
+    # takes the first, so the second is a setting that never takes effect.
+    test "rejects a repeated option" do
+      assert_raise ArgumentError, ~r/passes :max_batch_frequency more than once/, fn ->
+        define!("Repeat", "repo: DMEx.Test.Repo, max_batch_frequency: 50, max_batch_frequency: 60")
+      end
+    end
+
+    # The repeat is of a *known* key, so it survives `keys -- known` only if
+    # that subtraction is fed the raw list. Naming it "unknown" would point at
+    # the right line with the wrong complaint.
+    test "names a repeated option as repeated rather than unknown" do
+      error =
+        assert_raise ArgumentError, fn ->
+          define!("RepeatNotUnknown", "repo: DMEx.Test.Repo, repo: DMEx.Test.Repo")
+        end
+
+      assert Exception.message(error) =~ "passes :repo more than once"
+      refute Exception.message(error) =~ "unknown option"
+    end
   end
 
   ## Helpers

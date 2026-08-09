@@ -204,14 +204,19 @@ defmodule DMEx do
 
   @doc false
   @spec validate_keys!(Macro.t(), [atom()], String.t(), String.t(), [atom()]) :: :ok
-  def validate_keys!(opts, known, source, hint \\ "", required \\ []) do
+  def validate_keys!(opts, known, source, hint, required \\ []) do
     if !Keyword.keyword?(opts) do
       raise ArgumentError, "#{source} takes a keyword list, got: #{Macro.to_string(opts)}"
     end
 
+    # Deduped because `--` drops one occurrence per element: a second copy of a
+    # *known* key would otherwise survive `keys -- known` and be reported as
+    # unknown, which is the wrong complaint about the right line.
+    keys = opts |> Keyword.keys() |> Enum.uniq()
+
     # Unknown before missing: a misspelled required key is one mistake, and
     # naming the key that was actually written is what points at it.
-    case Enum.reject(Keyword.keys(opts), &(&1 in known)) do
+    case keys -- known do
       [] ->
         :ok
 
@@ -221,7 +226,21 @@ defmodule DMEx do
                 "passed to #{source}. Known options: #{inspect(Enum.sort(known))}." <> hint
     end
 
-    case required -- Keyword.keys(opts) do
+    # Subtracting the other way leaves every copy past the first. A repeat is
+    # legal Elixir and silently loses — every reader below takes the first — so
+    # it is its own error rather than a shrug. Deduped so a key written three
+    # times is named once.
+    case Enum.uniq(Keyword.keys(opts) -- keys) do
+      [] ->
+        :ok
+
+      repeated ->
+        raise ArgumentError,
+              "#{source} passes #{Enum.map_join(repeated, ", ", &inspect/1)} more than once. " <>
+                "Only the first is read, so a repeat could only ever mean one of them." <> hint
+    end
+
+    case required -- keys do
       [] ->
         :ok
 
