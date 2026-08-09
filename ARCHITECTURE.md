@@ -477,6 +477,15 @@ of scope.
   addressed, and neither is a consumer that is pathologically slow while still
   technically progressing. See
   [Global Resource Limits](ROADMAP.md#global-resource-limits).
+- **No per-endpoint pacing, and no two log modules on one table** — a log's
+  settings are the log's, one set per table, with no mount-level override and
+  nothing negotiable (invariant 9). An in-VM consumer subscribes through
+  `DMEx.Transport.Local` and never reaches `DMEx.Log.Plug`, so every HTTP consumer
+  is a remote application: one advertised heartbeat, one stall budget and one
+  batch size is the right number rather than a compromise. Two log modules
+  resolving to one `{repo, prefix}` is currently representable and buys only that
+  override; making it unrepresentable is
+  [One Log, One Table](ROADMAP.md#one-log-one-table).
 - **No compression** — a stream is an ordinary chunked HTTP response, so
   compressing it is the web server's to negotiate and configure. DMEx neither
   asks for it on the consumer side nor does it on the producer side.
