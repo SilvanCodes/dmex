@@ -218,10 +218,7 @@ defmodule DMEx do
   why DMEx's own client keeps its own schedule rather than reconnecting at
   exactly the advertised interval.
   """
-  @spec backoff(pos_integer(), pos_integer(), pos_integer()) :: non_neg_integer()
-  def backoff(attempt, base, max) when is_integer(attempt) and attempt >= 1 and is_integer(base) and is_integer(max) do
-    ceiling = min(max, base * Integer.pow(2, attempt - 1))
-
-    :rand.uniform(ceiling)
-  end
+  @spec backoff(pos_integer(), pos_integer(), pos_integer()) :: pos_integer()
+  def backoff(attempt, base, max) when is_integer(attempt) and attempt >= 1,
+    do: :rand.uniform(min(max, base * Integer.pow(2, attempt - 1)))
 end
