@@ -132,11 +132,12 @@ defmodule DMEx.Integration.HeartbeatTest do
       {:ok, [pid]} = subscribe()
 
       eventually(fn -> :sys.get_state(pid).source != nil end)
-      before = :sys.get_state(pid).last_activity
+      before = :sys.get_state(pid).liveness_timer
 
-      # Nothing is appended for the whole wait, yet activity advances: a
-      # heartbeat comment is bytes, and bytes are what liveness measures.
-      eventually(fn -> :sys.get_state(pid).last_activity != before end, 5_000, 50)
+      # Nothing is appended for the whole wait, yet the deadline is pushed out:
+      # a heartbeat comment is bytes, and bytes are what liveness measures. The
+      # re-armed timer is the only record of that, so it is what is read.
+      eventually(fn -> :sys.get_state(pid).liveness_timer != before end, 5_000, 50)
     end
 
     test "adopts the log's advertised interval as its deadline", _ctx do

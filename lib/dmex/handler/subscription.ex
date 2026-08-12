@@ -101,7 +101,6 @@ defmodule DMEx.Handler.Subscription do
           storage: Keyword.fetch!(opts, :storage),
           storage_opts: Keyword.fetch!(opts, :storage_opts),
           source: nil,
-          last_activity: nil,
           liveness_timer: nil,
           attempt: 0
         }
@@ -129,17 +128,13 @@ defmodule DMEx.Handler.Subscription do
   @impl GenServer
   def handle_info(:liveness, %{source: nil} = state), do: {:noreply, state}
 
+  # The timer is armed for the whole deadline and re-armed by every sign of
+  # life, so it firing *is* the deadline having passed with nothing arriving —
+  # the shape a vanished peer takes. Dropping costs a re-read from the durable
+  # cursor.
   @impl GenServer
   def handle_info(:liveness, state) do
-    silent_for = System.monotonic_time(:millisecond) - state.last_activity
-
-    if silent_for > state.transport.liveness(state.source) do
-      # Nothing ever arrived and nothing ever closed — the shape a vanished peer
-      # takes. Dropping costs a re-read from the durable cursor.
-      {:noreply, reconnect(state, {:silent_for, silent_for})}
-    else
-      {:noreply, schedule_liveness(state)}
-    end
+    {:noreply, reconnect(state, {:silent_for, state.transport.liveness(state.source)})}
   end
 
   @impl GenServer
@@ -302,16 +297,16 @@ defmodule DMEx.Handler.Subscription do
 
   ## Liveness
 
-  defp touch(state) do
-    # Re-armed on every sign of life rather than only on connect, because the
-    # deadline itself can change: an SSE transport does not know the log's
-    # advertised interval until the log has spoken.
-    schedule_liveness(%{state | last_activity: System.monotonic_time(:millisecond)})
-  end
+  # Re-armed on every sign of life rather than only on connect, so the armed
+  # timer is the whole record of when the last byte arrived — there is no
+  # `last_activity` to keep beside it. Re-arming is also what picks up a changed
+  # deadline: an SSE transport does not know the log's advertised interval until
+  # the log has spoken, and it only ever learns it from bytes, which are a
+  # touch.
+  defp touch(state), do: schedule_liveness(state)
 
-  # Checked twice per deadline, so a dead connection is noticed within about
-  # half an interval. The floor keeps a transport with a very short interval
-  # from turning this into a busy loop; `:infinity` arms nothing.
+  # One shot at the full deadline, so a dead connection is noticed exactly when
+  # the transport says it is dead. `:infinity` arms nothing.
   defp schedule_liveness(%{source: nil} = state), do: state
 
   defp schedule_liveness(state) do
@@ -319,7 +314,7 @@ defmodule DMEx.Handler.Subscription do
 
     case state.transport.liveness(state.source) do
       :infinity -> %{state | liveness_timer: nil}
-      deadline -> %{state | liveness_timer: Process.send_after(self(), :liveness, max(div(deadline, 2), 250))}
+      deadline -> %{state | liveness_timer: Process.send_after(self(), :liveness, deadline)}
     end
   end
 
