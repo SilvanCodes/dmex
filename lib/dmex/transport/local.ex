@@ -73,7 +73,12 @@ defmodule DMEx.Transport.Local do
     log = Keyword.fetch!(opts, :origin)
     owner = Keyword.fetch!(opts, :owner)
     config = log.__dmex__().config
-    selection = selection(opts)
+    selection =
+      opts
+      |> Keyword.fetch!(:handler)
+      |> Handler.declaration!()
+      |> Map.fetch!(:messages)
+      |> Selection.declared(Keyword.get(opts, :fingerprint))
 
     with {:ok, cursor} <-
            resolve_cursor(log, Keyword.fetch!(opts, :cursor), Keyword.fetch!(opts, :config)) do
@@ -144,16 +149,5 @@ defmodule DMEx.Transport.Local do
       cursor ->
         {:ok, cursor}
     end
-  end
-
-  ## Selection
-
-  # The declared modules rather than an expanded fingerprint — the exact set,
-  # where the wire's is a superset. `DMEx.Log.Selection` owns both and says why,
-  # including why the fingerprint is still what says whether to select at all.
-  defp selection(opts) do
-    declaration = opts |> Keyword.fetch!(:handler) |> Handler.declaration!()
-
-    Selection.declared(declaration.messages, Keyword.get(opts, :fingerprint))
   end
 end

@@ -88,7 +88,7 @@ defmodule DMEx.Handler.PipelineFailureTest do
   alias DMEx.Config
   alias DMEx.Handler.Pipeline
   alias DMEx.Handler.PipelineFailureTest.FlakyStorage
-  alias DMEx.Storage.Error
+  alias DMEx.Storage.Error, as: StorageError
   alias DMEx.Storage.Postgres
   alias DMEx.Test.Handlers
   alias DMEx.Test.Messages.OrderPlaced
@@ -369,7 +369,7 @@ defmodule DMEx.Handler.PipelineFailureTest do
       opts = FlakyStorage.new([:commit, :commit, :commit])
       state = stub_state(opts, handler: Handlers.Echo, max_attempts: 3)
 
-      assert_raise Error, fn -> Pipeline.run(row(1), state) end
+      assert_raise StorageError, fn -> Pipeline.run(row(1), state) end
 
       assert stub_dead("test/echo", opts) == []
       assert {:ok, nil} = FlakyStorage.last_seen("test/echo", opts)
@@ -391,7 +391,7 @@ defmodule DMEx.Handler.PipelineFailureTest do
       opts = FlakyStorage.new([:timeout])
       state = stub_state(opts, handler: Handlers.Echo, max_attempts: 3)
 
-      assert_raise Error, ~r/pool_timeout/, fn -> Pipeline.run(row(1), state) end
+      assert_raise StorageError, ~r/pool_timeout/, fn -> Pipeline.run(row(1), state) end
 
       refute_received {:handled, _, _}
       assert stub_dead("test/echo", opts) == []
@@ -405,7 +405,7 @@ defmodule DMEx.Handler.PipelineFailureTest do
       opts = FlakyStorage.new([:ok, :ok, :ok, :commit])
       state = stub_state(opts, handler: Handlers.Raising, max_attempts: 3)
 
-      assert_raise Error, fn -> Pipeline.run(row(1), state) end
+      assert_raise StorageError, fn -> Pipeline.run(row(1), state) end
 
       assert stub_dead("test/raising", opts) == []
       assert {:ok, nil} = FlakyStorage.last_seen("test/raising", opts)
@@ -415,7 +415,7 @@ defmodule DMEx.Handler.PipelineFailureTest do
       opts = FlakyStorage.new([:timeout])
       state = stub_state(opts, handler: Handlers.Echo, max_attempts: 3)
 
-      assert_raise Error, fn ->
+      assert_raise StorageError, fn ->
         Pipeline.flush(%{state | cursor: 7, pending: true})
       end
     end
