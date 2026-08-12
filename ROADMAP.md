@@ -43,12 +43,19 @@ Nothing worth having is on the other side of it:
 - **`name:` becomes a required log option and the log's identity.**
   `use DMEx.Log, repo: MyApp.Repo, name: "orders"`. Required, with no default —
   the default `public` is precisely what lets two logs collide by saying nothing.
+  An atom or a string, normalized to a string: `DMEx.validate_identifier!/3`
+  already does exactly this and is already what a `logs:` key and a handler's
+  `name:` pass through, so the rule stays written once. Its `[a-z][a-z0-9_]*` is
+  a strict subset of `DMEx.Storage.Postgres`'s `^[A-Za-z_][A-Za-z0-9_$]*$`, so
+  one validation covers both uses and no intersection has to be spelled out.
 - **The name is the schema.** The tables live in `dmex_orders`, and `:prefix` is
-  superseded and removed. This costs no new derivation: `scope` in
-  `DMEx.Log.__config__/3` *is* the prefix today, so the channel and the advisory
-  lock are already keyed on exactly this string and `@scope_max_bytes` already
-  bounds it. Table names stay fixed, so `dmex_messages` stays a constant and
-  hand-written operator queries survive.
+  superseded and removed. `scope` in `DMEx.Log.__config__/3` *is* the prefix
+  today, so it becomes `"dmex_" <> name` and the schema is that string. The
+  channel is then the scope **verbatim** rather than `"dmex_" <> scope`: the
+  channel and the schema are one name rather than `dmex_dmex_orders`, the lock
+  still `phash2`es it, and one bound covers both — `@scope_max_bytes` is 58, so a
+  name fits 53 bytes. Table names stay fixed, so `dmex_messages` stays a constant
+  and hand-written operator queries survive.
 - **The name is also the application-internal name.** `logs:` on
   `DMEx.Supervisor` becomes `remote_logs:`, name → URL only. Local logs are
   discovered the way handlers already are — a log module answers `__dmex__/0`,
@@ -63,14 +70,20 @@ Nothing worth having is on the other side of it:
   the internal name, placement ignores it, and the boot check groups on the repo.
 - **Consumer tables are unaffected.** `dmex_cursors` and `dmex_dead_messages` are
   consumer-side, keyed by subscription id across every log, and keep taking the
-  supervisor's storage prefix. `DMEx.Storage.Migration` already splits this way:
-  `up(tables: [:messages], prefix: "dmex_orders")` for the producer,
-  `up(tables: [:cursors, :dead_messages])` for the consumer.
+  supervisor's storage prefix. `DMEx.Storage.Migration` already splits this way,
+  and the producer half takes the log rather than a retyped schema:
+  `up(log: MyApp.Log)` for the producer, `up(tables: [:cursors, :dead_messages])`
+  for the consumer. `log:` implies both halves of what it replaces — a log module
+  is the producer side, so the tables are `[:messages]` and the schema is the
+  one `__dmex__/0` already carries. Passing `log:` with `tables:` or `prefix:`
+  raises rather than being reconciled, which keeps the schema derived in exactly
+  one place and a migration unable to drift from the log it migrates.
 
 **What stays true regardless.** The wire contract is untouched — none of this is
-observable to a consumer. The lock and channel derivation is not merely
-compatible but unchanged, since it already keys on the schema; what changes is
-its justification, because once the invariant holds, keying on the table and
+observable to a consumer. The lock and channel still key on the schema and
+nothing else — the channel loses its `"dmex_"` because the schema now carries
+one, which is a spelling and not a rekeying; what changes is the derivation's
+justification, because once the invariant holds, keying on the table and
 keying on the log module are the same key and `DMEx.Log`'s "two logs on one table
 would take different locks" describes a shape that can no longer be built. N
 nodes running one log module against one table stays legal, which is why the
@@ -80,23 +93,33 @@ subscription-id namespace that distinct handler `name:`s already give.
 
 ### Open, if and when it lands
 
-- **Discovery needs an opt-out, and the test suite is the proof.** Sixteen
-  `use DMEx.Log` modules live in `test/`, several deliberately misconfigured for
-  compile-error tests. With `logs:` gone there is no way to say "start only this
-  one". Handlers carry the same exposure today and DMEx accepts it, but sixteen
-  is a different number from zero — an explicit allowlist for when you mean it,
-  or a per-module opt-out, and the choice wants making before implementation.
-- **The identifier charset tightens.** A log name passes
-  `DMEx.validate_identifier!` so `"/"` can join it into a subscription id with no
-  escaping; as a schema it must also satisfy `DMEx.Storage.Postgres`'s
-  `^[A-Za-z_][A-Za-z0-9_$]*$`. It now has to be in the intersection, as one
-  validation with one message rather than two failures at different times.
-  Whether `name:` is an atom or a string belongs here too.
+- **Discovery needs an exclusion, and it is per boot rather than per module.**
+  Sixteen `use DMEx.Log` modules live in `test/`, several deliberately
+  misconfigured for compile-error tests, and with `logs:` gone there is no way to
+  say "start only this one". The test suite is the loudest case but not the
+  shape-defining one: a **log module arriving through a dependency** starts a
+  dispatcher, a `LISTEN` connection and a watcher in every application that
+  depends on it, and `DMEx.discovery/1` scanning every application declaring
+  `:dmex` is exactly what makes a shared package work; and **one codebase built
+  into several releases** has only `logs:` today to say that the web release
+  binds the log and the worker release does not. Both are the same compiled
+  module in different deployments, so a compile-time `start: false` cannot
+  express either and a runtime allowlist on `DMEx.Supervisor` can express all
+  three. Neither is a correctness problem — N nodes on one log module stays legal
+  — and handlers carry the same exposure today. Undecided.
 - **The test suite is where the bill lands.** Those sixteen logs share one repo
   with no prefix — the suite is the largest existing consumer of the shape being
   forbidden, and gets away with it because nothing appends across them
   concurrently. Each real one needs its own schema and a `CREATE SCHEMA` plus
   `:messages` migration.
+- **One existing test is the forbidden shape on purpose.**
+  `DMEx.Test.CoTenantLog` is a second log module on `DMEx.Test.IntegrationLog`'s
+  table, and `DMEx.Integration.AppendOrderingTest` exists to watch the two
+  exclude each other — which is the thing keying the lock on the table rather
+  than the module buys, and the thing that becomes unbuildable. Whether the
+  property survives as a test at all is open: N nodes on one log module is the
+  only legal spelling left, and a node-local registered name means one node
+  cannot stand in for two.
 - **Whether the boot check needs a runtime backstop.** A log placed directly in a
   host's tree via `DMEx.Log.child_spec/1` never passes through
   `__startable__!/2`. A node-local name claim on the schema, checked with
