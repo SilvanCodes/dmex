@@ -177,7 +177,7 @@ defmodule DMEx.Handler.Pipeline do
       :skipped ->
         {:ok, %{state | cursor: id, pending: true}}
 
-      {:handled, _attempts} ->
+      :handled ->
         {:ok, %{state | cursor: id, pending: false}}
 
       {:failed, exception, stacktrace, attempts} ->
@@ -186,11 +186,12 @@ defmodule DMEx.Handler.Pipeline do
   end
 
   @typedoc """
-  What `deliver/3` did with a row, and after how many handler calls.
+  What `deliver/3` did with a row, and — where a caller reports it — after how
+  many handler calls.
   """
   @type verdict ::
           :skipped
-          | {:handled, pos_integer()}
+          | :handled
           | {:failed, Exception.t(), Exception.stacktrace(), pos_integer()}
 
   @doc """
@@ -303,7 +304,7 @@ defmodule DMEx.Handler.Pipeline do
         commit.()
       end)
 
-      {{:handled, attempt}, telemetry}
+      {:handled, telemetry}
     end)
   rescue
     # Storage failing is not the handler failing (section 4), so this leaves by

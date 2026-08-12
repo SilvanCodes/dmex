@@ -153,7 +153,7 @@ defmodule DMEx.Handler.DeadMessages do
     end
 
     case Pipeline.deliver(state, pipeline_row(row), commit) do
-      {:handled, _attempts} ->
+      :handled ->
         :ok
 
       # Already reported as `[:dmex, :handler, :skip]`, but a stream skipping a
