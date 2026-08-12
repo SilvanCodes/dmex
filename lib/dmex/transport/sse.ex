@@ -4,9 +4,8 @@ defmodule DMEx.Transport.SSE do
 
   Both ends of the wire DMEx defines. The send side encodes rows as
   `DMEx.Transport.SSE.Frame` blocks and chunks them down a `Plug.Conn`; the
-  receive side owns a Mint connection, decodes what comes back
-  (`DMEx.Transport.SSE.Decoder`), and turns HTTP into the small vocabulary
-  `DMEx.Handler.Subscription` acts on.
+  receive side is a reader process owning a Mint connection, decoding what comes
+  back (`DMEx.Transport.SSE.Decoder`) and handing rows to its subscription.
 
   Chosen for a `logs:` entry that is a URL. Everything true of a *wire* and of
   nothing else lives here:
@@ -16,14 +15,21 @@ defmodule DMEx.Transport.SSE do
       everything else reconnects
     * liveness, `missed_heartbeats` × the interval the log advertises as `retry:`
 
-  **Backpressure.** Mint re-arms `active: :once` only when the owner returns, so
-  the receive window is what blocks the log's `chunk/2` — ARCHITECTURE
-  invariant 8.
+  **The loop is sequential, so nothing is ever parked.** Responses are handled
+  in the order they arrive and rows go out with `DMEx.Transport.deliver/2` as
+  they decode, so a response that ends the connection is reached only after
+  everything ahead of it has already been run.
+
+  **Backpressure.** `deliver/2` blocks until the pipeline has run the batch, and
+  only on its return does the reader call `Mint.HTTP.stream/2` again. The TCP
+  receive window closes behind it and the producer's `chunk/2` blocks on it —
+  ARCHITECTURE invariant 8.
   """
 
   @behaviour DMEx.Transport
 
   alias DMEx.Handler.Request
+  alias DMEx.Transport
   alias DMEx.Transport.SSE.Decoder
   alias DMEx.Transport.SSE.Frame
 
@@ -35,7 +41,7 @@ defmodule DMEx.Transport.SSE do
 
   ## Send side
 
-  @impl DMEx.Transport
+  @impl Transport
   def write(conn, rows) do
     frames = Enum.map(rows, &Frame.encode_row/1)
 
@@ -44,145 +50,133 @@ defmodule DMEx.Transport.SSE do
     end
   end
 
-  @impl DMEx.Transport
+  @impl Transport
   def heartbeat(conn), do: Plug.Conn.chunk(conn, Frame.encode_heartbeat())
 
   ## Receive side
 
-  @impl DMEx.Transport
-  def connect(opts) do
-    subscription = Keyword.fetch!(opts, :subscription)
-    handler = Keyword.fetch!(opts, :handler)
+  @impl Transport
+  def start_reader(opts), do: spawn_link(fn -> read(opts) end)
+
+  defp read(opts) do
+    owner = Keyword.fetch!(opts, :owner)
     config = Keyword.fetch!(opts, :config)
-    cursor = Keyword.fetch!(opts, :cursor)
     uri = opts |> Keyword.fetch!(:origin) |> URI.parse()
 
-    with {:ok, conn} <- Mint.HTTP.connect(Request.scheme(uri), uri.host, uri.port, mode: :active),
-         path = Request.path(uri, Keyword.get(opts, :fingerprint)),
-         {:ok, conn, ref} <-
-           Mint.HTTP.request(conn, "GET", path, Request.headers(cursor, config), nil) do
-      {:ok,
-       %{
-         conn: conn,
-         ref: ref,
-         url: URI.to_string(uri),
-         handler: handler,
-         subscription: subscription,
-         config: config,
-         decoder: Decoder.new(config.max_frame_bytes),
-         # Responses from one socket message not acted on yet — see
-         # `responses/3`.
-         pending: []
-       }}
-    else
-      {:error, reason} ->
-        {:error, reason}
+    {conn, ref} = open(uri, opts, config)
 
-      # The socket opened and the request did not. Closed here rather than left
-      # for the caller, which has no source to close yet.
+    # After the request is on the wire and not before: this is what clears the
+    # subscription's backoff, so it has to mean a connection that happened.
+    Transport.connected(owner)
+
+    loop(%{
+      conn: conn,
+      ref: ref,
+      owner: owner,
+      url: URI.to_string(uri),
+      handler: Keyword.fetch!(opts, :handler),
+      subscription: Keyword.fetch!(opts, :subscription),
+      config: config,
+      decoder: Decoder.new(config.max_frame_bytes)
+    })
+  end
+
+  # Exits rather than returning an error: to the subscription a connection that
+  # never opened and one that opened and died are the same event, and both are
+  # answered by the same jittered retry.
+  defp open(uri, opts, config) do
+    case Mint.HTTP.connect(Request.scheme(uri), uri.host, uri.port, mode: :active) do
+      {:ok, conn} -> request(conn, uri, opts, config)
+      {:error, reason} -> exit(reason)
+    end
+  end
+
+  defp request(conn, uri, opts, config) do
+    path = Request.path(uri, Keyword.get(opts, :fingerprint))
+    headers = Request.headers(Keyword.fetch!(opts, :cursor), config)
+
+    case Mint.HTTP.request(conn, "GET", path, headers, nil) do
+      {:ok, conn, ref} ->
+        {conn, ref}
+
+      # The socket opened and the request did not, so it is closed here rather
+      # than left to the link to reclaim.
       {:error, conn, reason} ->
         _ = Mint.HTTP.close(conn)
 
-        {:error, reason}
+        exit(reason)
     end
   end
 
-  @impl DMEx.Transport
-  def close(%{conn: conn}) do
-    _ = Mint.HTTP.close(conn)
-
-    :ok
+  # The `after` clause is the liveness deadline, re-armed by every message: a
+  # reader's mailbox carries nothing but this socket, so "no message" is
+  # "no bytes" — which is what silence means here, heartbeat comments included.
+  defp loop(state) do
+    receive do
+      message -> loop(stream(message, state))
+    after
+      liveness(state) -> exit({:silent_for, liveness(state)})
+    end
   end
 
-  @impl DMEx.Transport
-  def liveness(source) do
+  defp stream(message, state) do
+    case Mint.HTTP.stream(state.conn, message) do
+      :unknown -> state
+      {:ok, conn, responses} -> Enum.reduce(responses, %{state | conn: conn}, &response/2)
+      {:error, _conn, reason, _responses} -> exit(reason)
+    end
+  end
+
+  defp liveness(state) do
     # Until the log has advertised its own, assume a generous interval rather
     # than drop a healthy connection from a log that paces itself slowly.
-    source.config.missed_heartbeats * (Decoder.retry(source.decoder) || @assumed_retry)
+    state.config.missed_heartbeats * (Decoder.retry(state.decoder) || @assumed_retry)
   end
 
-  # Nothing parked is `:unknown`, which is what `c:DMEx.Transport.handle_message/2`
-  # specifies and what `DMEx.Transport.Local` answers — otherwise the stream
-  # re-arms its liveness timer once per batch for nothing.
-  @impl DMEx.Transport
-  def handle_message(:continue, %{pending: []}), do: :unknown
-
-  def handle_message(:continue, source), do: responses(source.pending, %{source | pending: []}, [])
-
-  def handle_message(message, source) do
-    case Mint.HTTP.stream(source.conn, message) do
-      :unknown ->
-        :unknown
-
-      {:ok, conn, responses} ->
-        responses(responses, %{source | conn: conn}, [])
-
-      {:error, conn, reason, _responses} ->
-        {:disconnect, reason, %{source | conn: conn}}
-    end
-  end
-
-  # One socket message can carry several responses, and rows accumulate across
-  # them so the owner runs a whole read's worth in one go — the same shape one
-  # `chunk/2` on the other end produced.
-  #
-  # A terminal response among them does **not** discard the rows ahead of it:
-  # those are complete and decoded, and dropping them costs a re-read of rows
-  # the subscription already has in hand. So rows are returned first and the
-  # terminal is parked in `:pending`, collected with `:continue`.
-  defp responses([], source, rows), do: yield(rows, source)
-
-  defp responses([event | rest] = remaining, source, rows) do
-    case response(event, source) do
-      {:cont, source} -> responses(rest, source, rows)
-      {:rows, decoded, source} -> responses(rest, source, Enum.reverse(decoded, rows))
-      {:halt, terminal} when rows == [] -> terminal
-      {:halt, _terminal} -> yield(rows, %{source | pending: remaining})
-    end
-  end
-
-  defp yield([], source), do: {:noreply, source}
-  defp yield(rows, source), do: {:rows, Enum.reverse(rows), source}
-
-  defp response({:status, ref, status}, %{ref: ref} = source) do
+  defp response({:status, ref, status}, %{ref: ref} = state) do
     cond do
       status in 200..299 ->
-        {:cont, source}
+        state
 
       status == 404 ->
         Logger.warning(
-          "DMEx #{source.subscription} (#{inspect(source.handler)}) got 404 from " <>
-            "#{source.url}: its message types match nothing this log knows. Either the " <>
+          "DMEx #{state.subscription} (#{inspect(state.handler)}) got 404 from " <>
+            "#{state.url}: its message types match nothing this log knows. Either the " <>
             "log has not deployed them yet, or this subscription is pointed at the " <>
             "wrong log. Retrying."
         )
 
-        {:halt, {:disconnect, {:no_matching_types, source.url}, source}}
+        exit({:no_matching_types, state.url})
 
       status in 400..499 ->
         # This client sent something the log could not parse. Reconnecting would
         # send it again, so stop loudly instead.
-        {:halt, {:stop, {:bad_request, status, source.url}}}
+        Transport.fatal({:bad_request, status, state.url})
 
       true ->
-        {:halt, {:disconnect, {:http_status, status}, source}}
+        exit({:http_status, status})
     end
   end
 
-  defp response({:data, ref, chunk}, %{ref: ref} = source) do
-    case Decoder.push(source.decoder, chunk) do
-      {:ok, decoded, decoder} ->
-        {:rows, decoded, %{source | decoder: decoder}}
+  defp response({:data, ref, chunk}, %{ref: ref} = state) do
+    case Decoder.push(state.decoder, chunk) do
+      {:ok, [], decoder} ->
+        %{state | decoder: decoder}
 
+      {:ok, rows, decoder} ->
+        :ok = Transport.deliver(state.owner, rows)
+
+        %{state | decoder: decoder}
+
+      # Reconnecting from the durable cursor costs only a re-read.
       {:error, reason, _decoder} ->
-        # Reconnecting from the durable cursor costs only a re-read.
-        {:halt, {:disconnect, {:decode_failed, reason}, source}}
+        exit({:decode_failed, reason})
     end
   end
 
-  defp response({:done, ref}, %{ref: ref} = source), do: {:halt, {:disconnect, :closed, source}}
+  defp response({:done, ref}, %{ref: ref}), do: exit(:closed)
 
-  defp response({:error, ref, reason}, %{ref: ref} = source), do: {:halt, {:disconnect, reason, source}}
+  defp response({:error, ref, reason}, %{ref: ref}), do: exit(reason)
 
-  defp response(_other, source), do: {:cont, source}
+  defp response(_other, state), do: state
 end

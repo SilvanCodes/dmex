@@ -18,7 +18,6 @@ defmodule DMEx.Integration.HeartbeatTest do
   alias DMEx.Test.IntegrationRepo
   alias DMEx.Test.Messages.OrderPlaced
   alias DMEx.Test.Server
-  alias DMEx.Transport.SSE.Decoder
 
   @heartbeat 150
 
@@ -128,26 +127,22 @@ defmodule DMEx.Integration.HeartbeatTest do
       assert_receive {:handled, %OrderPlaced{order_id: 2}, _}, 5_000
     end
 
+    # The deadline itself is the reader's, and `DMEx.Transport.SSE.ReaderTest`
+    # pins that it is the *advertised* interval rather than the assumed one.
+    # What is only visible from here is that heartbeats keep it from expiring.
     test "counts heartbeat bytes as activity, so silence means silence", _ctx do
+      ref = :telemetry_test.attach_event_handlers(self(), [[:dmex, :handler, :reconnect]])
+
       {:ok, [pid]} = subscribe()
 
-      eventually(fn -> :sys.get_state(pid).source != nil end)
-      before = :sys.get_state(pid).liveness_timer
+      reader = eventually(fn -> :sys.get_state(pid).reader end)
 
-      # Nothing is appended for the whole wait, yet the deadline is pushed out:
-      # a heartbeat comment is bytes, and bytes are what liveness measures. The
-      # re-armed timer is the only record of that, so it is what is read.
-      eventually(fn -> :sys.get_state(pid).liveness_timer != before end, 5_000, 50)
-    end
+      # Nothing is appended for many deadlines, yet the connection is never
+      # dropped: a heartbeat comment is bytes, and bytes are what liveness
+      # measures. A reader that measured messages would be replaced by now.
+      refute_receive {[:dmex, :handler, :reconnect], ^ref, _, _}, @heartbeat * 10
 
-    test "adopts the log's advertised interval as its deadline", _ctx do
-      {:ok, [pid]} = subscribe()
-
-      eventually(fn -> retry(pid) != nil end)
-
-      # Read off the wire rather than assumed: the log's own heartbeat plus
-      # its own batch interval, neither of which this consumer had any say in.
-      assert retry(pid) == effective_heartbeat()
+      assert :sys.get_state(pid).reader == reader
     end
   end
 
@@ -214,13 +209,6 @@ defmodule DMEx.Integration.HeartbeatTest do
 
   # The advertised interval lives in the transport's decoder now — the
   # subscription itself only asks it how long silence may last.
-  defp retry(pid) do
-    case :sys.get_state(pid).source do
-      %{decoder: decoder} -> Decoder.retry(decoder)
-      nil -> nil
-    end
-  end
-
   # `last_seen: 0` because these tests append *after* subscribing, and the
   # default resolves to the log's tip at connect. The log is empty until they
   # append, so the two name the same rows without racing the connect.

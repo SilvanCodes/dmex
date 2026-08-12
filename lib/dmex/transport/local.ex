@@ -7,7 +7,7 @@ defmodule DMEx.Transport.Local do
   The loop's heartbeat branch still runs; `heartbeat/1` is a no-op because there
   is no reader that could mistake silence for death.
 
-  **It is the same send loop.** `connect/1` starts a linked process that
+  **It is the same send loop.** `start_reader/1` starts a linked process that
   registers with `DMEx.Log.Streams` — the same registration a request process
   serving SSE makes — and runs `DMEx.Log.SendLoop.loop/2` with this module as its
   transport. So a local subscription gets `LISTEN`/`NOTIFY` wakeups,
@@ -15,13 +15,13 @@ defmodule DMEx.Transport.Local do
   rather than reimplementation. Only `c:DMEx.Transport.write/2` and
   `c:DMEx.Transport.heartbeat/1` differ.
 
-  **Backpressure is a call, not a window.** `write/2` is a `GenServer.call/3`
-  whose reply comes only after the pipeline has run the whole batch, so the loop
-  reads nothing meanwhile. The pipeline runs in the *subscription* process, so a
-  handler that never returns wedges that process first and the reader behind it.
-  `DMEx.Log.Watcher` reclaims the reader, which stops the log holding a
-  registration and a deadline for a stream that is not draining — the same thing
-  it does to a stalled request process.
+  **Backpressure is a call, not a window.** `write/2` is
+  `DMEx.Transport.deliver/2`, whose reply comes only after the pipeline has run
+  the whole batch, so the loop reads nothing meanwhile. The pipeline runs in the
+  *subscription* process, so a handler that never returns wedges that process
+  first and the reader behind it. `DMEx.Log.Watcher` reclaims the reader, which
+  stops the log holding a registration and a deadline for a stream that is not
+  draining — the same thing it does to a stalled request process.
 
   **Selection is a list, not a filter.** Both ends are the same node, so the
   handler's declared modules go straight into the read as a type list, where a
@@ -38,12 +38,13 @@ defmodule DMEx.Transport.Local do
   alias DMEx.Log.SendLoop
   alias DMEx.Log.Streams
   alias DMEx.Storage
+  alias DMEx.Transport
 
   ## Send side — the loop process writes into its owner
 
-  @impl DMEx.Transport
+  @impl Transport
   def write(%{owner: owner} = sink, rows) do
-    :ok = GenServer.call(owner, {:rows, Enum.map(rows, &row/1)}, :infinity)
+    :ok = Transport.deliver(owner, Enum.map(rows, &row/1))
 
     {:ok, sink, %{}}
   catch
@@ -53,7 +54,7 @@ defmodule DMEx.Transport.Local do
     :exit, reason -> {:error, reason}
   end
 
-  @impl DMEx.Transport
+  @impl Transport
   def heartbeat(sink), do: {:ok, sink}
 
   # The pipeline reads `id`, `type`, `data` and `metadata` — the same
@@ -67,10 +68,12 @@ defmodule DMEx.Transport.Local do
     }
   end
 
-  ## Receive side — the subscription's view of that process
+  ## Receive side — the reader is that send loop, run for one subscription
 
-  @impl DMEx.Transport
-  def connect(opts) do
+  @impl Transport
+  def start_reader(opts), do: spawn_link(fn -> read(opts) end)
+
+  defp read(opts) do
     log = Keyword.fetch!(opts, :origin)
     owner = Keyword.fetch!(opts, :owner)
     config = log.__dmex__().config
@@ -82,55 +85,26 @@ defmodule DMEx.Transport.Local do
       |> Map.fetch!(:messages)
       |> Selection.declared(Keyword.get(opts, :fingerprint))
 
-    with {:ok, cursor} <-
-           resolve_cursor(log, Keyword.fetch!(opts, :cursor), Keyword.fetch!(opts, :config)) do
-      {:ok, open(log, owner, config, selection, cursor)}
-    end
+    cursor = cursor!(log, Keyword.fetch!(opts, :cursor), Keyword.fetch!(opts, :config))
+
+    # Registered by the reader itself, so the entry dies with it — the same
+    # reason the SSE side registers the request process.
+    {:ok, status} = Streams.register(log, config.stall_timeout, selection)
+
+    Transport.connected(owner)
+
+    # Announces the connect and builds the loop's state — the same call
+    # `DMEx.Log.Plug` makes, so the two cannot report a connect differently.
+    SendLoop.loop(
+      %{owner: owner},
+      SendLoop.connect(log,
+        transport: __MODULE__,
+        cursor: cursor,
+        status: status,
+        selection: selection
+      )
+    )
   end
-
-  defp open(log, owner, config, selection, cursor) do
-    reader =
-      spawn_link(fn ->
-        # Registered by the reader itself, so the entry dies with it — the same
-        # reason the SSE side registers the request process.
-        {:ok, status} = Streams.register(log, config.stall_timeout, selection)
-
-        # Announces the connect and builds the loop's state — the same call
-        # `DMEx.Log.Plug` makes, so the two cannot report a connect differently.
-        SendLoop.loop(
-          %{owner: owner},
-          SendLoop.connect(log,
-            transport: __MODULE__,
-            cursor: cursor,
-            status: status,
-            selection: selection
-          )
-        )
-      end)
-
-    %{log: log, reader: reader}
-  end
-
-  # The reader is linked, so its death arrives as an exit the owner traps.
-  @impl DMEx.Transport
-  def handle_message({:EXIT, reader, reason}, %{reader: reader} = source), do: {:disconnect, reason, source}
-
-  # Catches `:continue` too: nothing is ever parked, because rows arrive one
-  # batch per `write/2` call and carry no terminal alongside them.
-  def handle_message(_message, _source), do: :unknown
-
-  @impl DMEx.Transport
-  def close(%{reader: reader}) do
-    if Process.alive?(reader) do
-      Process.unlink(reader)
-      Process.exit(reader, :shutdown)
-    end
-
-    :ok
-  end
-
-  @impl DMEx.Transport
-  def liveness(_source), do: :infinity
 
   ## Resolution
 
@@ -138,16 +112,19 @@ defmodule DMEx.Transport.Local do
   # and `DMEx.Log.Plug` resolves back out, without the round trip — and from the
   # same function, so neither side spells the position differently.
   #
-  # An error ends the connect rather than falling back to 0, which would turn a
+  # An error ends the reader rather than falling back to 0, which would turn a
   # momentary pool exhaustion into a whole-log replay. The subscription retries
   # on its own jittered schedule; the log's plug answers the same case with 503.
-  defp resolve_cursor(log, cursor, config) do
+  defp cursor!(log, cursor, config) do
     case Request.position(cursor, config) do
       :now ->
-        Storage.max_id(log.__dmex__().storage)
+        case Storage.max_id(log.__dmex__().storage) do
+          {:ok, cursor} -> cursor
+          {:error, reason} -> exit(reason)
+        end
 
       cursor ->
-        {:ok, cursor}
+        cursor
     end
   end
 end

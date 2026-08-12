@@ -132,7 +132,9 @@ defmodule DMEx.SupervisorTest do
 
       assert {:ok, [pid]} = subscribe(Handlers.Echo)
 
-      assert %{transport: DMEx.Transport.Local, origin: Log} = :sys.get_state(pid)
+      # The transport is named once, in the options the reader is started from.
+      assert %{opts: opts, origin: Log} = :sys.get_state(pid)
+      assert opts[:transport] == DMEx.Transport.Local
     end
 
     test "reads a log bound to a URL over HTTP" do
@@ -140,7 +142,8 @@ defmodule DMEx.SupervisorTest do
 
       assert {:ok, [pid]} = subscribe(Handlers.Echo)
 
-      assert %{transport: DMEx.Transport.SSE, origin: @url} = :sys.get_state(pid)
+      assert %{opts: opts, origin: @url} = :sys.get_state(pid)
+      assert opts[:transport] == DMEx.Transport.SSE
     end
 
     test "rejects a logs entry that is neither a module nor a URL" do

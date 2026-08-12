@@ -339,14 +339,16 @@ aggressive about reclaiming, and why there is no in-band "you are being dropped"
 frame — it would have to be written to the very socket that is stalled.
 
 **8. The consumer has no buffer, and that is what makes the backpressure
-exact.** `DMEx.Handler.Subscription` runs each row through the pipeline **inline, on
-the socket path**, as it is decoded. `Mint.HTTP.stream/2` re-arms `active:
-:once` itself, so while the process is inside a handler nothing is re-armed, the
-TCP receive window closes, and the producer's `chunk/2` blocks on it. The most
-that can be in flight is one decoded chunk plus one socket message in the
-mailbox. A buffer would only relocate the problem: a few hundred rows of slack
-absorb nothing at a sustained mismatch, and every row of slack is one more the
-socket accepts before it says stop.
+exact.** A transport's reader hands each decoded batch to
+`DMEx.Handler.Subscription` with `DMEx.Transport.deliver/2` — a call that
+returns only once the pipeline has run every row — and reads again only on its
+return. So while the subscription is inside a handler the reader is blocked in
+the call, `Mint.HTTP.stream/2` is not called again, the TCP receive window
+closes, and the producer's `chunk/2` blocks on it. The most that can be in
+flight is one decoded batch plus one socket message in the reader's mailbox. A
+buffer would only relocate the problem: a few hundred rows of slack absorb
+nothing at a sustained mismatch, and every row of slack is one more the socket
+accepts before it says stop.
 
 **9. Pacing has exactly one owner, and it is stated as a rate.**
 `max_batch_frequency`, `max_batch_rows` and `max_batch_bytes` are producer
@@ -403,9 +405,11 @@ and stall reclaim treat them identically.
 
 **Subscriptions.** `DMEx.Supervisor` supervises one `DMEx.Handler.Subscription` per
 subscription under a `DMEx.Handler.Subscriptions`, each owning one cursor and one
-`DMEx.Transport`, running `DMEx.Handler.Pipeline` inline on the rows that
-transport yields. The transport is inferred from the log's binding — a module is
-read in this VM, a URL over HTTP. There is nothing else in a subscription: no
+linked reader process its `DMEx.Transport` starts, running
+`DMEx.Handler.Pipeline` inline on the batches that reader hands over. The
+transport is inferred from the log's binding — a module is read in this VM, a
+URL over HTTP — and everything that can go wrong inside a reader reaches the
+subscription as one exit signal. There is nothing else in a subscription: no
 queue process, no controller, no drain loop. Restart intensity is set never to
 trip, so a subscription that crash-loops does so on its own, at a pace set by
 jittered backoff, and its siblings never notice.

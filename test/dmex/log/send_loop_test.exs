@@ -37,14 +37,9 @@ defmodule DMEx.Log.SendLoopTest do
       {:ok, sink}
     end
 
+    # Send side only: nothing here reads, so there is no reader to start.
     @impl DMEx.Transport
-    def connect(_opts), do: {:error, :not_a_receiver}
-    @impl DMEx.Transport
-    def handle_message(_message, _source), do: :unknown
-    @impl DMEx.Transport
-    def close(_source), do: :ok
-    @impl DMEx.Transport
-    def liveness(_source), do: :infinity
+    def start_reader(_opts), do: raise("not a reader")
   end
 
   describe "the transport seam" do

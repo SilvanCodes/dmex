@@ -39,6 +39,7 @@ defmodule DMEx.Log.SendLoop do
   alias DMEx.Log.Selection
   alias DMEx.Log.Status
   alias DMEx.Storage
+  alias DMEx.Transport
 
   require Logger
 
@@ -71,7 +72,7 @@ defmodule DMEx.Log.SendLoop do
   the reader process `DMEx.Transport.Local` starts. Either way the loop is
   sequential and blocking, which is what makes reads gated on sends.
   """
-  @spec loop(DMEx.Transport.sink(), state()) :: DMEx.Transport.sink()
+  @spec loop(Transport.sink(), state()) :: Transport.sink()
   def loop(conn, state) do
     # Both cleared *before* the read, never after. An append landing between the
     # clear and the read is picked up by that read; one landing after re-sets
@@ -218,7 +219,7 @@ defmodule DMEx.Log.SendLoop do
   defp maybe_heartbeat(conn, state, true) do
     arm(state)
 
-    case state.transport.heartbeat(conn) do
+    case Transport.heartbeat(state.transport, conn) do
       {:ok, conn} ->
         :telemetry.execute([:dmex, :stream, :heartbeat], %{}, %{log: state.log})
 
@@ -256,7 +257,7 @@ defmodule DMEx.Log.SendLoop do
   defp write(conn, state, rows) do
     arm(state)
 
-    state.transport.write(conn, rows)
+    Transport.write(state.transport, conn, rows)
   end
 
   # `stall_timeout` is the budget for the blocking itself; `extra` is however

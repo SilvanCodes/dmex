@@ -98,7 +98,7 @@ defmodule DMEx.Transport.LocalTest do
 
       # "Now" is resolved at connect, so the second append has to land after
       # that read — otherwise it is part of the backlog this is about skipping.
-      eventually(fn -> :sys.get_state(pid).source != nil end)
+      eventually(fn -> :sys.get_state(pid).reader != nil end)
 
       {:ok, _} = Log.append(%OrderPlaced{order_id: 2})
 
@@ -118,7 +118,7 @@ defmodule DMEx.Transport.LocalTest do
 
       assert {:ok, nil} = Postgres.last_seen("test/echo", Log.__dmex__().storage)
 
-      eventually(fn -> :sys.get_state(pid).source != nil end)
+      eventually(fn -> :sys.get_state(pid).reader != nil end)
 
       assert :sys.get_state(pid).pipeline.cursor == 0
     end
@@ -188,7 +188,7 @@ defmodule DMEx.Transport.LocalTest do
     pids
   end
 
-  defp reader(pid), do: :sys.get_state(pid).source[:reader]
+  defp reader(pid), do: :sys.get_state(pid).reader
 
   # `each/2` runs in the calling process, so this collects without a holder.
   defp selections do
