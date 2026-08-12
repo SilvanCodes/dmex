@@ -165,6 +165,28 @@ defmodule DMEx.Log.SendLoop do
     }
   end
 
+  @doc """
+  Resolves what a connect asked for into the cursor `connect/2` takes.
+
+  `:now` is the log's tip, which is the log's own to name and costs a query;
+  anything else is already a position. Both connect paths come through here —
+  `DMEx.Log.Plug` for a request's `Last-Event-ID`, `DMEx.Transport.Local` for a
+  subscription's durable cursor — so "from now on" cannot come to mean two
+  things.
+
+  An error is returned rather than fallen back from: 0 would turn a momentary
+  pool exhaustion into a whole-log replay, and since every subscription with no
+  cursor yet arrives here that is the default path, not an exotic one. What to
+  do about it is the caller's — a 503, or an exit its subscription retries
+  after — and both cost one jittered reconnect.
+  """
+  @spec resolve_cursor(module(), :now | non_neg_integer()) :: {:ok, non_neg_integer()} | {:error, term()}
+  def resolve_cursor(log, :now), do: Storage.max_id(log.__dmex__().storage)
+
+  def resolve_cursor(_log, cursor) when is_integer(cursor), do: {:ok, cursor}
+
+  ## The loop's steps
+
   defp read_and_send(conn, state) do
     arm(state)
 
@@ -191,7 +213,6 @@ defmodule DMEx.Log.SendLoop do
     end
   end
 
-  ## The loop's steps
   # A whole read's rows in one call, so syscalls and deadline arming do not
   # multiply by `max_batch_rows`.
   defp send_rows(conn, state, rows) do

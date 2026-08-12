@@ -1,0 +1,8 @@
+{
+  "servers": {
+    "elixirls": {
+      "command": "/home/gitpod/.vscode-server/extensions/jakebecker.elixir-ls-0.31.1/elixir-ls-release/language_server.sh",
+      "warmupTimeoutMs": 180000
+    }
+  }
+}

@@ -94,11 +94,13 @@ defmodule DMEx.Transport.LocalTest do
     test "unset skips the backlog" do
       {:ok, _} = Log.append(%OrderPlaced{order_id: 1})
 
-      [pid] = subscribe(Handlers.Echo, last_seen: nil)
+      subscribe(Handlers.Echo, last_seen: nil)
 
-      # "Now" is resolved at connect, so the second append has to land after
+      # "Now" is resolved by the reader, so the second append has to land after
       # that read — otherwise it is part of the backlog this is about skipping.
-      eventually(fn -> :sys.get_state(pid).reader != nil end)
+      # The registry entry is the sync point: the reader registers *after*
+      # resolving the tip, where its pid exists from the moment it is spawned.
+      eventually(fn -> selections() != [] end)
 
       {:ok, _} = Log.append(%OrderPlaced{order_id: 2})
 

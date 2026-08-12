@@ -37,7 +37,6 @@ defmodule DMEx.Transport.Local do
   alias DMEx.Log.Selection
   alias DMEx.Log.SendLoop
   alias DMEx.Log.Streams
-  alias DMEx.Storage
   alias DMEx.Transport
 
   ## Send side — the loop process writes into its owner
@@ -48,9 +47,11 @@ defmodule DMEx.Transport.Local do
 
     {:ok, sink, %{}}
   catch
-    # The owner went away mid-batch — unsubscribed, or shut down. There is
-    # nothing to hand rows to any more, so the loop ends exactly as a closed
-    # socket ends one.
+    # The owner went away mid-batch — unsubscribed, or shut down. The link has
+    # usually killed this process before it matters; what this covers is the
+    # owner stopping *normally*, whose exit signal a linked process ignores. So
+    # the loop ends exactly as a closed socket ends one, rather than the reader
+    # dying of a call to a process that is already gone.
     :exit, reason -> {:error, reason}
   end
 
@@ -109,22 +110,15 @@ defmodule DMEx.Transport.Local do
   ## Resolution
 
   # The same two answers `DMEx.Handler.Request` puts in a `last-event-id` header
-  # and `DMEx.Log.Plug` resolves back out, without the round trip — and from the
-  # same function, so neither side spells the position differently.
+  # and `DMEx.Log.Plug` resolves back out, without the round trip — and through
+  # the same two functions, so neither side spells the position differently.
   #
-  # An error ends the reader rather than falling back to 0, which would turn a
-  # momentary pool exhaustion into a whole-log replay. The subscription retries
-  # on its own jittered schedule; the log's plug answers the same case with 503.
+  # Failing to read the tip ends the reader, which the subscription answers with
+  # its jittered retry — the plug's 503 with the other end's.
   defp cursor!(log, cursor, config) do
-    case Request.position(cursor, config) do
-      :now ->
-        case Storage.max_id(log.__dmex__().storage) do
-          {:ok, cursor} -> cursor
-          {:error, reason} -> exit(reason)
-        end
-
-      cursor ->
-        cursor
+    case SendLoop.resolve_cursor(log, Request.position(cursor, config)) do
+      {:ok, cursor} -> cursor
+      {:error, reason} -> exit(reason)
     end
   end
 end
