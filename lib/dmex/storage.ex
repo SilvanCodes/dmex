@@ -15,6 +15,10 @@ defmodule DMEx.Storage do
   state, so the same adapter serves every log and every subscription in an
   application without any of them sharing anything.
 
+  Nothing in DMEx calls an adapter module directly. That map carries the adapter
+  too, and the functions under *Calling an adapter* take it first and dispatch
+  on it.
+
   ## Three contracts that are correctness, not style
 
   Each is easy to implement *almost* right, and each has a test pinning it.
@@ -54,18 +58,21 @@ defmodule DMEx.Storage do
   """
 
   @typedoc """
-  Everything an adapter needs, built once by the log module or the subscription
-  and passed to every call.
+  An adapter and everything it needs, built once by the log module or the
+  subscription and passed to every call.
 
-  `:repo` is the only universally-required key. `:lock` is log-side; `:prefix`
-  is the optional schema both sides may live in. Nothing about notification is
-  here — that is `t:DMEx.Notifier.opts/0`.
+  `:adapter` is the module implementing this behaviour, so this map is the whole
+  handle rather than half of a `{module, opts}` pair — see *Calling an adapter*.
+  `:repo` is the only other universally-required key. `:lock` is log-side;
+  `:prefix` is the optional schema both sides may live in. Nothing about
+  notification is here — that is `t:DMEx.Notifier.opts/0`.
 
   The map is open, because these are the keys *DMEx* knows about and an adapter
   is free to need others. One that does must still accept an `opts` without
   them, which is what reading its own keys rather than matching on them buys.
   """
   @type opts :: %{
+          required(:adapter) => module(),
           required(:repo) => module(),
           optional(:log) => module(),
           optional(:lock) => {integer(), integer()},
@@ -326,8 +333,73 @@ defmodule DMEx.Storage do
 
   @optional_callbacks default_notifier: 0, validate!: 1
 
+  ## Calling an adapter
+
+  # The whole caller-facing surface, one function per callback. Each takes the
+  # `t:opts/0` map first and hands it back to its own `:adapter` last, so a
+  # caller holds one value where it used to hold a pair, and no call site can
+  # pair one adapter's options with another adapter. `c:default_notifier/0` is
+  # the one callback with no function here: `DMEx.Log` asks for it from the
+  # module while building the map, before there is one.
+
+  @doc "Appends one message. See `c:append/4`."
+  @spec append(opts(), String.t(), binary(), binary()) :: {:ok, pos_integer()} | {:error, term()}
+  def append(%{adapter: adapter} = storage, type, data, metadata), do: adapter.append(type, data, metadata, storage)
+
+  @doc "Reads a bounded batch of rows past `cursor`. See `c:read/5`."
+  @spec read(opts(), non_neg_integer(), pos_integer(), pos_integer(), :all | [String.t()]) ::
+          {:ok, [row()]} | {:error, term()}
+  def read(%{adapter: adapter} = storage, cursor, max_rows, max_bytes, types),
+    do: adapter.read(cursor, max_rows, max_bytes, types, storage)
+
+  @doc "The log's current highest id. See `c:max_id/1`."
+  @spec max_id(opts()) :: {:ok, non_neg_integer()} | {:error, term()}
+  def max_id(%{adapter: adapter} = storage), do: adapter.max_id(storage)
+
+  @doc "What was appended past `cursor`. See `c:appended_since/2`."
+  @spec appended_since(opts(), non_neg_integer()) ::
+          {:ok, {non_neg_integer() | nil, [String.t()]}} | {:error, term()}
+  def appended_since(%{adapter: adapter} = storage, cursor), do: adapter.appended_since(cursor, storage)
+
+  @doc "A subscription's durable read position. See `c:last_seen/2`."
+  @spec last_seen(opts(), String.t()) :: {:ok, non_neg_integer() | nil} | {:error, term()}
+  def last_seen(%{adapter: adapter} = storage, subscription), do: adapter.last_seen(subscription, storage)
+
+  @doc "Runs `fun` in a transaction. See `c:transaction/2`."
+  @spec transaction(opts(), (-> result)) :: {:ok, result} | {:error, term()} when result: var
+  def transaction(%{adapter: adapter} = storage, fun), do: adapter.transaction(fun, storage)
+
+  @doc "Moves a subscription's cursor. See `c:advance_cursor/3`."
+  @spec advance_cursor(opts(), String.t(), non_neg_integer()) :: :ok
+  def advance_cursor(%{adapter: adapter} = storage, subscription, last_seen),
+    do: adapter.advance_cursor(subscription, last_seen, storage)
+
+  @doc "Records a message its handler gave up on. See `c:record_dead_message/2`."
+  @spec record_dead_message(opts(), dead_row()) :: :ok | {:error, term()}
+  def record_dead_message(%{adapter: adapter} = storage, dead), do: adapter.record_dead_message(dead, storage)
+
+  @doc "Every message a subscription gave up on. See `c:list_dead_messages/2`."
+  @spec list_dead_messages(opts(), String.t()) :: {:ok, [row()]} | {:error, term()}
+  def list_dead_messages(%{adapter: adapter} = storage, subscription),
+    do: adapter.list_dead_messages(subscription, storage)
+
+  @doc "Removes one dead message. See `c:delete_dead_message/3`."
+  @spec delete_dead_message(opts(), String.t(), non_neg_integer()) :: :ok | {:error, term()}
+  def delete_dead_message(%{adapter: adapter} = storage, subscription, id),
+    do: adapter.delete_dead_message(subscription, id, storage)
+
+  @doc "A subscription's full cursor row. See `c:cursor/2`."
+  @spec cursor(opts(), String.t()) ::
+          {:ok, %{required(:last_seen) => non_neg_integer(), optional(atom()) => term()} | nil}
+          | {:error, term()}
+  def cursor(%{adapter: adapter} = storage, subscription), do: adapter.cursor(subscription, storage)
+
+  @doc "Removes a subscription's cursor. See `c:delete_cursor/2`."
+  @spec delete_cursor(opts(), String.t()) :: :ok | {:error, term()}
+  def delete_cursor(%{adapter: adapter} = storage, subscription), do: adapter.delete_cursor(subscription, storage)
+
   @doc """
-  Runs `adapter`'s `c:validate!/1` if it has one, and returns `:ok`.
+  Runs the adapter's `c:validate!/1` if it has one, and returns `:ok`.
 
   Here rather than on either caller because `c:validate!/1` is optional, so
   every call site would otherwise carry the same `function_exported?/3` — and
@@ -335,9 +407,9 @@ defmodule DMEx.Storage do
   its storage is resolved. Neither of them is a log's business, which is why
   this is not on `DMEx.Log`.
   """
-  @spec validate!(module(), opts()) :: :ok
-  def validate!(adapter, opts) do
-    if function_exported?(adapter, :validate!, 1), do: adapter.validate!(opts)
+  @spec validate!(opts()) :: :ok
+  def validate!(%{adapter: adapter} = storage) do
+    if function_exported?(adapter, :validate!, 1), do: adapter.validate!(storage)
     :ok
   end
 

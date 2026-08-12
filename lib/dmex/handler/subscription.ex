@@ -56,6 +56,7 @@ defmodule DMEx.Handler.Subscription do
   use GenServer
 
   alias DMEx.Handler.Pipeline
+  alias DMEx.Storage
 
   require Logger
 
@@ -99,7 +100,6 @@ defmodule DMEx.Handler.Subscription do
           config: Keyword.fetch!(opts, :config),
           pipeline: Pipeline.new(opts),
           storage: Keyword.fetch!(opts, :storage),
-          storage_opts: Keyword.fetch!(opts, :storage_opts),
           source: nil,
           liveness_timer: nil,
           attempt: 0
@@ -224,7 +224,7 @@ defmodule DMEx.Handler.Subscription do
   # `:none` rather than 0 for "never committed anything" — that distinction is
   # what makes `last_seen:` apply exactly once.
   defp durable_cursor(state) do
-    case state.storage.last_seen(state.subscription, state.storage_opts) do
+    case Storage.last_seen(state.storage, state.subscription) do
       {:ok, nil} -> {:ok, :none}
       other -> other
     end

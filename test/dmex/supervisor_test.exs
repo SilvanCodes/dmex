@@ -365,7 +365,7 @@ defmodule DMEx.SupervisorTest do
 
       {:ok, [pid]} = subscribe(Handlers.Echo)
 
-      assert :sys.get_state(pid).storage_opts.repo == Repo
+      assert :sys.get_state(pid).storage.repo == Repo
     end
 
     test "a subscription may override the supervisor's repo" do
@@ -374,7 +374,7 @@ defmodule DMEx.SupervisorTest do
 
       {:ok, [pid]} = subscribe(Handlers.Echo, repo: IntegrationRepo)
 
-      assert :sys.get_state(pid).storage_opts.repo == IntegrationRepo
+      assert :sys.get_state(pid).storage.repo == IntegrationRepo
     end
   end
 

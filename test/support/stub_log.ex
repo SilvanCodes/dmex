@@ -17,8 +17,8 @@ defmodule DMEx.Test.StubLog do
 
   @doc "Points this process's stub log at `opts`, with optional config overrides."
   @spec install(DMEx.Storage.opts(), keyword()) :: :ok
-  def install(storage_opts, config_opts \\ []) do
-    Process.put(@key, {storage_opts, DMEx.Config.log!(config_opts)})
+  def install(storage, config_opts \\ []) do
+    Process.put(@key, {storage, DMEx.Config.log!(config_opts)})
 
     :ok
   end
@@ -37,19 +37,14 @@ defmodule DMEx.Test.StubLog do
 
   @doc false
   def __dmex__ do
-    {storage_opts, config} = Process.get(@key)
+    {storage, config} = Process.get(@key)
 
     %{
       log: __MODULE__,
-      repo: Storage,
-      storage: Storage,
-      notifier: DMEx.Notifier.Beam,
-      channel: "dmex_public",
-      lock: {0, 0},
-      prefix: nil,
       config: config,
-      storage_opts: Map.put(storage_opts, :log, __MODULE__),
-      notifier_opts: %{
+      storage: storage |> Map.put(:adapter, Storage) |> Map.put(:log, __MODULE__),
+      notifier: %{
+        adapter: DMEx.Notifier.Beam,
         repo: Storage,
         name: Module.concat(__MODULE__, "Notifications"),
         channel: "dmex_public"

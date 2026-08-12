@@ -119,6 +119,7 @@ defmodule DMEx.Handler.Pipeline do
   """
 
   alias DMEx.Handler
+  alias DMEx.Storage
   alias DMEx.Storage.Error, as: StorageError
 
   require Logger
@@ -146,8 +147,7 @@ defmodule DMEx.Handler.Pipeline do
   position would be a second copy of `:cursor` that could go stale.
   """
   @type t :: %{
-          required(:storage) => module(),
-          required(:storage_opts) => DMEx.Storage.opts(),
+          required(:storage) => Storage.opts(),
           required(:handler) => module(),
           required(:subscription) => String.t(),
           required(:origin) => term(),
@@ -261,7 +261,7 @@ defmodule DMEx.Handler.Pipeline do
 
     %{
       storage: Keyword.fetch!(opts, :storage),
-      storage_opts: Keyword.fetch!(opts, :storage_opts),
+      ## Internals
       handler: handler,
       subscription: Keyword.get_lazy(opts, :subscription, fn -> subscription!(handler.__dmex__()) end),
       origin: Keyword.fetch!(opts, :origin),
@@ -284,8 +284,6 @@ defmodule DMEx.Handler.Pipeline do
           "#{inspect(handler)} reads #{length(logs)} logs (#{Enum.join(logs, ", ")}), so a " <>
             "pipeline for it has to be built with the `subscription:` it is running."
   end
-
-  ## Internals
 
   defp attempt(state, delivery, commit, attempt) do
     telemetry = %{
@@ -326,9 +324,9 @@ defmodule DMEx.Handler.Pipeline do
       else
         {:failed, exception, __STACKTRACE__, attempt}
       end
-  end
 
-  ## Terminal actions — see section 6
+      ## Terminal actions — see section 6
+  end
 
   defp resolve(state, row, id, exception, stacktrace, attempts) do
     case state.config.on_failure do
@@ -355,7 +353,7 @@ defmodule DMEx.Handler.Pipeline do
   defp record_dead!(state, row) do
     dead = Map.put(row, "subscription", state.subscription)
 
-    :ok = state.storage.record_dead_message(dead, state.storage_opts)
+    :ok = Storage.record_dead_message(state.storage, dead)
   end
 
   defp report(state, %{"type" => type}, id, exception, attempts, mode) do
@@ -398,13 +396,13 @@ defmodule DMEx.Handler.Pipeline do
   # on the message — so it gets its own exception rather than whatever a failed
   # match would have produced, and every caller lets it through.
   defp commit!(state, fun) do
-    case state.storage.transaction(fun, state.storage_opts) do
+    case Storage.transaction(state.storage, fun) do
       {:ok, result} -> result
       {:error, reason} -> raise StorageError, reason
     end
   end
 
   defp advance!(state, last_seen) do
-    :ok = state.storage.advance_cursor(state.subscription, last_seen, state.storage_opts)
+    :ok = Storage.advance_cursor(state.storage, state.subscription, last_seen)
   end
 end

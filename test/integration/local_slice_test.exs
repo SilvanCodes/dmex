@@ -29,7 +29,7 @@ defmodule DMEx.Integration.LocalSliceTest do
     # one.
     start_stack!(log: nil, logs: [test: Log])
 
-    %{storage_opts: Log.__dmex__().storage_opts}
+    %{storage: Log.__dmex__().storage}
   end
 
   test "delivers a message appended after connect, live" do

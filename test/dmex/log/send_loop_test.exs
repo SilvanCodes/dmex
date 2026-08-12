@@ -523,8 +523,7 @@ defmodule DMEx.Log.SendLoopTest do
     %{
       log: __MODULE__,
       transport: Keyword.get(test_opts, :transport, SSE),
-      storage: Stub,
-      storage_opts: opts,
+      storage: Map.put(opts, :adapter, Stub),
       cursor: Keyword.get(test_opts, :cursor, 0),
       batch_interval: Keyword.get(test_opts, :batch_interval, 1),
       # Built by `DMEx.Config` rather than spelled out, so this harness cannot

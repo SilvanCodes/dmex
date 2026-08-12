@@ -95,6 +95,7 @@ defmodule DMEx.Log.Plug do
   alias DMEx.Log.SendLoop
   alias DMEx.Log.Status
   alias DMEx.Log.Streams
+  alias DMEx.Storage
   alias DMEx.Transport.SSE.Frame
 
   require Logger
@@ -211,11 +212,7 @@ defmodule DMEx.Log.Plug do
   # would turn a pool timeout into a whole-log replay — and since every
   # subscription with no cursor yet arrives here, that is the default path, not
   # an exotic one. A 503 costs the consumer one jittered reconnect.
-  defp resolve_cursor(log, :now) do
-    %{storage: storage, storage_opts: opts} = log.__dmex__()
-
-    storage.max_id(opts)
-  end
+  defp resolve_cursor(log, :now), do: Storage.max_id(log.__dmex__().storage)
 
   defp resolve_cursor(_log, cursor) when is_integer(cursor), do: {:ok, cursor}
 

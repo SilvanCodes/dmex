@@ -37,6 +37,8 @@ defmodule DMEx.Log.Dispatcher do
   alias DMEx.Log.Selection
   alias DMEx.Log.Status
   alias DMEx.Log.Streams
+  alias DMEx.Notifier
+  alias DMEx.Storage
 
   require Logger
 
@@ -58,21 +60,12 @@ defmodule DMEx.Log.Dispatcher do
 
   @impl GenServer
   def init(log) do
-    %{
-      storage: storage,
-      storage_opts: storage_opts,
-      notifier: notifier,
-      notifier_opts: notifier_opts,
-      config: config
-    } = log.__dmex__()
+    %{storage: storage, notifier: notifier, config: config} = log.__dmex__()
 
     state = %{
       log: log,
       storage: storage,
-      storage_opts: storage_opts,
       notifier: notifier,
-      notifier_opts: notifier_opts,
-      channel: notifier_opts.channel,
       poll_interval: config.poll_interval,
       polled_through: 0,
       notifier_ref: nil,
@@ -137,7 +130,7 @@ defmodule DMEx.Log.Dispatcher do
   defp ensure_listening(%{notifier_ref: ref} = state) when is_reference(ref), do: state
 
   defp ensure_listening(state) do
-    case state.notifier.listen(state.notifier_opts) do
+    case Notifier.listen(state.notifier) do
       {:ok, pid} ->
         %{state | notifier_ref: Process.monitor(pid), warned_listen?: false}
 
@@ -155,7 +148,7 @@ defmodule DMEx.Log.Dispatcher do
 
   defp warn_listen(state) do
     Logger.warning(
-      "DMEx could not LISTEN on #{state.channel} for #{inspect(state.log)}. " <>
+      "DMEx could not LISTEN on #{state.notifier.channel} for #{inspect(state.log)}. " <>
         "Falling back to polling every #{state.poll_interval}ms, which costs latency " <>
         "but never correctness."
     )
@@ -225,15 +218,15 @@ defmodule DMEx.Log.Dispatcher do
   # `{nil, []}` on an empty window and on an error alike: an engine that cannot
   # answer must not take the dispatcher down, and leaving `polled_through`
   # untouched means the next poll asks the same question over the same window.
-  defp appended_since(%{storage: storage, storage_opts: opts, polled_through: last}) do
-    case storage.appended_since(last, opts) do
+  defp appended_since(%{storage: storage, polled_through: last}) do
+    case Storage.appended_since(storage, last) do
       {:ok, {max_id, types}} -> {max_id, types}
       {:error, _reason} -> {nil, []}
     end
   end
 
-  defp current_max_id(%{storage: storage, storage_opts: opts, polled_through: last}) do
-    case storage.max_id(opts) do
+  defp current_max_id(%{storage: storage, polled_through: last}) do
+    case Storage.max_id(storage) do
       {:ok, max_id} -> max_id
       {:error, _reason} -> last
     end

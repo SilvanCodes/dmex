@@ -22,8 +22,12 @@ defmodule DMEx.Notifier do
   """
 
   @typedoc """
-  Everything a notifier needs, built once by the log and passed to every call.
+  A notifier and everything it needs, built once by the log and passed to every
+  call.
 
+  `:adapter` is the module implementing this behaviour, so this map is the whole
+  handle rather than half of a `{module, opts}` pair — the same shape as
+  `t:DMEx.Storage.opts/0`, and dispatched through the functions below.
   `:name` is the registered name for whatever `c:child_specs/1` starts, which is
   what `c:listen/1` then looks up — derived once by the log so no adapter
   re-derives it, and unique per log because it is built from the log module.
@@ -32,6 +36,7 @@ defmodule DMEx.Notifier do
   database; one that does not simply ignores it.
   """
   @type opts :: %{
+          required(:adapter) => module(),
           required(:name) => atom(),
           required(:channel) => String.t(),
           optional(:repo) => module(),
@@ -95,4 +100,20 @@ defmodule DMEx.Notifier do
   append path the difference is the thing to choose on.
   """
   @callback notify(type :: String.t(), opts()) :: :ok
+
+  ## Calling a notifier
+
+  # As in `DMEx.Storage`: the map first, the adapter it names last.
+
+  @doc "The processes this notifier needs running. See `c:child_specs/1`."
+  @spec child_specs(opts()) :: [Supervisor.child_spec() | {module(), term()} | module()]
+  def child_specs(%{adapter: adapter} = notifier), do: adapter.child_specs(notifier)
+
+  @doc "Subscribes the calling process to this log's appends. See `c:listen/1`."
+  @spec listen(opts()) :: {:ok, pid()} | :unsupported | {:error, term()}
+  def listen(%{adapter: adapter} = notifier), do: adapter.listen(notifier)
+
+  @doc "Announces an append. See `c:notify/2`."
+  @spec notify(opts(), String.t()) :: :ok
+  def notify(%{adapter: adapter} = notifier, type), do: adapter.notify(type, notifier)
 end

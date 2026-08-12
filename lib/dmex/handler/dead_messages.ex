@@ -48,6 +48,7 @@ defmodule DMEx.Handler.DeadMessages do
   alias DMEx.Config
   alias DMEx.Handler
   alias DMEx.Handler.Pipeline
+  alias DMEx.Storage
 
   require Logger
 
@@ -68,11 +69,11 @@ defmodule DMEx.Handler.DeadMessages do
   failure, having no tagged return to carry it and no business reporting an
   unreachable database as a count.
   """
-  @spec list(module(), keyword()) :: {:ok, [DMEx.Storage.row()]} | {:error, term()}
+  @spec list(module(), keyword()) :: {:ok, [Storage.row()]} | {:error, term()}
   def list(handler, opts) when is_atom(handler) do
-    {storage, storage_opts} = DMEx.Supervisor.storage!(opts)
+    storage = DMEx.Supervisor.storage!(opts)
 
-    storage.list_dead_messages(Handler.resolve_subscription_id!(handler, opts), storage_opts)
+    Storage.list_dead_messages(storage, Handler.resolve_subscription_id!(handler, opts))
   end
 
   @doc """
@@ -94,14 +95,13 @@ defmodule DMEx.Handler.DeadMessages do
   """
   @spec replay!(module(), keyword()) :: %{replayed: non_neg_integer(), failed: non_neg_integer()}
   def replay!(handler, opts) when is_atom(handler) do
-    {storage, storage_opts} = DMEx.Supervisor.storage!(opts)
+    storage = DMEx.Supervisor.storage!(opts)
 
     subscription = Handler.resolve_subscription_id!(handler, opts)
 
     state =
       Pipeline.new(
         storage: storage,
-        storage_opts: storage_opts,
         handler: handler,
         subscription: subscription,
         origin: @origin,
@@ -109,7 +109,7 @@ defmodule DMEx.Handler.DeadMessages do
       )
 
     subscription
-    |> dead_messages!(storage, storage_opts)
+    |> dead_messages!(storage)
     |> Enum.reduce(%{replayed: 0, failed: 0}, fn row, counts ->
       case replay_one(row, state, subscription) do
         :ok -> Map.update!(counts, :replayed, &(&1 + 1))
@@ -126,9 +126,9 @@ defmodule DMEx.Handler.DeadMessages do
   """
   @spec discard!(module(), non_neg_integer(), keyword()) :: :ok
   def discard!(handler, id, opts) when is_atom(handler) and is_integer(id) do
-    {storage, storage_opts} = DMEx.Supervisor.storage!(opts)
+    storage = DMEx.Supervisor.storage!(opts)
 
-    :ok = storage.delete_dead_message(Handler.resolve_subscription_id!(handler, opts), id, storage_opts)
+    :ok = Storage.delete_dead_message(storage, Handler.resolve_subscription_id!(handler, opts), id)
   end
 
   ## Internals
@@ -136,8 +136,8 @@ defmodule DMEx.Handler.DeadMessages do
   # A `DMEx.Storage.Error` rather than a failed match: an unreachable database is
   # not a verdict on any message, and the whole run has to stop rather than
   # report zero of them.
-  defp dead_messages!(subscription, storage, storage_opts) do
-    case storage.list_dead_messages(subscription, storage_opts) do
+  defp dead_messages!(subscription, storage) do
+    case Storage.list_dead_messages(storage, subscription) do
       {:ok, rows} -> rows
       {:error, reason} -> raise DMEx.Storage.Error, reason
     end
@@ -149,7 +149,7 @@ defmodule DMEx.Handler.DeadMessages do
   # the module documentation).
   defp replay_one(row, state, subscription) do
     commit = fn ->
-      :ok = state.storage.delete_dead_message(subscription, row.id, state.storage_opts)
+      :ok = Storage.delete_dead_message(state.storage, subscription, row.id)
     end
 
     case Pipeline.deliver(state, pipeline_row(row), commit) do

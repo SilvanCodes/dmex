@@ -8,33 +8,30 @@ defmodule DMEx.LogTest do
     test "resolves everything the append and stream paths need" do
       assert %{
                log: Log,
-               repo: Repo,
-               storage: DMEx.Storage.Postgres,
-               notifier: DMEx.Notifier.Postgres,
-               channel: "dmex_public",
-               lock: {classid, objid},
-               prefix: nil,
                config: %{max_batch_frequency: 100},
-               storage_opts: storage_opts,
-               notifier_opts: notifier_opts
+               storage: storage,
+               notifier: notifier
              } = Log.__dmex__()
 
-      assert is_integer(classid)
-      assert is_integer(objid)
-
-      # Each is handed exactly its map and nothing else, so neither can drift —
-      # and storage carries nothing about notification.
-      assert storage_opts == %{
+      # Two handles and nothing beside them: each carries its own adapter, so
+      # neither the adapter nor anything it reads has a second home to drift
+      # from — and storage carries nothing about notification.
+      assert %{
+               adapter: DMEx.Storage.Postgres,
                repo: Repo,
                log: Log,
                lock: {classid, objid},
                prefix: nil
-             }
+             } = storage
+
+      assert is_integer(classid)
+      assert is_integer(objid)
 
       # The notifier's process name is derived here and nowhere else, which is
       # why neither adapter rebuilds it from `:log` — and why `:log` is not in
       # this map at all.
-      assert notifier_opts == %{
+      assert notifier == %{
+               adapter: DMEx.Notifier.Postgres,
                repo: Repo,
                name: DMEx.Test.Log.Notifications,
                channel: "dmex_public"
@@ -42,13 +39,13 @@ defmodule DMEx.LogTest do
     end
 
     test "the storage adapter chooses the notifier, and a log may override it" do
-      assert define!("NotifierDefault", "repo: DMEx.Test.Repo").notifier ==
+      assert define!("NotifierDefault", "repo: DMEx.Test.Repo").notifier.adapter ==
                DMEx.Notifier.Postgres
 
       assert define!(
                "NotifierExplicit",
                "repo: DMEx.Test.Repo, notifier: DMEx.Notifier.Beam"
-             ).notifier == DMEx.Notifier.Beam
+             ).notifier.adapter == DMEx.Notifier.Beam
     end
 
     test "is a compile-time constant rather than rebuilt per call" do
@@ -60,18 +57,18 @@ defmodule DMEx.LogTest do
     test "an unset prefix is the default schema" do
       config = define!("ScopeDefault", "repo: DMEx.Test.Repo")
 
-      assert config.prefix == nil
-      assert config.channel == "dmex_public"
+      assert config.storage.prefix == nil
+      assert config.notifier.channel == "dmex_public"
     end
 
     test "an explicit prefix names the channel" do
-      assert define!("ScopePrefix", ~s(repo: DMEx.Test.Repo, prefix: "orders")).channel ==
+      assert define!("ScopePrefix", ~s(repo: DMEx.Test.Repo, prefix: "orders")).notifier.channel ==
                "dmex_orders"
 
       # Not a DMEx identifier: the charset is the storage adapter's to police,
       # and Postgrex quotes the channel name, so anything legal as a schema is
       # legal here.
-      assert define!("ScopeCased", ~s(repo: DMEx.Test.Repo, prefix: "Orders$1")).channel ==
+      assert define!("ScopeCased", ~s(repo: DMEx.Test.Repo, prefix: "Orders$1")).notifier.channel ==
                "dmex_Orders$1"
     end
 
@@ -79,8 +76,8 @@ defmodule DMEx.LogTest do
       implicit = define!("ScopeImplicit", "repo: DMEx.Test.Repo")
       explicit = define!("ScopeExplicit", ~s(repo: DMEx.Test.Repo, prefix: "public"))
 
-      assert implicit.channel == explicit.channel
-      assert implicit.lock == explicit.lock
+      assert implicit.notifier.channel == explicit.notifier.channel
+      assert implicit.storage.lock == explicit.storage.lock
     end
 
     test "rejects a schema too long for a Postgres channel name" do
@@ -93,7 +90,7 @@ defmodule DMEx.LogTest do
 
       at_limit = String.duplicate("a", 58)
 
-      assert define!("ScopeAtLimit", ~s(repo: DMEx.Test.Repo, prefix: "#{at_limit}")).channel ==
+      assert define!("ScopeAtLimit", ~s(repo: DMEx.Test.Repo, prefix: "#{at_limit}")).notifier.channel ==
                "dmex_" <> at_limit
     end
 
@@ -106,15 +103,15 @@ defmodule DMEx.LogTest do
 
   describe "the advisory lock key" do
     test "is shared by two logs on one table, which is what makes it sound" do
-      first = define!("LockSameA", ~s(repo: DMEx.Test.Repo, prefix: "shared")).lock
-      second = define!("LockSameB", ~s(repo: DMEx.Test.Repo, prefix: "shared")).lock
+      first = define!("LockSameA", ~s(repo: DMEx.Test.Repo, prefix: "shared")).storage.lock
+      second = define!("LockSameB", ~s(repo: DMEx.Test.Repo, prefix: "shared")).storage.lock
 
       assert first == second
     end
 
     test "differs between schemas, but shares one DMEx namespace" do
-      {classid_a, objid_a} = define!("LockDiffA", ~s(repo: DMEx.Test.Repo, prefix: "one")).lock
-      {classid_b, objid_b} = define!("LockDiffB", ~s(repo: DMEx.Test.Repo, prefix: "two")).lock
+      {classid_a, objid_a} = define!("LockDiffA", ~s(repo: DMEx.Test.Repo, prefix: "one")).storage.lock
+      {classid_b, objid_b} = define!("LockDiffB", ~s(repo: DMEx.Test.Repo, prefix: "two")).storage.lock
 
       # The classid is DMEx's own namespace, keeping its lock space disjoint
       # from any other library sharing the database; the objid is the schema.
@@ -123,7 +120,7 @@ defmodule DMEx.LogTest do
     end
 
     test "fits in the signed 32-bit ints pg_advisory_xact_lock takes" do
-      {classid, objid} = Log.__dmex__().lock
+      {classid, objid} = Log.__dmex__().storage.lock
 
       assert classid in 0..2_147_483_647
       assert objid in 0..2_147_483_647
@@ -139,7 +136,7 @@ defmodule DMEx.LogTest do
 
     test "defaults the repo to the application's `:ecto_repos` when it names one" do
       with_ecto_repos([Repo], fn ->
-        assert define!("DefaultRepo", ~s(prefix: "orders")).repo == Repo
+        assert define!("DefaultRepo", ~s(prefix: "orders")).storage.repo == Repo
       end)
     end
 

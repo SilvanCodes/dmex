@@ -125,7 +125,7 @@ defmodule DMEx.Supervisor do
           # The default storage and the log bindings ride along as registry
           # metadata, seeded at start, which is why a bare subscribe/2 can find
           # them with no GenServer call.
-          {Registry, keys: :unique, name: registry(name), meta: [storage: storage_config!(opts), logs: logs]},
+          {Registry, keys: :unique, name: registry(name), meta: [storage: storage(opts), logs: logs]},
           {Subscriptions, name: subscriptions(name)},
           {Starter, {name, handlers}}
         ]
@@ -213,7 +213,7 @@ defmodule DMEx.Supervisor do
     )
 
     bound = resolve_logs!(opts, supervisor)
-    storage = Map.to_list(resolve_storage!(opts, supervisor))
+    storage = resolve_storage!(opts, supervisor)
     config = Config.handler!(Keyword.merge(declaration.config, opts))
 
     declaration.logs
@@ -228,8 +228,9 @@ defmodule DMEx.Supervisor do
           transport: transport,
           origin: origin,
           registry: registry(supervisor),
-          config: config
-        ] ++ storage
+          config: config,
+          storage: storage
+        ]
 
       case DynamicSupervisor.start_child(subscriptions(supervisor), {Subscription, child}) do
         {:ok, pid} -> {:cont, {:ok, [pid | pids]}}
@@ -260,17 +261,22 @@ defmodule DMEx.Supervisor do
   end
 
   @doc """
-  Resolves `repo:`, `storage:` and `prefix:` into an adapter and its options.
+  Resolves `repo:`, `storage:` and `prefix:` into a `t:DMEx.Storage.opts/0`.
 
   The one place those three are read, so `subscribe/2`, `DMEx.Handler.Cursors`
   and `DMEx.Handler.DeadMessages` cannot drift. `:repo` may be absent here — a
   supervisor started with no default is legal, and `subscribe/2` insists on one.
+  The `storage:` option names the adapter and lands on `:adapter`, which is what
+  makes the result one value rather than a pair.
   """
-  @spec storage(keyword()) :: {module(), DMEx.Storage.opts()}
+  @spec storage(keyword()) :: DMEx.Storage.opts()
   def storage(opts) do
-    @storage_defaults
-    |> Map.new(fn {key, default} -> {key, Keyword.get(opts, key, default)} end)
-    |> Map.pop(:storage)
+    {adapter, storage} =
+      @storage_defaults
+      |> Map.new(fn {key, default} -> {key, Keyword.get(opts, key, default)} end)
+      |> Map.pop(:storage)
+
+    Map.put(storage, :adapter, adapter)
   end
 
   @doc """
@@ -279,19 +285,19 @@ defmodule DMEx.Supervisor do
   What the operator-facing modules use, since there is nothing running to fall
   back to when one is called from a migration or a console.
   """
-  @spec storage!(keyword()) :: {module(), DMEx.Storage.opts()}
+  @spec storage!(keyword()) :: DMEx.Storage.opts()
   def storage!(opts) do
     case storage(opts) do
-      {_storage, %{repo: nil}} ->
+      %{repo: nil} ->
         raise ArgumentError, "a `repo:` is required, e.g. `repo: MyApp.Repo`"
 
-      {storage, storage_opts} = resolved ->
+      storage ->
         # The consumer half's one call site, matching `DMEx.Log.start_link/2` on
         # the log half — an option an adapter cannot honour fails here rather
         # than at whichever query first ignores it.
-        :ok = DMEx.Storage.validate!(storage, storage_opts)
+        :ok = DMEx.Storage.validate!(storage)
 
-        resolved
+        storage
     end
   end
 
@@ -463,14 +469,14 @@ defmodule DMEx.Supervisor do
   ## Storage resolution
 
   defp resolve_storage!(opts, supervisor) do
-    config =
+    storage =
       if Keyword.has_key?(opts, :repo) do
-        storage_config!(opts)
+        storage(opts)
       else
         with pid when is_pid(pid) <- Process.whereis(registry(supervisor)),
-             {:ok, %{storage_opts: %{repo: repo}} = config} when not is_nil(repo) <-
+             {:ok, %{repo: repo} = storage} when not is_nil(repo) <-
                Registry.meta(registry(supervisor), :storage) do
-          config
+          storage
         else
           _ -> raise_no_repo(supervisor)
         end
@@ -480,15 +486,9 @@ defmodule DMEx.Supervisor do
     # honour — `prefix:` on SQLite — fails at subscribe rather than silently
     # reading the unprefixed tables. Safe by this point: both branches above
     # have established a non-nil repo, which `c:DMEx.Storage.validate!/1` reads.
-    :ok = DMEx.Storage.validate!(config.storage, config.storage_opts)
+    :ok = DMEx.Storage.validate!(storage)
 
-    config
-  end
-
-  defp storage_config!(opts) do
-    {storage, storage_opts} = storage(opts)
-
-    %{storage: storage, storage_opts: storage_opts}
+    storage
   end
 
   defp raise_no_repo(supervisor) do

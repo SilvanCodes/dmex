@@ -38,6 +38,7 @@ defmodule DMEx.Log.SendLoop do
 
   alias DMEx.Log.Selection
   alias DMEx.Log.Status
+  alias DMEx.Storage
 
   require Logger
 
@@ -51,8 +52,7 @@ defmodule DMEx.Log.SendLoop do
   reciprocal of `max_batch_frequency`, taken once rather than per iteration.
   """
   @type state :: %{
-          required(:storage) => module(),
-          required(:storage_opts) => DMEx.Storage.opts(),
+          required(:storage) => Storage.opts(),
           required(:log) => module(),
           required(:transport) => module(),
           required(:cursor) => non_neg_integer(),
@@ -138,7 +138,7 @@ defmodule DMEx.Log.SendLoop do
   """
   @spec connect(module(), keyword()) :: state()
   def connect(log, opts) do
-    %{storage: storage, storage_opts: storage_opts, config: config} = log.__dmex__()
+    %{storage: storage, config: config} = log.__dmex__()
 
     cursor = Keyword.get(opts, :cursor, 0)
     selection = Keyword.get(opts, :selection, :all)
@@ -153,7 +153,6 @@ defmodule DMEx.Log.SendLoop do
       log: log,
       transport: Keyword.fetch!(opts, :transport),
       storage: storage,
-      storage_opts: storage_opts,
       cursor: cursor,
       config: config,
       batch_interval: DMEx.Config.batch_interval(config),
@@ -165,17 +164,15 @@ defmodule DMEx.Log.SendLoop do
     }
   end
 
-  ## The loop's steps
-
   defp read_and_send(conn, state) do
     arm(state)
 
-    case state.storage.read(
+    case Storage.read(
+           state.storage,
            state.cursor,
            state.config.max_batch_rows,
            state.config.max_batch_bytes,
-           state.types,
-           state.storage_opts
+           state.types
          ) do
       {:ok, []} ->
         {:empty, conn, state}
@@ -193,6 +190,7 @@ defmodule DMEx.Log.SendLoop do
     end
   end
 
+  ## The loop's steps
   # A whole read's rows in one call, so syscalls and deadline arming do not
   # multiply by `max_batch_rows`.
   defp send_rows(conn, state, rows) do

@@ -83,7 +83,7 @@ defmodule DMEx.Handler.CursorsTest do
   @new "orders/new"
 
   setup do
-    %{opts: [repo: Repo], storage_opts: %{repo: Repo, prefix: nil}}
+    %{opts: [repo: Repo], storage: %{adapter: Postgres, repo: Repo, prefix: nil}}
   end
 
   describe "position/2" do
@@ -92,7 +92,7 @@ defmodule DMEx.Handler.CursorsTest do
     end
 
     test "reports the position and when it last moved", ctx do
-      :ok = Postgres.advance_cursor(@old, 42, ctx.storage_opts)
+      :ok = Postgres.advance_cursor(@old, 42, ctx.storage)
 
       assert {:ok, cursor} = Cursors.position(Old, ctx.opts)
       assert cursor.last_seen == 42
@@ -123,36 +123,36 @@ defmodule DMEx.Handler.CursorsTest do
     test "creates a cursor where there was none", ctx do
       assert :ok = Cursors.move!(Old, 100, ctx.opts)
 
-      assert {:ok, 100} = Postgres.last_seen(@old, ctx.storage_opts)
+      assert {:ok, 100} = Postgres.last_seen(@old, ctx.storage)
     end
 
     test "rewinds an existing one, so the next connect replays", ctx do
-      :ok = Postgres.advance_cursor(@old, 100, ctx.storage_opts)
+      :ok = Postgres.advance_cursor(@old, 100, ctx.storage)
 
       assert :ok = Cursors.move!(Old, 10, ctx.opts)
 
-      assert {:ok, 10} = Postgres.last_seen(@old, ctx.storage_opts)
+      assert {:ok, 10} = Postgres.last_seen(@old, ctx.storage)
     end
 
     test "moving to 0 replays the whole log but keeps the row", ctx do
       # Which is the difference from reset!/2: a cursor at 0 still exists, so
       # `last_seen:` stays ignored.
-      :ok = Postgres.advance_cursor(@old, 100, ctx.storage_opts)
+      :ok = Postgres.advance_cursor(@old, 100, ctx.storage)
 
       assert :ok = Cursors.move!(Old, 0, ctx.opts)
 
-      assert {:ok, 0} = Postgres.last_seen(@old, ctx.storage_opts)
+      assert {:ok, 0} = Postgres.last_seen(@old, ctx.storage)
     end
   end
 
   describe "reset!/2" do
     test "removes the row entirely, so last_seen: applies again", ctx do
-      :ok = Postgres.advance_cursor(@old, 100, ctx.storage_opts)
+      :ok = Postgres.advance_cursor(@old, 100, ctx.storage)
 
       assert :ok = Cursors.reset!(Old, ctx.opts)
 
       # nil, not 0 — the distinction that makes `last_seen:` apply exactly once.
-      assert {:ok, nil} = Postgres.last_seen(@old, ctx.storage_opts)
+      assert {:ok, nil} = Postgres.last_seen(@old, ctx.storage)
     end
 
     test "is fine on a handler that has no cursor", ctx do
@@ -166,16 +166,16 @@ defmodule DMEx.Handler.CursorsTest do
     # consumer's map, mints a new identity. Hence the id strings — the old
     # identity is the one no module declares.
     test "carries the position over and removes the old row", ctx do
-      :ok = Postgres.advance_cursor(@old, 4_242, ctx.storage_opts)
+      :ok = Postgres.advance_cursor(@old, 4_242, ctx.storage)
 
       assert :ok = Cursors.rename!(@old, @new, ctx.opts)
 
-      assert {:ok, 4_242} = Postgres.last_seen(@new, ctx.storage_opts)
-      assert {:ok, nil} = Postgres.last_seen(@old, ctx.storage_opts)
+      assert {:ok, 4_242} = Postgres.last_seen(@new, ctx.storage)
+      assert {:ok, nil} = Postgres.last_seen(@old, ctx.storage)
     end
 
     test "carries the log URL over too", ctx do
-      :ok = Postgres.advance_cursor(@old, 10, ctx.storage_opts)
+      :ok = Postgres.advance_cursor(@old, 10, ctx.storage)
 
       :ok = Cursors.rename!(@old, @new, ctx.opts)
 
@@ -183,8 +183,8 @@ defmodule DMEx.Handler.CursorsTest do
     end
 
     test "refuses to overwrite a cursor the target already has", ctx do
-      :ok = Postgres.advance_cursor(@old, 10, ctx.storage_opts)
-      :ok = Postgres.advance_cursor(@new, 99, ctx.storage_opts)
+      :ok = Postgres.advance_cursor(@old, 10, ctx.storage)
+      :ok = Postgres.advance_cursor(@new, 99, ctx.storage)
 
       assert_raise ArgumentError, ~r/already has a cursor at 99/, fn ->
         Cursors.rename!(@old, @new, ctx.opts)
@@ -192,20 +192,20 @@ defmodule DMEx.Handler.CursorsTest do
     end
 
     test "leaves both cursors untouched when it refuses", ctx do
-      :ok = Postgres.advance_cursor(@old, 10, ctx.storage_opts)
-      :ok = Postgres.advance_cursor(@new, 99, ctx.storage_opts)
+      :ok = Postgres.advance_cursor(@old, 10, ctx.storage)
+      :ok = Postgres.advance_cursor(@new, 99, ctx.storage)
 
       catch_error(Cursors.rename!(@old, @new, ctx.opts))
 
       # One transaction, so a refusal cannot half-apply.
-      assert {:ok, 10} = Postgres.last_seen(@old, ctx.storage_opts)
-      assert {:ok, 99} = Postgres.last_seen(@new, ctx.storage_opts)
+      assert {:ok, 10} = Postgres.last_seen(@old, ctx.storage)
+      assert {:ok, 99} = Postgres.last_seen(@new, ctx.storage)
     end
 
     test "is a no-op when the old handler never had a cursor", ctx do
       assert :ok = Cursors.rename!(@old, @new, ctx.opts)
 
-      assert {:ok, nil} = Postgres.last_seen(@new, ctx.storage_opts)
+      assert {:ok, nil} = Postgres.last_seen(@new, ctx.storage)
     end
 
     # Both reads used to happen in one tuple, so a `to` that legitimately had a

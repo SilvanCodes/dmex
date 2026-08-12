@@ -98,8 +98,7 @@ defmodule DMEx.Log.WatcherTest do
   defp state(opts, status) do
     %{
       SendLoop.connect(Log, transport: DMEx.Transport.SSE, status: status)
-      | storage: Stub,
-        storage_opts: opts
+      | storage: Map.put(opts, :adapter, Stub)
     }
   end
 

@@ -101,7 +101,7 @@ defmodule DMEx.Handler.PipelineFailureTest do
 
     SQL.query!(Repo, "CREATE TABLE dmex_test_scratch (id bigserial PRIMARY KEY, note text)", [])
 
-    %{storage_opts: %{repo: Repo, prefix: nil}}
+    %{storage: %{adapter: Postgres, repo: Repo, prefix: nil}}
   end
 
   describe "local retries" do
@@ -131,7 +131,7 @@ defmodule DMEx.Handler.PipelineFailureTest do
       state = state(ctx, handler: Handlers.FailTimes, max_attempts: 3)
 
       assert {:ok, %{cursor: 1}} = Pipeline.run(row(1), state)
-      assert {:ok, 1} = Postgres.last_seen("test/fail_times", ctx.storage_opts)
+      assert {:ok, 1} = Postgres.last_seen("test/fail_times", ctx.storage)
     end
 
     test "each attempt gets its own telemetry span", ctx do
@@ -166,7 +166,7 @@ defmodule DMEx.Handler.PipelineFailureTest do
 
       catch_error(Pipeline.run(row(1), state))
 
-      assert {:ok, nil} = Postgres.last_seen("test/raising", ctx.storage_opts)
+      assert {:ok, nil} = Postgres.last_seen("test/raising", ctx.storage)
     end
 
     test "writes no dead message", ctx do
@@ -207,7 +207,7 @@ defmodule DMEx.Handler.PipelineFailureTest do
       state = state(ctx, handler: Handlers.Raising, on_failure: :skip)
 
       assert {:ok, %{cursor: 1}} = Pipeline.run(row(1), state)
-      assert {:ok, 1} = Postgres.last_seen("test/raising", ctx.storage_opts)
+      assert {:ok, 1} = Postgres.last_seen("test/raising", ctx.storage)
     end
 
     test "does not stop the rest of the batch", ctx do
@@ -243,7 +243,7 @@ defmodule DMEx.Handler.PipelineFailureTest do
       state = state(ctx, handler: Handlers.Raising, on_failure: :dead_message)
 
       assert {:ok, %{cursor: 1}} = Pipeline.run(row(1), state)
-      assert {:ok, 1} = Postgres.last_seen("test/raising", ctx.storage_opts)
+      assert {:ok, 1} = Postgres.last_seen("test/raising", ctx.storage)
       assert dead_count() == 1
     end
 
@@ -327,7 +327,7 @@ defmodule DMEx.Handler.PipelineFailureTest do
       # Now rewind the cursor to 1 and feed message 2 again. Its dead-message
       # insert will conflict on (subscription, id), which aborts the transaction
       # the cursor advance is sharing.
-      :ok = Postgres.advance_cursor("test/raising", 1, ctx.storage_opts)
+      :ok = Postgres.advance_cursor("test/raising", 1, ctx.storage)
 
       assert catch_error(Pipeline.run(row(2), %{state | cursor: 1}))
 
@@ -335,7 +335,7 @@ defmodule DMEx.Handler.PipelineFailureTest do
       # its own — which is the whole reason they share a transaction. Without
       # that, the cursor would now read 2 and the message would be both skipped
       # and unrecorded.
-      assert {:ok, 1} = Postgres.last_seen("test/raising", ctx.storage_opts)
+      assert {:ok, 1} = Postgres.last_seen("test/raising", ctx.storage)
       assert dead_count() == 1
     end
 
@@ -439,10 +439,9 @@ defmodule DMEx.Handler.PipelineFailureTest do
     div(elapsed, 1000)
   end
 
-  defp stub_state(storage_opts, opts) do
+  defp stub_state(storage, opts) do
     Pipeline.new(
-      storage: FlakyStorage,
-      storage_opts: storage_opts,
+      storage: Map.put(storage, :adapter, FlakyStorage),
       handler: Keyword.fetch!(opts, :handler),
       origin: @url,
       cursor: 0,
@@ -457,8 +456,8 @@ defmodule DMEx.Handler.PipelineFailureTest do
     )
   end
 
-  defp stub_dead(subscription, storage_opts) do
-    {:ok, rows} = FlakyStorage.list_dead_messages(subscription, storage_opts)
+  defp stub_dead(subscription, storage) do
+    {:ok, rows} = FlakyStorage.list_dead_messages(subscription, storage)
 
     rows
   end
@@ -468,8 +467,7 @@ defmodule DMEx.Handler.PipelineFailureTest do
       Keyword.split(opts, [:on_failure, :max_attempts, :reconnect_backoff_base, :reconnect_backoff_max])
 
     Pipeline.new(
-      storage: Postgres,
-      storage_opts: ctx.storage_opts,
+      storage: ctx.storage,
       handler: Keyword.fetch!(opts, :handler),
       origin: @url,
       cursor: 0,

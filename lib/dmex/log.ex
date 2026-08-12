@@ -95,6 +95,8 @@ defmodule DMEx.Log do
 
   alias DMEx.Config
   alias DMEx.Log.Streams
+  alias DMEx.Notifier
+  alias DMEx.Storage
 
   @log_opts [:repo, :storage, :notifier, :prefix]
   @scope_max_bytes 58
@@ -156,18 +158,19 @@ defmodule DMEx.Log do
     end
   end
 
-  @typedoc "A log's compile-time resolved configuration."
+  @typedoc """
+  A log's compile-time resolved configuration.
+
+  Four keys, and `:repo`, `:prefix`, `:lock` and `:channel` are not among them:
+  each belongs to exactly one of the two adapter handles, which carry their own
+  adapter module — see `t:DMEx.Storage.opts/0`. A caller wanting the lock reads
+  `config.storage.lock`, and there is no second copy to disagree with it.
+  """
   @type config :: %{
           log: module(),
-          repo: module(),
-          storage: module(),
-          notifier: module(),
-          channel: String.t(),
-          lock: {integer(), integer()},
-          prefix: String.t() | nil,
           config: Config.log(),
-          storage_opts: DMEx.Storage.opts(),
-          notifier_opts: DMEx.Notifier.opts()
+          storage: Storage.opts(),
+          notifier: Notifier.opts()
         }
 
   @doc false
@@ -186,24 +189,19 @@ defmodule DMEx.Log do
 
     scope = scope!(module, prefix)
     channel = "dmex_" <> scope
-    lock = {@classid, :erlang.phash2(scope, 2_147_483_648)}
 
     %{
       log: module,
-      repo: repo,
-      storage: storage,
-      notifier: notifier!(module, storage, opts),
-      channel: channel,
-      lock: lock,
-      prefix: prefix,
       config: Config.log!(opts),
-      storage_opts: %{
+      storage: %{
+        adapter: storage,
         repo: repo,
         log: module,
-        lock: lock,
+        lock: {@classid, :erlang.phash2(scope, 2_147_483_648)},
         prefix: prefix
       },
-      notifier_opts: %{
+      notifier: %{
+        adapter: notifier!(module, storage, opts),
         repo: repo,
         # The one derivation of the notifier's process name. Both adapters read
         # it rather than rebuilding it from `:log`, which is why `:log` is not
@@ -228,24 +226,18 @@ defmodule DMEx.Log do
   @doc false
   @spec start_link(module()) :: Supervisor.on_start()
   def start_link(log) do
-    %{
-      storage: storage,
-      storage_opts: storage_opts,
-      notifier: notifier,
-      notifier_opts: notifier_opts,
-      config: config
-    } = log.__dmex__()
+    %{storage: storage, notifier: notifier, config: config} = log.__dmex__()
 
     # Here rather than at compile time, because an adapter may need to read the
     # repo's configuration — and the repo is started by now.
-    :ok = DMEx.Storage.validate!(storage, storage_opts)
+    :ok = Storage.validate!(storage)
 
     # Whatever the notifier needs sits between the registry and the dispatcher,
     # and this module has no idea what it is. Postgres puts a LISTEN connection
     # here; `DMEx.Notifier.Beam` puts a `:pg` scope.
     children =
       [Streams.child_spec(log)] ++
-        notifier.child_specs(notifier_opts) ++
+        Notifier.child_specs(notifier) ++
         [{DMEx.Log.Dispatcher, log: log}] ++
         watcher_children(log, config)
 
@@ -345,7 +337,7 @@ defmodule DMEx.Log do
   def __append__(log, message, opts) when is_atom(log) do
     validate_append_opts!(opts)
 
-    %{storage: storage, storage_opts: storage_opts} = config = log.__dmex__()
+    %{storage: storage, notifier: notifier} = log.__dmex__()
 
     type = type!(message)
     data = JSON.encode!(message)
@@ -355,7 +347,7 @@ defmodule DMEx.Log do
       [:dmex, :append],
       %{log: log, type: type},
       fn ->
-        result = storage.append(type, data, metadata, storage_opts)
+        result = Storage.append(storage, type, data, metadata)
 
         # Here rather than inside the adapter's transaction, because which
         # mechanism announces an append is not the storage engine's business —
@@ -363,7 +355,7 @@ defmodule DMEx.Log do
         # transaction announces a row that is not committed yet; the stream then
         # reads nothing and the dispatcher's poll picks it up.
         with {:ok, _id} <- result do
-          config.notifier.notify(type, config.notifier_opts)
+          Notifier.notify(notifier, type)
         end
 
         {result, %{log: log, type: type}}
@@ -399,8 +391,6 @@ defmodule DMEx.Log do
     end
   end
 
-  ## Compile-time validation
-
   defp repo!(_module, repo) when is_atom(repo) and not is_nil(repo), do: repo
 
   defp repo!(module, other) do
@@ -414,6 +404,8 @@ defmodule DMEx.Log do
   # entry is an answer; none or several is not, and guessing either would bind
   # the log to a database silently.
   defp default_repo!(_module, [repo]), do: repo
+
+  ## Compile-time validation
 
   defp default_repo!(module, repos) do
     raise ArgumentError,

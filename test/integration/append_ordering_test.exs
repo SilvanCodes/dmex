@@ -26,7 +26,7 @@ defmodule DMEx.Integration.AppendOrderingTest do
 
   describe "the lock itself" do
     test "append takes a transaction-scoped advisory lock on the log's key" do
-      {classid, objid} = Log.__dmex__().lock
+      {classid, objid} = Log.__dmex__().storage.lock
 
       Repo.transaction(fn ->
         {:ok, _id} = Log.append(%OrderPlaced{order_id: 1})
@@ -49,7 +49,7 @@ defmodule DMEx.Integration.AppendOrderingTest do
     end
 
     test "the lock is released by COMMIT, not left behind" do
-      {classid, objid} = Log.__dmex__().lock
+      {classid, objid} = Log.__dmex__().storage.lock
 
       {:ok, _} = Log.append(%OrderPlaced{order_id: 1})
 
@@ -167,13 +167,13 @@ defmodule DMEx.Integration.AppendOrderingTest do
   # LIMIT n`, advancing the cursor to the last id seen and never looking back.
   # That is what makes a skipped row unrecoverable, and what this observes.
   defp inserted_at(id) do
-    {:ok, [row]} = Postgres.read(id - 1, 1, 1_048_576, :all, storage_opts())
+    {:ok, [row]} = Postgres.read(id - 1, 1, 1_048_576, :all, storage())
 
     row.inserted_at
   end
 
   defp follow(parent, cursor, acc) do
-    {:ok, rows} = Postgres.read(cursor, 100, 1_048_576, :all, storage_opts())
+    {:ok, rows} = Postgres.read(cursor, 100, 1_048_576, :all, storage())
     ids = Enum.map(rows, & &1.id)
     acc = acc ++ ids
     cursor = List.last(ids) || cursor
@@ -188,7 +188,7 @@ defmodule DMEx.Integration.AppendOrderingTest do
   end
 
   defp drain(cursor, acc) do
-    {:ok, rows} = Postgres.read(cursor, 1_000, 1_048_576, :all, storage_opts())
+    {:ok, rows} = Postgres.read(cursor, 1_000, 1_048_576, :all, storage())
 
     case Enum.map(rows, & &1.id) do
       [] -> acc
@@ -196,5 +196,5 @@ defmodule DMEx.Integration.AppendOrderingTest do
     end
   end
 
-  defp storage_opts, do: Log.__dmex__().storage_opts
+  defp storage, do: Log.__dmex__().storage
 end

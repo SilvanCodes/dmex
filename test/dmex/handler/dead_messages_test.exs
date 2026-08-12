@@ -84,7 +84,7 @@ defmodule DMEx.Handler.DeadMessagesTest do
     %{
       opts: [repo: Repo],
       replay: [repo: Repo],
-      storage_opts: %{repo: Repo, prefix: nil}
+      storage: %{adapter: Postgres, repo: Repo, prefix: nil}
     }
   end
 
@@ -197,14 +197,14 @@ defmodule DMEx.Handler.DeadMessagesTest do
 
     test "does not touch the subscription's cursor", ctx do
       kill(ctx, 1)
-      :ok = Postgres.advance_cursor(@subscription, 500, ctx.storage_opts)
+      :ok = Postgres.advance_cursor(@subscription, 500, ctx.storage)
       Handlers.FailTimes.set(0)
 
       DeadMessages.replay!(@handler, ctx.replay)
 
       # A replayed message is delivered out of band; rewinding the cursor to
       # reach it would redeliver everything in between.
-      assert {:ok, 500} = Postgres.last_seen(@subscription, ctx.storage_opts)
+      assert {:ok, 500} = Postgres.last_seen(@subscription, ctx.storage)
     end
 
     test "is a no-op when there is nothing dead", ctx do
@@ -310,8 +310,7 @@ defmodule DMEx.Handler.DeadMessagesTest do
 
     state =
       Pipeline.new(
-        storage: Postgres,
-        storage_opts: ctx.storage_opts,
+        storage: ctx.storage,
         handler: @handler,
         origin: @url,
         cursor: id - 1,

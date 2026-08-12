@@ -126,7 +126,7 @@ defmodule DMEx.Integration.ResumptionTest do
     for n <- 1..3, do: {:ok, _} = Log.append(%OrderPlaced{order_id: n})
     drain(3)
 
-    {:ok, tip} = Postgres.max_id(Log.__dmex__().storage_opts)
+    {:ok, tip} = Postgres.max_id(Log.__dmex__().storage)
 
     eventually(fn -> cursor() == {:ok, tip} end)
   end

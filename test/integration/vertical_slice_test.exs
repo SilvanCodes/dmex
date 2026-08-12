@@ -32,7 +32,7 @@ defmodule DMEx.Integration.VerticalSliceTest do
   end
 
   setup do
-    Map.put(start_stack!(), :storage_opts, Log.__dmex__().storage_opts)
+    Map.put(start_stack!(), :storage, Log.__dmex__().storage)
   end
 
   test "delivers an appended message to a handler and commits the cursor", _ctx do

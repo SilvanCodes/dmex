@@ -38,6 +38,7 @@ defmodule DMEx.Handler.Cursors do
   """
 
   alias DMEx.Handler
+  alias DMEx.Storage
 
   @doc """
   Returns where `handler`'s subscription has got to, and when it last moved.
@@ -50,9 +51,9 @@ defmodule DMEx.Handler.Cursors do
           {:ok, %{last_seen: non_neg_integer(), updated_at: term()} | nil}
           | {:error, term()}
   def position(handler, opts) when is_atom(handler) do
-    {storage, storage_opts} = DMEx.Supervisor.storage!(opts)
+    storage = DMEx.Supervisor.storage!(opts)
 
-    storage.cursor(Handler.resolve_subscription_id!(handler, opts), storage_opts)
+    Storage.cursor(storage, Handler.resolve_subscription_id!(handler, opts))
   end
 
   @doc """
@@ -72,11 +73,11 @@ defmodule DMEx.Handler.Cursors do
   """
   @spec move!(module(), non_neg_integer(), keyword()) :: :ok
   def move!(handler, last_seen, opts) when is_atom(handler) and is_integer(last_seen) and last_seen >= 0 do
-    {storage, storage_opts} = DMEx.Supervisor.storage!(opts)
+    storage = DMEx.Supervisor.storage!(opts)
 
     # No transaction: one statement is already atomic, and `rename!/3` — which
     # genuinely needs one, for two — is the contrast.
-    :ok = storage.advance_cursor(Handler.resolve_subscription_id!(handler, opts), last_seen, storage_opts)
+    :ok = Storage.advance_cursor(storage, Handler.resolve_subscription_id!(handler, opts), last_seen)
   end
 
   @doc """
@@ -87,9 +88,9 @@ defmodule DMEx.Handler.Cursors do
   """
   @spec reset!(module(), keyword()) :: :ok
   def reset!(handler, opts) when is_atom(handler) do
-    {storage, storage_opts} = DMEx.Supervisor.storage!(opts)
+    storage = DMEx.Supervisor.storage!(opts)
 
-    :ok = storage.delete_cursor(Handler.resolve_subscription_id!(handler, opts), storage_opts)
+    :ok = Storage.delete_cursor(storage, Handler.resolve_subscription_id!(handler, opts))
   end
 
   @doc """
@@ -105,42 +106,39 @@ defmodule DMEx.Handler.Cursors do
   """
   @spec rename!(String.t(), String.t(), keyword()) :: :ok
   def rename!(from, to, opts) when is_binary(from) and is_binary(to) do
-    {storage, storage_opts} = DMEx.Supervisor.storage!(opts)
+    storage = DMEx.Supervisor.storage!(opts)
 
     {:ok, :ok} =
-      storage.transaction(
-        fn ->
-          # `from` first, and through `cursor!/3`, so a failed read cannot be
-          # mistaken for an answer: reading both at once let a `to` that has a
-          # cursor report "already has a cursor" when what actually happened was
-          # that `from` could not be read at all.
-          with %{last_seen: id} <- cursor!(storage, from, storage_opts),
-               nil <- cursor!(storage, to, storage_opts) do
-            :ok = storage.advance_cursor(to, id, storage_opts)
-            :ok = storage.delete_cursor(from, storage_opts)
-          else
-            # Only the first read can answer `nil` here, and only the second a
-            # cursor: nothing left to move, versus a destination already taken.
-            nil ->
-              :ok
+      Storage.transaction(storage, fn ->
+        # `from` first, and through `cursor!/2`, so a failed read cannot be
+        # mistaken for an answer: reading both at once let a `to` that has a
+        # cursor report "already has a cursor" when what actually happened was
+        # that `from` could not be read at all.
+        with %{last_seen: id} <- cursor!(storage, from),
+             nil <- cursor!(storage, to) do
+          :ok = Storage.advance_cursor(storage, to, id)
+          :ok = Storage.delete_cursor(storage, from)
+        else
+          # Only the first read can answer `nil` here, and only the second a
+          # cursor: nothing left to move, versus a destination already taken.
+          nil ->
+            :ok
 
-            %{last_seen: existing} ->
-              raise ArgumentError,
-                    "#{inspect(to)} already has a cursor at #{existing}. " <>
-                      "Renaming #{inspect(from)} onto it would overwrite that " <>
-                      "subscription's position — reset one of them first if that is what you want."
-          end
-        end,
-        storage_opts
-      )
+          %{last_seen: existing} ->
+            raise ArgumentError,
+                  "#{inspect(to)} already has a cursor at #{existing}. " <>
+                    "Renaming #{inspect(from)} onto it would overwrite that " <>
+                    "subscription's position — reset one of them first if that is what you want."
+        end
+      end)
 
     :ok
   end
 
   # Raising rather than returning: this runs inside the transaction, so a storage
   # failure rolls the rename back and says which read failed.
-  defp cursor!(storage, subscription, storage_opts) do
-    case storage.cursor(subscription, storage_opts) do
+  defp cursor!(storage, subscription) do
+    case Storage.cursor(storage, subscription) do
       {:ok, cursor} ->
         cursor
 

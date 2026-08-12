@@ -37,6 +37,7 @@ defmodule DMEx.Transport.Local do
   alias DMEx.Log.Selection
   alias DMEx.Log.SendLoop
   alias DMEx.Log.Streams
+  alias DMEx.Storage
 
   ## Send side — the loop process writes into its owner
 
@@ -73,6 +74,7 @@ defmodule DMEx.Transport.Local do
     log = Keyword.fetch!(opts, :origin)
     owner = Keyword.fetch!(opts, :owner)
     config = log.__dmex__().config
+
     selection =
       opts
       |> Keyword.fetch!(:handler)
@@ -142,9 +144,7 @@ defmodule DMEx.Transport.Local do
   defp resolve_cursor(log, cursor, config) do
     case Request.position(cursor, config) do
       :now ->
-        %{storage: storage, storage_opts: storage_opts} = log.__dmex__()
-
-        storage.max_id(storage_opts)
+        Storage.max_id(log.__dmex__().storage)
 
       cursor ->
         {:ok, cursor}
