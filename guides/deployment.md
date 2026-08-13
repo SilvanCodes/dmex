@@ -18,8 +18,10 @@ answering. So every blocking step states a deadline before it enters, and
 defmodule MyApp.Log do
   use DMEx.Log,
     repo: MyApp.Repo,
-    stall_timeout: 30_000,       # budget for any one blocking step
-    stall_check_interval: 1_000  # how often the watcher sweeps
+    # Both optional. `DMEx.Config` is where the defaults live and why they are
+    # what they are; these are the two knobs, not two values to copy.
+    stall_timeout: 30_000,
+    stall_check_interval: 1_000
 end
 ```
 
@@ -29,11 +31,11 @@ connection and no query, so leaving the interval at a second costs nothing
 measurable. `stall_timeout: :infinity` opts out and starts no watcher.
 
 **Sizing `stall_timeout`.** The budget covers one blocking step, and the step
-that matters is a write of at most `max_batch_bytes`. The 30 s default tolerates
-a 1 MiB write draining at ~280 kbit/s. Tighten it for fast links; loosen it, or
-lower `max_batch_bytes`, for slow ones — tightening too far drops healthy slow
-consumers, which at scale is a reconnect storm with no admission control to
-absorb it.
+that matters is a write of at most `max_batch_bytes`. So the question it answers
+is how slowly the slowest link you serve may drain one write. Tighten it for fast
+links; loosen it, or lower `max_batch_bytes`, for slow ones — tightening too far
+drops healthy slow consumers, which at scale is a reconnect storm with no
+admission control to absorb it.
 
 **Dropping a connection is not a delivery event**
 ([ARCHITECTURE](../ARCHITECTURE.md#dropping-a-connection-is-not-a-delivery-event)):
@@ -46,8 +48,8 @@ consumer; a steady rate is either a consumer that cannot keep up or a
 
 ### Two bounds on a read
 
-`max_batch_rows` (500 rows) and `max_batch_bytes` (1 MiB of `data` + `metadata`
-+ `type` octets) bound the same read, and whichever binds first ends it.
+`max_batch_rows` and `max_batch_bytes` — rows, and `data` + `metadata` + `type`
+octets — bound the same read, and whichever binds first ends it.
 
 Both are memory bounds, over different costs — see
 [producer memory is one batch](../ARCHITECTURE.md#producer-memory-is-one-batch-bounded-in-rows-and-bytes).
@@ -55,8 +57,8 @@ The byte cap counts what the database can see, and the row cap bounds the fixed
 ~1 KB per row that turning it into terms costs, which no budget in database
 octets can.
 
-To size it, add both: 500 rows at 1 MiB of payload is ~1.5 MiB per open stream,
-so 200 streams is ~300 MiB of worst-case transient read memory.
+To size it, add both: `max_batch_bytes` plus `max_batch_rows` kilobytes is the
+worst-case transient read memory of one open stream, and open streams multiply it.
 
 ### Sizing `max_batch_rows` against `stall_timeout`
 
@@ -82,61 +84,29 @@ consumers it does not control.
 
 ## 2. Socket timeouts — optional
 
-Neither is required. Both make the reclaim tighter than one watcher tick, and
-the second covers a case nothing inside the VM can see.
+Neither is required. Both make the reclaim tighter than one watcher tick, and the
+second covers a case nothing inside the VM can see. Both are web-server and
+kernel settings rather than DMEx ones, so the names are here and the spelling is
+your server's documentation.
 
-### `send_timeout`
-
-```elixir
-# Bandit
-{Bandit,
- plug: MyApp.Router,
- thousand_island_options: [
-   transport_options: [send_timeout: 5_000, send_timeout_close: true]
- ]}
-
-# Cowboy, via Plug.Cowboy
-{Plug.Cowboy,
- scheme: :http,
- plug: MyApp.Router,
- transport_options: [socket_opts: [send_timeout: 5_000, send_timeout_close: true]]}
-```
-
-`gen_tcp:send` returns `:ok` once data reaches the kernel buffer, so this
-timeout only engages when the output queue is genuinely full — exactly the
+**`send_timeout` (with `send_timeout_close`), on the listener's transport
+options.** `gen_tcp:send` returns `:ok` once data reaches the kernel buffer, so
+this timeout only engages when the output queue is genuinely full — exactly the
 stalled-consumer condition. It fires at the socket without waiting for a sweep,
-so it is strictly faster than the watcher on the one failure it can see.
+so it is strictly faster than the watcher on the one failure it can see. Size it
+against `max_batch_bytes` the way `stall_timeout` is sized: the write has to
+drain over the slowest link you serve. `send_timeout_close` is not optional —
+without it the timeout leaves the socket in an undefined state.
 
-`send_timeout_close: true` is not optional: without it the timeout leaves the
-socket in an undefined state. Size it against `max_batch_bytes` the same way as
-`stall_timeout` — 5 000 ms tolerates a 1 MiB write draining at ~1.6 Mbit/s.
-
-### TCP keepalive — for the case nothing in-process can reach
-
-```elixir
-transport_options: [
-  socket_opts: [
-    keepalive: true,
-    raw: [
-      # TCP_KEEPIDLE, TCP_KEEPINTVL, TCP_KEEPCNT — Linux values
-      {6, 4, <<15::native-32>>},
-      {6, 5, <<5::native-32>>},
-      {6, 6, <<3::native-32>>}
-    ]
-  ]
-]
-```
-
-A peer can vanish without sending FIN or RST — power loss, a NAT rebind, a
-dropped flow. Writes into a socket whose peer is gone keep returning `:ok` until
-the kernel gives up, so deadlines keep being met and the watcher sees a healthy
-connection. **This is the one stall DMEx structurally cannot detect.**
-
-TCP handles it eventually: heartbeats mean there is always unacked data in
-flight, so retransmission timeouts error the socket after some minutes.
-Keepalive tuned to the order of the heartbeat interval turns "some minutes" into
+**TCP keepalive, tuned to the order of `heartbeat_interval`.** A peer can vanish
+without sending FIN or RST — power loss, a NAT rebind, a dropped flow. Writes
+into a socket whose peer is gone keep returning `:ok` until the kernel gives up,
+so deadlines keep being met and the watcher sees a healthy connection. **This is
+the one stall DMEx structurally cannot detect.** TCP handles it eventually:
+heartbeats mean there is always unacked data in flight, so retransmission
+timeouts error the socket after some minutes. Keepalive turns "some minutes" into
 seconds. The OS default is useless here — Linux waits two hours before the first
-probe.
+probe — so the interval and probe count have to be set, not merely enabled.
 
 ## 3. Proxies must not buffer
 
@@ -159,10 +129,10 @@ healthy stream looks dead to both the consumer's liveness check and the proxy's
 own idle timeout.
 
 `proxy_read_timeout` must comfortably exceed the producer's **effective**
-heartbeat interval, `heartbeat_interval` plus one batch interval (15 010 ms with the
-defaults), because the loop's throttle runs after the heartbeat branch. The
-producer advertises that figure as SSE's `retry:`, so you can read it off the
-wire rather than recomputing it.
+heartbeat interval — `heartbeat_interval` plus one batch interval, because the
+loop's throttle runs after the heartbeat branch. Do not recompute it: the
+producer advertises exactly that figure as SSE's `retry:`, so `curl -N` against
+your own mount reads it off the wire.
 
 Any other intermediary doing its own response buffering has to be turned off,
 not tuned.
@@ -181,15 +151,15 @@ append or the heartbeat interval, and a wholly idle log costs one query per poll
 interval per *app*. The binding constraint in practice is **pool contention**,
 not raw query load.
 
-- **Size the pool for streams as well as requests.** 200 streams at the default
-  100 reads/s is a worst case of 20 000 reads/s, each a short primary-key range
-  scan, on top of whatever else the application does. **This is the setting most
-  likely to need lowering**: measured on a 10-connection pool, checkout queueing
-  appears somewhere between 50 and 200 busy streams at the default, and at 200
-  it dominates — `bench/e2e/fanout_reads.exs` has the numbers. The cost of
-  lowering it is latency, which rises to about `1 / (2 x max_batch_frequency)`
-  on average — 5 ms at the default, 100 ms at 5. Consumers do not ask for pacing
-  and cannot override it.
+- **Size the pool for streams as well as requests.** Two hundred streams at the
+  default frequency is tens of thousands of reads a second, each a short
+  primary-key range scan, on top of whatever else the application does. **This is
+  the setting most likely to need lowering**: measured on a 10-connection pool,
+  checkout queueing appears somewhere between 50 and 200 busy streams at the
+  default, and at 200 it dominates — `bench/e2e/fanout_reads.exs` has the numbers.
+  The cost of lowering it is latency, which rises to about
+  `1 / (2 x max_batch_frequency)` on average. Consumers do not ask for pacing and
+  cannot override it.
 - **The producer needs one extra connection beyond the pool.** `LISTEN` cannot
   share a pooled connection, since it must stay checked out for its whole life,
   so `DMEx.Notifier.Postgres` — the default notifier for Postgres storage —
