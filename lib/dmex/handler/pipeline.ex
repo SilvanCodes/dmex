@@ -72,14 +72,21 @@ defmodule DMEx.Handler.Pipeline do
   deadlock or a blipped downstream. Jittered, because a shared downstream fails
   every handler at once.
 
-  **Only the handler's own failure counts.** `c:DMEx.Storage.transaction/2`
-  answering `{:error, reason}` says the message was never processed — a checkout
-  that timed out, a dropped connection, a serialization failure — so it raises
-  `DMEx.Storage.Error` and nothing here rescues it. Retrying would re-run side
-  effects that never failed, and section 6 would resolve a message no handler
-  rejected. The stream dies, the supervisor restarts it, and it resumes from its
-  durable cursor — which still points *below* this message, since the advance
-  went down with the transaction.
+  **Only the handler's own failure counts**, and that is enforced by tagging it
+  rather than by enumerating everything else. `handle!/2` is the one place a
+  handler is called, and it wraps whatever that call raised in
+  `DMEx.Handler.Pipeline.Failure`; the retry schedule rescues that and nothing
+  else. So a checkout that timed out, a dropped connection, a driver error, an
+  adapter that failed a match on its own query result, or the cursor write
+  itself, all leave untouched: no retry, no terminal action. Retrying would
+  re-run side effects that never failed, and section 6 would resolve a message
+  no handler rejected. The stream dies, the supervisor restarts it, and it
+  resumes from its durable cursor — which still points *below* this message,
+  since the advance went down with the transaction.
+
+  Tagging the handler rather than tagging storage is the direction that stays
+  true: "everything else" is open-ended and no allowlist of driver exceptions
+  stays complete, while "what the handler raised" is one call.
 
   ## 5. The handler and the cursor share one transaction
 
@@ -120,9 +127,25 @@ defmodule DMEx.Handler.Pipeline do
 
   alias DMEx.Handler
   alias DMEx.Storage
-  alias DMEx.Storage.Error, as: StorageError
 
   require Logger
+
+  defmodule Failure do
+    @moduledoc false
+
+    # What `handle_message/2` raised, tagged so the pipeline can tell a verdict on
+    # one message from the infrastructure under it failing — section 4.
+    #
+    # It carries the original and its stacktrace, and never escapes the pipeline
+    # as itself: `attempt/4` unwraps it into `{:failed, ...}` and `on_failure:
+    # :crash` re-raises the original. The one place it is visible from outside is
+    # `[:dmex, :handler, :message, :exception]`, where it is what says the handler
+    # raised rather than storage — see `DMEx.Telemetry`.
+    defexception [:exception, :stacktrace]
+
+    @impl true
+    def message(%__MODULE__{exception: exception}), do: Exception.message(exception)
+  end
 
   @typedoc """
   One row as a transport yields it: string-keyed, with `data` and `metadata`
@@ -163,8 +186,8 @@ defmodule DMEx.Handler.Pipeline do
   whether it is waiting on `flush/1`.
 
   Propagates whatever the handler raises once retries are exhausted and
-  `on_failure` says `:crash`, and `DMEx.Storage.Error` whenever storage itself
-  failed — that one at once, and whatever `on_failure` says.
+  `on_failure` says `:crash`, and anything storage raised at once, whatever
+  `on_failure` says — section 4.
   """
   @spec run(decoded_row(), t()) :: {:ok, t()}
   def run(%{"id" => id}, %{cursor: cursor} = state) when id <= cursor, do: {:ok, state}
@@ -297,7 +320,7 @@ defmodule DMEx.Handler.Pipeline do
 
     :telemetry.span([:dmex, :handler, :message], telemetry, fn ->
       commit!(state, fn ->
-        _ = state.handler.handle_message(delivery.message, delivery.metadata)
+        handle!(state, delivery)
 
         commit.()
       end)
@@ -305,13 +328,10 @@ defmodule DMEx.Handler.Pipeline do
       {:handled, telemetry}
     end)
   rescue
-    # Storage failing is not the handler failing (section 4), so this leaves by
-    # the same door `resolve/6` and `flush/1` use, with the cursor still below
-    # the message.
-    storage_error in StorageError ->
-      reraise storage_error, __STACKTRACE__
-
-    exception ->
+    # The tag, and nothing else — section 4. Anything storage raised is not
+    # rescued at all, so it leaves by the same door `resolve/6` and `flush/1`
+    # use, with the cursor still below the message.
+    failure in Failure ->
       if attempt < state.config.max_attempts do
         # Blocking here is correct rather than lazy: the stream processes one
         # message at a time, so there is nothing else it could usefully do, and
@@ -322,11 +342,25 @@ defmodule DMEx.Handler.Pipeline do
 
         attempt(state, delivery, commit, attempt + 1)
       else
-        {:failed, exception, __STACKTRACE__, attempt}
+        # The handler's own exception and the stacktrace of its raise, so
+        # `on_failure: :crash` re-raises what a reader of the crash needs and not
+        # the tag it travelled in.
+        {:failed, failure.exception, failure.stacktrace, attempt}
       end
-
-      ## Terminal actions — see section 6
   end
+
+  # The one call whose raise is a verdict on the message. Everything else between
+  # here and the commit belongs to storage, which is why this is what gets
+  # tagged: the set of ways a database can fail is open-ended, and the set of
+  # ways a handler is invoked is one.
+  defp handle!(state, delivery) do
+    _ = state.handler.handle_message(delivery.message, delivery.metadata)
+  rescue
+    exception ->
+      reraise %Failure{exception: exception, stacktrace: __STACKTRACE__}, __STACKTRACE__
+  end
+
+  ## Terminal actions — see section 6
 
   defp resolve(state, row, id, exception, stacktrace, attempts) do
     case state.config.on_failure do
@@ -392,13 +426,18 @@ defmodule DMEx.Handler.Pipeline do
     :skipped
   end
 
-  # `{:error, reason}` is storage saying *it* failed (section 4), not a verdict
-  # on the message — so it gets its own exception rather than whatever a failed
-  # match would have produced, and every caller lets it through.
+  # `{:error, reason}` is storage saying *it* failed (section 4), not a verdict on
+  # the message. Raised rather than returned because no caller would do anything
+  # different with it, and untagged because that is exactly what makes the retry
+  # schedule pass it by. It names the subscription, since a crash log is where it
+  # will be read.
   defp commit!(state, fun) do
     case Storage.transaction(state.storage, fun) do
-      {:ok, result} -> result
-      {:error, reason} -> raise StorageError, reason
+      {:ok, result} ->
+        result
+
+      {:error, reason} ->
+        raise "DMEx #{state.subscription}: the storage transaction did not commit: #{inspect(reason)}"
     end
   end
 

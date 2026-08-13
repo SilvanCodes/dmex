@@ -65,9 +65,9 @@ defmodule DMEx.Handler.DeadMessages do
   appended, which is not carried over.
 
   Returns storage's `{:error, reason}` rather than raising, because a listing is
-  something a caller inspects; `replay!/2` raises `DMEx.Storage.Error` on the same
-  failure, having no tagged return to carry it and no business reporting an
-  unreachable database as a count.
+  something a caller inspects; `replay!/2` raises on the same failure, having no
+  tagged return to carry it and no business reporting an unreachable database as
+  a count.
   """
   @spec list(module(), keyword()) :: {:ok, [Storage.row()]} | {:error, term()}
   def list(handler, opts) when is_atom(handler) do
@@ -90,8 +90,8 @@ defmodule DMEx.Handler.DeadMessages do
 
   Returns `%{replayed: n, failed: n}`, where `failed` also counts a row no
   clause matches — it is a row still in the table, and the log line says what to
-  do about it. Raises `DMEx.Storage.Error` if storage itself fails, which is not
-  a message a handler rejected and not a count.
+  do about it. Raises if storage itself fails, which is not a message a handler
+  rejected and not a count.
   """
   @spec replay!(module(), keyword()) :: %{replayed: non_neg_integer(), failed: non_neg_integer()}
   def replay!(handler, opts) when is_atom(handler) do
@@ -133,13 +133,12 @@ defmodule DMEx.Handler.DeadMessages do
 
   ## Internals
 
-  # A `DMEx.Storage.Error` rather than a failed match: an unreachable database is
-  # not a verdict on any message, and the whole run has to stop rather than
-  # report zero of them.
+  # A raise rather than a failed match: an unreachable database is not a verdict
+  # on any message, and the whole run has to stop rather than report zero of them.
   defp dead_messages!(subscription, storage) do
     case Storage.list_dead_messages(storage, subscription) do
       {:ok, rows} -> rows
-      {:error, reason} -> raise DMEx.Storage.Error, reason
+      {:error, reason} -> raise "DMEx #{subscription}: could not list dead messages: #{inspect(reason)}"
     end
   end
 

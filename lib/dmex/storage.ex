@@ -232,9 +232,10 @@ defmodule DMEx.Storage do
   Every DMEx call site binds `:ok = ` on them, so the tuple becomes a raise one
   frame later; it survives because those three are also called outside a
   transaction, from `DMEx.Handler.Cursors` and `DMEx.Handler.DeadMessages`.
-  A `c:transaction/2` that fails as *infrastructure* is neither — that is
-  `DMEx.Storage.Error`, raised at the call site by `DMEx.Handler.Pipeline` and
-  `DMEx.Handler.DeadMessages`, and nothing here reports it.
+  A `c:transaction/2` that fails as *infrastructure* is neither, and needs no
+  type of its own: `DMEx.Handler.Pipeline` tags what the **handler** raised and
+  rescues only that, so everything else — this call included — propagates and
+  kills the subscription with the cursor still below the message.
   """
   @callback advance_cursor(subscription :: String.t(), last_seen :: non_neg_integer(), opts()) :: :ok
 

@@ -69,6 +69,13 @@ defmodule DMEx.Telemetry do
   sequence because an attempt's duration is what a handler costs, where a
   sequence's is mostly backoff.
 
+  On `:exception`, `:reason` says which half failed. The handler's own raise
+  arrives wrapped in `DMEx.Handler.Pipeline.Failure` — `Exception.message/1`
+  reads through to the original, and `.exception` is it — and anything else is
+  storage failing, which is not retried and not resolved by `on_failure`. So the
+  wrapper is the signal, not noise: it is what tells a message a handler rejected
+  from a database that went away.
+
   ### `[:dmex, :handler, :skip]`
 
   A row no clause matched — `DMEx.Handler.Pipeline` covers the two ways that

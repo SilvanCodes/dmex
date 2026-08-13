@@ -6,6 +6,11 @@ defmodule DMEx.Handler.PipelineFailureTest.FlakyStorage do
   thing no other test cares about: storage failing *underneath* a handler that
   did nothing wrong. The script is a list of faults, one consumed per
   `transaction/2` call, `:ok` meaning "behave normally".
+
+  `advance: :match` is the other half of that: both shipped adapters bind
+  `{:ok, _} =` on their query's reply, so a cursor write that fails raises a
+  `MatchError` rather than returning a tagged error — and the pipeline has to read
+  that as storage failing too.
   """
 
   @behaviour DMEx.Storage
@@ -13,11 +18,19 @@ defmodule DMEx.Handler.PipelineFailureTest.FlakyStorage do
   alias DMEx.Test.Storage
 
   @doc "Storage opts whose `transaction/2` follows `faults`, then behaves."
-  @spec new([:ok | :timeout | :commit | :down]) :: DMEx.Storage.opts()
-  def new(faults) do
+  @spec new([:ok | :timeout | :commit | :down], keyword()) :: DMEx.Storage.opts()
+  def new(faults, opts \\ []) do
     {:ok, pid} = Agent.start_link(fn -> faults end)
 
-    Map.put(Storage.new(), :faults, pid)
+    Storage.new() |> Map.put(:faults, pid) |> Map.put(:advance, Keyword.get(opts, :advance))
+  end
+
+  @impl DMEx.Storage
+  def advance_cursor(subscription, last_seen, opts) do
+    case Map.fetch!(opts, :advance) do
+      :match -> {:ok, _} = {:error, :connection_closed}
+      nil -> Storage.advance_cursor(subscription, last_seen, opts)
+    end
   end
 
   @impl DMEx.Storage
@@ -70,8 +83,6 @@ defmodule DMEx.Handler.PipelineFailureTest.FlakyStorage do
   @impl DMEx.Storage
   defdelegate delete_cursor(subscription, opts), to: Storage
   @impl DMEx.Storage
-  defdelegate advance_cursor(subscription, last_seen, opts), to: Storage
-  @impl DMEx.Storage
   defdelegate record_dead_message(row, opts), to: Storage
   @impl DMEx.Storage
   defdelegate list_dead_messages(subscription, opts), to: Storage
@@ -93,7 +104,6 @@ defmodule DMEx.Handler.PipelineFailureTest do
   alias DMEx.Config
   alias DMEx.Handler.Pipeline
   alias DMEx.Handler.PipelineFailureTest.FlakyStorage
-  alias DMEx.Storage.Error, as: StorageError
   alias DMEx.Storage.Postgres
   alias DMEx.Test.Handlers
   alias DMEx.Test.Messages.OrderPlaced
@@ -373,7 +383,7 @@ defmodule DMEx.Handler.PipelineFailureTest do
       opts = FlakyStorage.new([:commit, :commit, :commit])
       state = stub_state(opts, handler: Handlers.Echo, max_attempts: 3)
 
-      assert_raise StorageError, fn -> Pipeline.run(row(1), state) end
+      assert_raise RuntimeError, ~r/did not commit/, fn -> Pipeline.run(row(1), state) end
 
       assert stub_dead("test/echo", opts) == []
       assert {:ok, nil} = FlakyStorage.last_seen("test/echo", opts)
@@ -391,11 +401,29 @@ defmodule DMEx.Handler.PipelineFailureTest do
       refute_received {:handled, _, _}
     end
 
+    # The shape both shipped adapters actually have. This is what made section 4
+    # false in production: a `MatchError` from the cursor write reached the
+    # generic rescue, so a database blip was retried — re-running side effects
+    # that never failed — and then dead-lettered a message the handler had
+    # processed successfully three times.
+    test "an adapter that fails a match on its own query is storage failing too" do
+      opts = FlakyStorage.new([], advance: :match)
+      state = stub_state(opts, handler: Handlers.Echo, max_attempts: 3)
+
+      assert_raise MatchError, fn -> Pipeline.run(row(1), state) end
+
+      assert_received {:handled, %OrderPlaced{order_id: 1}, _}
+      refute_received {:handled, _, _}
+
+      assert stub_dead("test/echo", opts) == []
+      assert {:ok, nil} = FlakyStorage.last_seen("test/echo", opts)
+    end
+
     test "propagates when the callback never even ran" do
       opts = FlakyStorage.new([:timeout])
       state = stub_state(opts, handler: Handlers.Echo, max_attempts: 3)
 
-      assert_raise StorageError, ~r/pool_timeout/, fn -> Pipeline.run(row(1), state) end
+      assert_raise RuntimeError, ~r/did not commit: :pool_timeout/, fn -> Pipeline.run(row(1), state) end
 
       refute_received {:handled, _, _}
       assert stub_dead("test/echo", opts) == []
@@ -409,7 +437,7 @@ defmodule DMEx.Handler.PipelineFailureTest do
       opts = FlakyStorage.new([:ok, :ok, :ok, :commit])
       state = stub_state(opts, handler: Handlers.Raising, max_attempts: 3)
 
-      assert_raise StorageError, fn -> Pipeline.run(row(1), state) end
+      assert_raise RuntimeError, ~r/did not commit/, fn -> Pipeline.run(row(1), state) end
 
       assert stub_dead("test/raising", opts) == []
       assert {:ok, nil} = FlakyStorage.last_seen("test/raising", opts)
@@ -419,7 +447,7 @@ defmodule DMEx.Handler.PipelineFailureTest do
       opts = FlakyStorage.new([:timeout])
       state = stub_state(opts, handler: Handlers.Echo, max_attempts: 3)
 
-      assert_raise StorageError, fn ->
+      assert_raise RuntimeError, ~r/did not commit/, fn ->
         Pipeline.flush(%{state | cursor: 7, pending: true})
       end
     end

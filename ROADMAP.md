@@ -270,9 +270,9 @@ consumer-side, and a producer cannot tell how many nodes a consumer runs. The
 residual window is already specified — an owner whose connection dies while it is
 inside `handle_message/2` loses the lock before it notices, so a new owner can run
 one handler concurrently with it, but the old one **cannot commit**: its advance
-needs the dead connection, and pipeline section 4 makes that a
-`DMEx.Storage.Error` that kills the subscription with the cursor still below the
-message. That is bit-for-bit the case *Delivery semantics* already documents —
+needs the dead connection, and pipeline section 4 lets that failure through
+untagged, killing the subscription with the cursor still below the message. That
+is bit-for-bit the case *Delivery semantics* already documents —
 side effects landing before the transaction commits — so local-repo effects roll
 back and external ones need the idempotency they already needed. Nothing here
 adds a failure mode; it removes one. N nodes running one *log* module stays
