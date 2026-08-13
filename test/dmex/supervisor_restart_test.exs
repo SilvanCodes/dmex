@@ -10,6 +10,7 @@ defmodule DMEx.SupervisorRestartTest do
 
   alias DMEx.Handler
   alias DMEx.Test.Handlers
+  alias DMEx.Test.Log
   alias DMEx.Test.Server
 
   @moduletag :capture_log
@@ -33,7 +34,7 @@ defmodule DMEx.SupervisorRestartTest do
 
   describe "rest_for_one restarts" do
     test "brings every discovered subscription back after an owned log crashes" do
-      start_supervisor(otp_app: :dmex, logs: [test: DMEx.Test.Log, other: @other])
+      start_supervisor(otp_app: :dmex, logs: [test: Log, other: @other])
 
       ids = discovered_ids()
       assert "test/echo" in ids
@@ -84,23 +85,31 @@ defmodule DMEx.SupervisorRestartTest do
     end
   end
 
-  describe "starting the discovered handlers" do
-    test "a failing subscribe does not stop the handlers after it" do
-      start_supervisor(otp_app: nil, logs: [test: @url, other: @other])
+  describe "the discovered subscriptions" do
+    # The whole point of their being a child list: it is the only shape a
+    # supervisor can put back. Started by a process that then exited, they were
+    # gone from the child list altogether and an owned log's death took them with
+    # it for the lifetime of the node.
+    test "are children of the subscriptions supervisor" do
+      start_supervisor(otp_app: :dmex, logs: [test: Log, other: @other])
 
-      # The second attempt at the same identity is `{:error,
-      # {:already_subscribed, _}}` — one of `subscribe/2`'s documented returns.
-      {:ok, _} = DMEx.Supervisor.subscribe(Handlers.Echo, supervisor: TestSupervisor)
+      ids = discovered_ids()
+      children = Supervisor.which_children(DMEx.Supervisor.subscriptions(TestSupervisor))
 
-      DMEx.Supervisor.__start_discovered__(TestSupervisor, [Handlers.Echo, Handlers.Careful])
+      assert length(children) == length(ids)
 
-      assert subscribed?("test/careful")
+      for {id, pid, type, _modules} <- children do
+        assert {DMEx.Handler.Subscription, subscription} = id
+        assert subscription in ids
+        assert is_pid(pid)
+        assert type == :worker
+      end
     end
   end
 
-  ## Helpers
-
   defp registry_pid, do: Process.whereis(DMEx.Supervisor.registry(TestSupervisor))
+
+  ## Helpers
 
   defp discovered_ids do
     for handler <- Handler.discover(:dmex), id <- Handler.subscription_ids(handler), do: id

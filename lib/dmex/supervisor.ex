@@ -59,7 +59,10 @@ defmodule DMEx.Supervisor do
 
   **Two subscriptions cannot share one identity** — `DMEx.Handler` covers the
   `{log, id}` pair. Checked across every discovered handler before any child
-  starts, so a clash refuses the boot rather than clobbering a cursor.
+  starts, so a clash refuses the boot rather than clobbering a cursor, and again
+  by the supervisor itself at runtime: a subscription id *is* its child id, so a
+  second `subscribe/2` for one — from a differently-named handler included — is
+  `{:error, {:already_subscribed, id}}` before the process exists.
   """
 
   use Supervisor
@@ -69,9 +72,6 @@ defmodule DMEx.Supervisor do
   alias DMEx.Handler.Subscription
   alias DMEx.Handler.Subscriptions
   alias DMEx.Supervisor.Bindings
-  alias DMEx.Supervisor.Starter
-
-  require Logger
 
   @default_name __MODULE__
   # Every storage option and its default, in one list: the resolution at the
@@ -107,9 +107,8 @@ defmodule DMEx.Supervisor do
     logs = Bindings.logs!(opts)
     otp_app = otp_app(opts)
 
-    # Before any child starts, and loudly. It cannot live in the starter: that
-    # runs after `init/1` has returned, so a raise there is a child crash the
-    # supervisor answers with a restart, not a refusal to boot.
+    # Before any child starts, and loudly: both failures are pure functions of the
+    # declarations, so nothing has to be running to answer them.
     handlers = __startable__!(Handler.discover(otp_app), logs)
 
     # Both the collision check and the cache seed, and the only scan on the boot
@@ -121,52 +120,46 @@ defmodule DMEx.Supervisor do
     # connect, turning a collision into a 500. See `DMEx.Message.types/0`.
     for app <- Enum.uniq([otp_app | log_apps(logs)]), do: DMEx.Message.refresh_index(app)
 
+    storage = storage(opts)
+
     children =
       owned_logs(logs) ++
         [
           # The default storage and the log bindings ride along as registry
           # metadata, seeded at start, which is why a bare subscribe/2 can find
           # them with no GenServer call.
-          {Registry, keys: :unique, name: registry(name), meta: [storage: storage(opts), logs: logs]},
-          {Subscriptions, name: subscriptions(name)},
-          {Starter, {name, handlers}}
+          {Registry, keys: :unique, name: registry(name), meta: [storage: storage, logs: logs]},
+          {Subscriptions, name: subscriptions(name), children: discovered(name, handlers, logs, storage)}
         ]
 
     # `:rest_for_one` because the registry owns what the subscriptions register
-    # in, so everything after a dead child is rebuilt — including the starter,
-    # which is what puts the discovered subscriptions back. A `Task` could not:
-    # OTP never restarts a `:temporary` child, and one that has already run to
-    # completion is gone from the child list altogether, so an owned log's death
-    # would cost every discovered subscription for the lifetime of the node with
-    # nothing logged and the supervisor still reporting healthy. `:transient` is
-    # no better — a child that exited `:normal` is deleted just the same.
+    # in, so everything after a dead child is rebuilt. The discovered
+    # subscriptions are a child list rather than something a process starts, which
+    # is the only shape a supervisor can put back: a `Task` or a one-shot
+    # `GenServer` is gone from the child list once it has run, whatever its
+    # `:restart` says, so an owned log's death used to cost every discovered
+    # subscription for the lifetime of the node with nothing logged.
+    #
+    # A subscription started at runtime by `subscribe/2` is still lost that way —
+    # it is in no child list by construction — and that is the remaining half of
+    # the same problem.
     Supervisor.init(children, strategy: :rest_for_one)
+  end
+
+  # Every discovered handler's subscriptions, as child specs. The same options
+  # `subscribe/2` builds, from the same function, so a discovered subscription and
+  # a hand-started one cannot be configured differently.
+  defp discovered(name, handlers, logs, storage) do
+    for handler <- handlers,
+        declaration = Handler.declaration!(handler),
+        config = Config.handler!(declaration.config),
+        log <- declaration.logs,
+        do: {Subscription, child_opts(name, declaration, log, logs, config, storage)}
   end
 
   # The applications owning the logs this supervisor starts — the ones a scan
   # cannot reach on its own unless they are named.
   defp log_apps(logs), do: logs |> owned_logs() |> Enum.map(&Application.get_application/1)
-
-  @doc false
-  @spec __start_discovered__(atom(), [module()]) :: :ok
-  def __start_discovered__(name, handlers) do
-    Enum.each(handlers, fn handler ->
-      case subscribe(handler, supervisor: name) do
-        {:ok, _pids} ->
-          :ok
-
-        # Logged and skipped rather than matched: the handlers are independent,
-        # and one that cannot start is no reason for the ones after it never to
-        # be attempted. Raising here would also put the starter in a restart
-        # loop that `:rest_for_one` would spread to every sibling.
-        {:error, reason} ->
-          Logger.error(
-            "DMEx could not start #{inspect(handler)}: #{inspect(reason)}. Its subscriptions " <>
-              "are not running; the remaining handlers were started."
-          )
-      end
-    end)
-  end
 
   # `Enum.uniq` because two names may legitimately point at one owned log, and
   # a supervisor cannot hold the same child twice.
@@ -220,23 +213,11 @@ defmodule DMEx.Supervisor do
 
     declaration.logs
     |> Enum.reduce_while({:ok, []}, fn log, {:ok, pids} ->
-      {transport, origin} = Bindings.transport!(declaration, log, bound)
+      child_opts = child_opts(supervisor, declaration, log, bound, config, storage)
 
-      child =
-        [
-          handler: handler,
-          subscription: Handler.subscription_id!(handler, log),
-          fingerprint: declaration.fingerprint,
-          transport: transport,
-          origin: origin,
-          registry: registry(supervisor),
-          config: config,
-          storage: storage
-        ]
-
-      case DynamicSupervisor.start_child(subscriptions(supervisor), {Subscription, child}) do
+      case Supervisor.start_child(subscriptions(supervisor), {Subscription, child_opts}) do
         {:ok, pid} -> {:cont, {:ok, [pid | pids]}}
-        {:error, reason} -> {:halt, {:error, reason}}
+        {:error, reason} -> {:halt, {:error, taken(reason, child_opts[:subscription])}}
       end
     end)
     |> case do
@@ -245,8 +226,38 @@ defmodule DMEx.Supervisor do
     end
   end
 
+  # A subscription id *is* the child id, so the supervisor catches a duplicate
+  # before `DMEx.Handler.Subscription.init/1` reaches the registry — earlier, and
+  # for a differently-named handler declaring the same pair too. Both spellings
+  # become the one this function's `@doc` promises, since neither `:already_started`
+  # nor `:already_present` says which subscription.
+  defp taken({:already_started, _pid}, id), do: {:already_subscribed, id}
+  defp taken(:already_present, id), do: {:already_subscribed, id}
+  defp taken(reason, _id), do: reason
+
+  # One subscription's whole input, built the same way whether `init/1` names it
+  # in the child list or `subscribe/2` adds it at runtime.
+  defp child_opts(supervisor, declaration, log, logs, config, storage) do
+    {transport, origin} = Bindings.transport!(declaration, log, logs)
+
+    [
+      handler: declaration.handler,
+      subscription: Handler.subscription_id!(declaration.handler, log),
+      fingerprint: declaration.fingerprint,
+      transport: transport,
+      origin: origin,
+      registry: registry(supervisor),
+      config: config,
+      storage: storage
+    ]
+  end
+
   @doc """
   Stops every subscription `handler` declares.
+
+  The child spec goes with the process, so the same handler can be subscribed
+  again — and a discovered one stays gone until the supervisor restarts, which is
+  what makes this the operator's off switch rather than a pause.
 
   `{:error, :not_found}` when none of them is running.
   """
@@ -256,8 +267,12 @@ defmodule DMEx.Supervisor do
 
     stopped =
       for id <- Handler.subscription_ids(handler),
-          {pid, _} <- Registry.lookup(registry(supervisor), {:subscription, id}),
-          do: DynamicSupervisor.terminate_child(subscriptions(supervisor), pid)
+          [{_pid, _}] <- [Registry.lookup(registry(supervisor), {:subscription, id})] do
+        child = {Subscription, id}
+
+        :ok = Supervisor.terminate_child(subscriptions(supervisor), child)
+        :ok = Supervisor.delete_child(subscriptions(supervisor), child)
+      end
 
     if stopped == [], do: {:error, :not_found}, else: :ok
   end
@@ -356,34 +371,5 @@ defmodule DMEx.Supervisor do
 
         {DMEx.Supervisor, repo: MyApp.Repo, logs: [...]}
     """
-  end
-end
-
-defmodule DMEx.Supervisor.Starter do
-  @moduledoc false
-
-  # Starts the discovered handlers' subscriptions, then idles.
-  #
-  # A process that stays up rather than a one-shot that exits, because
-  # `:rest_for_one` can only restart what is still in the child list — and a
-  # child that has finished is not in it, whatever its `:restart` says.
-
-  use GenServer
-
-  @doc false
-  @spec start_link({atom(), [module()]}) :: GenServer.on_start()
-  def start_link({supervisor, handlers}), do: GenServer.start_link(__MODULE__, {supervisor, handlers})
-
-  @impl GenServer
-  def init(state), do: {:ok, state, {:continue, :subscribe}}
-
-  # In `handle_continue/2` so `init/1` returns first: the supervisor is still
-  # starting children while this runs, and every subscription started here talks
-  # to siblings that are already up.
-  @impl GenServer
-  def handle_continue(:subscribe, {supervisor, handlers} = state) do
-    DMEx.Supervisor.__start_discovered__(supervisor, handlers)
-
-    {:noreply, state}
   end
 end
