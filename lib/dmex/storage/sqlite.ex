@@ -132,24 +132,11 @@ defmodule DMEx.Storage.SQLite do
   end
 
   @impl DMEx.Storage
-  def read(cursor, max_rows, max_bytes, :all, opts)
-      when is_integer(cursor) and cursor >= 0 and is_integer(max_rows) and max_rows > 0 and is_integer(max_bytes) and
-             max_bytes > 0 do
+  def read(cursor, max_rows, max_bytes, :all, opts) do
     query(read_sql(""), [cursor, max_rows, max_bytes], opts)
   end
 
-  # Ahead of the list clause: an empty selection admits nothing, and building
-  # `IN ()` out of it would be a descending range and an unbindable statement.
-  # `DMEx.Storage.Postgres` answers the same call with an empty `= ANY($4)`.
-  def read(cursor, max_rows, max_bytes, [], _opts)
-      when is_integer(cursor) and cursor >= 0 and is_integer(max_rows) and max_rows > 0 and is_integer(max_bytes) and
-             max_bytes > 0 do
-    {:ok, []}
-  end
-
-  def read(cursor, max_rows, max_bytes, types, opts)
-      when is_integer(cursor) and cursor >= 0 and is_integer(max_rows) and max_rows > 0 and is_integer(max_bytes) and
-             max_bytes > 0 and is_list(types) do
+  def read(cursor, max_rows, max_bytes, types, opts) when is_list(types) do
     # SQLite has no array type, so a selection is N placeholders rather than one
     # `= ANY($4)`. Still a *separate statement* and never a nullable predicate —
     # see `c:DMEx.Storage.read/5`; the reason is the index, not the syntax. The

@@ -30,15 +30,13 @@ defmodule DMEx.Storage.Postgres do
   @cursors DMEx.Storage.__table__(:cursors)
   @dead_messages DMEx.Storage.__table__(:dead_messages)
 
-  # Postgres's own unquoted-identifier charset, as a source string rather than a
-  # compiled `~r//` so it can appear in the error message it enforces.
-  @prefix_charset "^[A-Za-z_][A-Za-z0-9_$]*$"
+  # Postgres's own unquoted-identifier charset. `Regex.source/1` is what puts it
+  # in the error message it enforces, so the pattern is compiled once here rather
+  # than per boot.
+  @prefix_charset ~r/^[A-Za-z_][A-Za-z0-9_$]*$/
 
   @impl DMEx.Storage
-  def validate!(opts) do
-    validate_prefix!(Map.get(opts, :prefix))
-    validate_lock!(opts)
-  end
+  def validate!(opts), do: validate_prefix!(Map.get(opts, :prefix))
 
   # A schema name reaches `__table__/2`'s quoted interpolation, so it is checked
   # rather than trusted: anything outside the charset would need quoting rules
@@ -46,13 +44,13 @@ defmodule DMEx.Storage.Postgres do
   defp validate_prefix!(nil), do: :ok
 
   defp validate_prefix!(prefix) when is_binary(prefix) do
-    if Regex.match?(Regex.compile!(@prefix_charset), prefix) do
+    if Regex.match?(@prefix_charset, prefix) do
       :ok
     else
       raise ArgumentError,
             "`prefix: #{inspect(prefix)}` is not a usable Postgres schema name. " <>
               "#{inspect(__MODULE__)} splices it into quoted identifiers, so it must " <>
-              "match #{@prefix_charset}."
+              "match #{Regex.source(@prefix_charset)}."
     end
   end
 
@@ -60,25 +58,6 @@ defmodule DMEx.Storage.Postgres do
     raise ArgumentError,
           "`prefix:` must be a schema name as a string or nil, got: #{inspect(prefix)}"
   end
-
-  # `:lock` is log-side — a subscription's opts carry none — and `:log` is what
-  # tells the two halves apart; see `t:DMEx.Storage.opts/0`. Checked here so a
-  # log without one fails where it was written, rather than as a `KeyError` out
-  # of `lock!/2` inside the transaction of the first append.
-  defp validate_lock!(%{log: _} = opts) do
-    case Map.get(opts, :lock) do
-      {classid, objid} when is_integer(classid) and is_integer(objid) ->
-        :ok
-
-      other ->
-        raise ArgumentError,
-              "#{inspect(__MODULE__)} serializes appends with a transaction-scoped " <>
-                "advisory lock and needs `lock: {classid, objid}` as two integers, " <>
-                "got: #{inspect(other)}"
-    end
-  end
-
-  defp validate_lock!(_opts), do: :ok
 
   @impl DMEx.Storage
   def append(type, data, metadata, opts) when is_binary(type) and is_binary(data) and is_binary(metadata) do
@@ -94,15 +73,11 @@ defmodule DMEx.Storage.Postgres do
   end
 
   @impl DMEx.Storage
-  def read(cursor, max_rows, max_bytes, :all, opts)
-      when is_integer(cursor) and cursor >= 0 and is_integer(max_rows) and max_rows > 0 and is_integer(max_bytes) and
-             max_bytes > 0 do
+  def read(cursor, max_rows, max_bytes, :all, opts) do
     query(read_sql("", opts), [cursor, max_rows, max_bytes], opts)
   end
 
-  def read(cursor, max_rows, max_bytes, types, opts)
-      when is_integer(cursor) and cursor >= 0 and is_integer(max_rows) and max_rows > 0 and is_integer(max_bytes) and
-             max_bytes > 0 and is_list(types) do
+  def read(cursor, max_rows, max_bytes, types, opts) when is_list(types) do
     # A separate statement, not a nullable predicate — see `c:DMEx.Storage.read/5`.
     query(read_sql("AND type = ANY($4)", opts), [cursor, max_rows, max_bytes, types], opts)
   end

@@ -15,14 +15,16 @@ defmodule DMEx.LogTest do
 
       # Two handles and nothing beside them: each carries its own adapter, so
       # neither the adapter nor anything it reads has a second home to drift
-      # from — and storage carries nothing about notification.
+      # from — and storage carries nothing about notification, and no second copy
+      # of the log module.
       assert %{
                adapter: DMEx.Storage.Postgres,
                repo: Repo,
-               log: Log,
                lock: {classid, objid},
                prefix: nil
              } = storage
+
+      refute Map.has_key?(storage, :log)
 
       assert is_integer(classid)
       assert is_integer(objid)

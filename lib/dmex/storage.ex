@@ -81,7 +81,8 @@ defmodule DMEx.Storage do
 
   `:adapter` is the module implementing this behaviour, so this map is the whole
   handle rather than half of a `{module, opts}` pair — see *Calling an adapter*.
-  `:repo` is the only other universally-required key. `:lock` is log-side;
+  `:repo` is the only other universally-required key. `:lock` is log-side and
+  `DMEx.Log` is its only writer;
   `:prefix` is the optional schema both sides may live in. Nothing about
   notification is here — that is `t:DMEx.Notifier.opts/0`.
 
@@ -92,7 +93,6 @@ defmodule DMEx.Storage do
   @type opts :: %{
           required(:adapter) => module(),
           required(:repo) => module(),
-          optional(:log) => module(),
           optional(:lock) => {integer(), integer()},
           optional(:prefix) => String.t() | nil,
           optional(atom()) => term()
@@ -373,6 +373,12 @@ defmodule DMEx.Storage do
   @doc "Reads a bounded batch of rows past `cursor`. See `c:read/5`."
   @spec read(opts(), non_neg_integer(), pos_integer(), pos_integer(), :all | [String.t()]) ::
           {:ok, [row()]} | {:error, term()}
+  # An empty selection admits nothing, which is a property of the call rather than
+  # of an engine: it needs no statement, and one adapter would otherwise build
+  # `IN ()` out of it while the other round-tripped an empty array to learn the
+  # same thing.
+  def read(_storage, _cursor, _max_rows, _max_bytes, []), do: {:ok, []}
+
   def read(%{adapter: adapter} = storage, cursor, max_rows, max_bytes, types),
     do: adapter.read(cursor, max_rows, max_bytes, types, storage)
 

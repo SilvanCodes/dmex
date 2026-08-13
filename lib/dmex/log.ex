@@ -196,7 +196,6 @@ defmodule DMEx.Log do
       storage: %{
         adapter: storage,
         repo: repo,
-        log: module,
         lock: {@classid, :erlang.phash2(scope, 2_147_483_648)},
         prefix: prefix
       },
@@ -230,7 +229,7 @@ defmodule DMEx.Log do
 
     # Here rather than at compile time, because an adapter may need to read the
     # repo's configuration — and the repo is started by now.
-    :ok = Storage.validate!(storage)
+    Storage.validate!(storage)
 
     # Whatever the notifier needs sits between the registry and the dispatcher,
     # and this module has no idea what it is. Postgres puts a LISTEN connection
