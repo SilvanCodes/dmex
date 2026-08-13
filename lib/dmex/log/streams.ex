@@ -21,9 +21,9 @@ defmodule DMEx.Log.Streams do
   SSE, the reader process for `DMEx.Transport.Local` — so an entry dies with its
   process and a live stream needs no cleanup.
 
-  The one exception is a connect that registers and then fails before it becomes
-  a stream, which calls `unregister/1` — `DMEx.Log.Plug` covers why its entry
-  cannot be left to die with its process.
+  A stream that ends without its process ending calls `unregister/1` on the way
+  out — every path, connect failures and read failures alike. `DMEx.Log.Plug`
+  covers why an entry cannot be left to die with a keep-alive process.
 
   It runs the other way too, which is what a registry crash means for the
   connections in it: `Registry` links to every process it holds an entry for, so

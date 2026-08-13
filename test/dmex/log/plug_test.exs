@@ -337,6 +337,34 @@ defmodule DMEx.Log.PlugTest do
 
       assert Streams.count(StubLog) == 0
     end
+
+    # The sharper case: the socket is *healthy* and the loop returns anyway,
+    # because the log could not be read. Nothing on the wire says so, and the
+    # process goes back to serving requests.
+    test "a read failure leaves nothing registered", %{opts: opts, plug: plug} do
+      Stub.fail(:boom, opts)
+      parent = self()
+
+      pid =
+        spawn(fn ->
+          StubLog.install(opts)
+
+          conn = LogPlug.call(ClosingAdapter.conn(parent, 5, req_headers: []), plug)
+
+          send(parent, {:responded, conn.status})
+
+          receive do
+            :stop -> :ok
+          end
+        end)
+
+      on_exit(fn -> Process.exit(pid, :kill) end)
+
+      assert_receive {:responded, 200}
+
+      assert Process.alive?(pid)
+      assert Streams.count(StubLog) == 0
+    end
   end
 
   ## Harness

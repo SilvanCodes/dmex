@@ -61,9 +61,12 @@ defmodule DMEx.Log.Plug do
 
   Registration happens before anything that can block, and hands back the
   connection's `DMEx.Log.Status`, which puts even the connect path under
-  `DMEx.Log.Watcher`. A connect that then fails unregisters: the request process
-  is reused for the next keep-alive request, so its entry cannot be left to die
-  with it.
+  `DMEx.Log.Watcher`. It is undone on the way out, whichever way that is: the
+  request process is reused for the next keep-alive request, so an entry left
+  behind is armed for a stall nothing will ever clear, and the watcher reclaims
+  a connection that is by then serving somebody else. A read failure is the
+  case that makes this more than a connect concern — the socket is healthy and
+  the process returns normally.
 
   ## Response headers
 
@@ -158,19 +161,17 @@ defmodule DMEx.Log.Plug do
     # carries.
     {:ok, status} = Streams.register(log, config.stall_timeout, selection)
 
-    case SendLoop.resolve_cursor(log, params.cursor) do
-      {:ok, cursor} ->
-        open(conn, log, config, selection, status, cursor)
-
-      {:error, reason} ->
-        # The one path that registers and never becomes a stream, so the only
-        # one that has to undo it: over HTTP/1.1 keep-alive this process is the
-        # *connection* process and lives on to serve the next request. Left
-        # behind, the entry is armed for a stall nothing will ever clear, and
-        # the watcher reclaims a connection that never streamed.
-        Streams.unregister(log)
-
-        unavailable(conn, reason)
+    try do
+      case SendLoop.resolve_cursor(log, params.cursor) do
+        {:ok, cursor} -> open(conn, log, config, selection, status, cursor)
+        {:error, reason} -> unavailable(conn, reason)
+      end
+    after
+      # Every path out of the stream, not just a failed connect: the entry
+      # outliving the loop on a keep-alive process is a kill signal aimed at
+      # whatever that process does next. A killed process needs nothing here —
+      # `Registry` drops the entry with its owner.
+      Streams.unregister(log)
     end
   end
 
