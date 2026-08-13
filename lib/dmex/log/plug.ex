@@ -157,55 +157,37 @@ defmodule DMEx.Log.Plug do
 
   ## Streaming
 
+  # The request process registers *itself*, so a stream's entry dies with it —
+  # `DMEx.Log.SendLoop.start/2` does that and resolves the cursor under the
+  # deadline the registration arms. The selection rides along for
+  # `DMEx.Log.Dispatcher`'s routing; see `DMEx.Log.Streams` on what an entry
+  # carries.
   defp stream(conn, log, params, config, selection) do
-    # The request process registers *itself*, so a stream's entry dies with it.
-    # Before the first read, so an append landing in between is picked up by
-    # that read; before the first *write*, so the connect path is under the
-    # watcher too, since resolving a cursor and sending headers can block
-    # exactly as the send loop can. The selection rides along for
-    # `DMEx.Log.Dispatcher`'s routing — see `DMEx.Log.Streams` on what an entry
-    # carries.
-    {:ok, status} = Streams.register(log, config.stall_timeout, selection)
-
-    try do
-      case SendLoop.resolve_cursor(log, params.cursor) do
-        {:ok, cursor} -> open(conn, log, config, selection, status, cursor)
-        {:error, reason} -> unavailable(conn, reason)
-      end
-    after
-      # Every path out of the stream, not just a failed connect: the entry
-      # outliving the loop on a keep-alive process is a kill signal aimed at
-      # whatever that process does next. A killed process needs nothing here —
-      # `Registry` drops the entry with its owner.
-      Streams.unregister(log)
+    case SendLoop.start(log, transport: DMEx.Transport.SSE, position: params.cursor, selection: selection) do
+      {:ok, state} -> open(conn, config, selection, state)
+      {:error, reason} -> unavailable(conn, reason)
     end
+  after
+    # Every path out of the stream, not just a failed connect: the entry
+    # outliving the loop on a keep-alive process is a kill signal aimed at
+    # whatever that process does next. A killed process needs nothing here —
+    # `Registry` drops the entry with its owner.
+    Streams.unregister(log)
   end
 
-  defp open(conn, log, config, selection, status, cursor) do
-    # Re-armed because `resolve_cursor/2` above can query — an absent
-    # `Last-Event-ID` costs a `max_id`, which takes a pool checkout like any
-    # other read. The registration's arm covers that query; this one gives the
-    # header write that follows its own full budget rather than what the query
-    # left.
-    Status.arm(status, config.stall_timeout)
+  defp open(conn, config, selection, state) do
+    # Re-armed because resolving the cursor can query — an absent `Last-Event-ID`
+    # costs a `max_id`, which takes a pool checkout like any other read. The
+    # registration's arm covered that query; this one gives the header write that
+    # follows its own full budget rather than what the query left.
+    Status.arm(state.status, config.stall_timeout)
 
     conn =
       conn
       |> put_stream_headers(selection)
       |> Plug.Conn.send_chunked(200)
 
-    # Announces the connect and builds the loop's state — the same call
-    # `DMEx.Transport.Local` makes, so the two cannot report a connect
-    # differently. Before `advertise_retry/3`, which may find the socket gone.
-    state =
-      SendLoop.connect(log,
-        transport: DMEx.Transport.SSE,
-        cursor: cursor,
-        status: status,
-        selection: selection
-      )
-
-    case advertise_retry(conn, config, status) do
+    case advertise_retry(conn, config, state.status) do
       {:ok, conn} -> SendLoop.loop(conn, state)
       {:error, _reason} -> conn
     end

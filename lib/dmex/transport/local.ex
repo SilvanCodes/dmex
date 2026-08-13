@@ -36,7 +36,6 @@ defmodule DMEx.Transport.Local do
   alias DMEx.Handler.Request
   alias DMEx.Log.Selection
   alias DMEx.Log.SendLoop
-  alias DMEx.Log.Streams
   alias DMEx.Transport
 
   ## Send side — the loop process writes into its owner
@@ -77,7 +76,6 @@ defmodule DMEx.Transport.Local do
   defp read(opts) do
     log = Keyword.fetch!(opts, :origin)
     owner = Keyword.fetch!(opts, :owner)
-    config = log.__dmex__().config
 
     selection =
       opts
@@ -86,39 +84,26 @@ defmodule DMEx.Transport.Local do
       |> Map.fetch!(:messages)
       |> Selection.declared(Keyword.get(opts, :fingerprint))
 
-    cursor = cursor!(log, Keyword.fetch!(opts, :cursor), Keyword.fetch!(opts, :config))
+    # The same ceremony `DMEx.Log.Plug` performs, from the same function: the
+    # reader registers itself so the entry dies with it, and the position is
+    # resolved under the deadline that registration arms.
+    #
+    # `DMEx.Handler.Request.position/2` is what turns a subscription's durable
+    # cursor into the two answers a connect can ask for, and `DMEx.Log.Plug`
+    # resolves a `last-event-id` header through the same pair — so neither side
+    # spells "from now on" differently, without the round trip.
+    position = Request.position(Keyword.fetch!(opts, :cursor), Keyword.fetch!(opts, :config))
 
-    # Registered by the reader itself, so the entry dies with it — the same
-    # reason the SSE side registers the request process.
-    {:ok, status} = Streams.register(log, config.stall_timeout, selection)
+    case SendLoop.start(log, transport: __MODULE__, position: position, selection: selection) do
+      {:ok, state} ->
+        Transport.connected(owner)
 
-    Transport.connected(owner)
+        SendLoop.loop(%{owner: owner}, state)
 
-    # Announces the connect and builds the loop's state — the same call
-    # `DMEx.Log.Plug` makes, so the two cannot report a connect differently.
-    SendLoop.loop(
-      %{owner: owner},
-      SendLoop.connect(log,
-        transport: __MODULE__,
-        cursor: cursor,
-        status: status,
-        selection: selection
-      )
-    )
-  end
-
-  ## Resolution
-
-  # The same two answers `DMEx.Handler.Request` puts in a `last-event-id` header
-  # and `DMEx.Log.Plug` resolves back out, without the round trip — and through
-  # the same two functions, so neither side spells the position differently.
-  #
-  # Failing to read the tip ends the reader, which the subscription answers with
-  # its jittered retry — the plug's 503 with the other end's.
-  defp cursor!(log, cursor, config) do
-    case SendLoop.resolve_cursor(log, Request.position(cursor, config)) do
-      {:ok, cursor} -> cursor
-      {:error, reason} -> exit(reason)
+      # Failing to read the tip ends the reader, which the subscription answers
+      # with its jittered retry — the plug's 503 with the other end's.
+      {:error, reason} ->
+        exit(reason)
     end
   end
 end

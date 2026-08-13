@@ -83,23 +83,19 @@ defmodule DMEx.Log.WatcherTest do
 
       pid =
         spawn(fn ->
-          {:ok, status} = Streams.register(Log, 20, :all)
+          {:ok, state} = SendLoop.start(Log, transport: DMEx.Transport.SSE, selection: :all)
           send(parent, :registered)
 
-          SendLoop.loop(ClosingAdapter.conn(parent, 100, state: :chunked), state(opts, status))
+          SendLoop.loop(
+            ClosingAdapter.conn(parent, 100, state: :chunked),
+            %{state | storage: Map.put(opts, :adapter, Stub)}
+          )
         end)
 
       assert_receive :registered
 
       eventually(fn -> not Process.alive?(pid) end)
     end
-  end
-
-  defp state(opts, status) do
-    %{
-      SendLoop.connect(Log, transport: DMEx.Transport.SSE, status: status)
-      | storage: Map.put(opts, :adapter, Stub)
-    }
   end
 
   ## Harness

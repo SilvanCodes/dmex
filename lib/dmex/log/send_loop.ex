@@ -45,6 +45,7 @@ defmodule DMEx.Log.SendLoop do
 
   alias DMEx.Log.Selection
   alias DMEx.Log.Status
+  alias DMEx.Log.Streams
   alias DMEx.Storage
   alias DMEx.Transport
 
@@ -125,32 +126,45 @@ defmodule DMEx.Log.SendLoop do
   end
 
   @doc """
-  Announces a connect and builds the loop's state for it.
+  Registers this process as one of `log`'s streams and builds the loop's state.
 
-  One function rather than two because the `[:dmex, :stream, :connect]` event
-  and the loop it announces describe the same connection: both transports get
-  the measurements and the metadata from here, so neither can report a connect
-  the other would report differently.
+  The whole connect ceremony, in one call because it is one thing happening: the
+  registration, the cursor `position` resolves to, the
+  `[:dmex, :stream, :connect]` event and the state. Both transports come through
+  here, so neither can register differently, resolve "from now on" differently, or
+  report a connect the other would report differently — and there is no `:status`
+  option because registering is what produces one.
 
-  Registration is deliberately *not* here: both paths make the same
-  `DMEx.Log.Streams.register/3` call, but each at a moment only it can pick —
-  that function and `DMEx.Log.Plug` say why.
+  Registering first is deliberate: it is before the first read, so an append
+  landing in between is picked up by that read, and before anything that can
+  block, so resolving the cursor is under `DMEx.Log.Watcher` like every other
+  query. `{:error, reason}` means the cursor could not be resolved; the entry is
+  registered by then, and unregistering it is the caller's — `DMEx.Log.Plug` does
+  it on every path out.
 
   ## Options
 
     * `:transport` — required; the `DMEx.Transport` this loop writes through.
-    * `:cursor` — where to resume from. Defaults to `0`, the whole log.
-    * `:status` — required; this connection's `DMEx.Log.Status`, from
-      `DMEx.Log.Streams.register/3`. Registration is what produces it, and both
-      connect paths register before they get here.
+    * `:position` — `:now` for the log's tip, or a cursor. Defaults to `0`, the
+      whole log.
     * `:selection` — the message types to read, as `t:DMEx.Log.Selection.t/0`.
   """
-  @spec connect(module(), keyword()) :: state()
-  def connect(log, opts) do
-    %{storage: storage, config: config} = log.__dmex__()
-
-    cursor = Keyword.get(opts, :cursor, 0)
+  @spec start(module(), keyword()) :: {:ok, state()} | {:error, term()}
+  def start(log, opts) do
     selection = Keyword.get(opts, :selection, :all)
+    config = log.__dmex__().config
+
+    {:ok, status} = Streams.register(log, config.stall_timeout, selection)
+
+    with {:ok, cursor} <- resolve_cursor(log, Keyword.get(opts, :position, 0)) do
+      {:ok, connect(log, Keyword.fetch!(opts, :transport), cursor, selection, status)}
+    end
+  end
+
+  @doc false
+  @spec connect(module(), module(), non_neg_integer(), Selection.t(), Status.t()) :: state()
+  def connect(log, transport, cursor, selection, status) do
+    %{storage: storage, config: config} = log.__dmex__()
 
     :telemetry.execute(
       [:dmex, :stream, :connect],
@@ -160,13 +174,13 @@ defmodule DMEx.Log.SendLoop do
 
     %{
       log: log,
-      transport: Keyword.fetch!(opts, :transport),
+      transport: transport,
       storage: storage,
       cursor: cursor,
       config: config,
       batch_interval: DMEx.Config.batch_interval(config),
       last_sent_at: nil,
-      status: Keyword.fetch!(opts, :status),
+      status: status,
       # Fixed for the connection's lifetime: a consumer wanting a different
       # selection asks for a different resource, which is a different URL.
       types: Selection.to_list(selection)
@@ -174,13 +188,10 @@ defmodule DMEx.Log.SendLoop do
   end
 
   @doc """
-  Resolves what a connect asked for into the cursor `connect/2` takes.
+  Resolves what a connect asked for into the cursor the loop takes.
 
   `:now` is the log's tip, which is the log's own to name and costs a query;
-  anything else is already a position. Both connect paths come through here —
-  `DMEx.Log.Plug` for a request's `Last-Event-ID`, `DMEx.Transport.Local` for a
-  subscription's durable cursor — so "from now on" cannot come to mean two
-  things.
+  anything else is already a position.
 
   An error is returned rather than fallen back from: 0 would turn a momentary
   pool exhaustion into a whole-log replay, and since every subscription with no
