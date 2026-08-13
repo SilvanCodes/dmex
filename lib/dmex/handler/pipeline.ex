@@ -387,7 +387,7 @@ defmodule DMEx.Handler.Pipeline do
   defp record_dead!(state, row) do
     dead = Map.put(row, "subscription", state.subscription)
 
-    :ok = Storage.record_dead_message(state.storage, dead)
+    Storage.record_dead_message(state.storage, dead)
   end
 
   defp report(state, %{"type" => type}, id, exception, attempts, mode) do
@@ -442,6 +442,6 @@ defmodule DMEx.Handler.Pipeline do
   end
 
   defp advance!(state, last_seen) do
-    :ok = Storage.advance_cursor(state.storage, state.subscription, last_seen)
+    Storage.advance_cursor(state.storage, state.subscription, last_seen)
   end
 end

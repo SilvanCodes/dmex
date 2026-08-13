@@ -194,7 +194,9 @@ defmodule DMEx.Storage.Postgres do
   def delete_cursor(subscription, opts) when is_binary(subscription) do
     sql = "DELETE FROM #{table(@cursors, opts)} WHERE subscription = $1"
 
-    with {:ok, _} <- SQL.query(Map.fetch!(opts, :repo), sql, [subscription]), do: :ok
+    SQL.query!(Map.fetch!(opts, :repo), sql, [subscription])
+
+    :ok
   end
 
   @impl DMEx.Storage
@@ -210,7 +212,7 @@ defmodule DMEx.Storage.Postgres do
                     updated_at = now()
     """
 
-    {:ok, _} = SQL.query(Map.fetch!(opts, :repo), sql, [subscription, last_seen])
+    SQL.query!(Map.fetch!(opts, :repo), sql, [subscription, last_seen])
 
     :ok
   end
@@ -233,7 +235,9 @@ defmodule DMEx.Storage.Postgres do
 
     params = [subscription, id, type, JSON.encode!(data), JSON.encode!(metadata)]
 
-    with {:ok, _} <- SQL.query(Map.fetch!(opts, :repo), sql, params), do: :ok
+    SQL.query!(Map.fetch!(opts, :repo), sql, params)
+
+    :ok
   end
 
   @impl DMEx.Storage
@@ -252,7 +256,9 @@ defmodule DMEx.Storage.Postgres do
   def delete_dead_message(subscription, id, opts) when is_binary(subscription) and is_integer(id) do
     sql = "DELETE FROM #{table(@dead_messages, opts)} WHERE subscription = $1 AND id = $2"
 
-    with {:ok, _} <- SQL.query(Map.fetch!(opts, :repo), sql, [subscription, id]), do: :ok
+    SQL.query!(Map.fetch!(opts, :repo), sql, [subscription, id])
+
+    :ok
   end
 
   @impl DMEx.Storage

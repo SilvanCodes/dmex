@@ -258,10 +258,9 @@ defmodule DMEx.Storage.SQLite do
   def delete_cursor(subscription, opts) when is_binary(subscription) do
     sql = "DELETE FROM #{@cursors} WHERE subscription = ?1"
 
-    case SQL.query(Map.fetch!(opts, :repo), sql, [subscription]) do
-      {:ok, _} -> :ok
-      {:error, reason} -> {:error, reason}
-    end
+    SQL.query!(Map.fetch!(opts, :repo), sql, [subscription])
+
+    :ok
   end
 
   @impl DMEx.Storage
@@ -282,7 +281,7 @@ defmodule DMEx.Storage.SQLite do
                     updated_at = #{@now}
     """
 
-    {:ok, _} = SQL.query(Map.fetch!(opts, :repo), sql, [subscription, last_seen])
+    SQL.query!(Map.fetch!(opts, :repo), sql, [subscription, last_seen])
 
     :ok
   end
@@ -308,10 +307,9 @@ defmodule DMEx.Storage.SQLite do
     # A dead row arrives as the consumer held it, so the encode happens here.
     params = [subscription, id, type, JSON.encode!(data), JSON.encode!(metadata)]
 
-    case SQL.query(Map.fetch!(opts, :repo), sql, params) do
-      {:ok, _} -> :ok
-      {:error, reason} -> {:error, reason}
-    end
+    SQL.query!(Map.fetch!(opts, :repo), sql, params)
+
+    :ok
   end
 
   @impl DMEx.Storage
@@ -330,10 +328,9 @@ defmodule DMEx.Storage.SQLite do
   def delete_dead_message(subscription, id, opts) when is_binary(subscription) and is_integer(id) do
     sql = "DELETE FROM #{@dead_messages} WHERE subscription = ?1 AND id = ?2"
 
-    case SQL.query(Map.fetch!(opts, :repo), sql, [subscription, id]) do
-      {:ok, _} -> :ok
-      {:error, reason} -> {:error, reason}
-    end
+    SQL.query!(Map.fetch!(opts, :repo), sql, [subscription, id])
+
+    :ok
   end
 
   ## Row shaping

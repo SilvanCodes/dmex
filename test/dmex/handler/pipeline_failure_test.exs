@@ -7,10 +7,10 @@ defmodule DMEx.Handler.PipelineFailureTest.FlakyStorage do
   did nothing wrong. The script is a list of faults, one consumed per
   `transaction/2` call, `:ok` meaning "behave normally".
 
-  `advance: :match` is the other half of that: both shipped adapters bind
-  `{:ok, _} =` on their query's reply, so a cursor write that fails raises a
-  `MatchError` rather than returning a tagged error — and the pipeline has to read
-  that as storage failing too.
+  `advance: :raise` is the other half of that: a write raises rather than
+  returning a tagged error — `Ecto.Adapters.SQL.query!/4` is what both shipped
+  adapters use — and the pipeline has to read that as storage failing rather than
+  as a verdict on the message.
   """
 
   @behaviour DMEx.Storage
@@ -28,7 +28,7 @@ defmodule DMEx.Handler.PipelineFailureTest.FlakyStorage do
   @impl DMEx.Storage
   def advance_cursor(subscription, last_seen, opts) do
     case Map.fetch!(opts, :advance) do
-      :match -> {:ok, _} = {:error, :connection_closed}
+      :raise -> raise DBConnection.ConnectionError, "connection closed"
       nil -> Storage.advance_cursor(subscription, last_seen, opts)
     end
   end
@@ -401,16 +401,16 @@ defmodule DMEx.Handler.PipelineFailureTest do
       refute_received {:handled, _, _}
     end
 
-    # The shape both shipped adapters actually have. This is what made section 4
-    # false in production: a `MatchError` from the cursor write reached the
-    # generic rescue, so a database blip was retried — re-running side effects
-    # that never failed — and then dead-lettered a message the handler had
-    # processed successfully three times.
-    test "an adapter that fails a match on its own query is storage failing too" do
-      opts = FlakyStorage.new([], advance: :match)
+    # The shape both shipped adapters have: a write raises. This is what made
+    # section 4 false in production, when the raise was a `MatchError` on a query
+    # result — it reached the generic rescue, so a database blip was retried,
+    # re-running side effects that never failed, and then dead-lettered a message
+    # the handler had processed successfully three times.
+    test "a write that raises is storage failing, not a verdict on the message" do
+      opts = FlakyStorage.new([], advance: :raise)
       state = stub_state(opts, handler: Handlers.Echo, max_attempts: 3)
 
-      assert_raise MatchError, fn -> Pipeline.run(row(1), state) end
+      assert_raise DBConnection.ConnectionError, fn -> Pipeline.run(row(1), state) end
 
       assert_received {:handled, %OrderPlaced{order_id: 1}, _}
       refute_received {:handled, _, _}

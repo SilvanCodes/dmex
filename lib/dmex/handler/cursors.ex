@@ -77,7 +77,7 @@ defmodule DMEx.Handler.Cursors do
 
     # No transaction: one statement is already atomic, and `rename!/3` — which
     # genuinely needs one, for two — is the contrast.
-    :ok = Storage.advance_cursor(storage, Handler.resolve_subscription_id!(handler, opts), last_seen)
+    Storage.advance_cursor(storage, Handler.resolve_subscription_id!(handler, opts), last_seen)
   end
 
   @doc """
@@ -90,7 +90,7 @@ defmodule DMEx.Handler.Cursors do
   def reset!(handler, opts) when is_atom(handler) do
     storage = DMEx.Supervisor.storage!(opts)
 
-    :ok = Storage.delete_cursor(storage, Handler.resolve_subscription_id!(handler, opts))
+    Storage.delete_cursor(storage, Handler.resolve_subscription_id!(handler, opts))
   end
 
   @doc """
@@ -116,8 +116,8 @@ defmodule DMEx.Handler.Cursors do
         # that `from` could not be read at all.
         with %{last_seen: id} <- cursor!(storage, from),
              nil <- cursor!(storage, to) do
-          :ok = Storage.advance_cursor(storage, to, id)
-          :ok = Storage.delete_cursor(storage, from)
+          Storage.advance_cursor(storage, to, id)
+          Storage.delete_cursor(storage, from)
         else
           # Only the first read can answer `nil` here, and only the second a
           # cursor: nothing left to move, versus a destination already taken.

@@ -46,6 +46,24 @@ defmodule DMEx.Storage do
   returns `nil`, not `0`, when a subscription has never committed anything,
   which is what makes the `last_seen:` option apply exactly once.
 
+  ## How a write fails
+
+  **A read returns `{:error, reason}`; a write returns `:ok` or raises.** Reads
+  have callers with somewhere to go — `DMEx.Log.SendLoop` closes the connection,
+  `DMEx.Log.Plug` answers `503`, `DMEx.Handler.DeadMessages.list/2` hands the
+  tuple back — while the four writes (`c:advance_cursor/3`,
+  `c:record_dead_message/2`, `c:delete_dead_message/3`, `c:delete_cursor/2`) have
+  none, and the path that matters is inside `c:transaction/2` beside a handler's
+  side effects, where a raise is the only outcome that rolls both back together.
+  An error tuple there leaves the transaction open and committing.
+
+  So an adapter raises: `Ecto.Adapters.SQL.query!/4` rather than a match on
+  `query/4`'s reply, which means the exception a crash log carries is the
+  driver's own, naming the constraint or the connection that failed. Nothing in
+  DMEx rescues it — `DMEx.Handler.Pipeline` tags what the *handler* raised and
+  rescues only that, so a storage failure kills the subscription with the cursor
+  still below the message it was processing.
+
   ## The contract is executable
 
   `test/dmex/storage/conformance_test.exs` runs one suite against every shipped
@@ -218,24 +236,8 @@ defmodule DMEx.Storage do
   pipeline, which is the authority, and an operator resetting a cursor
   deliberately needs this to go both ways.
 
-  **`:ok` and nothing else**, where `c:record_dead_message/2`,
-  `c:delete_dead_message/3` and `c:delete_cursor/2` also admit
-  `{:error, term()}`. Deliberate, and the asymmetry is worth stating rather than
-  smoothing over. Both shipped adapters implement this as a hard match on the
-  driver's reply, so a failure raises — and on the path that matters this call
-  is inside `c:transaction/2` beside a handler's side effects, where a raise is
-  the only outcome that rolls both back together. An error tuple there would be
-  one a caller has no useful way to act on: returning it leaves the transaction
-  open and committing.
-
-  The siblings' wider return type is not a caller-facing difference either.
-  Every DMEx call site binds `:ok = ` on them, so the tuple becomes a raise one
-  frame later; it survives because those three are also called outside a
-  transaction, from `DMEx.Handler.Cursors` and `DMEx.Handler.DeadMessages`.
-  A `c:transaction/2` that fails as *infrastructure* is neither, and needs no
-  type of its own: `DMEx.Handler.Pipeline` tags what the **handler** raised and
-  rescues only that, so everything else — this call included — propagates and
-  kills the subscription with the cursor still below the message.
+  **`:ok` or a raise**, like every other write here — see *how a write fails*
+  above.
   """
   @callback advance_cursor(subscription :: String.t(), last_seen :: non_neg_integer(), opts()) :: :ok
 
@@ -274,7 +276,7 @@ defmodule DMEx.Storage do
   crash-loops on a row it already gave up on once. The later attempt wins and
   restamps `inserted_at`, which is when the row last landed here.
   """
-  @callback record_dead_message(dead_row(), opts()) :: :ok | {:error, term()}
+  @callback record_dead_message(dead_row(), opts()) :: :ok
 
   @doc """
   Lists every message `subscription` gave up on, oldest first, as log rows.
@@ -291,8 +293,7 @@ defmodule DMEx.Storage do
   Called inside `c:transaction/2` by a replay, so a message is dropped exactly
   when its handler finally accepted it.
   """
-  @callback delete_dead_message(subscription :: String.t(), id :: non_neg_integer(), opts()) ::
-              :ok | {:error, term()}
+  @callback delete_dead_message(subscription :: String.t(), id :: non_neg_integer(), opts()) :: :ok
 
   @doc """
   Returns a subscription's full cursor row, or `nil`.
@@ -311,7 +312,7 @@ defmodule DMEx.Storage do
   Distinct from advancing it to 0 — `DMEx.Handler.Cursors.reset!/2` covers the
   difference.
   """
-  @callback delete_cursor(subscription :: String.t(), opts()) :: :ok | {:error, term()}
+  @callback delete_cursor(subscription :: String.t(), opts()) :: :ok
 
   @doc """
   The `DMEx.Notifier` to use when a log names none.
@@ -398,7 +399,7 @@ defmodule DMEx.Storage do
     do: adapter.advance_cursor(subscription, last_seen, storage)
 
   @doc "Records a message its handler gave up on. See `c:record_dead_message/2`."
-  @spec record_dead_message(opts(), dead_row()) :: :ok | {:error, term()}
+  @spec record_dead_message(opts(), dead_row()) :: :ok
   def record_dead_message(%{adapter: adapter} = storage, dead), do: adapter.record_dead_message(dead, storage)
 
   @doc "Every message a subscription gave up on. See `c:list_dead_messages/2`."
@@ -407,7 +408,7 @@ defmodule DMEx.Storage do
     do: adapter.list_dead_messages(subscription, storage)
 
   @doc "Removes one dead message. See `c:delete_dead_message/3`."
-  @spec delete_dead_message(opts(), String.t(), non_neg_integer()) :: :ok | {:error, term()}
+  @spec delete_dead_message(opts(), String.t(), non_neg_integer()) :: :ok
   def delete_dead_message(%{adapter: adapter} = storage, subscription, id),
     do: adapter.delete_dead_message(subscription, id, storage)
 
@@ -418,7 +419,7 @@ defmodule DMEx.Storage do
   def cursor(%{adapter: adapter} = storage, subscription), do: adapter.cursor(subscription, storage)
 
   @doc "Removes a subscription's cursor. See `c:delete_cursor/2`."
-  @spec delete_cursor(opts(), String.t()) :: :ok | {:error, term()}
+  @spec delete_cursor(opts(), String.t()) :: :ok
   def delete_cursor(%{adapter: adapter} = storage, subscription), do: adapter.delete_cursor(subscription, storage)
 
   @doc """

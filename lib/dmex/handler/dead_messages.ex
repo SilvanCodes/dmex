@@ -128,7 +128,7 @@ defmodule DMEx.Handler.DeadMessages do
   def discard!(handler, id, opts) when is_atom(handler) and is_integer(id) do
     storage = DMEx.Supervisor.storage!(opts)
 
-    :ok = Storage.delete_dead_message(storage, Handler.resolve_subscription_id!(handler, opts), id)
+    Storage.delete_dead_message(storage, Handler.resolve_subscription_id!(handler, opts), id)
   end
 
   ## Internals
@@ -148,7 +148,7 @@ defmodule DMEx.Handler.DeadMessages do
   # the module documentation).
   defp replay_one(row, state, subscription) do
     commit = fn ->
-      :ok = Storage.delete_dead_message(state.storage, subscription, row.id)
+      Storage.delete_dead_message(state.storage, subscription, row.id)
     end
 
     case Pipeline.deliver(state, pipeline_row(row), commit) do
