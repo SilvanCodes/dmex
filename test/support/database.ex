@@ -8,13 +8,19 @@ defmodule DMEx.Test.Database do
   exercised on a machine with nothing running.
   """
 
+  alias DMEx.Test.IntegrationRepo
   alias DMEx.Test.Migrations.Install
   alias DMEx.Test.Repo
   alias Ecto.Adapters.Postgres
   alias Ecto.Adapters.SQLite3
 
-  @repos [Repo, DMEx.Test.IntegrationRepo]
+  @repos [Repo, IntegrationRepo]
   @sqlite_repos [DMEx.Test.SQLiteRepo, DMEx.Test.SQLiteIntegrationRepo]
+
+  # Any fixed key in a space nothing else in this database uses. It is not
+  # DMEx's append lock: that one is `{classid, objid}` and scoped to a schema,
+  # and this claims a whole database against another OS process.
+  @integration_lock 0x646D6578
 
   @doc """
   Whether the configured Postgres is accepting connections.
@@ -136,5 +142,39 @@ defmodule DMEx.Test.Database do
     |> Application.fetch_env!(Repo)
     |> Keyword.fetch!(:url)
     |> URI.parse()
+  end
+
+  @doc """
+  Claims the integration database for this OS process, or refuses to share it.
+
+  The integration suite truncates all three tables on every test setup and the
+  benchmarks drain for minutes; both run against `dmex_integration_test`, and
+  neither is sandboxed. Run together, a benchmark mid-drain watches its log
+  vanish and reports as a run that never finished, which is how this was found.
+
+  A session advisory lock on a connection this process owns is the whole guard.
+  It is released when the VM exits, so there is nothing to clean up and a killed
+  run does not leave the database claimed.
+  """
+  @spec claim_integration!(String.t()) :: :ok
+  def claim_integration!(claimant) do
+    {:ok, conn} =
+      IntegrationRepo.config()
+      |> Keyword.take([:hostname, :port, :database, :username, :password, :socket_dir, :ssl])
+      |> Keyword.put(:pool_size, 1)
+      |> Postgrex.start_link()
+
+    case Postgrex.query!(conn, "SELECT pg_try_advisory_lock($1)", [@integration_lock]) do
+      %{rows: [[true]]} ->
+        :ok
+
+      %{rows: [[false]]} ->
+        raise """
+        #{claimant} could not claim dmex_integration_test: something else is using it.
+
+        The integration suite and the benchmarks share this database and truncate
+        under each other. Run them one at a time.
+        """
+    end
   end
 end

@@ -6,15 +6,30 @@ defmodule DMEx.BenchHelper do
   alias DMEx.Test.IntegrationRepo
   alias DMEx.Test.Storage, as: Stub
 
-  @doc "Starts the integration repo, for benchmarks that touch a real database."
+  @doc """
+  Starts the integration repo, for benchmarks that touch a real database.
+
+  Claims it too: the integration suite truncates the same three tables on every
+  test setup, and a benchmark mid-drain watching its log vanish reports as a run
+  that never finished rather than as a collision. `mix bench.e2e` requires every
+  file into one VM, so the claim has to tolerate already holding it.
+  """
   def start_repo! do
     Application.ensure_all_started(:ecto_sql)
     Application.ensure_all_started(:postgrex)
 
-    case IntegrationRepo.start_link() do
-      {:ok, pid} -> pid
-      {:error, {:already_started, pid}} -> pid
+    pid =
+      case IntegrationRepo.start_link() do
+        {:ok, pid} -> pid
+        {:error, {:already_started, pid}} -> pid
+      end
+
+    if !Process.get(:dmex_bench_claimed) do
+      DMEx.Test.Database.claim_integration!("this benchmark")
+      Process.put(:dmex_bench_claimed, true)
     end
+
+    pid
   end
 
   @doc """

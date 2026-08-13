@@ -49,4 +49,10 @@ exclude =
   if(database_available?, do: [], else: [:database]) ++
     if(sqlite_available?, do: [], else: [:sqlite])
 
+# Only when the integration tests are actually going to run: they truncate a
+# database the benchmarks also use, so the two must not overlap.
+if database_available? and :integration in ExUnit.configuration()[:include] do
+  Database.claim_integration!("the integration suite")
+end
+
 ExUnit.start(exclude: exclude)
