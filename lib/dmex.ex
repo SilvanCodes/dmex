@@ -104,33 +104,6 @@ defmodule DMEx do
   `DMEx.Telemetry` documents every event DMEx emits.
   """
 
-  # A log name and a handler's `name:` are the same kind of name, so the rule is
-  # written once.
-  @identifier ~r/\A[a-z][a-z0-9_]*\z/
-
-  @doc "Whether `value` is a well-formed DMEx identifier."
-  @spec identifier?(term()) :: boolean()
-  def identifier?(value), do: is_binary(value) and Regex.match?(@identifier, value)
-
-  # Every identifier is checked and reported here, so neither error can drift.
-  # `source` names the value ("a log name", "`:name` in MyApp.Log"); `hint` is
-  # whatever else that one site has to say. Atoms and strings render identically,
-  # and a string comes back either way.
-
-  @doc false
-  @spec validate_identifier!(term(), String.t(), String.t()) :: String.t()
-  def validate_identifier!(value, source, hint \\ "") do
-    name = if is_atom(value) and not is_nil(value), do: Atom.to_string(value), else: value
-
-    if !identifier?(name) do
-      raise ArgumentError,
-            "#{source} must be an atom or a string matching #{inspect(@identifier)}, " <>
-              "got: #{inspect(name)}." <> hint
-    end
-
-    name
-  end
-
   @doc """
   Every module of every application that could hold a DMEx declaration.
 

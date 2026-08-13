@@ -86,7 +86,7 @@ defmodule DMEx.Supervisor.Bindings do
 
   defp bind({name, target}, logs) do
     name =
-      DMEx.validate_identifier!(
+      Handler.identifier!(
         name,
         "a log name",
         " It is the same charset a handler's `logs:` and `name:` use, so \"/\" can join " <>

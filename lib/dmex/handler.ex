@@ -114,6 +114,12 @@ defmodule DMEx.Handler do
 
   @handler_opts [:logs, :name]
 
+  # A log name and a handler's `name:` are the same kind of name, so the rule is
+  # written once — see `identifier!/3`.
+  @identifier ~r/\A[a-z][a-z0-9_]*\z/
+  @charset_hint " Both halves of a subscription identifier are restricted to that charset so " <>
+                  "\"/\" can separate them with no escaping — which rules out UUIDs, dots and dashes."
+
   @typedoc """
   A handler's compile-time declaration, as returned by its `__dmex__/0`.
 
@@ -243,7 +249,7 @@ defmodule DMEx.Handler do
 
     %{
       logs: logs!(module, opts),
-      name: identifier!(module, :name, Keyword.fetch!(opts, :name)),
+      name: declared_identifier!(module, :name, Keyword.fetch!(opts, :name)),
       config: config!(module, opts)
     }
   end
@@ -662,8 +668,8 @@ defmodule DMEx.Handler do
     logs =
       case Keyword.fetch!(opts, :logs) do
         [] -> raise_no_logs(module)
-        logs when is_list(logs) -> Enum.map(logs, &identifier!(module, :logs, &1))
-        one -> [identifier!(module, :logs, one)]
+        logs when is_list(logs) -> Enum.map(logs, &declared_identifier!(module, :logs, &1))
+        one -> [declared_identifier!(module, :logs, one)]
       end
 
     case logs -- Enum.uniq(logs) do
@@ -683,14 +689,30 @@ defmodule DMEx.Handler do
             "A handler reads at least one: `use DMEx.Handler, logs: [:orders], name: :projection`"
   end
 
+  defp declared_identifier!(module, key, value) do
+    identifier!(value, "#{inspect(key)} in #{inspect(module)}", @charset_hint)
+  end
+
+  # Checks one half of a subscription identifier and returns it as a string.
+  #
+  # Both halves live here because the *pair* is the rule: a subscription id is
+  # `"<log>/<name>"`, and the charset is what makes `/` an unambiguous separator
+  # needing no escaping. `DMEx.Supervisor.Bindings` checks a log name against this
+  # same function, so the two halves cannot be restricted differently.
+  #
   # Atoms and binaries must render identically — otherwise a config style change
   # would silently mint a second identity and reset a cursor.
-  defp identifier!(module, key, value) do
-    DMEx.validate_identifier!(
-      value,
-      "#{inspect(key)} in #{inspect(module)}",
-      " Both halves of a subscription identifier are restricted to that charset so \"/\" can " <>
-        "separate them with no escaping — which rules out UUIDs, dots and dashes."
-    )
+  @doc false
+  @spec identifier!(term(), String.t(), String.t()) :: String.t()
+  def identifier!(value, source, hint \\ "") do
+    name = if is_atom(value) and not is_nil(value), do: Atom.to_string(value), else: value
+
+    if !(is_binary(name) and Regex.match?(@identifier, name)) do
+      raise ArgumentError,
+            "#{source} must be an atom or a string matching #{inspect(@identifier)}, " <>
+              "got: #{inspect(name)}." <> hint
+    end
+
+    name
   end
 end
