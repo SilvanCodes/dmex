@@ -7,8 +7,8 @@ defmodule DMEx.Config do
   `DMEx.Supervisor.subscribe/2` options, and both are resolved exactly once —
   never per append, per request, or per row.
 
-  Nothing is negotiated: every setting has exactly one owner — ARCHITECTURE
-  invariant 9.
+  Nothing is negotiated: every setting has exactly one owner — ARCHITECTURE's
+  "pacing has one owner".
 
   ## Log defaults
 
@@ -23,9 +23,10 @@ defmodule DMEx.Config do
   | `stall_check_interval` | `1_000` | ms; how often `DMEx.Log.Watcher` sweeps, so a stall is reclaimed within `stall_timeout + stall_check_interval`. A sweep is one atomics read per connection and no query. |
 
   `max_batch_rows` and `max_batch_bytes` are not two spellings of one limit —
-  ARCHITECTURE invariant 2 has the two heap costs and the arithmetic. The row
-  bound is also what makes the byte bound cheap: a running sum needs a bounded
-  input, or it visits every row after the cursor to find where to stop.
+  ARCHITECTURE's "producer memory is one batch" has the two heap costs and the
+  arithmetic. The row bound is also what makes the byte bound cheap: a running
+  sum needs a bounded input, or it visits every row after the cursor to find
+  where to stop.
 
   ## Handler defaults
 

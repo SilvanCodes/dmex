@@ -280,9 +280,13 @@ Because the protocol is just HTTP and SSE, no custom client library is required.
 
 ## The invariants
 
-The properties the design is built to have, and where each is enforced.
+The properties the design is built to have, and where each is enforced. They are
+named rather than numbered, because everything that cites one cites it by name —
+inserting a thirteenth renumbers nothing.
 
-**1. Appends are serialized per app.** Postgres allocates sequence values at
+### Appends are serialized per app
+
+Postgres allocates sequence values at
 INSERT time but makes rows visible at COMMIT time, so two concurrent appends can
 commit out of allocation order — and a reader scanning `id > cursor ORDER BY id`
 would advance straight over the row that had not committed yet and lose it
@@ -294,8 +298,9 @@ order equals commit order*, and the lock is only Postgres's way of getting
 there: SQLite has one writer database-wide, so a second writer cannot draw a
 rowid until the first commits, and `DMEx.Storage.SQLite` takes no lock at all.
 
-**2. Producer memory per connection is one batch, bounded in rows *and*
-bytes.** The send loop in `DMEx.Log.SendLoop` holds at most the rows it is
+### Producer memory is one batch, bounded in rows and bytes
+
+The send loop in `DMEx.Log.SendLoop` holds at most the rows it is
 writing; there is no accumulator. Two bounds because a row costs heap two ways:
 its payload, which `max_batch_bytes` counts, and a fixed ~1 KB for the map, the
 `%DateTime{}` and the frame's iodata cells — which no budget in database octets
@@ -309,20 +314,26 @@ spent the memory the bound exists to cap. One deliberate exception — a single
 row larger than the whole budget is returned alone, because refusing it would
 wedge the subscription forever.
 
-**3. Reads are gated on sends completing.** The key inversion. If reads were
+### Reads are gated on sends
+
+The key inversion. If reads were
 driven by the publisher's rate, that decoupling *is* an unbounded buffer. Here
 the next read cannot happen until the previous write returns, so producer-side
 overload is not detected and handled, it is unrepresentable. A stalled consumer
 stalls its own loop and nothing else: no more rows, no more memory, no more
 queries.
 
-**4. The request process *is* the stream.** No per-connection `GenServer`, no
+### The request process is the stream
+
+No per-connection `GenServer`, no
 producer-side supervisor. In both Bandit and Cowboy the connection process owns
 the socket, so `chunk/2` works naturally, the socket closes when the process
 dies, and reclaiming a connection means killing the process blocked in the
 write. `DMEx.Log.Plug` runs the loop inline.
 
-**5. Every blocking step is taken under a deadline.** A process blocked in
+### Every blocking step has a deadline
+
+A process blocked in
 `chunk/2` cannot time itself out, because it is not running — nor can one
 blocked in a read against a database that stopped answering. So the loop arms a
 deadline in its `DMEx.Log.Status` before each blocking step, and
@@ -330,20 +341,26 @@ deadline in its `DMEx.Log.Status` before each blocking step, and
 configuration and reaches wedges a socket timeout structurally cannot see. See
 [the deployment guide](guides/deployment.md).
 
-**6. A wakeup is a hint, never a carrier of work.** `DMEx.Log.Dispatcher`
+### A wakeup is a hint
+
+Never a carrier of work. `DMEx.Log.Dispatcher`
 broadcasts a bare atom on `NOTIFY` or on a poll that saw the tip move; each
 stream reads from its own cursor to whatever is there now. Missing one costs
 latency (bounded by the poll interval) and never correctness, so there is no
 gap-versus-overlap reconciliation anywhere.
 
-**7. Dropping a connection is not a delivery event.** The producer holds no
+### Dropping a connection is not a delivery event
+
+The producer holds no
 consumer state, the consumer's `last_seen` is durable, and resumption is the
 same `id > last_seen` read a cold connect does. That is what makes it safe to be
 aggressive about reclaiming, and why there is no in-band "you are being dropped"
 frame — it would have to be written to the very socket that is stalled.
 
-**8. The consumer has no buffer, and that is what makes the backpressure
-exact.** A transport's reader hands each decoded batch to
+### The consumer has no buffer
+
+And that is what makes the backpressure
+exact. A transport's reader hands each decoded batch to
 `DMEx.Handler.Subscription` with `DMEx.Transport.deliver/2` — a call that
 returns only once the pipeline has run every row — and reads again only on its
 return. So while the subscription is inside a handler the reader is blocked in
@@ -354,7 +371,9 @@ buffer would only relocate the problem: a few hundred rows of slack absorb
 nothing at a sustained mismatch, and every row of slack is one more the socket
 accepts before it says stop.
 
-**9. Pacing has exactly one owner, and it is stated as a rate.**
+### Pacing has one owner
+
+And it is stated as a rate.
 `max_batch_frequency`, `max_batch_rows` and `max_batch_bytes` are producer
 configuration and appear nowhere else — not in a request, not in a response, not
 in a subscription's options. There is no "requested" value to drift from an
@@ -367,18 +386,24 @@ database, memory and request processes all three protect — and at that default
 the pool, not the query load, is what gives first, so an application expecting
 many concurrent streams should lower it.
 
-**10. Batching is a write batch, never a processing unit.** The producer encodes
+### Batching is a write batch
+
+Never a processing unit. The producer encodes
 a read's rows as one frame each and writes them together; the consumer sees a
 plain run of one-row frames and runs each through `DMEx.Handler.Pipeline`
 separately — its own transaction, handler call, cursor advance and failure
 handling. A mid-batch failure rolls back exactly one message.
 
-**11. The handler sees its message and a metadata map, nothing else.** No frame,
+### A handler sees only its message
+
+Its message and a metadata map, nothing else. No frame,
 no id, no `type` — the map is the publisher's, byte for byte. A handler
 stays a plain function of its domain data plus context, testable by constructing
 a struct and a map.
 
-**12. An identity is its declaration, not its module name.** The `"log/id"` pair
+### An identity is its declaration
+
+Not its module name. The `"log/id"` pair
 in `use DMEx.Handler` keys the cursor and the `type:` in `use DMEx.Message` keys
 the row, so renaming either module is free and only changing the declaration
 costs anything — a migration for a cursor (`DMEx.Handler.Cursors`), and for a
@@ -458,7 +483,7 @@ is the pattern that stays correct.
 one id, so a row lost *between* two that arrived is indistinguishable from a
 selective stream's legitimate sparseness, and the next row's advance puts the
 missing id permanently behind the cursor. What defends against it is on the
-producer's side — id assignment order equal to commit order (invariant 1), and
+producer's side — id assignment order equal to commit order ([appends are serialized](#appends-are-serialized-per-app)), and
 one read per connection issued against the cursor it was handed.
 
 **Ordering** holds within one app's stream and never across streams.
@@ -480,14 +505,15 @@ of scope.
   splits into two handlers and two cursors. An explicit override on
   `subscribe/2` is open.
 - **No aggregate budget or admission control** — no cap on open connections, no
-  `503`/`Retry-After`. Per-connection protection is complete (invariants 2, 3,
-  5); aggregate pressure from many individually-healthy connections is not
+  `503`/`Retry-After`. Per-connection protection is complete ([producer memory is one batch](#producer-memory-is-one-batch-bounded-in-rows-and-bytes),
+  [reads are gated on sends](#reads-are-gated-on-sends),
+  [every blocking step has a deadline](#every-blocking-step-has-a-deadline)); aggregate pressure from many individually-healthy connections is not
   addressed, and neither is a consumer that is pathologically slow while still
   technically progressing. See
   [Global Resource Limits](ROADMAP.md#global-resource-limits).
 - **No per-endpoint pacing, and no two log modules on one table** — a log's
   settings are the log's, one set per table, with no mount-level override and
-  nothing negotiable (invariant 9). An in-VM consumer subscribes through
+  nothing negotiable ([pacing has one owner](#pacing-has-one-owner)). An in-VM consumer subscribes through
   `DMEx.Transport.Local` and never reaches `DMEx.Log.Plug`, so every HTTP consumer
   is a remote application: one advertised heartbeat, one stall budget and one
   batch size is the right number rather than a compromise. Two log modules
@@ -507,7 +533,8 @@ of scope.
   superset [selection](#message-type-selection) requires, which is a false
   negative in the one direction that must never produce one. Both failures are
   undetectable at the consumer. Pacing would gain a second owner, against
-  invariant 9, and the stall watcher's budgets (invariant 5) assume a local read
+  [pacing has one owner](#pacing-has-one-owner), and the stall watcher's budgets
+  ([every blocking step has a deadline](#every-blocking-step-has-a-deadline)) assume a local read
   loop rather than an unbounded upstream wait.
 
   What the proxy is wanted for has an answer that needs no new machinery: bind
@@ -602,7 +629,8 @@ the constants are not portable.
   `max_batch_rows` — which one slow consumer cannot ask to be lowered for it
   alone. Is a steady `[:dmex, :stream, :reclaim]` rate an adequate operator
   signal, or does the protocol need a way to say "less at a time"?
-- **Third-party client backpressure** — invariant 8 is a property of *DMEx's*
+- **Third-party client backpressure** — [the consumer has no buffer](#the-consumer-has-no-buffer)
+  is a property of *DMEx's*
   client. Any SSE-capable client can consume a stream, and one that bounds
   neither its socket nor its queue is indistinguishable to the producer from a
   genuinely fast one. Documented caveat, or something detectable?

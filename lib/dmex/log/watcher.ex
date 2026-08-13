@@ -28,8 +28,8 @@ defmodule DMEx.Log.Watcher do
 
   That reclaims the request process, its registry entry, the database connection
   it had checked out (the pool monitors its client), and the socket through the
-  web server's teardown. Dropping a connection is not a delivery event
-  (ARCHITECTURE invariant 7), which is what makes it safe to be blunt.
+  web server's teardown. **Dropping a connection is not a delivery event** —
+  ARCHITECTURE says why, and it is what makes it safe to be blunt.
 
   ## What it cannot see
 

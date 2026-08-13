@@ -163,10 +163,10 @@ place a connect attempt passes through before registering.
   "which connection goes", and the watcher can rank by deadline because it holds
   every one. Oldest-first and slowest-first are the other candidates.
 
-**What stays true regardless.** Dropping a connection is not a delivery event
-(ARCHITECTURE invariant 7), which makes shedding a capacity decision rather than
-a correctness one — so this can be added later without revisiting delivery
-semantics.
+**What stays true regardless.**
+[Dropping a connection is not a delivery event](ARCHITECTURE.md#dropping-a-connection-is-not-a-delivery-event),
+which makes shedding a capacity decision rather than a correctness one — so this
+can be added later without revisiting delivery semantics.
 
 ### Open, if and when it lands
 
@@ -206,9 +206,10 @@ Serializing per row — a locked read-back before each handler call — is the o
 way to make two readers on one cursor safe, and it buys nothing: both nodes still
 stream the whole log, so producer reads double while throughput stays one node's,
 and the loser's work is discarded. Worse, it puts a contended lock acquisition on
-the socket path, where invariant 8 has the handler running inline with the
-receive window closed, so a slow owner walks its standby into the producer's
-stall deadline (invariant 5) and gets it reclaimed. One cursor is one
+the socket path, where *the consumer has no buffer* has the handler running
+inline with the receive window closed, so a slow owner walks its standby into the
+producer's stall deadline (*every blocking step has a deadline*) and gets it
+reclaimed. One cursor is one
 serialization point; the answer to consumer throughput is more cursors —
 today, more handlers, each with its own cursor and socket — or the outbox
 that *Delivery semantics* already recommends, where one reader enqueues and

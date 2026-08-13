@@ -23,7 +23,7 @@ defmodule DMEx.Transport.SSE do
   **Backpressure.** `deliver/2` blocks until the pipeline has run the batch, and
   only on its return does the reader call `Mint.HTTP.stream/2` again. The TCP
   receive window closes behind it and the producer's `chunk/2` blocks on it —
-  ARCHITECTURE invariant 8.
+  ARCHITECTURE's "the consumer has no buffer".
   """
 
   @behaviour DMEx.Transport

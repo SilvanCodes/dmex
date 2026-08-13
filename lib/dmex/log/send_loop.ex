@@ -17,8 +17,9 @@ defmodule DMEx.Log.SendLoop do
   It does nothing to a row: what a read returns is what a transport writes.
 
   Memory per connection is one batch and reads are gated on sends completing, so
-  a stalled reader stalls its own loop and nothing else — ARCHITECTURE
-  invariants 2 and 3. The cursor is the only source of truth.
+  a stalled reader stalls its own loop and nothing else — ARCHITECTURE's
+  "producer memory is one batch" and "reads are gated on sends". The cursor is
+  the only source of truth.
 
   ## Every blocking step is taken under a deadline
 
@@ -33,7 +34,8 @@ defmodule DMEx.Log.SendLoop do
   The loop is sequential, so `max_batch_frequency`, `max_batch_rows` and
   `max_batch_bytes` compose: it reads at most `max_batch_rows` rows or
   `max_batch_bytes`, `max_batch_frequency` times a second. `DMEx.Config` says
-  what each caps, and ARCHITECTURE invariant 9 why the producer owns all three.
+  what each caps, and ARCHITECTURE's "pacing has one owner" why the producer owns
+  all three.
   """
 
   alias DMEx.Log.Selection

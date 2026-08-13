@@ -58,8 +58,8 @@ defmodule DMEx.Handler.Subscription do
   ## Backpressure is the absence of a buffer
 
   Rows run through the pipeline **inline**, one at a time, inside the reader's
-  `DMEx.Transport.deliver/2` call: no queue, no drain loop — ARCHITECTURE
-  invariant 8.
+  `DMEx.Transport.deliver/2` call: no queue, no drain loop — ARCHITECTURE's
+  "the consumer has no buffer".
   """
 
   use GenServer

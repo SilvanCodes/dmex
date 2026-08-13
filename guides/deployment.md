@@ -35,7 +35,8 @@ lower `max_batch_bytes`, for slow ones — tightening too far drops healthy slow
 consumers, which at scale is a reconnect storm with no admission control to
 absorb it.
 
-**Dropping a connection is not a delivery event** (ARCHITECTURE invariant 7):
+**Dropping a connection is not a delivery event**
+([ARCHITECTURE](../ARCHITECTURE.md#dropping-a-connection-is-not-a-delivery-event)):
 nothing is lost and nothing is skipped.
 
 **What to alert on.** Every reclaim emits `[:dmex, :stream, :reclaim]` with an
@@ -48,8 +49,9 @@ consumer; a steady rate is either a consumer that cannot keep up or a
 `max_batch_rows` (500 rows) and `max_batch_bytes` (1 MiB of `data` + `metadata`
 + `type` octets) bound the same read, and whichever binds first ends it.
 
-Both are memory bounds, over different costs (ARCHITECTURE invariant 2): the
-byte cap counts what the database can see, and the row cap bounds the fixed
+Both are memory bounds, over different costs — see
+[producer memory is one batch](../ARCHITECTURE.md#producer-memory-is-one-batch-bounded-in-rows-and-bytes).
+The byte cap counts what the database can see, and the row cap bounds the fixed
 ~1 KB per row that turning it into terms costs, which no budget in database
 octets can.
 

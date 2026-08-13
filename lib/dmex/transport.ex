@@ -35,9 +35,9 @@ defmodule DMEx.Transport do
   ## What a transport must preserve
 
   **No buffer.** At most one batch may be in flight, and the reader must not
-  produce the next until `deliver/2` returns — ARCHITECTURE invariant 8. A
-  transport that queues rows for later has replaced a structural guarantee with
-  a bound somebody has to choose.
+  produce the next until `deliver/2` returns — ARCHITECTURE's "the consumer has
+  no buffer". A transport that queues rows for later has replaced a structural
+  guarantee with a bound somebody has to choose.
 
   **Rows are handled in the process that owns the cursor.** `deliver/2` hands
   them to the subscription and they are run there. A reader running the pipeline

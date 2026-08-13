@@ -56,8 +56,8 @@ defmodule DMEx.Log.Plug do
 
   No per-connection `GenServer` and no log-side supervisor: this plug registers
   the request process for wakeups and runs the send loop inline for the life of
-  the connection. ARCHITECTURE invariant 4 covers why the process holding the
-  socket has to be the one the loop runs in.
+  the connection. ARCHITECTURE's "the request process is the stream" covers why
+  the process holding the socket has to be the one the loop runs in.
 
   Registration happens before anything that can block, and hands back the
   connection's `DMEx.Log.Status`, which puts even the connect path under

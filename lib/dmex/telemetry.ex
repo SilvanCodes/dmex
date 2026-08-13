@@ -107,9 +107,9 @@ defmodule DMEx.Telemetry do
 
   There is deliberately **no socket-gating event and no lag event**:
   backpressure is not a decision this side makes but what happens while the
-  process is in a handler (ARCHITECTURE invariant 8), and "how far behind am I"
-  is not answerable from a frame (ARCHITECTURE's *wire contract* — no `max_id`,
-  no clock).
+  process is in a handler (ARCHITECTURE's "the consumer has no buffer"), and
+  "how far behind am I" is not answerable from a frame (ARCHITECTURE's *wire
+  contract* — no `max_id`, no clock).
 
   ### `[:dmex, :handler, :reconnect]`
 
