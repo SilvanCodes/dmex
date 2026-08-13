@@ -26,6 +26,17 @@ defmodule DMEx.Transport.SSE.Decoder do
   a frame: DMEx puts the whole payload on one `data:` line, so every interior
   chunk of a large frame skips both. A producer splitting `data:` over many
   lines — which `Frame.decode/1` accepts — makes it quadratic in pushes again.
+
+  **A leading byte order mark is removed once, at the head of the stream** —
+  the event-stream grammar's first step. Left in, it becomes part of the first
+  block's first field *name*, which then matches nothing, so `Frame.decode/1`
+  reports the block `:ignore` and it disappears with no error. Against DMEx's
+  own producer that block is the `retry:` advertisement, so a consumer's
+  liveness budget would silently fall back to its assumed default; against a
+  third-party producer it is the first message. It is stripped here rather than
+  in `Frame.decode/1` because it is a property of the stream, not of a block:
+  only the first three bytes of the first chunk are a mark, and the same bytes
+  opening any later block are payload.
   """
 
   alias DMEx.Transport.SSE.Frame
@@ -53,13 +64,14 @@ defmodule DMEx.Transport.SSE.Decoder do
   # cheap "could this chunk have completed a line?" test over the same set.
   @terminators Enum.filter(Frame.line_terminators(), &(byte_size(&1) == 1))
 
-  defstruct buffer: [], size: 0, max_bytes: nil, retry: nil
+  defstruct buffer: [], size: 0, max_bytes: nil, retry: nil, bom: <<>>
 
   @type t :: %__MODULE__{
           buffer: iodata(),
           size: non_neg_integer(),
           max_bytes: pos_integer(),
-          retry: pos_integer() | nil
+          retry: pos_integer() | nil,
+          bom: binary() | :done
         }
 
   # `extract/2` passes a decode failure through untouched, so the two types are
@@ -93,7 +105,14 @@ defmodule DMEx.Transport.SSE.Decoder do
   """
   @spec push(t(), binary()) :: {:ok, [Frame.decoded_row()], t()} | {:error, error(), t()}
   def push(%__MODULE__{} = decoder, chunk) when is_binary(chunk) do
-    decoder = %{decoder | buffer: [chunk | decoder.buffer], size: decoder.size + byte_size(chunk)}
+    {chunk, bom} = strip_bom(decoder.bom, chunk)
+
+    decoder = %{
+      decoder
+      | buffer: [chunk | decoder.buffer],
+        size: decoder.size + byte_size(chunk),
+        bom: bom
+    }
 
     if terminator?(chunk) do
       decoder |> flatten() |> extract([])
@@ -103,6 +122,25 @@ defmodule DMEx.Transport.SSE.Decoder do
   end
 
   ## Internals
+
+  @bom <<0xEF, 0xBB, 0xBF>>
+
+  # `:done` once the question is settled, so every chunk after the first costs
+  # one clause head. Until then the bytes seen so far are held back rather than
+  # buffered: a first read of one or two bytes is legal, and deciding on a
+  # partial prefix would either eat payload or leave a mark behind. At most two
+  # bytes are ever withheld, and only before the first frame can be complete.
+  defp strip_bom(:done, chunk), do: {chunk, :done}
+
+  defp strip_bom(seen, chunk) do
+    case seen <> chunk do
+      @bom <> rest -> {rest, :done}
+      <<>> -> {<<>>, <<>>}
+      <<0xEF>> = partial -> {<<>>, partial}
+      <<0xEF, 0xBB>> = partial -> {<<>>, partial}
+      other -> {other, :done}
+    end
+  end
 
   defp flatten(%{buffer: [single]} = decoder) when is_binary(single), do: decoder
 

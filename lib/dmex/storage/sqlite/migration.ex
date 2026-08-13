@@ -2,9 +2,9 @@ defmodule DMEx.Storage.SQLite.Migration do
   @moduledoc """
   The SQLite DDL behind `DMEx.Storage.Migration`.
 
-  Reached through that module, which picks a migration by the repo's adapter —
-  a host application writes `DMEx.Storage.Migration.up()` and never names this
-  one.
+  Reached through that module, which runs the DDL the configured storage adapter
+  names — `DMEx.Storage.SQLite.migration/0` is what points here. A host
+  application writes `DMEx.Storage.Migration.up()` and never names this one.
 
   **Raw SQL rather than the migration DSL**, because the CHECK constraints have
   to be inline: SQLite's `ALTER TABLE` cannot add one, and ecto_sqlite3 raises

@@ -2,9 +2,9 @@ defmodule DMEx.Storage.Postgres.Migration do
   @moduledoc """
   The Postgres DDL behind `DMEx.Storage.Migration`.
 
-  Reached through that module, which picks a migration by the repo's adapter —
-  a host application writes `DMEx.Storage.Migration.up()` and never names this
-  one.
+  Reached through that module, which runs the DDL the configured storage adapter
+  names — `DMEx.Storage.Postgres.migration/0` is what points here. A host
+  application writes `DMEx.Storage.Migration.up()` and never names this one.
   """
 
   use Ecto.Migration

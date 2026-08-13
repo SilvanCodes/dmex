@@ -68,27 +68,31 @@ defmodule DMEx.Config do
       subscription that must not miss those names a cursor instead.
   """
 
-  @log_defaults [
-    max_batch_frequency: 100,
-    max_batch_rows: 500,
-    heartbeat_interval: 15_000,
-    poll_interval: 1_000,
-    max_batch_bytes: 1_048_576,
-    stall_timeout: 30_000,
-    stall_check_interval: 1_000
+  # Each setting is a default and the domain it has to stay inside, in one
+  # place. Two lists — one of defaults, one of field names to check — is how a
+  # setting gets added to the first and forgotten in the second, which is a
+  # validator that silently does not run.
+  @log_settings [
+    max_batch_frequency: {100, :positive_number},
+    max_batch_rows: {500, :positive_integer},
+    heartbeat_interval: {15_000, :positive_integer},
+    poll_interval: {1_000, :positive_integer},
+    max_batch_bytes: {1_048_576, :positive_integer},
+    stall_timeout: {30_000, :stall_timeout},
+    stall_check_interval: {1_000, :positive_integer}
   ]
 
-  @handler_defaults [
-    last_seen: nil,
-    checkpoint_interval: 1_000,
-    on_failure: :dead_message,
-    max_attempts: 3,
-    retry_backoff_base: 100,
-    retry_backoff_max: 5_000,
-    reconnect_backoff_base: 500,
-    reconnect_backoff_max: 30_000,
-    max_frame_bytes: 4_194_304,
-    missed_heartbeats: 3
+  @handler_settings [
+    last_seen: {nil, :cursor},
+    checkpoint_interval: {1_000, :positive_integer},
+    on_failure: {:dead_message, {:in, [:crash, :skip, :dead_message]}},
+    max_attempts: {3, :positive_integer},
+    retry_backoff_base: {100, :positive_integer},
+    retry_backoff_max: {5_000, :positive_integer},
+    reconnect_backoff_base: {500, :positive_integer},
+    reconnect_backoff_max: {30_000, :positive_integer},
+    max_frame_bytes: {4_194_304, :positive_integer},
+    missed_heartbeats: {3, :positive_integer}
   ]
 
   @typedoc "A log's resolved configuration."
@@ -127,9 +131,7 @@ defmodule DMEx.Config do
   """
   @spec log!(keyword()) :: log()
   def log!(opts) when is_list(opts) do
-    @log_defaults
-    |> cast!(opts)
-    |> validate_log!()
+    @log_settings |> cast!(opts) |> validate!(@log_settings)
   end
 
   @doc """
@@ -141,9 +143,7 @@ defmodule DMEx.Config do
   """
   @spec handler!(keyword()) :: handler()
   def handler!(opts) when is_list(opts) do
-    @handler_defaults
-    |> cast!(opts)
-    |> validate_handler!()
+    @handler_settings |> cast!(opts) |> validate!(@handler_settings)
   end
 
   @doc """
@@ -171,11 +171,11 @@ defmodule DMEx.Config do
 
   @doc "Every log setting name."
   @spec log_keys() :: [atom()]
-  def log_keys, do: Keyword.keys(@log_defaults)
+  def log_keys, do: Keyword.keys(@log_settings)
 
   @doc "Every handler setting name."
   @spec handler_keys() :: [atom()]
-  def handler_keys, do: Keyword.keys(@handler_defaults)
+  def handler_keys, do: Keyword.keys(@handler_settings)
 
   @doc """
   Every default, as `%{log: keyword(), handler: keyword()}`.
@@ -183,99 +183,57 @@ defmodule DMEx.Config do
   So the tables above can be tested against the code rather than trusted.
   """
   @spec defaults() :: %{log: keyword(), handler: keyword()}
-  def defaults, do: %{log: Enum.sort(@log_defaults), handler: Enum.sort(@handler_defaults)}
+  def defaults, do: %{log: sorted_defaults(@log_settings), handler: sorted_defaults(@handler_settings)}
+
+  defp sorted_defaults(settings), do: settings |> Enum.map(fn {key, {default, _}} -> {key, default} end) |> Enum.sort()
 
   ## Casting
 
   # Only known keys are copied, so an unknown one cannot become a setting. Later
   # duplicates win, so a caller may prepend its own defaults to an option list.
-  defp cast!(defaults, opts) do
-    Enum.reduce(opts, Map.new(defaults), fn {key, value}, acc ->
+  defp cast!(settings, opts) do
+    defaults = Map.new(settings, fn {key, {default, _domain}} -> {key, default} end)
+
+    Enum.reduce(opts, defaults, fn {key, value}, acc ->
       if Map.has_key?(acc, key), do: %{acc | key => value}, else: acc
     end)
   end
 
   ## Validation
 
-  defp validate_log!(config) do
-    positive_number!(config, :max_batch_frequency)
+  # Driven by the same list the defaults come from, so a setting cannot be added
+  # with a default and no domain.
+  defp validate!(config, settings) do
+    for {key, {_default, domain}} <- settings do
+      value = Map.fetch!(config, key)
 
-    for field <- [:max_batch_rows, :heartbeat_interval, :poll_interval, :max_batch_bytes, :stall_check_interval],
-        do: positive_integer!(config, field)
-
-    validate_stall_timeout!(config.stall_timeout)
-
-    config
-  end
-
-  defp validate_handler!(config) do
-    for field <- [
-          :max_attempts,
-          :retry_backoff_base,
-          :retry_backoff_max,
-          :reconnect_backoff_base,
-          :reconnect_backoff_max,
-          :max_frame_bytes,
-          :missed_heartbeats,
-          :checkpoint_interval
-        ] do
-      positive_integer!(config, field)
+      if !in_domain?(value, domain) do
+        raise ArgumentError, "#{inspect(key)} must be #{describe(domain)}, got: #{inspect(value)}"
+      end
     end
 
-    validate_inclusion!(:on_failure, config.on_failure, [:crash, :skip, :dead_message])
-
-    validate_last_seen!(config.last_seen)
-
     config
-  end
-
-  # The one setting that may be switched off rather than tuned: a log whose
-  # streams legitimately block longer than any budget worth naming is better off
-  # with no watcher than a wrong one.
-  defp validate_stall_timeout!(:infinity), do: :ok
-  defp validate_stall_timeout!(value) when is_integer(value) and value > 0, do: :ok
-
-  defp validate_stall_timeout!(value) do
-    raise ArgumentError,
-          ":stall_timeout must be a positive integer or :infinity, got: #{inspect(value)}"
   end
 
   # `max_batch_frequency` is not a count, so it may be fractional: a stream
   # reading once every five seconds is 0.2 Hz and has no integer spelling.
-  defp positive_number!(config, field) do
-    case Map.fetch!(config, field) do
-      value when is_number(value) and value > 0 ->
-        :ok
+  defp in_domain?(value, :positive_number), do: is_number(value) and value > 0
+  defp in_domain?(value, :positive_integer), do: is_integer(value) and value > 0
 
-      value ->
-        raise ArgumentError,
-              "#{inspect(field)} must be a positive number, got: #{inspect(value)}"
-    end
-  end
+  # The one setting that may be switched off rather than tuned: a log whose
+  # streams legitimately block longer than any budget worth naming is better off
+  # with no watcher than a wrong one.
+  defp in_domain?(:infinity, :stall_timeout), do: true
+  defp in_domain?(value, :stall_timeout), do: in_domain?(value, :positive_integer)
 
-  defp positive_integer!(config, field) do
-    case Map.fetch!(config, field) do
-      value when is_integer(value) and value > 0 ->
-        :ok
+  defp in_domain?(nil, :cursor), do: true
+  defp in_domain?(value, :cursor), do: is_integer(value) and value >= 0
 
-      value ->
-        raise ArgumentError,
-              "#{inspect(field)} must be a positive integer, got: #{inspect(value)}"
-    end
-  end
+  defp in_domain?(value, {:in, allowed}), do: value in allowed
 
-  defp validate_last_seen!(nil), do: :ok
-  defp validate_last_seen!(id) when is_integer(id) and id >= 0, do: :ok
-
-  defp validate_last_seen!(value) do
-    raise ArgumentError,
-          ":last_seen must be a non-negative integer cursor or nil, got: #{inspect(value)}"
-  end
-
-  defp validate_inclusion!(field, value, allowed) do
-    if value not in allowed do
-      raise ArgumentError,
-            "#{inspect(field)} must be one of #{inspect(allowed)}, got: #{inspect(value)}"
-    end
-  end
+  defp describe(:positive_number), do: "a positive number"
+  defp describe(:positive_integer), do: "a positive integer"
+  defp describe(:stall_timeout), do: "a positive integer or :infinity"
+  defp describe(:cursor), do: "a non-negative integer cursor or nil"
+  defp describe({:in, allowed}), do: "one of #{inspect(allowed)}"
 end

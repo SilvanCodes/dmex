@@ -130,6 +130,61 @@ defmodule DMEx.Transport.SSE.DecoderTest do
     end
   end
 
+  describe "the byte order mark" do
+    # Left in, the mark becomes part of the first field *name*, which matches
+    # nothing — so the block is reported `:ignore` and the first frame vanishes
+    # with no error. Against DMEx's own producer that block is the `retry:`.
+    @bom <<0xEF, 0xBB, 0xBF>>
+
+    test "a leading mark does not swallow the first frame" do
+      {:ok, [row], _} = push(Decoder.new(), @bom <> frame_bytes(1..1))
+
+      assert row["id"] == 1
+    end
+
+    test "a leading mark does not swallow the retry: advertisement" do
+      bytes = @bom <> IO.iodata_to_binary(Frame.encode_retry(15_200))
+
+      {:ok, [], decoder} = push(Decoder.new(), bytes)
+
+      assert Decoder.retry(decoder) == 15_200
+    end
+
+    test "a mark split across chunks is still one mark" do
+      {rows, _decoder} =
+        (@bom <> frame_bytes(1..1))
+        |> chunks_of(1)
+        |> Enum.reduce({[], Decoder.new()}, fn chunk, {acc, decoder} ->
+          {:ok, rows, decoder} = push(decoder, chunk)
+          {acc ++ rows, decoder}
+        end)
+
+      assert Enum.map(rows, & &1["id"]) == [1]
+    end
+
+    # Only the head of the stream is a mark; the same bytes later are payload,
+    # and stripping them there would corrupt a frame rather than repair one.
+    test "the same bytes inside a later frame are left alone" do
+      body = ~s(id: 1\nevent: T\ndata: {"data":{"note":"#{@bom}x"},"metadata":{}}\n\n)
+
+      {:ok, [row], _} = push(Decoder.new(), body)
+
+      assert row["data"]["note"] == @bom <> "x"
+    end
+
+    # A first read of one or two bytes is legal, so a decision has to wait for
+    # the third. What it must never do is keep the bytes to itself: `EF BB`
+    # followed by anything else is payload, and payload is not discarded even
+    # when it is exactly the two bytes that make the frame behind it
+    # unparseable — eating them would be a decoder inventing a repair.
+    test "a partial mark that turns out not to be one is not swallowed" do
+      {:ok, [], decoder} = push(Decoder.new(), <<0xEF, 0xBB>>)
+      {:ok, rows, _} = push(decoder, frame_bytes(1..1))
+
+      assert rows == []
+    end
+  end
+
   describe "the buffer bound" do
     # A log that never emits a blank line — broken, hostile, or simply
     # mid-frame when it wedged — would otherwise grow this without limit.

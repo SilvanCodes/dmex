@@ -78,6 +78,9 @@ defmodule DMEx.Storage.SQLite do
   def default_notifier, do: DMEx.Notifier.Beam
 
   @impl DMEx.Storage
+  def migration, do: DMEx.Storage.SQLite.Migration
+
+  @impl DMEx.Storage
   def validate!(opts) do
     case Map.get(opts, :prefix) do
       nil ->
@@ -176,45 +179,26 @@ defmodule DMEx.Storage.SQLite do
     end
   end
 
-  # The Postgres adapter's four levels, and each is load-bearing for the same
-  # reason here: SQLite also computes window functions before `LIMIT` within one
-  # SELECT, and it does not flatten a subquery that contains one — so `page` is
-  # what keeps the running sum off every row after the cursor.
+  # The four levels and why each of them is load-bearing: `DMEx.Storage.SQL`,
+  # which renders this statement for both engines because a divergence in this
+  # one is a data bug rather than a failure. What is SQLite's about it, and so
+  # lives here:
   #
-  # Two things differ. There is no `::text` cast, because the columns are text.
-  # And bytes are `length(CAST(x AS BLOB))` rather than `octet_length` — the
-  # latter needs SQLite 3.43, and exqlite can be built against the system
-  # library, so the portable spelling is the one that cannot be wrong.
-  #
-  # `?1` twice rather than a repeated parameter: numbered placeholders bind one
-  # value to every occurrence, which keeps the params list identical to the
-  # Postgres adapter's.
+  #   * No cast. The columns are text already, which is what
+  #     `c:DMEx.Storage.read/5` asks for.
+  #   * Bytes are `length(CAST(x AS BLOB))` rather than `octet_length` — the
+  #     latter needs SQLite 3.43, and exqlite can be built against the system
+  #     library, so the portable spelling is the one that cannot be wrong.
+  #   * `?1` to `?3` are the three parameters every read binds, and a selection
+  #     appends its types from `?4` on, so nothing here renumbers.
   defp read_sql(predicate) do
-    """
-    SELECT id, type, data, metadata, inserted_at
-      FROM (
-        SELECT id, type, data, metadata, inserted_at, bytes,
-               coalesce(
-                 sum(bytes) OVER (ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),
-                 0
-               ) AS prefix_bytes
-          FROM (
-            SELECT id, type, data, metadata, inserted_at,
-                   length(CAST(data AS BLOB)) +
-                   length(CAST(metadata AS BLOB)) +
-                   length(CAST(type AS BLOB)) AS bytes
-              FROM (
-                SELECT id, type, data, metadata, inserted_at
-                  FROM #{@messages}
-                 WHERE id > ?1 #{predicate}
-                 ORDER BY id
-                 LIMIT ?2
-              ) page
-          ) sized
-      ) measured
-     WHERE prefix_bytes + bytes <= ?3 OR prefix_bytes = 0
-     ORDER BY id
-    """
+    DMEx.Storage.SQL.read_sql(%{
+      table: @messages,
+      param: "?",
+      cast: &Function.identity/1,
+      bytes: &"length(CAST(#{&1} AS BLOB))",
+      predicate: predicate
+    })
   end
 
   defp query(sql, params, opts) do

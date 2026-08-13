@@ -68,14 +68,16 @@ defmodule DMEx.Supervisor do
   alias DMEx.Handler
   alias DMEx.Handler.Subscription
   alias DMEx.Handler.Subscriptions
+  alias DMEx.Supervisor.Bindings
   alias DMEx.Supervisor.Starter
 
   require Logger
 
   @default_name __MODULE__
-  # Every storage option and its default, in one list: `storage/1` reads it and
-  # `subscribe/2` accepts it, so a fourth one cannot be added to the reader
-  # and forgotten in the vocabulary — which would reject a legal option.
+  # Every storage option and its default, in one list: the resolution at the
+  # bottom of this module reads it and `subscribe/2` accepts it, so a fourth one
+  # cannot be added to the reader and forgotten in the vocabulary — which would
+  # reject a legal option.
   @storage_defaults [storage: DMEx.Storage.Postgres, repo: nil, prefix: nil]
   @storage_opts Keyword.keys(@storage_defaults)
   # `:handler` is deliberately absent: it is the positional argument, so a stray
@@ -102,7 +104,7 @@ defmodule DMEx.Supervisor do
 
   @impl Supervisor
   def init({name, opts}) do
-    logs = logs!(opts)
+    logs = Bindings.logs!(opts)
     otp_app = otp_app(opts)
 
     # Before any child starts, and loudly. It cannot live in the starter: that
@@ -212,13 +214,13 @@ defmodule DMEx.Supervisor do
         "handler module, not here."
     )
 
-    bound = resolve_logs!(opts, supervisor)
+    bound = Bindings.resolve_logs!(opts, supervisor)
     storage = resolve_storage!(opts, supervisor)
     config = Config.handler!(Keyword.merge(declaration.config, opts))
 
     declaration.logs
     |> Enum.reduce_while({:ok, []}, fn log, {:ok, pids} ->
-      {transport, origin} = transport!(declaration, log, bound)
+      {transport, origin} = Bindings.transport!(declaration, log, bound)
 
       child =
         [
@@ -264,42 +266,16 @@ defmodule DMEx.Supervisor do
   Resolves `repo:`, `storage:` and `prefix:` into a `t:DMEx.Storage.opts/0`.
 
   The one place those three are read, so `subscribe/2`, `DMEx.Handler.Cursors`
-  and `DMEx.Handler.DeadMessages` cannot drift. `:repo` may be absent here — a
-  supervisor started with no default is legal, and `subscribe/2` insists on one.
-  The `storage:` option names the adapter and lands on `:adapter`, which is what
-  makes the result one value rather than a pair.
-  """
-  @spec storage(keyword()) :: DMEx.Storage.opts()
-  def storage(opts) do
-    {adapter, storage} =
-      @storage_defaults
-      |> Map.new(fn {key, default} -> {key, Keyword.get(opts, key, default)} end)
-      |> Map.pop(:storage)
+  and `DMEx.Handler.DeadMessages` cannot drift. The `storage:` option names the
+  adapter and lands on `:adapter`, which is what makes the result one value
+  rather than a pair.
 
-    Map.put(storage, :adapter, adapter)
-  end
-
-  @doc """
-  Like `storage/1`, but insists on a `repo:`.
-
-  What the operator-facing modules use, since there is nothing running to fall
-  back to when one is called from a migration or a console.
+  Insists on a `repo:`. What the operator-facing modules use, since there is
+  nothing running to fall back to when one is called from a migration or a
+  console — where `subscribe/2` has the supervisor's default underneath it.
   """
   @spec storage!(keyword()) :: DMEx.Storage.opts()
-  def storage!(opts) do
-    case storage(opts) do
-      %{repo: nil} ->
-        raise ArgumentError, "a `repo:` is required, e.g. `repo: MyApp.Repo`"
-
-      storage ->
-        # The consumer half's one call site, matching `DMEx.Log.start_link/2` on
-        # the log half — an option an adapter cannot honour fails here rather
-        # than at whichever query first ignores it.
-        :ok = DMEx.Storage.validate!(storage)
-
-        storage
-    end
-  end
+  def storage!(opts), do: resolve_storage!(opts, nil)
 
   @doc "The registry name for a supervisor, where subscriptions register by id."
   @spec registry(atom()) :: atom()
@@ -315,180 +291,57 @@ defmodule DMEx.Supervisor do
   Both failures are pure functions of the declarations, so nothing has to be
   running to answer them — which is why `init/1` asks before starting anything.
   """
-  @spec __startable__!([module()], %{String.t() => String.t() | module()}) :: [module()]
-  def __startable__!(handlers, logs) do
-    reject_duplicate_ids!(handlers)
-    reject_unbound_logs!(handlers, logs)
-
-    handlers
-  end
-
-  # Names both modules, because "duplicate subscription id" without them is a
-  # riddle in an application with thirty handlers.
-  defp reject_duplicate_ids!(handlers) do
-    pairs = for handler <- handlers, id <- Handler.subscription_ids(handler), do: {id, handler}
-
-    _ =
-      Enum.reduce(pairs, %{}, fn {id, handler}, seen ->
-        case seen do
-          %{^id => already} ->
-            raise ArgumentError,
-                  "#{inspect(already)} and #{inspect(handler)} both declare the subscription " <>
-                    "#{inspect(id)}. A subscription id keys the cursor, so two handlers " <>
-                    "sharing one would clobber each other's position — give one of them a " <>
-                    "different `name:`."
-
-          _ ->
-            Map.put(seen, id, handler)
-        end
-      end)
-
-    :ok
-  end
-
-  defp reject_unbound_logs!(handlers, logs) do
-    for handler <- handlers,
-        declaration = Handler.declaration!(handler),
-        log <- declaration.logs do
-      _ = transport!(declaration, log, logs)
-    end
-
-    :ok
-  end
-
-  ## Log resolution
-
-  # The binding is the whole of the choice, which is why there is no transport
-  # option anywhere: there would be nothing left for one to say.
-  defp transport!(declaration, log, logs) do
-    case Map.fetch(logs, log) do
-      {:ok, url} when is_binary(url) -> {DMEx.Transport.SSE, url}
-      {:ok, module} when is_atom(module) -> {DMEx.Transport.Local, module}
-      :error -> raise_unbound(declaration, log, logs)
-    end
-  end
-
-  defp raise_unbound(declaration, log, logs) do
-    raise ArgumentError, """
-    #{inspect(declaration.handler)} reads #{inspect(log)}, which is not in `logs:`.
-
-    Known logs: #{known(logs)}
-
-    Add it where DMEx is started:
-
-        {DMEx.Supervisor,
-         repo: MyApp.Repo,
-         logs: [#{log}: "https://.../stream"]}
-    """
-  end
-
-  defp known(logs) when map_size(logs) == 0, do: "(none)"
-  defp known(logs), do: logs |> Map.keys() |> Enum.sort() |> Enum.join(", ")
-
-  defp resolve_logs!(opts, supervisor) do
-    if Keyword.has_key?(opts, :logs) do
-      logs!(opts)
-    else
-      # Checking the registry is alive first: Registry.meta/2 raises its own
-      # "unknown registry" ArgumentError otherwise.
-      with pid when is_pid(pid) <- Process.whereis(registry(supervisor)),
-           {:ok, logs} <- Registry.meta(registry(supervisor), :logs) do
-        logs
-      else
-        _ -> raise_no_logs(supervisor)
-      end
-    end
-  end
-
-  # Names are validated where they are declared rather than at first connect,
-  # because a typo in a key and a typo in a handler's `logs:` are the same bug
-  # and only one is visible in the "unknown log" message.
-  defp logs!(opts) do
-    case Keyword.get(opts, :logs, []) do
-      entries when is_list(entries) or is_map(entries) ->
-        Map.new(entries, fn
-          {name, target} ->
-            name =
-              DMEx.validate_identifier!(
-                name,
-                "a log name",
-                " It is the same charset a handler's `logs:` and `name:` use, so \"/\" can join " <>
-                  "them with no escaping."
-              )
-
-            {name, log_target!(name, target)}
-
-          other ->
-            raise ArgumentError,
-                  "a `logs:` entry must be `name: url_or_module`, got: #{inspect(other)}"
-        end)
-
-      other ->
-        raise ArgumentError,
-              "`logs:` must be a keyword list of name to URL or log module, got: #{inspect(other)}"
-    end
-  end
-
-  defp log_target!(name, module) when is_atom(module) and not is_nil(module) do
-    # `append/2` rather than `__dmex__/0`: a handler answers that one too.
-    if Code.ensure_loaded?(module) and function_exported?(module, :append, 2) do
-      module
-    else
-      raise ArgumentError,
-            "the log #{inspect(name)} is bound to #{inspect(module)}, which is not a module " <>
-              "built with `use DMEx.Log`. Bind a name to a log module this application owns, " <>
-              "or to the URL of someone else's."
-    end
-  end
-
-  defp log_target!(name, url) when is_binary(url) and url != "" do
-    case URI.parse(url) do
-      # `host` covers `nil` as well as `""`: `URI.parse/1` returns the first for
-      # `"http:stream"` and the second for `"http:///stream"`, and both are the
-      # missing host, not a bad scheme.
-      %URI{scheme: scheme, host: host} when scheme in ["http", "https"] ->
-        if host in [nil, ""], do: raise_log_url(name, url, "it has no host"), else: url
-
-      %URI{scheme: nil} ->
-        raise_log_url(name, url, "it has no scheme")
-
-      %URI{scheme: scheme} ->
-        raise_log_url(name, url, "#{inspect(scheme)} is not http or https")
-    end
-  end
-
-  defp log_target!(name, other), do: raise_log_url(name, other, "it is neither a log module nor a non-empty string")
-
-  defp raise_log_url(name, url, why) do
-    raise ArgumentError,
-          "the URL for #{inspect(name)} is not usable — #{why}: #{inspect(url)}. " <>
-            "It must be an absolute http:// or https:// URL, e.g. " <>
-            "\"https://orders.internal/stream\"."
-  end
+  @spec __startable__!([module()], Bindings.t()) :: [module()]
+  def __startable__!(handlers, logs), do: Bindings.startable!(handlers, logs)
 
   ## Storage resolution
 
+  # One resolution, two ways to reach it with no `repo:`. A `nil` supervisor is
+  # the operator-facing case — a migration or a console, where nothing is
+  # running and the missing option is the whole of the fix. Under a supervisor
+  # the default it seeded into the registry is tried first, and only its absence
+  # too is a mistake, which is a longer message because it has a second fix.
   defp resolve_storage!(opts, supervisor) do
     storage =
-      if Keyword.has_key?(opts, :repo) do
-        storage(opts)
-      else
-        with pid when is_pid(pid) <- Process.whereis(registry(supervisor)),
-             {:ok, %{repo: repo} = storage} when not is_nil(repo) <-
-               Registry.meta(registry(supervisor), :storage) do
+      case storage(opts) do
+        %{repo: nil} when is_nil(supervisor) ->
+          raise ArgumentError, "a `repo:` is required, e.g. `repo: MyApp.Repo`"
+
+        %{repo: nil} ->
+          # Checking the registry is alive first: Registry.meta/2 raises its own
+          # "unknown registry" ArgumentError otherwise.
+          with pid when is_pid(pid) <- Process.whereis(registry(supervisor)),
+               {:ok, %{repo: repo} = default} when not is_nil(repo) <-
+                 Registry.meta(registry(supervisor), :storage) do
+            default
+          else
+            _ -> raise_no_repo(supervisor)
+          end
+
+        storage ->
           storage
-        else
-          _ -> raise_no_repo(supervisor)
-        end
       end
 
-    # Here rather than only in `storage!/1`, so an option an adapter cannot
-    # honour — `prefix:` on SQLite — fails at subscribe rather than silently
-    # reading the unprefixed tables. Safe by this point: both branches above
-    # have established a non-nil repo, which `c:DMEx.Storage.validate!/1` reads.
+    # Here rather than only on the operator-facing door, so an option an adapter
+    # cannot honour — `prefix:` on SQLite — fails at subscribe rather than
+    # silently reading the unprefixed tables. Safe by this point: every branch
+    # above has established a non-nil repo, which `c:DMEx.Storage.validate!/1`
+    # reads.
     :ok = DMEx.Storage.validate!(storage)
 
     storage
+  end
+
+  # The options as one value. `:repo` may be nil here — a supervisor started
+  # with no default is legal, and it is `init/1` that seeds whatever it got as
+  # the registry metadata a later `subscribe/2` falls back to.
+  defp storage(opts) do
+    {adapter, storage} =
+      @storage_defaults
+      |> Map.new(fn {key, default} -> {key, Keyword.get(opts, key, default)} end)
+      |> Map.pop(:storage)
+
+    Map.put(storage, :adapter, adapter)
   end
 
   defp raise_no_repo(supervisor) do
@@ -500,23 +353,6 @@ defmodule DMEx.Supervisor do
         DMEx.Supervisor.subscribe(MyApp.OrderProjection, repo: MyApp.Repo, logs: [...])
 
     or start #{inspect(supervisor)} in your supervision tree with a default:
-
-        {DMEx.Supervisor, repo: MyApp.Repo, logs: [...]}
-    """
-  end
-
-  defp raise_no_logs(supervisor) do
-    raise ArgumentError, """
-    DMEx.Supervisor.subscribe/2 has no `logs:` to resolve this handler's `logs:` against.
-
-    Either pass them on the call:
-
-        DMEx.Supervisor.subscribe(MyApp.OrderProjection,
-          repo: MyApp.Repo,
-          logs: [orders: "https://orders.internal/stream"]
-        )
-
-    or start #{inspect(supervisor)} in your supervision tree with them:
 
         {DMEx.Supervisor, repo: MyApp.Repo, logs: [...]}
     """

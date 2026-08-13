@@ -111,55 +111,25 @@ defmodule DMEx.Storage.Postgres do
   @doc false
   def __read_sql__(predicate, opts), do: read_sql(predicate, opts)
 
-  # Four nested levels, each load-bearing.
+  # The four levels and why each of them is load-bearing: `DMEx.Storage.SQL`,
+  # which renders this statement for both engines because a divergence in this
+  # one is a data bug rather than a failure. What is Postgres's about it, and so
+  # lives here:
   #
-  # **`page`** applies the row limit against the index, so everything above it
-  # works on at most `$2` rows. Not stylistic: within one SELECT, Postgres
-  # computes window functions *before* LIMIT, so a window at the same level as
-  # the LIMIT would run the sum over every matching row in the log. The `::text`
-  # casts happen here, once.
-  #
-  # **`sized`** gives each row its byte count, off the already-cast columns.
-  #
-  # **`measured`** adds the *exclusive* prefix sum over the same ordering —
-  # bytes of the rows strictly before this one; `sum()` over an empty frame is
-  # NULL, hence the coalesce, and that NULL-to-zero is exactly the first row.
-  #
-  # **The outer filter** applies the byte bound — inclusive, plus
-  # `prefix_bytes = 0` so one oversized row cannot wedge the subscription. That
-  # identifies the first row exactly: `type` is `NOT NULL` and at least
-  # one character, so every row contributes at least one byte. See
-  # `c:DMEx.Storage.read/5`.
-  #
-  # The ORDER BY is repeated at the top because a filter over a subquery does
-  # not contractually preserve its ordering, and ordering here is a delivery
-  # guarantee.
+  #   * `data` and `metadata` are `jsonb` and `c:DMEx.Storage.read/5` hands back
+  #     text, so `page` casts them — once, off the row limit, and the levels
+  #     above measure and return the cast text.
+  #   * `octet_length/1` is the byte length of that text.
+  #   * `$1` and `$2` are the same two parameters `page` is given whatever the
+  #     type predicate is; a selection binds `$4` and never renumbers these.
   defp read_sql(predicate, opts) do
-    """
-    SELECT id, type, data, metadata, inserted_at
-      FROM (
-        SELECT id, type, data, metadata, inserted_at, bytes,
-               coalesce(
-                 sum(bytes) OVER (ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING),
-                 0
-               ) AS prefix_bytes
-          FROM (
-            SELECT id, type, data, metadata, inserted_at,
-                   octet_length(data) + octet_length(metadata) + octet_length(type)
-                     AS bytes
-              FROM (
-                SELECT id, type, data::text AS data, metadata::text AS metadata,
-                       inserted_at
-                  FROM #{table(@messages, opts)}
-                 WHERE id > $1 #{predicate}
-                 ORDER BY id
-                 LIMIT $2
-              ) page
-          ) sized
-      ) measured
-     WHERE prefix_bytes + bytes <= $3 OR prefix_bytes = 0
-     ORDER BY id
-    """
+    DMEx.Storage.SQL.read_sql(%{
+      table: table(@messages, opts),
+      param: "$",
+      cast: &"#{&1}::text AS #{&1}",
+      bytes: &"octet_length(#{&1})",
+      predicate: predicate
+    })
   end
 
   defp query(sql, params, opts) do
@@ -282,6 +252,9 @@ defmodule DMEx.Storage.Postgres do
 
   @impl DMEx.Storage
   def default_notifier, do: DMEx.Notifier.Postgres
+
+  @impl DMEx.Storage
+  def migration, do: DMEx.Storage.Postgres.Migration
 
   ## Append steps
 

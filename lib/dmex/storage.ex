@@ -319,6 +319,20 @@ defmodule DMEx.Storage do
   @callback default_notifier() :: module()
 
   @doc """
+  The module holding this adapter's DDL, for `DMEx.Storage.Migration`.
+
+  The three tables are the behaviour's — `DMEx.Storage.__table__/1` names them
+  and an engine does not get to disagree — but the DDL that creates them is the
+  engine's own, down to which spellings are re-runnable. So the engine names the
+  module, for the reason `c:default_notifier/0` gives: otherwise the choice is a
+  `case` somewhere central that a third-party adapter could never appear in.
+
+  Optional. `DMEx.Storage.Migration` raises for an adapter without one, since
+  there is nothing else it could run.
+  """
+  @callback migration() :: module()
+
+  @doc """
   Refuses options this adapter cannot honour, before anything runs.
 
   Called once per log when its supervision tree starts, and once per
@@ -331,16 +345,18 @@ defmodule DMEx.Storage do
   """
   @callback validate!(opts()) :: :ok
 
-  @optional_callbacks default_notifier: 0, validate!: 1
+  @optional_callbacks default_notifier: 0, migration: 0, validate!: 1
 
   ## Calling an adapter
 
   # The whole caller-facing surface, one function per callback. Each takes the
   # `t:opts/0` map first and hands it back to its own `:adapter` last, so a
   # caller holds one value where it used to hold a pair, and no call site can
-  # pair one adapter's options with another adapter. `c:default_notifier/0` is
-  # the one callback with no function here: `DMEx.Log` asks for it from the
-  # module while building the map, before there is one.
+  # pair one adapter's options with another adapter. `c:default_notifier/0` and
+  # `c:migration/0` are the two callbacks with no function here, both because
+  # their callers hold no `t:opts/0`: `DMEx.Log` asks the module for a notifier
+  # while it is still building the map, and a migration runs in the host's
+  # `Ecto.Migration` with only the repo to hand.
 
   @doc "Appends one message. See `c:append/4`."
   @spec append(opts(), String.t(), binary(), binary()) :: {:ok, pos_integer()} | {:error, term()}
@@ -399,17 +415,48 @@ defmodule DMEx.Storage do
   def delete_cursor(%{adapter: adapter} = storage, subscription), do: adapter.delete_cursor(subscription, storage)
 
   @doc """
+  Calls an optional callback on `adapter`, or answers `:none`.
+
+  The three optional callbacks are asked in three places — a log building its
+  config asks for `c:default_notifier/0`, a migration asks for `c:migration/0`,
+  a starting tree asks for `c:validate!/1` — and every one of them needs the
+  same two-step probe rather than a bare `function_exported?/3`.
+
+  `function_exported?/3` alone answers `false` for a module that is merely not
+  *loaded*, which every one of these callers can hit: a storage handle is built
+  at compile time out of an atom, so in interactive mode nothing has referenced
+  the adapter before the first of these asks. Unguarded, an implemented
+  callback reads as absent — silently, since absent is the legal answer.
+  `Code.ensure_compiled/1` rather than `ensure_loaded?/1` because a host may ask
+  from inside the compilation still building the adapter, and only this form
+  waits for it.
+
+  Takes the module rather than `t:opts/0` because two of the three callers hold
+  no handle: `DMEx.Log` asks while it is still building the map, and a migration
+  runs in the host's `Ecto.Migration` with only the repo to hand. What each
+  caller does with `:none` differs — one skips, two raise — so that stays theirs.
+  """
+  @spec optional(module(), atom(), [term()]) :: {:ok, term()} | :none
+  def optional(adapter, callback, args) when is_atom(callback) and is_list(args) do
+    if is_atom(adapter) and match?({:module, _}, Code.ensure_compiled(adapter)) and
+         function_exported?(adapter, callback, length(args)) do
+      {:ok, apply(adapter, callback, args)}
+    else
+      :none
+    end
+  end
+
+  @doc """
   Runs the adapter's `c:validate!/1` if it has one, and returns `:ok`.
 
-  Here rather than on either caller because `c:validate!/1` is optional, so
-  every call site would otherwise carry the same `function_exported?/3` — and
-  both halves of DMEx have one: a log when its tree starts, a subscription when
-  its storage is resolved. Neither of them is a log's business, which is why
-  this is not on `DMEx.Log`.
+  Here rather than on either caller because both halves of DMEx have one — a log
+  when its tree starts, a subscription when its storage is resolved — and
+  neither of them is a log's business, which is why this is not on `DMEx.Log`.
   """
   @spec validate!(opts()) :: :ok
   def validate!(%{adapter: adapter} = storage) do
-    if function_exported?(adapter, :validate!, 1), do: adapter.validate!(storage)
+    _ = optional(adapter, :validate!, [storage])
+
     :ok
   end
 

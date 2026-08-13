@@ -405,8 +405,6 @@ defmodule DMEx.Log do
   # the log to a database silently.
   defp default_repo!(_module, [repo]), do: repo
 
-  ## Compile-time validation
-
   defp default_repo!(module, repos) do
     raise ArgumentError,
           "`use DMEx.Log` in #{inspect(module)} requires :repo: the application's " <>
@@ -419,17 +417,16 @@ defmodule DMEx.Log do
   # behind a transaction-pooling pooler cannot LISTEN. An adapter that declines to
   # choose forces the log to.
   defp notifier!(module, storage, opts) do
+    ## Compile-time validation
     with nil <- Keyword.get(opts, :notifier) do
-      # `ensure_compiled/1` rather than `ensure_loaded?/1`: this runs while the
-      # host's log module is compiling, and the adapter may be in the same
-      # compilation — only this form waits for it.
-      if match?({:module, _}, Code.ensure_compiled(storage)) and
-           function_exported?(storage, :default_notifier, 0) do
-        storage.default_notifier()
-      else
-        raise ArgumentError,
-              "#{inspect(storage)} names no default notifier, so #{inspect(module)} must " <>
-                "pass one, e.g. `use DMEx.Log, notifier: DMEx.Notifier.Beam`"
+      case Storage.optional(storage, :default_notifier, []) do
+        {:ok, notifier} ->
+          notifier
+
+        :none ->
+          raise ArgumentError,
+                "#{inspect(storage)} names no default notifier, so #{inspect(module)} must " <>
+                  "pass one, e.g. `use DMEx.Log, notifier: DMEx.Notifier.Beam`"
       end
     end
   end

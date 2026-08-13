@@ -19,9 +19,10 @@ defmodule DMEx.Storage.Migration do
       DMEx.Storage.Migration.up(tables: [:cursors, :dead_messages])   # a consumer
       DMEx.Storage.Migration.up()                                     # all three, the default
 
-  The DDL itself comes from the repo's adapter — `DMEx.Storage.Postgres.Migration`
-  or `DMEx.Storage.SQLite.Migration` — so those two lines are the same whatever
-  the database is, and a host switching engines rewrites nothing.
+  The DDL itself is the storage adapter's, named by its `c:DMEx.Storage.migration/0`
+  — `DMEx.Storage.Postgres.Migration` or `DMEx.Storage.SQLite.Migration` — so those
+  two lines are the same whatever the database is, and a host switching engines
+  rewrites nothing.
 
   ## Options
 
@@ -30,6 +31,9 @@ defmodule DMEx.Storage.Migration do
       alone; a pure consumer needs the other two.
     * `:prefix` — a Postgres schema to create the tables in, created if absent.
       SQLite has no schemas and raises on it.
+    * `:storage` — the `DMEx.Storage` adapter whose DDL to run. Defaults to the
+      shipped adapter for the repo's engine, so only an adapter DMEx does not
+      ship has to name itself here.
 
   ## The two indexes
 
@@ -65,8 +69,8 @@ defmodule DMEx.Storage.Migration do
   @doc "Creates the DMEx tables. See the module documentation for options."
   @spec up(keyword()) :: :ok
   def up(opts \\ []) when is_list(opts) do
-    %{tables: tables, prefix: prefix} = validate!(opts)
-    migration!().up(tables, prefix)
+    %{tables: tables, prefix: prefix, storage: storage} = validate!(opts)
+    migration!(storage).up(tables, prefix)
   end
 
   @doc """
@@ -81,25 +85,49 @@ defmodule DMEx.Storage.Migration do
   """
   @spec down(keyword()) :: :ok
   def down(opts \\ []) when is_list(opts) do
-    %{tables: tables, prefix: prefix} = validate!(opts)
-    migration!().down(tables, prefix)
+    %{tables: tables, prefix: prefix, storage: storage} = validate!(opts)
+    migration!(storage).down(tables, prefix)
   end
+
+  # The DDL comes from the adapter rather than from a `case` here, so a
+  # third-party engine is migrated by naming itself — see
+  # `c:DMEx.Storage.migration/0`.
+  defp migration!(storage) do
+    case DMEx.Storage.optional(storage, :migration, []) do
+      {:ok, migration} ->
+        migration
+
+      :none ->
+        raise ArgumentError,
+              "#{inspect(storage)} names no migration, so DMEx cannot create its " <>
+                "tables on that engine. A `DMEx.Storage` adapter points at its own " <>
+                "DDL module from `c:DMEx.Storage.migration/0`."
+    end
+  end
+
+  # A migration holds the Ecto repo and nothing else: `use DMEx.Log, storage:` is
+  # out of reach from here, and DMEx reads no global application config. So the
+  # two shipped adapters have to be named somewhere, and this is the least-bad
+  # somewhere. It is a *default*, not the selection axis — that is
+  # `c:DMEx.Storage.migration/0`, and `storage:` is how anything else gets in.
+  @shipped %{
+    Ecto.Adapters.Postgres => DMEx.Storage.Postgres,
+    Ecto.Adapters.SQLite3 => DMEx.Storage.SQLite
+  }
 
   # `repo/0` reads the migrator's process dictionary, and that is this process:
   # the host's `up/0` calls straight through to here.
-  defp migration! do
-    case repo().__adapter__() do
-      Ecto.Adapters.Postgres ->
-        DMEx.Storage.Postgres.Migration
+  defp default_storage! do
+    adapter = repo().__adapter__()
 
-      Ecto.Adapters.SQLite3 ->
-        DMEx.Storage.SQLite.Migration
+    Map.get_lazy(@shipped, adapter, fn ->
+      raise ArgumentError, """
+      DMEx ships no storage adapter for #{inspect(adapter)}, so a migration on it \
+      has to name the one to use:
 
-      other ->
-        raise ArgumentError,
-              "DMEx ships no migration for #{inspect(other)}. " <>
-                "Supported: Ecto.Adapters.Postgres, Ecto.Adapters.SQLite3."
-    end
+          DMEx.Storage.Migration.up(storage: MyApp.Storage)
+      """
+    end)
   end
 
   defp validate!(opts) do
@@ -111,6 +139,10 @@ defmodule DMEx.Storage.Migration do
               "got: #{inspect(tables)}"
     end
 
-    %{tables: tables, prefix: Keyword.get(opts, :prefix)}
+    %{
+      tables: tables,
+      prefix: Keyword.get(opts, :prefix),
+      storage: Keyword.get_lazy(opts, :storage, &default_storage!/0)
+    }
   end
 end
