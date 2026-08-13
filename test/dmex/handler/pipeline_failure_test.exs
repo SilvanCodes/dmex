@@ -315,27 +315,26 @@ defmodule DMEx.Handler.PipelineFailureTest do
       assert metadata.reason == "handler exploded"
     end
 
-    # The atomicity is the point: there is no state where a message was skipped
-    # without being recorded, or recorded without being skipped.
-    test "the dead row and the cursor advance commit together", ctx do
+    # A cursor moves both ways — `DMEx.Handler.Cursors.reset!/2` — so the same
+    # message can reach the same subscription twice, and the second failure has
+    # to be recordable. It used to conflict on `(subscription, id)`, which
+    # aborted the transaction the advance shared and crash-looped the
+    # subscription on a row it had already given up on.
+    #
+    # The atomicity that conflict incidentally proved is now pinned by "on the
+    # terminal action is the same answer, not a different one", which fails the
+    # commit itself rather than leaning on a constraint.
+    test "records a message it is handed a second time", ctx do
       state = state(ctx, handler: Handlers.Raising, on_failure: :dead_message)
 
-      # First pass: message 2 dies, is recorded, and the cursor moves to 2.
       assert {:ok, %{cursor: 2}} = Pipeline.run(row(2), state)
       assert dead_count() == 1
 
-      # Now rewind the cursor to 1 and feed message 2 again. Its dead-message
-      # insert will conflict on (subscription, id), which aborts the transaction
-      # the cursor advance is sharing.
       :ok = Postgres.advance_cursor("test/raising", 1, ctx.storage)
 
-      assert catch_error(Pipeline.run(row(2), %{state | cursor: 1}))
+      assert {:ok, %{cursor: 2}} = Pipeline.run(row(2), %{state | cursor: 1})
 
-      # The advance went down with the failed insert rather than committing on
-      # its own — which is the whole reason they share a transaction. Without
-      # that, the cursor would now read 2 and the message would be both skipped
-      # and unrecorded.
-      assert {:ok, 1} = Postgres.last_seen("test/raising", ctx.storage)
+      assert {:ok, 2} = Postgres.last_seen("test/raising", ctx.storage)
       assert dead_count() == 1
     end
 

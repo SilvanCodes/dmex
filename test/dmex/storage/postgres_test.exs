@@ -67,17 +67,6 @@ defmodule DMEx.Storage.PostgresTest do
     end
   end
 
-  describe "dead_message/2" do
-    # The error term is the driver's, not DMEx's — the behaviour promises
-    # `{:error, term()}` and nothing about its shape.
-    test "one subscription cannot record the same message twice", %{opts: opts} do
-      assert :ok = Postgres.record_dead_message(dead_row(), opts)
-
-      assert {:error, %Postgrex.Error{postgres: %{code: :unique_violation}}} =
-               Postgres.record_dead_message(dead_row(), opts)
-    end
-  end
-
   # At boot rather than at the first query, so an option that will never be
   # honoured fails where it was written — `c:DMEx.Storage.validate!/1`. Both of
   # these used to surface downstream: a missing `:lock` as a `KeyError` from
