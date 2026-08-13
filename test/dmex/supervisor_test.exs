@@ -62,6 +62,13 @@ defmodule DMEx.SupervisorTest do
       assert Process.whereis(DMEx.Supervisor.subscriptions(TestSupervisor))
     end
 
+    # The entry point had no typo protection: `rep:` booted clean and failed at the
+    # first subscribe with a message about cursors, naming neither the option nor
+    # the mistake.
+    test "refuses an option it does not know, naming it" do
+      assert start_error(rep: Repo) =~ "unknown option [:rep]"
+    end
+
     # Every test but the discovery ones passes `otp_app: nil`, since this suite
     # *is* the `:dmex` application and would otherwise start its own fixtures.
     test "discovers nothing when no scanned application has handlers" do

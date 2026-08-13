@@ -78,8 +78,10 @@ defmodule DMEx.Supervisor do
   # the only constructor, so the defaults live there and this is just what
   # `subscribe/2` accepts.
   @storage_opts [:storage, :repo, :prefix]
-  # `:handler` is deliberately absent: it is the positional argument, so a stray
+  # This child spec's own vocabulary, and `subscribe/2`'s. `:handler` is
+  # deliberately absent from the second: it is the positional argument, so a stray
   # `handler:` in the options is a mistake worth raising on.
+  @supervisor_opts [:name, :otp_app, :logs]
   @subscription_opts [:supervisor, :logs]
 
   @doc false
@@ -102,6 +104,18 @@ defmodule DMEx.Supervisor do
 
   @impl Supervisor
   def init({name, opts}) do
+    # The entry point had no typo protection at all: `rep: MyApp.Repo` booted clean
+    # and failed at the first subscribe with "nowhere to write this subscription's
+    # cursor", naming neither the option nor the mistake. Same mechanism every
+    # other vocabulary in DMEx uses.
+    DMEx.validate_keys!(
+      opts,
+      @supervisor_opts ++ @storage_opts,
+      "`DMEx.Supervisor`",
+      " A subscription's own settings belong on the handler module or on " <>
+        "`subscribe/2`, not here."
+    )
+
     logs = Bindings.logs!(opts)
     otp_app = otp_app(opts)
 

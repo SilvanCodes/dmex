@@ -109,15 +109,18 @@ defmodule DMEx.Log.Plug do
 
   @impl Plug
   def init(opts) do
-    log =
-      Keyword.get(opts, :log_module) ||
-        raise ArgumentError,
-              "DMEx.Log.Plug requires a `:log_module`, e.g. " <>
-                "`forward \"/stream\", to: DMEx.Log.Plug, log_module: MyApp.Log`"
+    DMEx.validate_keys!(
+      opts,
+      [:log_module],
+      "`DMEx.Log.Plug`",
+      " A mount is `forward \"/stream\", to: DMEx.Log.Plug, log_module: MyApp.Log`. " <>
+        "Pacing and stall settings belong on the log module — one log, one set.",
+      [:log_module]
+    )
 
     # Deliberately no database or registry access: under Phoenix's default
     # `init_mode` this runs at compile time.
-    %{log: log}
+    %{log: Keyword.fetch!(opts, :log_module)}
   end
 
   # Anything but GET is a `405` with the `allow` header RFC 9110 requires.

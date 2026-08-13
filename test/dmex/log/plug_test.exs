@@ -22,8 +22,17 @@ defmodule DMEx.Log.PlugTest do
 
   describe "init/1" do
     test "requires a log, and says how to give it one" do
-      assert_raise ArgumentError, ~r/requires a `:log_module`.*log_module: MyApp.Log/s, fn ->
+      assert_raise ArgumentError, ~r/requires :log_module.*log_module: MyApp.Log/s, fn ->
         LogPlug.init([])
+      end
+    end
+
+    # A mount used to accept anything: `log_modul:` raised the "requires" message,
+    # but `stall_timeout: 5_000` was silently ignored — and a reader would have no
+    # way to learn it belongs on the log module.
+    test "refuses an option it does not know, naming it" do
+      assert_raise ArgumentError, ~r/unknown option \[:stall_timeout\]/s, fn ->
+        LogPlug.init(log_module: StubLog, stall_timeout: 5_000)
       end
     end
 
