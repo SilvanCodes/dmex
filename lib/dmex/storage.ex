@@ -21,7 +21,11 @@ defmodule DMEx.Storage do
 
   ## Three contracts that are correctness, not style
 
-  Each is easy to implement *almost* right, and each has a test pinning it.
+  Each is easy to implement *almost* right. The first cannot be pinned by the
+  conformance suite — the Ecto sandbox is one connection, so nothing inside it can
+  append concurrently — and lives in `test/integration/append_ordering_test.exs`,
+  which runs 8 writers against a real database. The other two are conformance
+  tests.
 
   **`c:append/4` must make id assignment order equal commit order.** If T1 takes
   `id=100` and T2 takes `id=101` but T2 commits first, a reader scanning
@@ -67,11 +71,11 @@ defmodule DMEx.Storage do
   ## The contract is executable
 
   `test/dmex/storage/conformance_test.exs` runs one suite against every shipped
-  adapter and asserts nothing about how an engine keeps its promises. It is the
-  single statement of everything above: an adapter is finished when that file
-  passes, and a change to this behaviour is one edit there rather than one per
-  engine. Engine-specific behaviour — query plans, driver error shapes, the two
-  places the storage formats genuinely differ — lives in `postgres_test.exs` and
+  adapter and asserts nothing about how an engine keeps its promises: an adapter
+  is finished when that file and the append-ordering integration test pass, and a
+  change to this behaviour is one edit there rather than one per engine.
+  Engine-specific behaviour — query plans, driver error shapes, the two places the
+  storage formats genuinely differ — lives in `postgres_test.exs` and
   `sqlite_test.exs` beside it.
   """
 
