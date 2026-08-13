@@ -10,11 +10,26 @@ defmodule DMEx.SupervisorRestartTest do
 
   alias DMEx.Handler
   alias DMEx.Test.Handlers
+  alias DMEx.Test.Server
 
   @moduletag :capture_log
 
   @url "http://127.0.0.1:1/stream"
   @other "http://127.0.0.1:2/stream"
+
+  # Answers every request `400` and tells the test it was asked, so a restart
+  # loop is observable as a second request rather than as elapsed time.
+  defmodule Refuse do
+    @moduledoc false
+
+    def init(owner), do: owner
+
+    def call(conn, owner) do
+      send(owner, :requested)
+
+      Plug.Conn.send_resp(conn, 400, "this client got the request wrong")
+    end
+  end
 
   describe "rest_for_one restarts" do
     test "brings every discovered subscription back after an owned log crashes" do
@@ -46,6 +61,26 @@ defmodule DMEx.SupervisorRestartTest do
       assert counts.active == counts.specs
 
       for id <- ids, do: eventually(fn -> subscribed?(id) end)
+    end
+  end
+
+  describe "a fatal transport failure" do
+    # `DMEx.Transport.fatal/1` exists to stop rather than retry. A `:permanent`
+    # child is restarted whatever it exits with, and a restarted subscription
+    # connects immediately at `attempt: 0` — so the failure the backoff exists
+    # to prevent was exactly what a 400 produced.
+    test "stops the subscription instead of restarting it into a request loop" do
+      url = Server.start!(plug: {Refuse, self()}) <> "/stream"
+      start_supervisor(otp_app: nil, logs: [test: url])
+
+      {:ok, [pid]} = DMEx.Supervisor.subscribe(Handlers.Echo, supervisor: TestSupervisor)
+      ref = Process.monitor(pid)
+
+      assert_receive :requested, 2_000
+      assert_receive {:DOWN, ^ref, :process, ^pid, {:shutdown, {:bad_request, 400, _}}}, 2_000
+
+      refute_receive :requested, 300
+      refute subscribed?("test/echo")
     end
   end
 

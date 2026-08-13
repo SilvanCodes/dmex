@@ -15,7 +15,12 @@ defmodule DMEx.Handler.Subscription do
   over: those arrived as a call that returned before anything could end.
 
   Only `DMEx.Transport.fatal/1` is answered differently, by stopping instead of
-  retrying.
+  retrying — which is why the child is `:transient` and the stop reason is a
+  `{:shutdown, reason}`. A `:permanent` child is restarted whatever it exits
+  with, and `init/1` reconnects immediately at `attempt: 0`, so "stop" would
+  have meant an unbacked-off request loop against the endpoint that just
+  refused it. An ordinary crash still restarts, which is what `on_failure:
+  :crash` rests on.
 
   ## Resumption is entirely cursor-driven
 
@@ -77,7 +82,10 @@ defmodule DMEx.Handler.Subscription do
     %{
       id: {__MODULE__, Keyword.fetch!(opts, :subscription)},
       start: {__MODULE__, :start_link, [opts]},
-      restart: :permanent
+      # `:transient`, so a deliberate `{:shutdown, _}` stop stays stopped and
+      # everything else — a crash, a poison message under `on_failure: :crash` —
+      # is restarted as before.
+      restart: :transient
     }
   end
 
@@ -132,9 +140,12 @@ defmodule DMEx.Handler.Subscription do
   end
 
   # A reader ends the connection by ending, whatever went wrong inside it.
+  #
+  # `{:shutdown, reason}` rather than `reason`: it carries what happened and it
+  # is what a `:transient` child has to exit with to stay stopped.
   @impl GenServer
   def handle_info({:EXIT, reader, {:fatal, reason}}, %{reader: reader} = state) do
-    {:stop, reason, %{state | reader: nil}}
+    {:stop, {:shutdown, reason}, %{state | reader: nil}}
   end
 
   @impl GenServer
