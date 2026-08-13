@@ -91,6 +91,14 @@ defmodule DMEx.Storage.Postgres.Migration do
     # fetches a whole `LIMIT` per type and discards the surplus.
     create_if_not_exists(index(@messages, [:type, :id], prefix: prefix))
 
+    # A **backstop, deliberately looser than the real rule.** `DMEx.Message`
+    # enforces `[A-Za-z0-9_]+` segments joined by single dots, so `".foo"` and
+    # `"foo."` are compile errors there and legal here. The column's job is to
+    # keep a row that never came through `use DMEx.Message` from putting a
+    # character on an SSE `event:` line that the wire cannot escape; deciding what
+    # a *well-formed* type looks like is the message module's, and duplicating
+    # that decision in SQL would be a second rule to keep in step.
+    #
     # Written out rather than through `constraint/3`, because Ecto has no
     # `create_if_not_exists` for constraints and Postgres has no
     # `ADD CONSTRAINT IF NOT EXISTS` — and every other statement here is

@@ -106,6 +106,9 @@ defmodule DMEx.Storage.SQLite.Migration do
             "its own — which is what a schema would have bought."
   end
 
+  # The `type` CHECK is a backstop and deliberately looser than the real rule —
+  # `DMEx.Storage.Postgres.Migration` says why, and this is the same rule as a
+  # negated GLOB, SQLite having no regex.
   defp up_messages do
     execute("""
     CREATE TABLE IF NOT EXISTS #{@messages} (

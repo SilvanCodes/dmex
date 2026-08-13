@@ -44,12 +44,15 @@ defmodule DMEx.Message do
   consumer stops resolving them and skips them silently, exactly the way
   renaming the module used to. `retired:` is how a type is changed instead.
 
-  Restricted to `[A-Za-z0-9_]+` segments joined by dots, because the type goes
-  onto an SSE `event:` line and SSE field lines have no escaping. Dots are
-  available for namespacing —
-  `"acme.orders.placed"` — which is worth using: two producers declaring a bare
-  `"order_placed"` collide on a consumer that reads both, and nothing outside a
-  single node can detect that.
+  Restricted to `[A-Za-z0-9_]+` segments joined by single dots — so `"."`,
+  `".foo"` and `"foo."` are compile errors rather than merely never written —
+  because the type goes onto an SSE `event:` line and SSE field lines have no
+  escaping. **This is the rule.** The `type` column's CHECK constraint is a looser
+  backstop for rows that never came through here; it is not a second definition.
+
+  Dots are available for namespacing — `"acme.orders.placed"` — which is worth
+  using: two producers declaring a bare `"order_placed"` collide on a consumer
+  that reads both, and nothing outside a single node can detect that.
 
   ## `retired:` — the types this module used to append under
 

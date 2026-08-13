@@ -33,43 +33,25 @@ type over an append-only Postgres log.
 ## The log
 
 One append-only log per application: a totally-ordered stream of every message
-it appended, in one table. `DMEx.Storage.Migration` ships the DDL.
+it appended, in one table. `DMEx.Storage.Migration` ships the DDL, and
+`DMEx.Storage.Postgres.Migration` is the authoritative column-by-column account —
+every type, default and constraint, with the reasoning beside it.
+`DMEx.Storage.SQLite.Migration` is the same schema on the other engine.
 
-The block below is **illustrative and restates rather than defines**:
-`DMEx.Storage.Postgres.Migration` is authoritative, `DMEx.Storage.SQLite.Migration`
-is the same schema on the other engine, and neither `dmex_cursors` nor
-`dmex_dead_messages` is shown here. It is already not literal — the migration adds
-the `type` CHECK as a named constraint through a `DO` block rather than
-inline, so that it stays re-runnable.
+What belongs here is what the columns *mean*:
 
-```sql
-CREATE TABLE dmex_messages (
-  id            bigserial   PRIMARY KEY,
-  type  text        NOT NULL CHECK (type ~ '^[A-Za-z0-9_.]+$'),
-  data          jsonb       NOT NULL,
-  metadata      jsonb       NOT NULL DEFAULT '{}',
-  inserted_at   timestamptz NOT NULL DEFAULT clock_timestamp()
-);
-
-CREATE INDEX ON dmex_messages (type, id);
-```
-
-- `id` is the offset and the only ordering and resumption mechanism. `bigint`
-  because a log nothing deletes from outgrows 2³¹.
-- `type` is the string the appending module declared as its `type:`,
+- **`id` is the offset**, and the only ordering and resumption mechanism there
+  is.
+- **`type` is the string the appending module declared as its `type:`**,
   independent of what that module is called, so a producer can reorganise its
-  message modules without any of it reaching this column.
-- `metadata` is entirely publisher-owned; DMEx writes nothing into this column,
-  nothing into what goes on the wire, and nothing into the map a handler
+  message modules without any of it reaching this column. `DMEx.Message` owns the
+  charset and why it is narrow — the short version is that the string goes onto
+  an SSE `event:` line, which has no escaping.
+- **`metadata` is entirely publisher-owned.** DMEx writes nothing into this
+  column, nothing into what goes on the wire, and nothing into the map a handler
   receives.
-- `inserted_at` is never an ordering key — `id` is, and nothing in DMEx reads
-  this column. It is observability, never delivered. `clock_timestamp()` rather than
-  `now()` so it still ascends with `id`: `now()` is the transaction's start
-  time, taken before the advisory lock was acquired, so it says nothing about
-  the order ids were assigned in.
-- `type` is constrained to `[A-Za-z0-9_.]+` because it goes on an SSE
-  `event:` line, and SSE field lines have no escaping. Dots survive so a
-  declared type can namespace itself.
+- **`inserted_at` is never an ordering key** — `id` is, and nothing in DMEx reads
+  this column. It is observability, never delivered.
 
 **Two indexes, one per read shape.** The primary key serves a whole-log
 `id > cursor` range scan; `(type, id)` serves a selective one, and the
