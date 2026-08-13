@@ -54,12 +54,6 @@ defmodule DMEx.Storage.SQLite do
   @cursors DMEx.Storage.__table__(:cursors)
   @dead_messages DMEx.Storage.__table__(:dead_messages)
 
-  # SQLite's own limit is 32766 bound parameters (999 before 3.32). This is the
-  # conservative one, and the point is a named error rather than an opaque one
-  # from the driver: a selection is expanded from a handler's declared message
-  # set, so hundreds of types means something went wrong upstream.
-  @max_types 900
-
   # `strftime('%f')` renders `SS.SSS`, so every stored value is fixed-width and
   # comparable as bytes, which is what makes `updated_at` orderable at all —
   # SQLite has no timestamp type. Stated once: `DMEx.Storage.SQLite.Migration` renders
@@ -156,12 +150,17 @@ defmodule DMEx.Storage.SQLite do
   def read(cursor, max_rows, max_bytes, types, opts)
       when is_integer(cursor) and cursor >= 0 and is_integer(max_rows) and max_rows > 0 and is_integer(max_bytes) and
              max_bytes > 0 and is_list(types) do
-    validate_types!(types)
-
     # SQLite has no array type, so a selection is N placeholders rather than one
     # `= ANY($4)`. Still a *separate statement* and never a nullable predicate —
     # see `c:DMEx.Storage.read/5`; the reason is the index, not the syntax. The
     # varying arity costs nothing: exqlite prepares every statement anyway.
+    #
+    # Nothing here bounds the count. A selection is expanded from the compiled
+    # `use DMEx.Message` modules of one application, so the reachable ceiling is
+    # how many of those exist, and exqlite names its own parameter limit if one
+    # ever gets near it — where a raise from inside `c:DMEx.Storage.read/5`
+    # would kill the stream process, which handles `{:error, _}` and nothing
+    # else.
     placeholders = Enum.map_join(4..(3 + length(types))//1, ",", &"?#{&1}")
 
     query(read_sql("AND type IN (#{placeholders})"), [cursor, max_rows, max_bytes | types], opts)
@@ -170,14 +169,6 @@ defmodule DMEx.Storage.SQLite do
   # Public so `DMEx.Storage.SQLiteTest` can EXPLAIN the real statement.
   @doc false
   def __read_sql__(predicate), do: read_sql(predicate)
-
-  defp validate_types!(types) do
-    if length(types) > @max_types do
-      raise ArgumentError,
-            "a selective read of #{length(types)} message types exceeds SQLite's " <>
-              "bound-parameter limit; #{inspect(__MODULE__)} allows #{@max_types}"
-    end
-  end
 
   # The four levels and why each of them is load-bearing: `DMEx.Storage.SQL`,
   # which renders this statement for both engines because a divergence in this

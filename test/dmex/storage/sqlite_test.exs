@@ -66,12 +66,15 @@ defmodule DMEx.Storage.SQLiteTest do
   end
 
   describe "read/5" do
-    test "refuses a selection larger than SQLite can bind", %{opts: opts} do
+    # A selection is expanded from one application's compiled message modules, so
+    # this is far past anything reachable — and it is still an ordinary read.
+    # Refusing it here used to *raise* from inside a callback the stream handles
+    # `{:error, _}` from, so the same input that returned rows on Postgres killed
+    # the connection on SQLite.
+    test "binds a selection far larger than anything a handler can declare", %{opts: opts} do
       types = for n <- 1..1_000, do: "T#{n}"
 
-      assert_raise ArgumentError, ~r/bound-parameter limit/, fn ->
-        SQLite.read(0, 10, @megabyte, types, opts)
-      end
+      assert {:ok, []} = SQLite.read(0, 10, @megabyte, types, opts)
     end
   end
 
