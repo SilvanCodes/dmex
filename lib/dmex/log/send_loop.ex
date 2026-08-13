@@ -21,13 +21,18 @@ defmodule DMEx.Log.SendLoop do
   "producer memory is one batch" and "reads are gated on sends". The cursor is
   the only source of truth.
 
-  ## Every blocking step is taken under a deadline
+  ## Every step that can wedge is taken under a deadline
 
-  The read, either write, the idle wait and the throttle each arm a deadline in
-  this connection's `DMEx.Log.Status` first; `DMEx.Log.Watcher` enforces it from
-  outside. Each budget is `stall_timeout` plus however long that step is
-  *expected* to take, so a wait doing its job is never mistaken for one that is
-  stuck.
+  Three of them: the read, and either write. Each arms `stall_timeout` in this
+  connection's `DMEx.Log.Status` first, and `DMEx.Log.Watcher` enforces it from
+  outside.
+
+  The idle wait and the throttle **disarm** instead. Both are self-terminating —
+  a `receive` with an `after`, and a `Process.sleep/1` — so neither can wedge, and
+  a deadline over one is a budget for a wait that already has its own. They used to
+  arm `stall_timeout` plus the interval they were waiting out, which was a second
+  arithmetic on top of `DMEx.Config.effective_heartbeat/1` and did not agree with
+  it.
 
   ## Pacing
 
@@ -62,7 +67,7 @@ defmodule DMEx.Log.SendLoop do
           required(:config) => DMEx.Config.log(),
           required(:batch_interval) => non_neg_integer(),
           required(:last_sent_at) => integer() | nil,
-          required(:status) => Status.t() | nil,
+          required(:status) => Status.t(),
           required(:types) => :all | [String.t()]
         }
 
@@ -107,10 +112,10 @@ defmodule DMEx.Log.SendLoop do
   end
 
   # True when the wait expired with no append — the stream is idle and owes the
-  # consumer a liveness signal. The one step whose whole purpose is to block, so
-  # its budget carries the interval it is waiting out.
+  # consumer a liveness signal. Self-terminating, so it runs with no deadline at
+  # all: `after` is its own budget.
   defp await_wakeup(state) do
-    arm(state, state.config.heartbeat_interval)
+    Status.disarm(state.status)
 
     receive do
       :wakeup -> false
@@ -135,8 +140,9 @@ defmodule DMEx.Log.SendLoop do
 
     * `:transport` — required; the `DMEx.Transport` this loop writes through.
     * `:cursor` — where to resume from. Defaults to `0`, the whole log.
-    * `:status` — this connection's `DMEx.Log.Status`, or `nil` for a loop no
-      watcher is holding a deadline against.
+    * `:status` — required; this connection's `DMEx.Log.Status`, from
+      `DMEx.Log.Streams.register/3`. Registration is what produces it, and both
+      connect paths register before they get here.
     * `:selection` — the message types to read, as `t:DMEx.Log.Selection.t/0`.
   """
   @spec connect(module(), keyword()) :: state()
@@ -160,7 +166,7 @@ defmodule DMEx.Log.SendLoop do
       config: config,
       batch_interval: DMEx.Config.batch_interval(config),
       last_sent_at: nil,
-      status: Keyword.get(opts, :status),
+      status: Keyword.fetch!(opts, :status),
       # Fixed for the connection's lifetime: a consumer wanting a different
       # selection asks for a different resource, which is a different URL.
       types: Selection.to_list(selection)
@@ -254,14 +260,15 @@ defmodule DMEx.Log.SendLoop do
   end
 
   # Measured from the last frame *sent*, so time parked in `await_wakeup/1` does
-  # not count against the interval. A no-op on an idle stream.
+  # not count against the interval. A no-op on an idle stream, and self-terminating
+  # when it is not, so it runs with no deadline.
   defp throttle(%{last_sent_at: nil}), do: :ok
 
   defp throttle(state) do
     remaining = state.last_sent_at + state.batch_interval - System.monotonic_time(:millisecond)
 
     if remaining > 0 do
-      arm(state, remaining)
+      Status.disarm(state.status)
       Process.sleep(remaining)
     end
   end
@@ -274,20 +281,14 @@ defmodule DMEx.Log.SendLoop do
     end
   end
 
-  ## Deadlines
-
   # Every write goes through here, so every write is under a deadline.
+  # `Status.arm/2` takes `:infinity` itself, so a log that runs no watcher needs no
+  # branch here.
   defp write(conn, state, rows) do
     arm(state)
 
     Transport.write(state.transport, conn, rows)
   end
 
-  # `stall_timeout` is the budget for the blocking itself; `extra` is however
-  # long the step is legitimately expected to sit there first.
-  defp arm(state, extra \\ 0)
-
-  defp arm(%{config: %{stall_timeout: :infinity}} = state, _extra), do: Status.arm(state.status, :infinity)
-
-  defp arm(state, extra), do: Status.arm(state.status, state.config.stall_timeout + extra)
+  defp arm(state), do: Status.arm(state.status, state.config.stall_timeout)
 end

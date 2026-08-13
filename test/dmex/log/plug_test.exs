@@ -199,10 +199,14 @@ defmodule DMEx.Log.PlugTest do
 
       stream(opts, plug, @whole_log)
 
-      # heartbeat_interval + one batch interval, because the loop's throttle runs after the
-      # heartbeat branch — the sum is the real upper bound on silence. Both are
-      # log configuration, so every connection is told the same number.
-      assert_received {:chunk, "retry: 15010\n\n"}
+      # `heartbeat_interval` plus one batch interval, because the loop's throttle
+      # runs after the heartbeat branch — the sum is the real upper bound on
+      # silence. Derived rather than written out: a literal here was the drift this
+      # suite exists to catch.
+      retry = DMEx.Config.effective_heartbeat(StubLog.__dmex__().config)
+
+      assert_received {:chunk, chunk}
+      assert chunk == "retry: #{retry}\n\n"
     end
 
     test "then sends the log as one frame per row", %{opts: opts, plug: plug} do

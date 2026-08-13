@@ -54,10 +54,13 @@ defmodule DMEx.Integration.WireContractTest do
     test "opens the stream with a retry: frame carrying the effective heartbeat", ctx do
       {200, _headers, body} = request(ctx, [])
 
-      # heartbeat_interval + one batch interval, since the throttle runs after the heartbeat
-      # branch and the sum is the real upper bound on silence. Both are log
-      # configuration, so this number is the same for every client.
-      assert body =~ "retry: 15010"
+      # `heartbeat_interval` plus one batch interval, since the throttle runs after
+      # the heartbeat branch and the sum is the real upper bound on silence. Derived
+      # rather than written out: a literal here was the drift this suite exists to
+      # catch.
+      retry = DMEx.Config.effective_heartbeat(Log.__dmex__().config)
+
+      assert body =~ "retry: #{retry}"
     end
 
     # A log must not reject a request over a header it does not define —

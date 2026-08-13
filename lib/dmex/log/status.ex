@@ -66,8 +66,7 @@ defmodule DMEx.Log.Status do
   def mark_pending(ref), do: :atomics.exchange(ref, @flag, 1) == 0
 
   @doc "Clears the flag. Called by the stream itself, before every read."
-  @spec clear(t() | nil) :: :ok
-  def clear(nil), do: :ok
+  @spec clear(t()) :: :ok
   def clear(ref), do: :atomics.put(ref, @flag, 0)
 
   @doc "Whether a wakeup is currently queued. For tests and telemetry."
@@ -80,8 +79,7 @@ defmodule DMEx.Log.Status do
   Called by the stream process itself, immediately before it blocks. `:infinity`
   arms no deadline at all, which is how a log opts out of reclaiming.
   """
-  @spec arm(t() | nil, budget()) :: :ok
-  def arm(nil, _budget), do: :ok
+  @spec arm(t(), budget()) :: :ok
   def arm(ref, :infinity), do: :atomics.put(ref, @deadline, @never)
 
   def arm(ref, budget) when is_integer(budget) and budget > 0,

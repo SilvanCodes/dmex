@@ -43,11 +43,6 @@ defmodule DMEx.Log.StatusTest do
     refute Status.pending?(ref)
   end
 
-  test "a loop with no flag at all still runs" do
-    # The send loop is testable without a registry, and must not care.
-    assert :ok = Status.clear(nil)
-  end
-
   test "flags are per connection" do
     one = Status.new(5_000)
     two = Status.new(5_000)
@@ -124,11 +119,6 @@ defmodule DMEx.Log.StatusTest do
       :ok = Status.disarm(ref)
 
       refute Status.overdue?(ref, System.monotonic_time(:millisecond))
-    end
-
-    test "a loop with no status at all still runs" do
-      # The send loop is testable without a registry, and must not care.
-      assert :ok = Status.arm(nil, 5_000)
     end
 
     # Different slots of the same reference: the dispatcher writes one, the
