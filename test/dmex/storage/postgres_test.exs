@@ -123,14 +123,4 @@ defmodule DMEx.Storage.PostgresTest do
     |> List.flatten()
     |> Enum.join("\n")
   end
-
-  defp dead_row do
-    %{
-      "subscription" => @some,
-      "id" => 1042,
-      "type" => "MyApp.Messages.OrderPlaced",
-      "data" => %{"order_id" => 7},
-      "metadata" => %{"trace_id" => "abc"}
-    }
-  end
 end

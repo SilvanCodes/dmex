@@ -13,7 +13,7 @@ defmodule DMEx.Handler.PipelineFailureTest.FlakyStorage do
   alias DMEx.Test.Storage
 
   @doc "Storage opts whose `transaction/2` follows `faults`, then behaves."
-  @spec new([:ok | :timeout | :commit]) :: DMEx.Storage.opts()
+  @spec new([:ok | :timeout | :commit | :down]) :: DMEx.Storage.opts()
   def new(faults) do
     {:ok, pid} = Agent.start_link(fn -> faults end)
 
@@ -23,6 +23,11 @@ defmodule DMEx.Handler.PipelineFailureTest.FlakyStorage do
   @impl DMEx.Storage
   def transaction(fun, opts) do
     case next_fault(opts) do
+      # A pool that is already down: `Ecto.Repo.transaction/1` calls it, so this
+      # leaves as an exit rather than as an exception.
+      :down ->
+        exit(:noproc)
+
       # A checkout that timed out: the callback never ran.
       :timeout ->
         {:error, :pool_timeout}

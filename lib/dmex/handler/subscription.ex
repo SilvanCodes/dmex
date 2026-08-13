@@ -170,15 +170,22 @@ defmodule DMEx.Handler.Subscription do
   @impl GenServer
   def handle_cast(:connected, state), do: {:noreply, %{state | attempt: 0}}
 
-  # A clean stop should not throw away skips already made. Rescued because the
-  # repo's pool may already be on its way down, and re-skipping is the ordinary
-  # cost of a pending run rather than something worth a noisy shutdown crash.
+  # A clean stop should not throw away skips already made, and it should not turn
+  # a shutdown into a crash either: re-skipping is the ordinary cost of a pending
+  # run.
+  #
+  # `catch` as well as `rescue`, because the failure the comment has always named
+  # — the repo's pool already on its way down — arrives as an **exit**, from the
+  # `GenServer` call inside `Ecto.Repo.transaction/1`, not as an exception. With
+  # only the rescue, `terminate/2` died there and never reached `stop_reader/1`.
   @impl GenServer
   def terminate(_reason, state) do
     try do
       flush(state)
     rescue
-      _ -> :ok
+      _exception -> :ok
+    catch
+      :exit, _reason -> :ok
     end
 
     stop_reader(state)
