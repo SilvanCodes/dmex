@@ -42,10 +42,6 @@ defmodule DMEx.Log.Dispatcher do
 
   require Logger
 
-  # Indices into the one `:counters` array a broadcast pass tallies into.
-  @streams 1
-  @woken 2
-
   @doc "Starts a dispatcher for `log:`."
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
@@ -183,32 +179,25 @@ defmodule DMEx.Log.Dispatcher do
   end
 
   defp broadcast(state, types) do
-    # Both telemetry measurements come out of the one walk. `streams` used to be
-    # a second pass over the same entries, and `DMEx.Log.Streams.count/1` was
-    # the expensive spelling of it.
-    tally = :counters.new(2, [])
+    streams = Streams.all(state.log)
 
     # Two gates, and they answer different questions. `Selection.concerns?/2`
     # asks whether this append is any of this connection's business at all;
     # `Status.mark_pending/1` asks whether it already has a wakeup queued. The second is
     # what bounds a stalled connection's mailbox at one wakeup rather than at the
     # append rate times the stall duration, however long it stalls.
-    Streams.each(state.log, fn pid, status, selection ->
-      :counters.add(tally, @streams, 1)
+    woken =
+      Enum.count(streams, fn {pid, status, selection} ->
+        if Selection.concerns?(selection, types) and Status.mark_pending(status) do
+          send(pid, :wakeup)
 
-      if Selection.concerns?(selection, types) and Status.mark_pending(status) do
-        send(pid, :wakeup)
-        :counters.add(tally, @woken, 1)
-      end
-    end)
+          true
+        end
+      end)
 
     :telemetry.execute(
       [:dmex, :dispatcher, :broadcast],
-      %{
-        streams: :counters.get(tally, @streams),
-        woken: :counters.get(tally, @woken),
-        types: length(types)
-      },
+      %{streams: length(streams), woken: woken, types: length(types)},
       %{log: state.log}
     )
 

@@ -98,21 +98,20 @@ defmodule DMEx.Log.Watcher do
 
   # One clock reading for the whole pass, so every connection is judged against
   # the same instant however long the walk takes.
+  #
+  # The list comes out of the registry in this process, so a sweep costs one
+  # atomics read per connection and nothing that can block. A deadline is a
+  # deadline whatever the connection selected.
   defp reclaim_overdue(state) do
     now = System.monotonic_time(:millisecond)
-    reclaimed = :counters.new(1, [])
 
-    # `each/2` runs here rather than in the registry's own processes, so a sweep
-    # costs one atomics read per connection and nothing that can block. A
-    # deadline is a deadline whatever the connection selected.
-    Streams.each(state.log, fn pid, status, _selection ->
+    Enum.count(Streams.all(state.log), fn {pid, status, _selection} ->
       if Status.overdue?(status, now) do
         reclaim(state.log, pid, status, now)
-        :counters.add(reclaimed, 1, 1)
+
+        true
       end
     end)
-
-    :counters.get(reclaimed, 1)
   end
 
   defp reclaim(log, pid, status, now) do

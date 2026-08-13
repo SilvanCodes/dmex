@@ -20,17 +20,14 @@ defmodule DMEx.Log.StreamsTest do
     assert Streams.name(FakeLog) == DMEx.Log.StreamsTest.FakeLog.Registry
   end
 
-  test "each/2 visits a registered process with its status and selection" do
+  test "all/1 hands back a registered process with its status and selection" do
     {:ok, status} = Streams.register(FakeLog, 5_000, :all)
+    me = self()
 
-    Streams.each(FakeLog, fn pid, entry_status, selection ->
-      send(pid, {:visited, entry_status, selection})
-    end)
-
-    assert_received {:visited, ^status, :all}
+    assert [{^me, ^status, :all}] = Streams.all(FakeLog)
   end
 
-  test "each/2 visits every registered stream" do
+  test "all/1 hands back every registered stream" do
     parent = self()
 
     pids =
@@ -47,7 +44,7 @@ defmodule DMEx.Log.StreamsTest do
 
     for pid <- pids, do: assert_receive({:registered, ^pid})
 
-    Streams.each(FakeLog, fn pid, _status, _selection -> send(pid, :wakeup) end)
+    for {pid, _status, _selection} <- Streams.all(FakeLog), do: send(pid, :wakeup)
 
     for pid <- pids, do: assert_receive({:woke, ^pid})
   end
@@ -97,10 +94,7 @@ defmodule DMEx.Log.StreamsTest do
     assert Streams.count(FakeLog) == 0
   end
 
-  test "each/2 over nobody is fine" do
-    assert :ok =
-             Streams.each(FakeLog, fn pid, _status, _selection ->
-               send(pid, :wakeup)
-             end)
+  test "all/1 over nobody is an empty list" do
+    assert Streams.all(FakeLog) == []
   end
 end

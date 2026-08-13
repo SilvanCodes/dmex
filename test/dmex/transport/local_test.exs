@@ -194,14 +194,7 @@ defmodule DMEx.Transport.LocalTest do
 
   # `each/2` runs in the calling process, so this collects without a holder.
   defp selections do
-    parent = self()
-
-    :ok =
-      Streams.each(Log, fn _pid, _status, selection ->
-        send(parent, {:selection, selection})
-      end)
-
-    drain_selections([])
+    for {_pid, _status, selection} <- Streams.all(Log), do: selection
   end
 
   defp drain_selections(acc) do

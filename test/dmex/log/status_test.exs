@@ -169,9 +169,7 @@ defmodule DMEx.Log.StatusTest do
     test "the dispatcher reaches it through the entry" do
       {:ok, mine} = Streams.register(FakeLog, 5_000, :all)
 
-      Streams.each(FakeLog, fn _pid, status, _selection ->
-        Status.mark_pending(status)
-      end)
+      for {_pid, status, _selection} <- Streams.all(FakeLog), do: Status.mark_pending(status)
 
       # Same flag, reached from another code path — which is what lets the
       # dispatcher coalesce without any shared table.
@@ -198,9 +196,7 @@ defmodule DMEx.Log.StatusTest do
       eventually(fn -> Streams.count(FakeLog) == 0 end)
 
       # Nothing left to iterate, so nothing left to leak.
-      Streams.each(FakeLog, fn _pid, _status, _selection ->
-        flunk("entry outlived process")
-      end)
+      assert Streams.all(FakeLog) == []
     end
   end
 end

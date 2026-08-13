@@ -60,17 +60,6 @@ defmodule DMEx.Log.Streams do
   releases its registered name only once it has been *scheduled* to handle the
   kill — exactly the `{:already_started, _}` restart race `DMEx.Log.__start__/1`
   waits out.
-
-  **`:partitions` is omitted deliberately** — it defaults to 1, and `Registry`'s
-  own docs recommend raising it under write concurrency, so this is a plausible
-  thing to "optimise" later. At one partition `Registry.dispatch/3` invokes
-  `each/2`'s callback exactly once, with every entry. Partitioned, it invokes it
-  once per partition, and `:parallel` — inert today — starts running it in
-  `Task` processes. Per-entry work survives both; per-*pass* work does not, and
-  both walkers do per-pass work: `DMEx.Log.Watcher` takes one clock reading per
-  sweep and `DMEx.Log.Dispatcher` emits one telemetry event per broadcast. Both
-  keep it outside the callback, which is what makes them correct. Raising
-  `:partitions` means checking that they still do.
   """
   @spec start_link(module()) :: Supervisor.on_start()
   def start_link(log) when is_atom(log) do
@@ -109,30 +98,26 @@ defmodule DMEx.Log.Streams do
   def unregister(log) when is_atom(log), do: Registry.unregister(name(log), @key)
 
   @doc """
-  Runs `fun` for every registered stream, with its pid, status and selection.
+  Every registered stream: its pid, its `DMEx.Log.Status` and its selection.
 
   There is deliberately no blanket `broadcast/2`: the dispatcher decides per
-  connection whether a wakeup is worth sending, and `DMEx.Log.Watcher` uses this
-  to read every connection's deadline. It is one ETS read and no message to any
-  stream, so a wedged connection cannot stall the walk — but `fun` runs in the
-  caller's own process, so it must not block either.
+  connection whether a wakeup is worth sending, and `DMEx.Log.Watcher` reads every
+  connection's deadline out of the same list. One ETS read and no message to any
+  stream, so a wedged connection cannot stall either walk.
 
-  One call per entry, in one pass. See `start_link/1` for what that rests on.
+  A list rather than a callback: both callers want to *count* what they did, and a
+  callback made that a mutable counter where an `Enum.count/2` will do.
   """
-  @spec each(module(), (pid(), Status.t(), Selection.t() -> any())) :: :ok
-  def each(log, fun) when is_atom(log) and is_function(fun, 3) do
-    Registry.dispatch(name(log), @key, fn entries ->
-      Enum.each(entries, fn {pid, {status, selection}} -> fun.(pid, status, selection) end)
-    end)
+  @spec all(module()) :: [{pid(), Status.t(), Selection.t()}]
+  def all(log) when is_atom(log) do
+    for {pid, {status, selection}} <- Registry.lookup(name(log), @key), do: {pid, status, selection}
   end
 
   @doc """
   How many streams are currently registered. For tests.
 
-  `Registry.count/1` is `:ets.info(size)`; counting the entries under `@key`
-  instead would be `:ets.select_count/2`, a full scan for the same answer —
-  every entry is under that one key. A broadcast counts its own pass, so
-  nothing on the hot path calls this.
+  `Registry.count/1` is `:ets.info(size)`, where counting `all/1` would build the
+  list first — and every entry is under one key, so the two agree.
   """
   @spec count(module()) :: non_neg_integer()
   def count(log) when is_atom(log), do: Registry.count(name(log))
