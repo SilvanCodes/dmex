@@ -582,7 +582,10 @@ of scope.
   a one-off `EXPLAIN` session rather than a `bench/` artifact — nothing in
   `bench/` runs `EXPLAIN`. On a 500k-row skewed log (one type at 99%, one at
   0.9%, one at 0.1%): the 0.1% type uses the index; the 0.9% type or larger uses
-  the primary key and filters, at fewer buffers than the index plan would cost. A hand-written per-type `LATERAL`
+  the primary key and filters. Which plan the planner takes is measured; that the
+  primary-key plan also costs *fewer buffers* than the index plan would is not —
+  forcing the alternative needs a planner extension this database does not have,
+  so that half rests on analysis. A hand-written per-type `LATERAL`
   seek — the usual loose-index-scan workaround — is *worse* everywhere except the
   most extreme selectivity, because each branch fetches a whole `LIMIT` per type
   and discards the surplus. So plain `type = ANY($1)` is the right query
