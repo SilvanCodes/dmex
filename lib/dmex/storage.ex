@@ -372,6 +372,35 @@ defmodule DMEx.Storage do
 
   @optional_callbacks default_notifier: 0, migration: 0, validate!: 1
 
+  @doc """
+  The adapter a log or a supervisor gets when it names none.
+
+  One owner. `DMEx.Log` and `DMEx.Supervisor` both default `storage:`, and a
+  mismatch between them would be silent: an owned log would serve from one adapter
+  while its subscription's cursor was written through another.
+  """
+  @spec default_adapter() :: module()
+  def default_adapter, do: DMEx.Storage.Postgres
+
+  @doc """
+  Builds a `t:opts/0` from `storage:`, `repo:` and `prefix:`.
+
+  The one place those three become a handle, so the log side and the consumer side
+  cannot disagree about the keys. `:repo` may be `nil` here — a supervisor started
+  with no default is legal, and it is `DMEx.Supervisor.init/1` that seeds whatever
+  it got as the registry metadata a later `subscribe/2` falls back to.
+
+  `DMEx.Log` adds `:lock`, which is the one key only an appender needs.
+  """
+  @spec opts(keyword()) :: opts()
+  def opts(opts) when is_list(opts) do
+    %{
+      adapter: Keyword.get(opts, :storage, default_adapter()),
+      repo: Keyword.get(opts, :repo),
+      prefix: Keyword.get(opts, :prefix)
+    }
+  end
+
   ## Calling an adapter
 
   # The whole caller-facing surface, one function per callback. Each takes the

@@ -366,7 +366,7 @@ defmodule DMEx.SupervisorTest do
 
   describe "resolving where the cursor is written" do
     test "a bare subscribe/2 with no repo and nothing running names both fixes" do
-      assert_raise ArgumentError, ~r/nowhere to write.*repo: MyApp.Repo.*DMEx.Supervisor,/s, fn ->
+      assert_raise ArgumentError, ~r/nowhere to write.*`repo:` on the call, or start/s, fn ->
         DMEx.Supervisor.subscribe(Handlers.Echo, logs: @logs, supervisor: NotRunningSupervisor)
       end
     end

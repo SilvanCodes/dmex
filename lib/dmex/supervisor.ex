@@ -74,12 +74,10 @@ defmodule DMEx.Supervisor do
   alias DMEx.Supervisor.Bindings
 
   @default_name __MODULE__
-  # Every storage option and its default, in one list: the resolution at the
-  # bottom of this module reads it and `subscribe/2` accepts it, so a fourth one
-  # cannot be added to the reader and forgotten in the vocabulary — which would
-  # reject a legal option.
-  @storage_defaults [storage: DMEx.Storage.Postgres, repo: nil, prefix: nil]
-  @storage_opts Keyword.keys(@storage_defaults)
+  # The storage vocabulary. `DMEx.Storage.opts/1` reads exactly these three and is
+  # the only constructor, so the defaults live there and this is just what
+  # `subscribe/2` accepts.
+  @storage_opts [:storage, :repo, :prefix]
   # `:handler` is deliberately absent: it is the positional argument, so a stray
   # `handler:` in the options is a mistake worth raising on.
   @subscription_opts [:supervisor, :logs]
@@ -120,7 +118,7 @@ defmodule DMEx.Supervisor do
     # connect, turning a collision into a 500. See `DMEx.Message.types/0`.
     for app <- Enum.uniq([otp_app | log_apps(logs)]), do: DMEx.Message.refresh_index(app)
 
-    storage = storage(opts)
+    storage = DMEx.Storage.opts(opts)
 
     children =
       owned_logs(logs) ++
@@ -350,20 +348,12 @@ defmodule DMEx.Supervisor do
   # too is a mistake, which is a longer message because it has a second fix.
   defp resolve_storage!(opts, supervisor) do
     storage =
-      case storage(opts) do
+      case DMEx.Storage.opts(opts) do
         %{repo: nil} when is_nil(supervisor) ->
           raise ArgumentError, "a `repo:` is required, e.g. `repo: MyApp.Repo`"
 
         %{repo: nil} ->
-          # Checking the registry is alive first: Registry.meta/2 raises its own
-          # "unknown registry" ArgumentError otherwise.
-          with pid when is_pid(pid) <- Process.whereis(registry(supervisor)),
-               {:ok, %{repo: repo} = default} when not is_nil(repo) <-
-                 Registry.meta(registry(supervisor), :storage) do
-            default
-          else
-            _ -> raise_no_repo(supervisor)
-          end
+          seeded_storage!(supervisor)
 
         storage ->
           storage
@@ -379,29 +369,23 @@ defmodule DMEx.Supervisor do
     storage
   end
 
-  # The options as one value. `:repo` may be nil here — a supervisor started
-  # with no default is legal, and it is `init/1` that seeds whatever it got as
-  # the registry metadata a later `subscribe/2` falls back to.
-  defp storage(opts) do
-    {adapter, storage} =
-      @storage_defaults
-      |> Map.new(fn {key, default} -> {key, Keyword.get(opts, key, default)} end)
-      |> Map.pop(:storage)
-
-    Map.put(storage, :adapter, adapter)
+  # `Registry.meta/2` raises its own "unknown registry" `ArgumentError` when nothing
+  # is running under that name, which is the same answer as no default — so this
+  # rescues rather than checking `whereis` first, where the registry could die in
+  # the window between the two.
+  defp seeded_storage!(supervisor) do
+    case Registry.meta(registry(supervisor), :storage) do
+      {:ok, %{repo: repo} = default} when not is_nil(repo) -> default
+      _ -> raise_no_repo(supervisor)
+    end
+  rescue
+    ArgumentError -> raise_no_repo(supervisor)
   end
 
   defp raise_no_repo(supervisor) do
-    raise ArgumentError, """
-    DMEx.Supervisor.subscribe/2 has nowhere to write this subscription's cursor.
-
-    Either pass a repo on the call:
-
-        DMEx.Supervisor.subscribe(MyApp.OrderProjection, repo: MyApp.Repo, logs: [...])
-
-    or start #{inspect(supervisor)} in your supervision tree with a default:
-
-        {DMEx.Supervisor, repo: MyApp.Repo, logs: [...]}
-    """
+    raise ArgumentError,
+          "DMEx.Supervisor.subscribe/2 has nowhere to write this subscription's cursor. Pass a " <>
+            "`repo:` on the call, or start #{inspect(supervisor)} with a default: " <>
+            "`{DMEx.Supervisor, repo: MyApp.Repo, logs: [...]}`."
   end
 end

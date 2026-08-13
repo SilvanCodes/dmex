@@ -185,22 +185,25 @@ defmodule DMEx.Log do
 
     repo = repo!(module, Keyword.get_lazy(opts, :repo, fn -> default_repo!(module, ecto_repos) end))
     prefix = Keyword.get(opts, :prefix)
-    storage = Keyword.get(opts, :storage, DMEx.Storage.Postgres)
 
     scope = scope!(module, prefix)
     channel = "dmex_" <> scope
 
+    # One constructor for the handle, plus the one key only an appender needs:
+    # `DMEx.Storage.opts/1` owns the key set and the default adapter, so this side
+    # and `DMEx.Supervisor`'s cannot disagree about either.
+    storage =
+      opts
+      |> Keyword.put(:repo, repo)
+      |> Storage.opts()
+      |> Map.put(:lock, {@classid, :erlang.phash2(scope, 2_147_483_648)})
+
     %{
       log: module,
       config: Config.log!(opts),
-      storage: %{
-        adapter: storage,
-        repo: repo,
-        lock: {@classid, :erlang.phash2(scope, 2_147_483_648)},
-        prefix: prefix
-      },
+      storage: storage,
       notifier: %{
-        adapter: notifier!(module, storage, opts),
+        adapter: notifier!(module, storage.adapter, opts),
         repo: repo,
         # The one derivation of the notifier's process name. Both adapters read
         # it rather than rebuilding it from `:log`, which is why `:log` is not
