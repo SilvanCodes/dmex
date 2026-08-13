@@ -25,7 +25,7 @@ defmodule DMEx.Test.CoTenantLog do
   @moduledoc """
   A second log module on `DMEx.Test.IntegrationLog`'s table.
 
-  Exists so `DMEx.Integration.AppendOrderingTest` can watch two log modules
+  Exists so `DMEx.Storage.Postgres.AppendOrderingTest` can watch two log modules
   exclude each other, which is what keying the lock on the table rather than on
   the module buys.
   """

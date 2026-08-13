@@ -117,7 +117,7 @@ subscription-id namespace that distinct handler `name:`s already give.
   `:messages` migration.
 - **One existing test is the forbidden shape on purpose.**
   `DMEx.Test.CoTenantLog` is a second log module on `DMEx.Test.IntegrationLog`'s
-  table, and `DMEx.Integration.AppendOrderingTest` exists to watch the two
+  table, and `DMEx.Storage.Postgres.AppendOrderingTest` exists to watch the two
   exclude each other — which is the thing keying the lock on the table rather
   than the module buys, and the thing that becomes unbuildable. Whether the
   property survives as a test at all is open: N nodes on one log module is the
