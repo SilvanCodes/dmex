@@ -19,7 +19,8 @@ defmodule DMEx.Integration.HeartbeatTest do
   alias DMEx.Test.Messages.OrderPlaced
   alias DMEx.Test.Server
 
-  @heartbeat 150
+  # Read from the log rather than restated: every wait below is a multiple of it.
+  @heartbeat Log.__dmex__().config.heartbeat_interval
 
   defmodule Router do
     @moduledoc false
@@ -135,14 +136,14 @@ defmodule DMEx.Integration.HeartbeatTest do
 
       {:ok, [pid]} = subscribe()
 
-      reader = eventually(fn -> :sys.get_state(pid).reader end)
+      original = eventually(fn -> reader(pid) end)
 
       # Nothing is appended for many deadlines, yet the connection is never
       # dropped: a heartbeat comment is bytes, and bytes are what liveness
       # measures. A reader that measured messages would be replaced by now.
       refute_receive {[:dmex, :handler, :reconnect], ^ref, _, _}, @heartbeat * 10
 
-      assert :sys.get_state(pid).reader == reader
+      assert reader(pid) == original
     end
   end
 
@@ -207,6 +208,11 @@ defmodule DMEx.Integration.HeartbeatTest do
   defp effective_heartbeat do
     @heartbeat + DMEx.Config.batch_interval(Log.__dmex__().config)
   end
+
+  # The reader is a linked process the subscription spawns, so its identity is
+  # how a test asks "was this connection replaced?" - the question these tests
+  # exist to answer, and one nothing observable answers.
+  defp reader(pid), do: :sys.get_state(pid).reader
 
   # The advertised interval lives in the transport's decoder now — the
   # subscription itself only asks it how long silence may last.

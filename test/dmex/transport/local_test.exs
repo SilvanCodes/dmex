@@ -120,9 +120,9 @@ defmodule DMEx.Transport.LocalTest do
 
       assert {:ok, nil} = Postgres.last_seen("test/echo", Log.__dmex__().storage)
 
-      eventually(fn -> :sys.get_state(pid).reader != nil end)
+      eventually(fn -> reader(pid) != nil end)
 
-      assert :sys.get_state(pid).pipeline.cursor == 0
+      assert cursor(pid) == 0
     end
 
     test "a subscription with no durable cursor still delivers from the start" do
@@ -191,6 +191,7 @@ defmodule DMEx.Transport.LocalTest do
   end
 
   defp reader(pid), do: :sys.get_state(pid).reader
+  defp cursor(pid), do: :sys.get_state(pid).pipeline.cursor
 
   # `each/2` runs in the calling process, so this collects without a holder.
   defp selections do

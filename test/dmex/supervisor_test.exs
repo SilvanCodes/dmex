@@ -140,8 +140,8 @@ defmodule DMEx.SupervisorTest do
       assert {:ok, [pid]} = subscribe(Handlers.Echo)
 
       # The transport is named once, in the options the reader is started from.
-      assert %{opts: opts, origin: Log} = :sys.get_state(pid)
-      assert opts[:transport] == DMEx.Transport.Local
+      assert origin(pid) == Log
+      assert transport(pid) == DMEx.Transport.Local
     end
 
     test "reads a log bound to a URL over HTTP" do
@@ -149,8 +149,8 @@ defmodule DMEx.SupervisorTest do
 
       assert {:ok, [pid]} = subscribe(Handlers.Echo)
 
-      assert %{opts: opts, origin: @url} = :sys.get_state(pid)
-      assert opts[:transport] == DMEx.Transport.SSE
+      assert origin(pid) == @url
+      assert transport(pid) == DMEx.Transport.SSE
     end
 
     test "rejects a logs entry that is neither a module nor a URL" do
@@ -257,7 +257,7 @@ defmodule DMEx.SupervisorTest do
     test "resolves the log name against the supervisor's logs" do
       {:ok, [pid]} = subscribe(Handlers.Echo)
 
-      assert :sys.get_state(pid).origin == @url
+      assert origin(pid) == @url
     end
 
     # Two streams on one identity would share and clobber a single cursor.
@@ -333,16 +333,16 @@ defmodule DMEx.SupervisorTest do
     test "takes the handler's declared config, and lets the call site override it" do
       {:ok, [pid]} = subscribe(Handlers.Careful)
 
-      assert :sys.get_state(pid).config.on_failure == :crash
-      assert :sys.get_state(pid).config.max_attempts == 5
+      assert config(pid).on_failure == :crash
+      assert config(pid).max_attempts == 5
 
       assert :ok = DMEx.Supervisor.unsubscribe(Handlers.Careful, supervisor: TestSupervisor)
       eventually(fn -> not subscribed?("test/careful") end)
 
       {:ok, [pid]} = subscribe(Handlers.Careful, on_failure: :skip)
 
-      assert :sys.get_state(pid).config.on_failure == :skip
-      assert :sys.get_state(pid).config.max_attempts == 5
+      assert config(pid).on_failure == :skip
+      assert config(pid).max_attempts == 5
     end
   end
 
@@ -383,7 +383,7 @@ defmodule DMEx.SupervisorTest do
 
       {:ok, [pid]} = subscribe(Handlers.Echo)
 
-      assert :sys.get_state(pid).storage.repo == Repo
+      assert storage(pid).repo == Repo
     end
 
     test "a subscription may override the supervisor's repo" do
@@ -392,7 +392,7 @@ defmodule DMEx.SupervisorTest do
 
       {:ok, [pid]} = subscribe(Handlers.Echo, repo: IntegrationRepo)
 
-      assert :sys.get_state(pid).storage.repo == IntegrationRepo
+      assert storage(pid).repo == IntegrationRepo
     end
   end
 
@@ -413,7 +413,7 @@ defmodule DMEx.SupervisorTest do
 
       {:ok, [pid]} = subscribe(Handlers.Echo, bindings: [test: "https://override.test/stream"])
 
-      assert :sys.get_state(pid).origin == "https://override.test/stream"
+      assert origin(pid) == "https://override.test/stream"
     end
   end
 
@@ -467,4 +467,14 @@ defmodule DMEx.SupervisorTest do
   defp subscribed?(id) do
     Registry.lookup(DMEx.Supervisor.registry(TestSupervisor), {:subscription, id}) != []
   end
+
+  # Every resolution `subscribe/2` performs lands in the reader's options, and
+  # the started subscription is the only place to read one back: the transport is
+  # inferred, not passed, and the config and storage are merged from three
+  # sources. These name the four questions the tests above ask, so a change to the
+  # subscription's state shape is four lines here rather than ten assertions.
+  defp origin(pid), do: :sys.get_state(pid).origin
+  defp transport(pid), do: :sys.get_state(pid).opts[:transport]
+  defp config(pid), do: :sys.get_state(pid).config
+  defp storage(pid), do: :sys.get_state(pid).storage
 end
