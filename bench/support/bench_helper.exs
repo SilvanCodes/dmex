@@ -56,7 +56,7 @@ defmodule DMEx.BenchHelper do
            name: name,
            repo: IntegrationRepo,
            otp_app: nil,
-           logs: [bench: url]
+           bindings: [bench: url]
          ) do
       {:ok, pid} -> pid
       {:error, {:already_started, pid}} -> pid

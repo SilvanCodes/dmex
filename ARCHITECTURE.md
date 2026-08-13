@@ -527,7 +527,7 @@ of scope.
   compressing it is the web server's to negotiate and configure. DMEx neither
   asks for it on the consumer side nor does it on the producer side.
 - **No proxying — mirror instead, and own your ids.** `DMEx.Log.Plug` serves a
-  log module, never a `logs:` name, so a mount can never re-serve someone else's
+  log module, never a `bindings:` name, so a mount can never re-serve someone else's
   stream. A proxy has no storage, and everything else follows from that: it
   would forward the *origin's* id space while being unable to answer a
   `Last-Event-ID` behind its live tail, which is the silent gap described under
@@ -541,7 +541,7 @@ of scope.
   loop rather than an unbounded upstream wait.
 
   What the proxy is wanted for has an answer that needs no new machinery: bind
-  both — `logs: [upstream: "https://origin/stream", mine: MyApp.Log]` — run a
+  both — `bindings: [upstream: "https://origin/stream", mine: MyApp.Log]` — run a
   handler that appends what it receives into your own log, and mount that. The
   mirror gets its own id space, so a resume position means something it can
   honour; its own storage and retention; its own message modules to resolve

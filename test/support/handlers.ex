@@ -7,7 +7,7 @@ defmodule DMEx.Test.Handlers do
   state.
 
   `Fanned` is the only one on two logs (`:test` and `:other`); the rest are on
-  `:test` alone, which `DMEx.Test.Server.logs/1` binds. Ids are per-module: the
+  `:test` alone, which `DMEx.Test.Server.bindings/1` binds. Ids are per-module: the
   id keys the cursor and these run concurrently.
   """
 

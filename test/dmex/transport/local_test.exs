@@ -178,7 +178,7 @@ defmodule DMEx.Transport.LocalTest do
   ## Helpers
 
   defp start_supervisor do
-    start_supervised!({DMEx.Supervisor, name: TestSupervisor, otp_app: nil, repo: Repo, logs: @logs})
+    start_supervised!({DMEx.Supervisor, name: TestSupervisor, otp_app: nil, repo: Repo, bindings: @logs})
   end
 
   # `last_seen: 0` throughout: every test here appends first and subscribes

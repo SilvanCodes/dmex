@@ -34,7 +34,7 @@ defmodule DMEx.SupervisorRestartTest do
 
   describe "rest_for_one restarts" do
     test "brings every discovered subscription back after an owned log crashes" do
-      start_supervisor(otp_app: :dmex, logs: [test: Log, other: @other])
+      start_supervisor(otp_app: :dmex, bindings: [test: Log, other: @other])
 
       ids = discovered_ids()
       assert "test/echo" in ids
@@ -72,7 +72,7 @@ defmodule DMEx.SupervisorRestartTest do
     # to prevent was exactly what a 400 produced.
     test "stops the subscription instead of restarting it into a request loop" do
       url = Server.start!(plug: {Refuse, self()}) <> "/stream"
-      start_supervisor(otp_app: nil, logs: [test: url])
+      start_supervisor(otp_app: nil, bindings: [test: url])
 
       {:ok, [pid]} = DMEx.Supervisor.subscribe(Handlers.Echo, supervisor: TestSupervisor)
       ref = Process.monitor(pid)
@@ -91,7 +91,7 @@ defmodule DMEx.SupervisorRestartTest do
     # gone from the child list altogether and an owned log's death took them with
     # it for the lifetime of the node.
     test "are children of the subscriptions supervisor" do
-      start_supervisor(otp_app: :dmex, logs: [test: Log, other: @other])
+      start_supervisor(otp_app: :dmex, bindings: [test: Log, other: @other])
 
       ids = discovered_ids()
       children = Supervisor.which_children(DMEx.Supervisor.subscriptions(TestSupervisor))
@@ -122,7 +122,7 @@ defmodule DMEx.SupervisorRestartTest do
     start_supervised!(
       {DMEx.Supervisor,
        Keyword.merge(
-         [name: TestSupervisor, otp_app: nil, repo: DMEx.Test.Repo, logs: [test: @url]],
+         [name: TestSupervisor, otp_app: nil, repo: DMEx.Test.Repo, bindings: [test: @url]],
          opts
        )},
       restart: :temporary

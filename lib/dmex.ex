@@ -63,7 +63,7 @@ defmodule DMEx do
         {DMEx.Supervisor,
          otp_app: :my_app,
          repo: MyApp.Repo,
-         logs: [
+         bindings: [
            catalogue: MyApp.Log,
            orders: "https://orders.internal/stream"
          ]}

@@ -7,7 +7,7 @@ defmodule DMEx.Supervisor.Bindings do
   configures one — a module is read in this VM (`DMEx.Transport.Local`), a URL over
   HTTP (`DMEx.Transport.SSE`). There would be nothing left for an option to say.
 
-  Both functions here are pure functions of the `logs:` option, so nothing has to
+  Both functions here are pure functions of the `bindings:` option, so nothing has to
   be running to answer them. That is why `DMEx.Supervisor.init/1` resolves every
   declared log before it starts a child: a misconfiguration refuses the boot rather
   than surfacing at the first connect as a stream that silently never exists.
@@ -20,34 +20,34 @@ defmodule DMEx.Supervisor.Bindings do
   @type t :: %{String.t() => String.t() | module()}
 
   @doc """
-  The `logs:` option as bindings, with every name and target checked.
+  The `bindings:` option, with every name and target checked.
 
   Names are validated where they are declared rather than at first connect, because
   a typo in a key and a typo in a handler's `logs:` are the same bug and only one
   of them is visible in the "unknown log" message.
   """
-  @spec logs!(keyword()) :: t()
-  def logs!(opts) do
-    case Keyword.get(opts, :logs, []) do
+  @spec declared!(keyword()) :: t()
+  def declared!(opts) do
+    case Keyword.get(opts, :bindings, []) do
       entries when is_list(entries) or is_map(entries) ->
         Enum.reduce(entries, %{}, &bind/2)
 
       other ->
         raise ArgumentError,
-              "`logs:` must be a keyword list of name to URL or log module, got: #{inspect(other)}"
+              "`bindings:` must be a keyword list of name to URL or log module, got: #{inspect(other)}"
     end
   end
 
   @doc """
   The bindings a `DMEx.Supervisor.subscribe/2` call should use.
 
-  Its own `logs:` if it brought one, else the ones `init/1` seeded as registry
+  Its own `bindings:` if it brought one, else the ones `init/1` seeded as registry
   metadata.
   """
-  @spec resolve_logs!(keyword(), atom()) :: t()
-  def resolve_logs!(opts, supervisor) do
-    if Keyword.has_key?(opts, :logs) do
-      logs!(opts)
+  @spec resolve!(keyword(), atom()) :: t()
+  def resolve!(opts, supervisor) do
+    if Keyword.has_key?(opts, :bindings) do
+      declared!(opts)
     else
       seeded!(supervisor)
     end
@@ -58,8 +58,8 @@ defmodule DMEx.Supervisor.Bindings do
   # so this rescues rather than checking `whereis` first, where the registry could
   # die in the window between the two.
   defp seeded!(supervisor) do
-    case Registry.meta(Supervisor.registry(supervisor), :logs) do
-      {:ok, logs} -> logs
+    case Registry.meta(Supervisor.registry(supervisor), :bindings) do
+      {:ok, bindings} -> bindings
       :error -> raise_no_logs(supervisor)
     end
   rescue
@@ -97,7 +97,7 @@ defmodule DMEx.Supervisor.Bindings do
     # whole log's target and therefore its transport.
     if Map.has_key?(logs, name) do
       raise ArgumentError,
-            "`logs:` names #{inspect(name)} twice. One name is one log — one target, one " <>
+            "`bindings:` names #{inspect(name)} twice. One name is one log — one target, one " <>
               "transport, one subscription per handler that reads it — so a repeat could only " <>
               "ever mean one of them."
     end
@@ -106,7 +106,7 @@ defmodule DMEx.Supervisor.Bindings do
   end
 
   defp bind(other, _logs) do
-    raise ArgumentError, "a `logs:` entry must be `name: url_or_module`, got: #{inspect(other)}"
+    raise ArgumentError, "a `bindings:` entry must be `name: url_or_module`, got: #{inspect(other)}"
   end
 
   defp target!(name, module) when is_atom(module) and not is_nil(module) do
@@ -151,9 +151,9 @@ defmodule DMEx.Supervisor.Bindings do
   # the list says which.
   defp raise_unbound(declaration, log, logs) do
     raise ArgumentError,
-          "#{inspect(declaration.handler)} reads #{inspect(log)}, which is not in `logs:`. " <>
+          "#{inspect(declaration.handler)} reads #{inspect(log)}, which is not in `bindings:`. " <>
             "Known logs: #{known(logs)}. Add it where DMEx is started, e.g. " <>
-            "`logs: [#{log}: \"https://.../stream\"]`."
+            "`bindings: [#{log}: \"https://.../stream\"]`."
   end
 
   defp known(logs) when map_size(logs) == 0, do: "(none)"
@@ -161,8 +161,8 @@ defmodule DMEx.Supervisor.Bindings do
 
   defp raise_no_logs(supervisor) do
     raise ArgumentError,
-          "DMEx.Supervisor.subscribe/2 has no `logs:` to resolve this handler's against. Pass " <>
+          "DMEx.Supervisor.subscribe/2 has no `bindings:` to resolve this handler's `logs:` against. " <>
             "them on the call, or start #{inspect(supervisor)} with them: " <>
-            "`{DMEx.Supervisor, repo: MyApp.Repo, logs: [...]}`."
+            "Pass them on the call, or start #{inspect(supervisor)} with them: `{DMEx.Supervisor, repo: MyApp.Repo, bindings: [...]}`."
   end
 end

@@ -46,8 +46,8 @@ Nothing worth having is on the other side of it:
 - **`name:` becomes a required log option and the log's identity.**
   `use DMEx.Log, repo: MyApp.Repo, name: "orders"`. Required, with no default —
   the default `public` is precisely what lets two logs collide by saying nothing.
-  An atom or a string, normalized to a string: `DMEx.validate_identifier!/3`
-  already does exactly this and is already what a `logs:` key and a handler's
+  An atom or a string, normalized to a string: `DMEx.Handler.identifier!/3`
+  already does exactly this and is already what a `bindings:` key and a handler's
   `name:` pass through, so the rule stays written once. Its `[a-z][a-z0-9_]*` is
   a strict subset of `DMEx.Storage.Postgres`'s `^[A-Za-z_][A-Za-z0-9_$]*$`, so
   one validation covers both uses and no intersection has to be spelled out.
@@ -59,8 +59,8 @@ Nothing worth having is on the other side of it:
   still `phash2`es it, and one bound covers both — `@scope_max_bytes` is 58, so a
   name fits 53 bytes. Table names stay fixed, so `dmex_messages` stays a constant
   and hand-written operator queries survive.
-- **The name is also the application-internal name.** `logs:` on
-  `DMEx.Supervisor` becomes `remote_logs:`, name → URL only. Local logs are
+- **The name is also the application-internal name.** `bindings:` on
+  `DMEx.Supervisor` narrows to name → URL only. Local logs are
   discovered the way handlers already are — a log module answers `__dmex__/0`,
   and `DMEx.Handler.discover/1` is the pattern — so adding a log module is the
   whole of adding a log. `transport!/3` stops sniffing `is_atom(target)`: the
@@ -91,20 +91,20 @@ keying on the log module are the same key and `DMEx.Log`'s "two logs on one tabl
 would take different locks" describes a shape that can no longer be built. N
 nodes running one log module against one table stays legal, which is why the
 duplicate check is node-local. Binding one local log to two names
-(`logs: [orders: MyApp.Log, mirror: MyApp.Log]`) is lost, and buys only a second
+(`bindings: [orders: MyApp.Log, mirror: MyApp.Log]`) is lost, and buys only a second
 subscription-id namespace that distinct handler `name:`s already give.
 
 ### Open, if and when it lands
 
 - **Discovery needs an exclusion, and it is per boot rather than per module.**
   Sixteen `use DMEx.Log` modules live in `test/`, several deliberately
-  misconfigured for compile-error tests, and with `logs:` gone there is no way to
-  say "start only this one". The test suite is the loudest case but not the
-  shape-defining one: a **log module arriving through a dependency** starts a
-  dispatcher, a `LISTEN` connection and a watcher in every application that
-  depends on it, and `DMEx.discovery/1` scanning every application declaring
+  misconfigured for compile-error tests, and with local logs out of `bindings:`
+  there is no way to say "start only this one". The test suite is the loudest case
+  but not the shape-defining one: a **log module arriving through a dependency**
+  starts a dispatcher, a `LISTEN` connection and a watcher in every application
+  that depends on it, and `DMEx.discovery/1` scanning every application declaring
   `:dmex` is exactly what makes a shared package work; and **one codebase built
-  into several releases** has only `logs:` today to say that the web release
+  into several releases** has only `bindings:` today to say that the web release
   binds the log and the worker release does not. Both are the same compiled
   module in different deployments, so a compile-time `start: false` cannot
   express either and a runtime allowlist on `DMEx.Supervisor` can express all

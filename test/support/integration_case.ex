@@ -61,7 +61,7 @@ defmodule DMEx.IntegrationCase do
       `DMEx.Test.Server` mounts `DMEx.Log.Plug` on.
     * `:otp_app` — `nil`, the default, keeps handler auto-discovery off so each
       test subscribes explicitly.
-    * `:logs` — the log map, given directly. No server starts at all, for a
+    * `:bindings` — the bindings, given directly. No server starts at all, for a
       slice that binds a name to a module rather than to a URL.
     * `:supervisor` — `false` leaves the `DMEx.Supervisor` unstarted, for a file
       that starts it per describe.
@@ -74,36 +74,37 @@ defmodule DMEx.IntegrationCase do
 
     if log = Keyword.get(opts, :log, DMEx.Test.IntegrationLog), do: start_supervised!(log)
 
-    {logs, context} =
-      case Keyword.fetch(opts, :logs) do
-        {:ok, logs} ->
-          {logs, %{}}
+    {bindings, context} =
+      case Keyword.fetch(opts, :bindings) do
+        {:ok, bindings} ->
+          {bindings, %{}}
 
         :error ->
           base = Server.start!(Keyword.take(opts, [:plug]))
           url = base <> "/stream"
           uri = URI.parse(base)
 
-          {Server.logs(url), %{base: base, url: url, host: uri.host, port: uri.port}}
+          {Server.bindings(url), %{base: base, url: url, host: uri.host, port: uri.port}}
       end
 
     if Keyword.get(opts, :supervisor, true) do
-      start_supervisor!(logs, Keyword.take(opts, [:otp_app]))
+      start_supervisor!(bindings, Keyword.take(opts, [:otp_app]))
     end
 
     context
   end
 
   @doc """
-  Starts the `DMEx.Supervisor` the whole suite subscribes through, bound to `logs`.
+  Starts the `DMEx.Supervisor` the whole suite subscribes through, bound to `bindings`.
 
   Split out of `start_stack!/1` for the file that needs the server up before the
   supervisor is, so only some of its describes have a consumer connected.
   """
   @spec start_supervisor!(keyword(), keyword()) :: pid()
-  def start_supervisor!(logs, opts \\ []) do
+  def start_supervisor!(bindings, opts \\ []) do
     start_supervised!(
-      {DMEx.Supervisor, name: TestSupervisor, otp_app: Keyword.get(opts, :otp_app), repo: IntegrationRepo, logs: logs}
+      {DMEx.Supervisor,
+       name: TestSupervisor, otp_app: Keyword.get(opts, :otp_app), repo: IntegrationRepo, bindings: bindings}
     )
   end
 

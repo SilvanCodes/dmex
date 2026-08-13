@@ -188,7 +188,7 @@ defmodule DMEx.Integration.VerticalSliceTest do
       stop(Slice, after: first)
 
       {:ok, _} =
-        DMEx.Supervisor.subscribe(Slice, supervisor: TestSupervisor, logs: Server.logs(second))
+        DMEx.Supervisor.subscribe(Slice, supervisor: TestSupervisor, bindings: Server.bindings(second))
 
       {:ok, id} = Log.append(%OrderPlaced{order_id: 2})
 

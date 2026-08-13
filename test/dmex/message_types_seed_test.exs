@@ -90,7 +90,7 @@ defmodule DMEx.MessageTypesSeedTest do
   test "seeds the types of an application the supervisor's own scan misses" do
     assert :application.get_application(Dep.Log) == {:ok, :dmex_fake_dep}
 
-    start_supervisor(otp_app: :dmex_fake_host, logs: [fake: Dep.Log])
+    start_supervisor(otp_app: :dmex_fake_host, bindings: [fake: Dep.Log])
 
     # In the term, not merely reachable: `DMEx.Log.Plug` reads the cache at the
     # first selective connect, and a lazy scan there would not reach
@@ -100,7 +100,7 @@ defmodule DMEx.MessageTypesSeedTest do
   end
 
   test "runs the collision check at boot, not on the first request" do
-    assert start_error(otp_app: :dmex_fake_host, logs: [fake: Collide.Log]) =~
+    assert start_error(otp_app: :dmex_fake_host, bindings: [fake: Collide.Log]) =~
              ~s(message type "fake_collision" is declared by both)
   end
 
@@ -158,7 +158,7 @@ defmodule DMEx.MessageTypesSeedTest do
 
   defp options(opts) do
     Keyword.merge(
-      [name: TestSupervisor, otp_app: nil, repo: Repo, logs: [test: @url]],
+      [name: TestSupervisor, otp_app: nil, repo: Repo, bindings: [test: @url]],
       opts
     )
   end

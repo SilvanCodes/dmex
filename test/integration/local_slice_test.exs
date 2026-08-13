@@ -27,7 +27,7 @@ defmodule DMEx.Integration.LocalSliceTest do
     # `otp_app: nil` costs nothing here: the message scan it feeds is what
     # expands a *remote* subscription's filter, and a local read never builds
     # one.
-    start_stack!(log: nil, logs: [test: Log])
+    start_stack!(log: nil, bindings: [test: Log])
 
     %{storage: Log.__dmex__().storage}
   end

@@ -56,7 +56,7 @@ defmodule DMEx.Test.Server do
   end
 
   @doc """
-  Binds `:test` and `:other` to `url` for `DMEx.Supervisor`. Not a literal
+  Binds `:test` and `:other` to `url` for `DMEx.Supervisor`'s `bindings:`. Not a literal
   anywhere, since the port is 0 until the server is running.
 
   `:other` is bound because `DMEx.Test.Handlers.Fanned` names it, and a
@@ -65,6 +65,6 @@ defmodule DMEx.Test.Server do
   the same log, since what `Fanned` demonstrates is two subscriptions with
   their own cursors and connections, not two logs.
   """
-  @spec logs(String.t()) :: keyword(String.t())
-  def logs(url), do: [test: url, other: url]
+  @spec bindings(String.t()) :: keyword(String.t())
+  def bindings(url), do: [test: url, other: url]
 end

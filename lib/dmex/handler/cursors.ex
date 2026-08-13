@@ -10,7 +10,7 @@ defmodule DMEx.Handler.Cursors do
   ## Changing a declaration costs a migration
 
   A different `name:`, or a different key for that log in `DMEx.Supervisor`'s
-  `logs:`, mints a new identity with no cursor — `DMEx.Handler` covers what does
+  `bindings:`, mints a new identity with no cursor — `DMEx.Handler` covers what does
   and does not change one. Migrate it next to the code change that causes it:
 
       defmodule MyApp.Repo.Migrations.RenameOrderProjection do

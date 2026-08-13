@@ -24,7 +24,7 @@ defmodule DMEx.Log.RestartTest do
 
   setup do
     start_supervised!(
-      {DMEx.Supervisor, name: @sup, otp_app: nil, repo: DMEx.Test.Repo, logs: [test: Log]},
+      {DMEx.Supervisor, name: @sup, otp_app: nil, repo: DMEx.Test.Repo, bindings: [test: Log]},
       restart: :temporary
     )
 

@@ -77,7 +77,7 @@ defmodule DMEx.Handler do
   ## Options
 
     * `:logs` — required; the logical names of the logs to read, as atoms or
-      strings, resolved against `logs:` on `DMEx.Supervisor`. A bare name is
+      strings, resolved against `bindings:` on `DMEx.Supervisor`. A bare name is
       accepted for the single-log case.
     * `:name` — required; this handler's own name. The same for every log, since
       the log name is the other half of each subscription's identity.

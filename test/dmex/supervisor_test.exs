@@ -94,7 +94,7 @@ defmodule DMEx.SupervisorTest do
     # app is the Mix project, and in a release it declares `:dmex` and is scanned
     # for that reason instead.
     test "defaults the scanned application to the Mix project" do
-      start_supervised!({DMEx.Supervisor, name: TestSupervisor, repo: Repo, logs: @logs})
+      start_supervised!({DMEx.Supervisor, name: TestSupervisor, repo: Repo, bindings: @logs})
 
       eventually(fn -> subscribed?("test/echo") end)
     end
@@ -114,20 +114,20 @@ defmodule DMEx.SupervisorTest do
     end
 
     test "refuses to start when a discovered handler's log is not bound" do
-      assert start_error(otp_app: :dmex, logs: [other: @other]) =~
-               ~r/reads "test", which is not in `logs:`/
+      assert start_error(otp_app: :dmex, bindings: [other: @other]) =~
+               ~r/reads "test", which is not in `bindings:`/
 
-      assert start_error(otp_app: :dmex, logs: [other: @other]) =~ "Known logs: other"
+      assert start_error(otp_app: :dmex, bindings: [other: @other]) =~ "Known logs: other"
     end
 
-    test "starts a log module bound in logs:" do
-      start_supervisor(logs: [owned: Log] ++ @logs)
+    test "starts a log module bound in bindings:" do
+      start_supervisor(bindings: [owned: Log] ++ @logs)
 
       assert Process.whereis(DMEx.Test.Log.Supervisor)
     end
 
     test "starts an owned log once even when two names point at it" do
-      start_supervisor(logs: [owned: Log, mirror: Log] ++ @logs)
+      start_supervisor(bindings: [owned: Log, mirror: Log] ++ @logs)
 
       assert Process.whereis(DMEx.Test.Log.Supervisor)
     end
@@ -135,7 +135,7 @@ defmodule DMEx.SupervisorTest do
     # The binding is the whole of the choice: a module is read in this VM, a URL
     # over HTTP. Nothing names a transport anywhere.
     test "reads a log this application owns in this VM" do
-      start_supervisor(logs: [test: Log, other: @other])
+      start_supervisor(bindings: [test: Log, other: @other])
 
       assert {:ok, [pid]} = subscribe(Handlers.Echo)
 
@@ -154,7 +154,7 @@ defmodule DMEx.SupervisorTest do
     end
 
     test "rejects a logs entry that is neither a module nor a URL" do
-      assert start_error(logs: [owned: Enum]) =~ "which is not a module built with `use DMEx.Log`"
+      assert start_error(bindings: [owned: Enum]) =~ "which is not a module built with `use DMEx.Log`"
     end
   end
 
@@ -194,19 +194,19 @@ defmodule DMEx.SupervisorTest do
   # Validated where the names are declared rather than at first connect, because
   # a typo in a key and a typo in a handler's `logs:` are the same bug and only
   # one of them shows up in the "unknown log" message.
-  describe "logs:" do
+  describe "bindings:" do
     test "rejects a name that is not a legal identifier" do
-      assert start_error(logs: [{"Orders", @url}]) =~
+      assert start_error(bindings: [{"Orders", @url}]) =~
                ~s(a log name must be an atom or a string matching)
     end
 
     test "rejects a URL with no scheme, naming the entry" do
-      assert start_error(logs: [test: "orders.internal/stream"]) =~
+      assert start_error(bindings: [test: "orders.internal/stream"]) =~
                ~r/URL for "test".*no scheme/s
     end
 
     test "rejects a non-http scheme" do
-      assert start_error(logs: [test: "ftp://orders.internal/stream"]) =~
+      assert start_error(bindings: [test: "ftp://orders.internal/stream"]) =~
                ~r/URL for "test".*not http or https/s
     end
 
@@ -214,29 +214,29 @@ defmodule DMEx.SupervisorTest do
     # used to fall past the http clause and be reported as a bad scheme — a
     # message naming the one part of the URL that was fine.
     test "rejects an http URL with no host, saying so" do
-      assert start_error(logs: [test: "http:stream"]) =~
+      assert start_error(bindings: [test: "http:stream"]) =~
                ~r/URL for "test".*no host/s
     end
 
     test "rejects something that is neither a URL nor a module" do
-      assert start_error(logs: [test: nil]) =~
+      assert start_error(bindings: [test: nil]) =~
                ~r/URL for "test".*neither a log module nor a non-empty string/s
     end
 
     test "rejects an entry that is not a pair" do
-      assert start_error(logs: ["nope"]) =~ "must be `name: url_or_module`"
+      assert start_error(bindings: ["nope"]) =~ "must be `name: url_or_module`"
     end
 
     # `Map.new/2` let the last one win, so a repeat silently discarded a log's
     # target — and with it the transport every subscription on that name uses.
     # `DMEx.Handler`'s own `logs:` has always refused this.
     test "rejects a repeated name" do
-      assert start_error(logs: [test: @url, test: Log]) =~
-               ~s(`logs:` names "test" twice)
+      assert start_error(bindings: [test: @url, test: Log]) =~
+               ~s(`bindings:` names "test" twice)
     end
 
     test "rejects a logs option that is not a list" do
-      assert start_error(logs: "nope") =~ "`logs:` must be a keyword list"
+      assert start_error(bindings: "nope") =~ "`bindings:` must be a keyword list"
     end
   end
 
@@ -374,7 +374,7 @@ defmodule DMEx.SupervisorTest do
   describe "resolving where the cursor is written" do
     test "a bare subscribe/2 with no repo and nothing running names both fixes" do
       assert_raise ArgumentError, ~r/nowhere to write.*`repo:` on the call, or start/s, fn ->
-        DMEx.Supervisor.subscribe(Handlers.Echo, logs: @logs, supervisor: NotRunningSupervisor)
+        DMEx.Supervisor.subscribe(Handlers.Echo, bindings: @logs, supervisor: NotRunningSupervisor)
       end
     end
 
@@ -398,7 +398,7 @@ defmodule DMEx.SupervisorTest do
 
   describe "resolving logs" do
     test "a bare subscribe/2 with no logs and nothing running names both fixes" do
-      assert_raise ArgumentError, ~r/no `logs:`.*Pass them on the call, or start/s, fn ->
+      assert_raise ArgumentError, ~r/no `bindings:`.*Pass them on the call, or start/s, fn ->
         DMEx.Supervisor.subscribe(Handlers.Echo,
           repo: Repo,
           supervisor: NotRunningSupervisor
@@ -411,7 +411,7 @@ defmodule DMEx.SupervisorTest do
     test "call-site logs override the supervisor's" do
       start_supervisor([])
 
-      {:ok, [pid]} = subscribe(Handlers.Echo, logs: [test: "https://override.test/stream"])
+      {:ok, [pid]} = subscribe(Handlers.Echo, bindings: [test: "https://override.test/stream"])
 
       assert :sys.get_state(pid).origin == "https://override.test/stream"
     end
@@ -440,7 +440,7 @@ defmodule DMEx.SupervisorTest do
     {:error, {%ArgumentError{message: message}, _stacktrace}} =
       DMEx.Supervisor.start_link(
         Keyword.merge(
-          [name: TestSupervisor, otp_app: nil, repo: Repo, logs: @logs],
+          [name: TestSupervisor, otp_app: nil, repo: Repo, bindings: @logs],
           opts
         )
       )
@@ -454,7 +454,7 @@ defmodule DMEx.SupervisorTest do
     start_supervised!(
       {DMEx.Supervisor,
        Keyword.merge(
-         [name: TestSupervisor, otp_app: nil, repo: Repo, logs: @logs],
+         [name: TestSupervisor, otp_app: nil, repo: Repo, bindings: @logs],
          opts
        )}
     )

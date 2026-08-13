@@ -8,12 +8,12 @@ defmodule DMEx.Log do
 
   A log module is a handle, not a process pool. It carries which storage adapter
   and repo an append goes through, and thereby which `dmex_messages` table. Name
-  it in `DMEx.Supervisor`'s `logs:` — an application may own several — and mount
+  it in `DMEx.Supervisor`'s `bindings:` — an application may own several — and mount
   its endpoint:
 
       children = [
         MyApp.Repo,
-        {DMEx.Supervisor, repo: MyApp.Repo, logs: [orders: MyApp.Log]}
+        {DMEx.Supervisor, repo: MyApp.Repo, bindings: [orders: MyApp.Log]}
       ]
 
       # in a Plug.Router

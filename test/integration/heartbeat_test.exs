@@ -106,7 +106,7 @@ defmodule DMEx.Integration.HeartbeatTest do
 
   describe "a DMEx consumer on a quiet stream" do
     setup ctx do
-      start_supervisor!(Server.logs(ctx.url))
+      start_supervisor!(Server.bindings(ctx.url))
 
       :ok
     end
@@ -154,7 +154,8 @@ defmodule DMEx.Integration.HeartbeatTest do
       base = Server.start!(plug: SilentPlug)
 
       start_supervised!(
-        {DMEx.Supervisor, name: SilentHandler, otp_app: nil, repo: IntegrationRepo, logs: Server.logs(base <> "/stream")}
+        {DMEx.Supervisor,
+         name: SilentHandler, otp_app: nil, repo: IntegrationRepo, bindings: Server.bindings(base <> "/stream")}
       )
 
       ref = :telemetry_test.attach_event_handlers(self(), [[:dmex, :handler, :reconnect]])
@@ -177,7 +178,7 @@ defmodule DMEx.Integration.HeartbeatTest do
 
       start_supervised!(
         {DMEx.Supervisor,
-         name: PersistentHandler, otp_app: nil, repo: IntegrationRepo, logs: Server.logs(base <> "/stream")}
+         name: PersistentHandler, otp_app: nil, repo: IntegrationRepo, bindings: Server.bindings(base <> "/stream")}
       )
 
       ref = :telemetry_test.attach_event_handlers(self(), [[:dmex, :handler, :reconnect]])

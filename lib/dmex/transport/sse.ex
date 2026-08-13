@@ -7,7 +7,7 @@ defmodule DMEx.Transport.SSE do
   receive side is a reader process owning a Mint connection, decoding what comes
   back (`DMEx.Transport.SSE.Decoder`) and handing rows to its subscription.
 
-  Chosen for a `logs:` entry that is a URL. Everything true of a *wire* and of
+  Chosen for a `bindings:` entry that is a URL. Everything true of a *wire* and of
   nothing else lives here:
 
     * the request contract (`DMEx.Handler.Request`)

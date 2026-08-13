@@ -16,7 +16,7 @@ defmodule DMEx.Transport do
   one module and its only other user in another, free to drift.
 
   Nothing here guards against *mismatched* ends being paired, because nothing
-  can pair them: a transport is inferred from a `logs:` binding, never
+  can pair them: a transport is inferred from a `bindings:` entry, never
   configured — see `DMEx.Supervisor`.
 
   ## The receive side is a process

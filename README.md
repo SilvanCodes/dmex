@@ -54,7 +54,7 @@ end
 {DMEx.Supervisor,
  otp_app: :my_app,
  repo: MyApp.Repo,
- logs: [
+ bindings: [
    catalogue: MyApp.Log,                        # owned: started here
    orders: "https://orders.internal/stream"     # someone else's: read
  ]}
@@ -62,7 +62,7 @@ end
 
 Handler modules are never listed: every one compiled into an application that
 depends on `:dmex` is discovered and started — one subscription per log in its
-`logs:`, each with its own cursor — and one naming a log that `logs:` does not
+`logs:`, each with its own cursor — and one naming a log that `bindings:` does not
 bind stops the boot rather than silently never running.
 
 The binding also chooses how the log is read, which is why nothing configures a

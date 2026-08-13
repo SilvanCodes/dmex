@@ -2,7 +2,7 @@ defmodule DMEx.Transport.Local do
   @moduledoc """
   Reading a log this application owns, in this VM.
 
-  Chosen for a `logs:` entry that is a module rather than a URL. There is no
+  Chosen for a `bindings:` entry that is a module rather than a URL. There is no
   wire, so there is no framing and no fingerprint — only a read and a handler.
   The loop's heartbeat branch still runs; `heartbeat/1` is a no-op because there
   is no reader that could mistake silence for death.

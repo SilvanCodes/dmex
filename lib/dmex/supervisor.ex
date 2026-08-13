@@ -6,7 +6,7 @@ defmodule DMEx.Supervisor do
       {DMEx.Supervisor,
        otp_app: :my_app,
        repo: MyApp.Repo,
-       logs: [
+       bindings: [
          orders: MyApp.OrdersLog,
          returns: MyApp.ReturnsLog,
          billing: "https://billing.internal/stream"
@@ -31,7 +31,7 @@ defmodule DMEx.Supervisor do
 
   ## Options
 
-    * `:logs` — a keyword list of log name to either a `DMEx.Log` module (owned)
+    * `:bindings` — a keyword list of log name to either a `DMEx.Log` module (owned)
       or a stream URL (remote).
     * `:otp_app` — the application whose modules are scanned for handlers, and
       for the message types a *pure consumer* can see. Defaults to the Mix
@@ -55,7 +55,7 @@ defmodule DMEx.Supervisor do
   `repo:` (and optionally `storage:` / `prefix:`) is the default for every
   subscription under this supervisor. A `subscribe/2` call may override it, or
   resolve it from the supervisor named by `supervisor:`; with neither it raises
-  and names both fixes. `logs:` resolves the same way.
+  and names both fixes. `bindings:` resolves the same way.
 
   **Two subscriptions cannot share one identity** — `DMEx.Handler` covers the
   `{log, id}` pair. Checked across every discovered handler before any child
@@ -81,8 +81,8 @@ defmodule DMEx.Supervisor do
   # This child spec's own vocabulary, and `subscribe/2`'s. `:handler` is
   # deliberately absent from the second: it is the positional argument, so a stray
   # `handler:` in the options is a mistake worth raising on.
-  @supervisor_opts [:name, :otp_app, :logs]
-  @subscription_opts [:supervisor, :logs]
+  @supervisor_opts [:name, :otp_app, :bindings]
+  @subscription_opts [:supervisor, :bindings]
 
   @doc false
   @spec child_spec(keyword()) :: Supervisor.child_spec()
@@ -116,12 +116,12 @@ defmodule DMEx.Supervisor do
         "`subscribe/2`, not here."
     )
 
-    logs = Bindings.logs!(opts)
+    bindings = Bindings.declared!(opts)
     otp_app = otp_app(opts)
 
     # Before any child starts, and loudly: both failures are pure functions of the
     # declarations, so nothing has to be running to answer them.
-    handlers = __startable__!(Handler.discover(otp_app), logs)
+    handlers = __startable__!(Handler.discover(otp_app), bindings)
 
     # Both the collision check and the cache seed, and the only scan on the boot
     # path. One index for the node, but one scan per application that a scan
@@ -130,18 +130,18 @@ defmodule DMEx.Supervisor do
     # owning a log, which is `otp_app` only for a single-app host. An umbrella
     # parent would otherwise be scanned lazily inside the first selective
     # connect, turning a collision into a 500. See `DMEx.Message.types/0`.
-    for app <- Enum.uniq([otp_app | log_apps(logs)]), do: DMEx.Message.refresh_index(app)
+    for app <- Enum.uniq([otp_app | log_apps(bindings)]), do: DMEx.Message.refresh_index(app)
 
     storage = DMEx.Storage.opts(opts)
 
     children =
-      owned_logs(logs) ++
+      owned_logs(bindings) ++
         [
           # The default storage and the log bindings ride along as registry
           # metadata, seeded at start, which is why a bare subscribe/2 can find
           # them with no GenServer call.
-          {Registry, keys: :unique, name: registry(name), meta: [storage: storage, logs: logs]},
-          {Subscriptions, name: subscriptions(name), children: discovered(name, handlers, logs, storage)}
+          {Registry, keys: :unique, name: registry(name), meta: [storage: storage, bindings: bindings]},
+          {Subscriptions, name: subscriptions(name), children: discovered(name, handlers, bindings, storage)}
         ]
 
     # `:rest_for_one` because the registry owns what the subscriptions register
@@ -161,15 +161,15 @@ defmodule DMEx.Supervisor do
   # Every discovered handler's subscriptions, as child specs. The same options
   # `subscribe/2` builds, from the same function, so a discovered subscription and
   # a hand-started one cannot be configured differently.
-  defp discovered(name, handlers, logs, storage) do
+  defp discovered(name, handlers, bindings, storage) do
     for handler <- handlers,
         declaration = Handler.declaration!(handler),
         config = Config.handler!(declaration.config),
         log <- declaration.logs,
-        do: {Subscription, child_opts(name, declaration, log, logs, config, storage)}
+        do: {Subscription, child_opts(name, declaration, log, bindings, config, storage)}
   end
 
-  # Returns the discovered handlers that may be started against `logs`, or raises.
+  # Returns the discovered handlers that may be started against `bindings`, or raises.
   #
   # The two ways a set of handlers cannot be started, both refused before a child
   # exists rather than at the first connect. `Bindings.transport!/3` *is* the second
@@ -180,13 +180,13 @@ defmodule DMEx.Supervisor do
   # directly — no public door hands one in.
   @doc false
   @spec __startable__!([module()], Bindings.t()) :: [module()]
-  def __startable__!(handlers, logs) do
+  def __startable__!(handlers, bindings) do
     reject_duplicate_ids!(handlers)
 
     for handler <- handlers,
         declaration = Handler.declaration!(handler),
         log <- declaration.logs,
-        do: Bindings.transport!(declaration, log, logs)
+        do: Bindings.transport!(declaration, log, bindings)
 
     handlers
   end
@@ -212,12 +212,12 @@ defmodule DMEx.Supervisor do
 
   # The applications owning the logs this supervisor starts — the ones a scan
   # cannot reach on its own unless they are named.
-  defp log_apps(logs), do: logs |> owned_logs() |> Enum.map(&Application.get_application/1)
+  defp log_apps(bindings), do: bindings |> owned_logs() |> Enum.map(&Application.get_application/1)
 
   # `Enum.uniq` because two names may legitimately point at one owned log, and
   # a supervisor cannot hold the same child twice.
-  defp owned_logs(logs) do
-    for {_name, target} <- logs, is_atom(target), uniq: true, do: target
+  defp owned_logs(bindings) do
+    for {_name, target} <- bindings, is_atom(target), uniq: true, do: target
   end
 
   # Every application depending on `:dmex` is scanned anyway, so this only adds
@@ -260,7 +260,7 @@ defmodule DMEx.Supervisor do
         "handler module, not here."
     )
 
-    bound = Bindings.resolve_logs!(opts, supervisor)
+    bound = Bindings.resolve!(opts, supervisor)
     storage = resolve_storage!(opts, supervisor)
     config = Config.handler!(Keyword.merge(declaration.config, opts))
 
@@ -290,8 +290,8 @@ defmodule DMEx.Supervisor do
 
   # One subscription's whole input, built the same way whether `init/1` names it
   # in the child list or `subscribe/2` adds it at runtime.
-  defp child_opts(supervisor, declaration, log, logs, config, storage) do
-    {transport, origin} = Bindings.transport!(declaration, log, logs)
+  defp child_opts(supervisor, declaration, log, bindings, config, storage) do
+    {transport, origin} = Bindings.transport!(declaration, log, bindings)
 
     [
       handler: declaration.handler,
@@ -400,6 +400,6 @@ defmodule DMEx.Supervisor do
     raise ArgumentError,
           "DMEx.Supervisor.subscribe/2 has nowhere to write this subscription's cursor. Pass a " <>
             "`repo:` on the call, or start #{inspect(supervisor)} with a default: " <>
-            "`{DMEx.Supervisor, repo: MyApp.Repo, logs: [...]}`."
+            "`{DMEx.Supervisor, repo: MyApp.Repo, bindings: [...]}`."
   end
 end

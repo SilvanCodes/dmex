@@ -23,8 +23,8 @@ defmodule DMEx.Log.Plug do
 
   ## `log_module:`, and not `log:`
 
-  A log **module**, never a name from `DMEx.Supervisor`'s `logs:`. The two are
-  different kinds of thing and the option says which: a `logs:` name is a
+  A log **module**, never a name from `DMEx.Supervisor`'s `bindings:`. The two are
+  different kinds of thing and the option says which: a bound name is a
   *reader's* alias for a log, scoped to the reading application and deliberately
   transport-transparent, while this is the local resource the mount serves. A
   producer needs no alias for its own log — on the network it is identified by
