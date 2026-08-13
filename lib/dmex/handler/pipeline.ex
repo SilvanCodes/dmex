@@ -45,7 +45,7 @@ defmodule DMEx.Handler.Pipeline do
 
   A skip runs no handler, so its advance is atomic with *nothing*, and on a
   mostly-skipped stream a transaction per row is the entire cost of consuming
-  (measured — see ARCHITECTURE's *What has been measured*). So a skip advances
+  (measured — `bench/e2e/catchup_drain.exs`). So a skip advances
   `:cursor`, sets `:pending`, and returns without touching the database; the run
   is persisted by `flush/1` on a `checkpoint_interval` timer and before anything
   re-reads the durable cursor.

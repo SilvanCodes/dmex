@@ -193,34 +193,19 @@ Each is the complete blob for the given type set, under §8's seed derivation.
 An implementation reproducing §1–§7 agrees with a DMEx producer even if it picks
 different seeds; matching the blobs above additionally confirms §8.
 
-## 10. Measured behaviour (informative)
-
-From `mix bench.fingerprint`, an 86-point sweep over set sizes 1–2000:
-
-| | measured | expected |
-| --- | --- | --- |
-| false negatives | **0** in 45 660 membership tests | 0, by construction |
-| false-positive rate | 14.65 ± 1.85 per million | 15.26 per million (2⁻¹⁶) |
-| `recovered / encoded` | 1.0 at 84 of 86 points; worst 1.00069 | ~1.0 |
-| bytes per type | 2.493 raw at n = 2000 | 2.46 asymptotically |
-| chars per type | 3.329 after base64url | — |
-
-`recovered / encoded` is the operationally meaningful figure: against a producer
-knowing ten times the types a consumer selects, how much does the consumer
-actually admit? See ARCHITECTURE.md for why this is the argument for 16-bit
-rather than 8-bit fingerprints.
-
-## 11. Size limits
+## 10. Size limits
 
 The blob lands in the request line, and therefore in every access-log line of
 every intermediary. nginx's `large_client_header_buffers` and Apache's
 `LimitRequestLine` both default to about 8 KB, which puts the ceiling at
-**roughly 2 400 message types**.
+**roughly 2 400 message types** — `mix bench.fingerprint` measures the bytes per
+type this rests on.
 
-Exceeding the limit fails loudly — a `414` at connect — rather than silently
-truncating a selection.
+DMEx neither bounds nor checks the blob against that limit. What happens past it
+is whatever the intermediary does — typically a `414`, which a consumer treats as
+fatal like any other 4xx it caused.
 
-## 12. The `/stream` namespace
+## 11. The `/stream` namespace
 
 `/stream/...` carries the *whole* of what distinguishes one subscription from
 another: a connect request has no DMEx headers at all, so a producer answers it

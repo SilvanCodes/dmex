@@ -11,6 +11,17 @@
 # Secondary signal: if locked and unlocked are close even at concurrency 32, the
 # bottleneck is fsync rather than the lock, and the advice to users is "batch
 # your appends", not "the lock is the problem".
+#
+# Last measured — developer machine, single Postgres, so read the shape rather
+# than the constants:
+#
+#   * locked/unlocked ratio 1.11x at concurrency 1, 1.12x at 2, 4.55x at 8,
+#     5.77x at 32;
+#   * locked throughput *falls* as concurrency rises: 252 -> 134 -> 32 -> 8
+#     appends/s.
+#
+# So append concurrency buys an application nothing, and the advice is to batch
+# work into fewer, larger messages.
 
 alias DMEx.BenchHelper, as: Helper
 alias DMEx.Test.IntegrationLog, as: Log

@@ -15,6 +15,18 @@
 #
 # (c) should sit near (a): a skipped row costs a map lookup and a telemetry
 # event, no database work.
+#
+# Last measured — developer machine, stable across four runs:
+#
+#   * (a) ~36 000 rows/s, (b) ~265 rows/s, (c) ~39 000 rows/s;
+#   * 200 000 skipped rows cost 5 cursor writes across a 5.15 s drain — one per
+#     `checkpoint_interval`, or 40 000 rows per write.
+#
+# The two orders of magnitude between (b) and the other two is the per-row
+# commit, which is the handler/cursor guarantee rather than overhead. At ~265
+# rows/s a million-row log of entirely handled messages replays in about an
+# hour; a mostly-skipped one replays at wire speed. (a) and (c) are paced by the
+# log's `max_batch_frequency`, not by anything the design imposes.
 
 alias DMEx.BenchHelper, as: Helper
 alias DMEx.Test.Messages.OrderPlaced

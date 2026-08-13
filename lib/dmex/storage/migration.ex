@@ -40,8 +40,9 @@ defmodule DMEx.Storage.Migration do
   **The primary key on `id`** serves every whole-log read directly: those are
   `id > cursor` range scans and nothing else. **`(type, id)`** serves a
   selective subscription's `id > cursor` plus a type predicate, and the planner
-  takes it only when the selection is rare enough to be cheaper — see
-  *What has been measured* in `ARCHITECTURE.md` for the numbers. It costs one
+  takes it only when the selection is rare enough to be cheaper — the `EXPLAIN`
+  session that measured the crossover is recorded beside the index in
+  `DMEx.Storage.Postgres.Migration`. It costs one
   index entry per append, paid whether or not anyone selects against it, because
   the alternative is that server-side selection saves bandwidth and no database
   work at all.

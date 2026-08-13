@@ -73,7 +73,8 @@ CREATE INDEX ON dmex_messages (type, id);
 
 **Two indexes, one per read shape.** The primary key serves a whole-log
 `id > cursor` range scan; `(type, id)` serves a selective one, and the
-planner takes whichever is cheaper (see *What has been measured*).
+planner takes whichever is cheaper — `DMEx.Storage.Postgres.Migration` records
+the `EXPLAIN` session that measured the crossover.
 
 **A row says what a message *is*, never who might want it.** A grouping stamped
 in at append time would be immutable with the table: fixed message by message,
@@ -521,75 +522,36 @@ of scope.
 
 ## What has been measured
 
-`bench/` answers design claims rather than catching regressions.
+`bench/` answers design claims rather than catching regressions. Each file
+states the claim it exists to answer and carries what it last measured, next to
+the code that would refute it — so the numbers are not restated here, where
+nothing regenerates them.
 
-- **The append lock is nearly free uncontended and expensive under contention** —
-  ~1.1× at concurrency 1–2, ~4.6× at 8, ~5.8× at 32, with locked throughput
-  *falling* as concurrency rises (252 → 134 → 32 → 8 appends/s). Append
-  concurrency buys an application nothing; batch work into fewer, larger
-  messages instead.
-- **Per-connection pacing holds, and an idle log is flat in C.** Each connection
-  writes well under its log's `max_batch_frequency` however fast the log is
-  appended to — 53–66 writes/s against the 100/s default at C=10 and C=50. An
-  idle log costs one query per poll interval per *app*, not per connection: 1/s
-  flat at 10, 50 and 200 connections.
-- **Pool checkout queueing is where fanout binds, and it binds before 200
-  connections.** At C=200 with a 100/s append rate, ~50 000 of ~61 000 queries
-  waited over 5 ms for a checkout and per-connection writes fell to ~40–48/s:
-  the frequency cap stops being the limit and the pool starts being it. At C=50
-  the same load queued only ~120 of ~30 000, and at C=10 none. That is the
-  argument for partitioning the pool so stream reads cannot starve append
-  writes, and the reason `max_batch_frequency` is the first setting to lower
-  when many streams share one pool.
-
-  Three runs, developer machine, 10-connection pool — so read the shape rather
-  than the constants: queueing appears somewhere between 50 and 200 connections
-  here, and scales with pool size rather than with anything DMEx chooses.
+- **The append lock is nearly free uncontended and expensive under contention,
+  and locked throughput falls as concurrency rises** —
+  `bench/e2e/append_throughput.exs`. Append concurrency buys an application
+  nothing; batch work into fewer, larger messages instead.
+- **Per-connection pacing holds, an idle log is flat in C, and pool checkout
+  queueing is where fanout binds** — `bench/e2e/fanout_reads.exs`. It binds well
+  before 200 connections on a 10-connection pool, which is why
+  `max_batch_frequency` is the first setting to lower when many streams share
+  one, and the argument for partitioning the pool so stream reads cannot starve
+  append writes.
 - **The consumer is commit-bound on the rows it *handles*, not on the rows it
-  skips.** A client that reads and discards sustains ~36 000 rows/s, a
-  fully-skipping consumer ~39 000 rows/s, and a real consumer with a no-op
-  handler ~265 rows/s. The two-orders-of-magnitude gap is the per-row commit,
-  and that transaction is the handler/cursor guarantee rather than overhead.
+  skips**, and coalescing is what buys the skip path its speed —
+  `bench/e2e/catchup_drain.exs`. A log of entirely handled messages replays two
+  orders of magnitude slower than a mostly-skipped one, and that is the figure
+  "arbitrarily replayable" should be quoted with.
+- **The selection filter behaves as the design assumes** — `mix bench.fingerprint`
+  sweeps 86 set sizes over 1–2000 and checks no false negatives, a
+  false-positive rate near 2⁻¹⁶, and the bytes per type the sizing argument
+  rests on. It also puts a number on the request-line ceiling.
+- **The `(type, id)` index is taken exactly when it pays** — a one-off `EXPLAIN`
+  session rather than a `bench/` artifact, recorded where the index is created in
+  `DMEx.Storage.Postgres.Migration`.
 
-  Coalescing is what buys the skip path that speed, and it is counted rather
-  than assumed: **200 000 skipped rows cost 5 cursor writes** — one per
-  `checkpoint_interval` across a 5.15 s drain, or 40 000 rows per write.
-
-  At ~265 rows/s a million-row log of entirely handled messages takes roughly an
-  hour to replay, and that is the figure "arbitrarily replayable" should be
-  quoted with. A mostly-skipped log replays at wire speed.
-
-  The ~36 000 and ~39 000 figures are paced by the log's `max_batch_frequency`
-  (100/s by default, so `max_batch_rows` × 100 is the ceiling), not by a limit
-  the design imposes; only the ~265 is a property of the consumer.
-- **The selection filter behaves as the design assumes.** `mix bench.fingerprint`
-  sweeps 86 set sizes over 1–2000: **zero false negatives** across 45 660
-  membership tests, a false-positive rate of **14.65 ± 1.85 per million** against
-  2⁻¹⁶'s expected 15.26, and **2.49 bytes per type** raw (3.33 after base64url)
-  against the 2.46 the sizing argument claims. `recovered / encoded` is a flat
-  1.0 at 84 of 86 points against a producer knowing 10× the types selected,
-  worst case 1.00069.
-
-  That flatness is the evidence for 16-bit fingerprints rather than 8. Since
-  membership is tested per *type* and not per row, a false positive admits one
-  entire message type for the life of a connection — at 8 bits the same universe
-  would admit a spurious type at roughly every other point, and one unlucky draw
-  is a connection receiving all of the highest-volume type in the system.
-
-  It also puts a number on the request-line ceiling: **~2 400 message types** at
-  an 8 KB limit.
-- **The `(type, id)` index is taken exactly when it pays.** This one is
-  a one-off `EXPLAIN` session rather than a `bench/` artifact — nothing in
-  `bench/` runs `EXPLAIN`. On a 500k-row skewed log (one type at 99%, one at
-  0.9%, one at 0.1%): the 0.1% type uses the index; the 0.9% type or larger uses
-  the primary key and filters. Which plan the planner takes is measured; that the
-  primary-key plan also costs *fewer buffers* than the index plan would is not —
-  forcing the alternative needs a planner extension this database does not have,
-  so that half rests on analysis. A hand-written per-type `LATERAL`
-  seek — the usual loose-index-scan workaround — is *worse* everywhere except the
-  most extreme selectivity, because each branch fetches a whole `LIMIT` per type
-  and discards the surplus. So plain `type = ANY($1)` is the right query
-  and the planner is left to choose.
+Every figure is developer-machine and small-sample. The shapes are reproduced;
+the constants are not portable.
 
 ## Open questions
 

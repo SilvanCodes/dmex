@@ -17,6 +17,20 @@
 #
 # Not a benchee benchmark: there is nothing here to time. It is an analysis, and
 # it prints a CSV plus a summary.
+#
+# Last measured (fixed seed, so the false-positive figure is reproducible):
+#
+#   * **zero** false negatives across 45 660 membership tests;
+#   * 14.65 +/- 1.85 false positives per million, against 2^-16's expected 15.26;
+#   * 2.493 bytes per type raw, 3.329 after base64url;
+#   * `recovered / encoded` flat at 1.0 for 84 of 86 set sizes against a producer
+#     knowing 10x the types selected, worst case 1.00069;
+#   * request-line ceiling ~2 460 types at an 8 KB limit.
+#
+# That flatness is the evidence for 16-bit fingerprints rather than 8: at 8 bits
+# the same universe would admit a spurious type at roughly every other point,
+# and one unlucky draw is a connection receiving all of the highest-volume type
+# in the system.
 
 alias DMEx.Handler.Fingerprint
 

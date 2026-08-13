@@ -80,6 +80,15 @@ defmodule DMEx.Storage.Postgres.Migration do
     # For exactly one query shape — `DMEx.Storage.Migration` covers when the
     # planner takes it, and `c:DMEx.Storage.read/5` why that makes a selective
     # read a *separate statement* rather than one nullable predicate.
+    #
+    # Measured once, on a 500k-row skewed log (one type at 99%, one at 0.9%, one
+    # at 0.1%): the 0.1% type gets `Index Scan using dmex_messages_type_id_index`,
+    # the 0.9% type and larger get `Index Scan using dmex_messages_pkey` and
+    # filter. Exactly the crossover the two-index design assumes, and the reason
+    # `type = ANY($1)` is left plain for the planner to choose. A hand-written
+    # per-type `LATERAL` seek — the usual loose-index-scan workaround — measured
+    # *worse* everywhere except the most extreme selectivity, because each branch
+    # fetches a whole `LIMIT` per type and discards the surplus.
     create_if_not_exists(index(@messages, [:type, :id], prefix: prefix))
 
     # Written out rather than through `constraint/3`, because Ecto has no

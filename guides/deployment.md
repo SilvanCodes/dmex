@@ -66,10 +66,11 @@ write's drain time is therefore a real term in the stall budget:
 max_batch_rows / (slowest consumer's rows per second)  <  stall_timeout
 ```
 
-265 rows/s is the measured ceiling for a handler that commits at all (see
-ARCHITECTURE's *What has been measured*), so at the defaults that is
-`500 / 265 ≈ 1.9 s` against a 30 s budget. It breaks down below roughly
-**17 rows/s** — a handler spending 60 ms per message.
+`bench/e2e/catchup_drain.exs` measures the ceiling for a handler that commits at
+all — a few hundred rows per second, so at the defaults one write's drain is a
+couple of seconds against a 30 s budget. It breaks down when a handler spends
+tens of milliseconds per message; run that benchmark against your own handler if
+you are near it.
 
 If your handlers are that slow, lower `max_batch_rows` rather than raising
 `stall_timeout`: a smaller batch also lowers the latency floor and the
@@ -183,7 +184,7 @@ not raw query load.
   scan, on top of whatever else the application does. **This is the setting most
   likely to need lowering**: measured on a 10-connection pool, checkout queueing
   appears somewhere between 50 and 200 busy streams at the default, and at 200
-  it dominates — see ARCHITECTURE's *What has been measured*. The cost of
+  it dominates — `bench/e2e/fanout_reads.exs` has the numbers. The cost of
   lowering it is latency, which rises to about `1 / (2 x max_batch_frequency)`
   on average — 5 ms at the default, 100 ms at 5. Consumers do not ask for pacing
   and cannot override it.

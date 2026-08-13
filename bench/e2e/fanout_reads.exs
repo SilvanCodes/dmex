@@ -15,6 +15,21 @@
 #   * **Where pool checkout queueing appears.** That is the connection ceiling,
 #     and the number that would justify partitioning the pool so stream reads
 #     cannot starve append writes.
+#
+# Last measured — developer machine, three runs, `pool_size: 10`:
+#
+#   * each connection wrote 53-66 times/s against the 100/s default, at C=10 and
+#     C=50, however fast the log was appended to;
+#   * an idle log cost 1 query/s flat at C=10, 50 and 200;
+#   * pool checkout queueing appears between C=50 and C=200: at C=200 with a
+#     100/s append rate ~50 000 of ~61 000 queries waited over 5 ms and
+#     per-connection writes fell to ~40-48/s, at C=50 only ~120 of ~30 000, and
+#     at C=10 none.
+#
+# So the frequency cap stops being the limit and the pool starts being it — and
+# it scales with pool size rather than with anything DMEx chooses, which is why
+# `max_batch_frequency` is the first setting to lower when many streams share
+# one pool.
 
 alias DMEx.BenchHelper, as: Helper
 alias DMEx.Test.IntegrationLog, as: Log
