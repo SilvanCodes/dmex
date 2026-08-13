@@ -224,6 +224,11 @@ defmodule DMEx.Storage.Postgres do
     INSERT INTO #{table(@dead_messages, opts)}
            (subscription, id, type, data, metadata)
          VALUES ($1, $2, $3, $4::text::jsonb, $5::text::jsonb)
+    ON CONFLICT (subscription, id)
+      DO UPDATE SET type = EXCLUDED.type,
+                    data = EXCLUDED.data,
+                    metadata = EXCLUDED.metadata,
+                    inserted_at = clock_timestamp()
     """
 
     params = [subscription, id, type, JSON.encode!(data), JSON.encode!(metadata)]

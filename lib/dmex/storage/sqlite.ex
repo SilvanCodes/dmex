@@ -307,6 +307,11 @@ defmodule DMEx.Storage.SQLite do
     sql = """
     INSERT INTO #{@dead_messages} (subscription, id, type, data, metadata)
          VALUES (?1, ?2, ?3, ?4, ?5)
+    ON CONFLICT (subscription, id)
+      DO UPDATE SET type = excluded.type,
+                    data = excluded.data,
+                    metadata = excluded.metadata,
+                    inserted_at = #{@now}
     """
 
     # A dead row arrives as the consumer held it, so the encode happens here.

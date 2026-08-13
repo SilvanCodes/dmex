@@ -443,6 +443,18 @@ for {storage, repo, tag} <- [
         assert count("dmex_dead_messages", opts) == 2
       end
 
+      # `DMEx.Handler.Cursors.reset!/2` moves a cursor backwards, so the same
+      # subscription can reach the same message twice. A plain INSERT made the
+      # second failure unrecordable, and the subscription crash-looped on a row
+      # it had already given up on.
+      test "one subscription may give up on the same log row twice", %{opts: opts} do
+        assert :ok = @storage.record_dead_message(dead_row(), opts)
+        assert :ok = @storage.record_dead_message(dead_row(type: "later.attempt"), opts)
+
+        assert count("dmex_dead_messages", opts) == 1
+        assert {:ok, [%{type: "later.attempt"}]} = @storage.list_dead_messages(@some, opts)
+      end
+
       # Nothing is defaulted here: every slot is mandatory on a message, so a
       # transport rejects one short of them and a row that reaches storage is
       # whole — which is why the adapter matches the shape in its head.
@@ -535,7 +547,7 @@ for {storage, repo, tag} <- [
       %{
         "subscription" => Keyword.get(overrides, :subscription, @some),
         "id" => Keyword.get(overrides, :id, 1042),
-        "type" => "MyApp.Messages.OrderPlaced",
+        "type" => Keyword.get(overrides, :type, "MyApp.Messages.OrderPlaced"),
         "data" => %{"order_id" => 7},
         "metadata" => %{"trace_id" => "abc"}
       }

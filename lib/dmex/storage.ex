@@ -266,6 +266,12 @@ defmodule DMEx.Storage do
 
   **Nothing about the failure is stored**, which is what lets
   `c:list_dead_messages/2` return the row as an ordinary `t:row/0`.
+
+  Recording is an **upsert on `{subscription, id}`**, because a cursor moves both
+  ways: `DMEx.Handler.Cursors.reset!/2` below a dead-lettered id re-delivers that
+  message, and a second failure has to be recordable or the subscription
+  crash-loops on a row it already gave up on once. The later attempt wins and
+  restamps `inserted_at`, which is when the row last landed here.
   """
   @callback record_dead_message(dead_row(), opts()) :: :ok | {:error, term()}
 
