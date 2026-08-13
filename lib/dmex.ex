@@ -211,5 +211,14 @@ defmodule DMEx do
   """
   @spec backoff(pos_integer(), pos_integer(), pos_integer()) :: pos_integer()
   def backoff(attempt, base, max) when is_integer(attempt) and attempt >= 1,
-    do: :rand.uniform(min(max, base * Integer.pow(2, attempt - 1)))
+    do: :rand.uniform(ceiling(base, max, attempt - 1))
+
+  # Doubling with an early exit rather than `min(max, base * 2^(attempt - 1))`.
+  # `attempt` is unbounded — a subscription whose origin is down counts up for as
+  # long as it runs, and only a successful connect resets it — and the power is
+  # evaluated before the cap, so the closed form allocates a `2^n` bignum per
+  # reconnect, growing forever, to answer `max` every time.
+  defp ceiling(ceiling, max, _doublings) when ceiling >= max, do: max
+  defp ceiling(ceiling, _max, 0), do: ceiling
+  defp ceiling(ceiling, max, doublings), do: ceiling(ceiling * 2, max, doublings - 1)
 end
