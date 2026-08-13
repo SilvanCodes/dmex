@@ -74,13 +74,34 @@ be a second vocabulary to define, version, discover and keep in sync, and the
 two can disagree: naming a type the handler cannot decode, or omitting one it
 can, both silently. Derived, that state is unrepresentable.
 
-**It travels as an XOR filter in the path.** Module names run 25–40 bytes each,
-so spelling them out exhausts a conservative request line at around sixty types.
-A 16-bit XOR filter encodes the same set at ~2.46 bytes per type, putting the
-ceiling near 2 400. The blob is built at compile time and is a pure function of
-the message set, so it is a constant on `__dmex__/0` and the same handler
-compiles to the same URL everywhere. `guides/fingerprint-spec.md` is the
-normative encoding; `DMEx.Handler.Fingerprint` implements it.
+**It travels as an XOR filter in the path**, and the trade is worth stating
+precisely, because it is not free at every size. What travels is the declared
+`type:` strings, not module names, and the filter has a fixed floor: `capacity/1`
+is `ceil(1.23n) + 32` slots at 2 bytes each plus an 8-byte seed, so a *one-type*
+handler encodes to 107 base64url characters. Against a comma-joined sorted list of
+ordinary type names (`acme.orders.event_n`, 19 characters):
+
+| types | filter | literal list |
+| ---: | ---: | ---: |
+| 1 | 107 | 19 |
+| 5 | 115 | 99 |
+| 8 | 123 | 159 |
+| 20 | 163 | 410 |
+| 60 | 299 | 1 250 |
+| 1 000 | 3 379 | 21 892 |
+
+So the literal list wins below about six types and the filter wins from about
+eight, unboundedly: at ~2.5 bytes per type it puts the ceiling near 2 400 types
+against a conservative 8 KB request line, where a literal list reaches that line at
+a few hundred. The filter is chosen for the shape of that curve rather than for any
+one point on it — a URL whose length is a function of the selection rather than of
+the producer's naming taste — and `mix bench.fingerprint` measures the bytes per
+type it rests on.
+
+The blob is built at compile time and is a pure function of the message set, so it
+is a constant on `__dmex__/0` and the same handler compiles to the same URL
+everywhere. `guides/fingerprint-spec.md` is the normative encoding;
+`DMEx.Handler.Fingerprint` implements it.
 
 **Errors point one way, and that is the whole reason it works.** There are no
 false negatives, so every selected type is delivered. A false positive admits

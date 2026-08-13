@@ -9,10 +9,14 @@ defmodule DMEx.Handler.Fingerprint do
   non-Elixir
   consumer has to reproduce exactly.
 
-  **A filter rather than the types themselves**: [ARCHITECTURE](ARCHITECTURE.md) has
-  the sizing
-  argument that rules out spelling them out, and the spec why a **static** set —
-  built once, never added to — makes an
+  **A filter rather than the types themselves**, above a handful of them:
+  [ARCHITECTURE](ARCHITECTURE.md) has the measured crossover, and the number to
+  know here is the floor — `capacity/1` is `ceil(1.23n) + 32` slots, so a one-type
+  handler still encodes to 107 base64url characters and a literal list of its own
+  types would be a fifth of that. What the filter buys is the *curve*: a URL whose
+  length follows the selection rather than the producer's naming, and a ceiling in
+  the low thousands of types rather than the low hundreds. The spec has why a
+  **static** set — built once, never added to — makes an
   [XOR filter](https://arxiv.org/abs/1912.08258) (Graf & Lemire) the right family
   rather than Bloom or cuckoo. That compression is what makes a bare browser
   `EventSource`, whose URL is the only thing it controls, capable of real
