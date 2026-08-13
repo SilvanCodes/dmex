@@ -125,27 +125,39 @@ defmodule DMEx.Supervisor.Bindings do
   def logs!(opts) do
     case Keyword.get(opts, :logs, []) do
       entries when is_list(entries) or is_map(entries) ->
-        Map.new(entries, fn
-          {name, target} ->
-            name =
-              DMEx.validate_identifier!(
-                name,
-                "a log name",
-                " It is the same charset a handler's `logs:` and `name:` use, so \"/\" can join " <>
-                  "them with no escaping."
-              )
-
-            {name, log_target!(name, target)}
-
-          other ->
-            raise ArgumentError,
-                  "a `logs:` entry must be `name: url_or_module`, got: #{inspect(other)}"
-        end)
+        Enum.reduce(entries, %{}, &bind/2)
 
       other ->
         raise ArgumentError,
               "`logs:` must be a keyword list of name to URL or log module, got: #{inspect(other)}"
     end
+  end
+
+  defp bind({name, target}, logs) do
+    name =
+      DMEx.validate_identifier!(
+        name,
+        "a log name",
+        " It is the same charset a handler's `logs:` and `name:` use, so \"/\" can join " <>
+          "them with no escaping."
+      )
+
+    # `Map.new/2` collapsed a repeat silently, and this is the copy where the
+    # loser is a whole log's target and therefore its transport. Same rule as
+    # `DMEx.validate_keys!/5` and `DMEx.Handler`'s own `logs:`, for the same
+    # reason.
+    if Map.has_key?(logs, name) do
+      raise ArgumentError,
+            "`logs:` names #{inspect(name)} twice. One name is one log — one target, one " <>
+              "transport, one subscription per handler that reads it — so a repeat could only " <>
+              "ever mean one of them."
+    end
+
+    Map.put(logs, name, log_target!(name, target))
+  end
+
+  defp bind(other, _logs) do
+    raise ArgumentError, "a `logs:` entry must be `name: url_or_module`, got: #{inspect(other)}"
   end
 
   defp log_target!(name, module) when is_atom(module) and not is_nil(module) do

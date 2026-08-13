@@ -220,6 +220,14 @@ defmodule DMEx.SupervisorTest do
       assert start_error(logs: ["nope"]) =~ "must be `name: url_or_module`"
     end
 
+    # `Map.new/2` let the last one win, so a repeat silently discarded a log's
+    # target — and with it the transport every subscription on that name uses.
+    # `DMEx.Handler`'s own `logs:` has always refused this.
+    test "rejects a repeated name" do
+      assert start_error(logs: [test: @url, test: Log]) =~
+               ~s(`logs:` names "test" twice)
+    end
+
     test "rejects a logs option that is not a list" do
       assert start_error(logs: "nope") =~ "`logs:` must be a keyword list"
     end
