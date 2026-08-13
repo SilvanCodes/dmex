@@ -5,7 +5,7 @@ defmodule DMEx.Storage.Postgres do
   Raw SQL through `Ecto.Adapters.SQL` rather than Ecto schemas: the `data::text`
   that `c:DMEx.Storage.read/5` requires cannot be expressed as a schema load.
 
-  Three things here are Postgres's own — `c:dialect/1`, `c:DMEx.Storage.append/4`,
+  Three things here are Postgres's own — `c:DMEx.Storage.SQL.dialect/1`, `c:DMEx.Storage.append/4`,
   which serializes itself, and `c:DMEx.Storage.validate!/1`. Every statement comes
   from `DMEx.Storage.SQL`, which says why.
 

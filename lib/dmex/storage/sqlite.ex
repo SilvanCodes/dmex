@@ -6,7 +6,7 @@ defmodule DMEx.Storage.SQLite do
   the same reasons — the read has to hand back `data` and `metadata` as text. Here
   that costs nothing at all: the columns *are* text.
 
-  Three things here are SQLite's own — `c:dialect/1`,
+  Three things here are SQLite's own — `c:DMEx.Storage.SQL.dialect/1`,
   `c:DMEx.Storage.append/4`, which needs no lock, and
   `c:DMEx.Storage.validate!/1`. Every statement comes from `DMEx.Storage.SQL`,
   which says why.
