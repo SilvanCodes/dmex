@@ -157,6 +157,47 @@ defmodule DMEx.Supervisor do
         do: {Subscription, child_opts(name, declaration, log, logs, config, storage)}
   end
 
+  # Returns the discovered handlers that may be started against `logs`, or raises.
+  #
+  # The two ways a set of handlers cannot be started, both refused before a child
+  # exists rather than at the first connect. `Bindings.transport!/3` *is* the second
+  # check: a log name it cannot resolve is a subscription that could never exist,
+  # and resolving every one of them is the whole of asking.
+  #
+  # Public because it takes a handler *list*, which is what makes it testable
+  # directly — no public door hands one in.
+  @doc false
+  @spec __startable__!([module()], Bindings.t()) :: [module()]
+  def __startable__!(handlers, logs) do
+    reject_duplicate_ids!(handlers)
+
+    for handler <- handlers,
+        declaration = Handler.declaration!(handler),
+        log <- declaration.logs,
+        do: Bindings.transport!(declaration, log, logs)
+
+    handlers
+  end
+
+  # Names both modules, because "duplicate subscription id" without them is a
+  # riddle in an application with thirty handlers.
+  defp reject_duplicate_ids!(handlers) do
+    for handler <- handlers, id <- Handler.subscription_ids(handler), reduce: %{} do
+      seen ->
+        case seen do
+          %{^id => already} ->
+            raise ArgumentError,
+                  "#{inspect(already)} and #{inspect(handler)} both declare the subscription " <>
+                    "#{inspect(id)}. A subscription id keys the cursor, so two handlers " <>
+                    "sharing one would clobber each other's position — give one of them a " <>
+                    "different `name:`."
+
+          _ ->
+            Map.put(seen, id, handler)
+        end
+    end
+  end
+
   # The applications owning the logs this supervisor starts — the ones a scan
   # cannot reach on its own unless they are named.
   defp log_apps(logs), do: logs |> owned_logs() |> Enum.map(&Application.get_application/1)
@@ -296,18 +337,9 @@ defmodule DMEx.Supervisor do
   @spec registry(atom()) :: atom()
   def registry(name \\ @default_name), do: Module.concat(name, "Registry")
 
-  @doc "The dynamic supervisor name holding a supervisor's subscriptions."
+  @doc "The supervisor name holding a supervisor's subscriptions."
   @spec subscriptions(atom()) :: atom()
   def subscriptions(name \\ @default_name), do: Module.concat(name, "Subscriptions")
-
-  @doc """
-  Returns the discovered handlers that may be started against `logs`, or raises.
-
-  Both failures are pure functions of the declarations, so nothing has to be
-  running to answer them — which is why `init/1` asks before starting anything.
-  """
-  @spec __startable__!([module()], Bindings.t()) :: [module()]
-  def __startable__!(handlers, logs), do: Bindings.startable!(handlers, logs)
 
   ## Storage resolution
 

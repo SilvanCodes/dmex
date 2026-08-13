@@ -391,7 +391,7 @@ defmodule DMEx.SupervisorTest do
 
   describe "resolving logs" do
     test "a bare subscribe/2 with no logs and nothing running names both fixes" do
-      assert_raise ArgumentError, ~r/no `logs:`.*logs: \[orders:/s, fn ->
+      assert_raise ArgumentError, ~r/no `logs:`.*Pass them on the call, or start/s, fn ->
         DMEx.Supervisor.subscribe(Handlers.Echo,
           repo: Repo,
           supervisor: NotRunningSupervisor
