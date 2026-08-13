@@ -197,14 +197,6 @@ defmodule DMEx.Transport.LocalTest do
     for {_pid, _status, selection} <- Streams.all(Log), do: selection
   end
 
-  defp drain_selections(acc) do
-    receive do
-      {:selection, selection} -> drain_selections([selection | acc])
-    after
-      0 -> acc
-    end
-  end
-
   defp last_seen(subscription) do
     {:ok, cursor} = Postgres.last_seen(subscription, %{repo: Repo, prefix: nil})
 

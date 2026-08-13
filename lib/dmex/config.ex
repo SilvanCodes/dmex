@@ -73,6 +73,13 @@ defmodule DMEx.Config do
   # place. Two lists — one of defaults, one of field names to check — is how a
   # setting gets added to the first and forgotten in the second, which is a
   # validator that silently does not run.
+  #
+  # The moduledoc's tables are a *deliberate* second copy, held to this one by
+  # `test/dmex/config_test.exs`, which parses them back out of the docs chunk.
+  # Generating them instead does not work here: `@moduledoc` would have to
+  # interpolate this attribute, which means declaring it first, and the formatter
+  # hoists `@moduledoc` back above it — Styler's module-directive order. Tried; the
+  # result did not survive `mix format`.
   @log_settings [
     max_batch_frequency: {100, :positive_number},
     max_batch_rows: {500, :positive_integer},

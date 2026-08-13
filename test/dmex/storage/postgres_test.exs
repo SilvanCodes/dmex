@@ -8,8 +8,6 @@ defmodule DMEx.Storage.PostgresTest do
   alias DMEx.Storage.Postgres
   alias Ecto.Adapters.SQL
 
-  @some "orders/some"
-
   setup do
     %{opts: %{repo: Repo, lock: {1_701, 4_242}, prefix: nil}}
   end
