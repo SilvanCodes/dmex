@@ -18,7 +18,8 @@ defmodule DMEx.Log.Plug do
       consumer's filter admits. See `DMEx.Handler.Fingerprint` for the blob and
       `DMEx.Message.types/0` for what it is resolved against.
 
-  ARCHITECTURE.md's wire contract covers the rest of the URL vocabulary.
+  [ARCHITECTURE](ARCHITECTURE.md)'s wire contract covers the rest of the URL
+  vocabulary.
 
   ## `log_module:`, and not `log:`
 
@@ -33,7 +34,7 @@ defmodule DMEx.Log.Plug do
   Resolving one needs a running supervisor and its registry, and this runs at
   compile time (see `init/1`); a mount serving a log needs no `DMEx.Supervisor`
   at all today, since a log module carries its own supervision subtree. See
-  ARCHITECTURE.md on why DMEx does not proxy.
+  [ARCHITECTURE](ARCHITECTURE.md) on why DMEx does not proxy.
 
   ## Selection is resolved once, at connect
 
@@ -71,9 +72,11 @@ defmodule DMEx.Log.Plug do
   ## Response headers
 
   Beyond the ordinary SSE set: **`x-accel-buffering: no`**, nginx-specific and
-  stopping it buffering the stream (see `guides/deployment.md`), and, on a
+  stopping it buffering the stream (see [the deployment guide](deployment.md)), and,
+  on a
   selective stream only, **`dmex-matched-types`**, how many of the application's
-  types the filter admitted — ARCHITECTURE.md's wire contract covers what it is
+  types the filter admitted — [ARCHITECTURE](ARCHITECTURE.md)'s wire contract covers
+  what it is
   for.
 
   `connection: keep-alive` is set only on HTTP/1.1, where it means something; it
@@ -87,7 +90,7 @@ defmodule DMEx.Log.Plug do
   connect cursor cannot be resolved — an absent `Last-Event-ID` whose
   `c:DMEx.Storage.max_id/1` query fails.
 
-  There is no `503`/`Retry-After` *admission control* — see `ROADMAP.md`.
+  There is no `503`/`Retry-After` *admission control* — see [ROADMAP](ROADMAP.md).
   """
 
   @behaviour Plug

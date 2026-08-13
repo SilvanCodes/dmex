@@ -11,7 +11,8 @@ defmodule DMEx.Log.Params do
   | `last-event-id` | resume after this id | from now on | `400` |
 
   **DMEx defines no request headers.** See the wire contract in
-  `ARCHITECTURE.md`, which also covers why the selection goes in the path.
+  [ARCHITECTURE](ARCHITECTURE.md), which also covers why the selection goes in the
+  path.
 
   This module takes a path and request headers rather than a `Plug.Conn`, which
   keeps it pure, free of any optional dependency, and testable without a socket.
@@ -71,6 +72,8 @@ defmodule DMEx.Log.Params do
     end
   end
 
+  # Not an ExDoc link: this goes on the wire to a client whose author may not be
+  # reading hexdocs, so it names the file in the repository.
   @doc "What a `400` should say back to the client."
   @spec describe(error()) :: String.t()
   def describe({:invalid, @filter, value}) do

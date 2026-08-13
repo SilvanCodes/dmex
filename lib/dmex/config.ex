@@ -14,12 +14,12 @@ defmodule DMEx.Config do
 
   | setting | default | why |
   | --- | --- | --- |
-  | `max_batch_frequency` | `100` | reads per second. A hundred puts added latency (`1 / 2f`) at 5 ms, low enough to be invisible next to the network hop. The first setting to lower when many streams share one pool — `guides/deployment.md` has the pool arithmetic and the measurements. Any positive number: `0.2` is one read every five seconds. |
-  | `max_batch_rows` | `500` | rows per read. Bounds the **per-row** heap cost — about a kilobyte each once decoded and framed, which no byte budget can see — and bounds the running sum enforcing `max_batch_bytes`. `guides/deployment.md` sizes it against `stall_timeout`, since a write does not complete until the slowest handler has drained it. |
+  | `max_batch_frequency` | `100` | reads per second. A hundred puts added latency (`1 / 2f`) at 5 ms, low enough to be invisible next to the network hop. The first setting to lower when many streams share one pool — [The deployment guide](deployment.md) has the pool arithmetic. Any positive number: `0.2` is one read every five seconds. |
+  | `max_batch_rows` | `500` | rows per read. Bounds the **per-row** heap cost — about a kilobyte each once decoded and framed, which no byte budget can see — and bounds the running sum enforcing `max_batch_bytes`. [The deployment guide](deployment.md) sizes it against `stall_timeout`, since a write does not complete until the slowest handler has drained it. |
   | `max_batch_bytes` | `1_048_576` | **payload** bytes per read, enforced inside the query (see `c:DMEx.Storage.read/5`, which also covers the single oversized row). Bounds the half of the heap cost that scales with message size: 500 rows is half a megabyte at 1 KB each and half a gigabyte at 1 MB each. |
   | `heartbeat_interval` | `15_000` | ms; half the most common 30 s proxy idle timeout, so two heartbeats fit inside every window. |
   | `poll_interval` | `1_000` | ms; Oban stager parity. The worst-case wakeup latency when a `NOTIFY` is lost, costing one `max(id)` index descent per app per second. |
-  | `stall_timeout` | `30_000` | ms; the budget for any one blocking step of the send loop. Generous on purpose: killing a healthy slow handler costs a reconnect and a fresh catch-up read, where a wedged connection lingering 30 s costs one request process. `guides/deployment.md` sizes it against link speed. `:infinity` runs no watcher at all. |
+  | `stall_timeout` | `30_000` | ms; the budget for any one blocking step of the send loop. Generous on purpose: killing a healthy slow handler costs a reconnect and a fresh catch-up read, where a wedged connection lingering 30 s costs one request process. [The deployment guide](deployment.md) sizes it against link speed. `:infinity` runs no watcher at all. |
   | `stall_check_interval` | `1_000` | ms; how often `DMEx.Log.Watcher` sweeps, so a stall is reclaimed within `stall_timeout + stall_check_interval`. A sweep is one atomics read per connection and no query. |
 
   `max_batch_rows` and `max_batch_bytes` are not two spellings of one limit —

@@ -4,7 +4,7 @@ defmodule DMEx do
 
   Every application that appends messages owns and persists its own append-only
   message log — one ordinary SQL table — and streams it directly to its readers
-  over HTTP. See `ARCHITECTURE.md` for the design.
+  over HTTP. See [ARCHITECTURE](ARCHITECTURE.md) for the design.
 
   ## Installing
 

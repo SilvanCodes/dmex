@@ -9,7 +9,8 @@ defmodule DMEx.Transport.SSE.Frame do
       data: {"data":{"order_id":7},"metadata":{"trace_id":"abc"}}
 
   The column-to-slot table, and why each column goes where it does, is in
-  ARCHITECTURE.md's wire contract. `id:` is the row's own id, so a client echoing
+  [ARCHITECTURE](ARCHITECTURE.md)'s wire contract. `id:` is the row's own id, so a
+  client echoing
   it back as `Last-Event-ID` — which `DMEx.Log.Params` validates — resumes after it.
 
   ## Encoding

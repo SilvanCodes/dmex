@@ -58,7 +58,7 @@ defmodule DMEx.Handler.Request do
   `fingerprint` is `nil` for a whole-log subscription, which requests the bare
   `/stream`. Otherwise it is the handler's compile-time `DMEx.Handler.Fingerprint` blob,
   appended as a path segment rather than a query parameter — see the wire
-  contract in `ARCHITECTURE.md` for why.
+  contract in [ARCHITECTURE](ARCHITECTURE.md) for why.
   """
   @spec path(URI.t(), String.t() | nil) :: String.t()
   def path(%URI{path: path}, fingerprint \\ nil), do: join(path || "/", fingerprint)

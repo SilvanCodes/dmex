@@ -17,7 +17,7 @@ defmodule DMEx.Log.Watcher do
   `DMEx.Log.Status`) and this process enforces it from outside. That is the
   whole mechanism: no per-connection timer, no progress heuristics, no
   inspecting another process's state. Socket options are still worth setting —
-  `guides/deployment.md` says why — but nothing here depends on them.
+  [the deployment guide](deployment.md) says why — but nothing here depends on them.
 
   ## Why the kill is untrappable
 
@@ -35,7 +35,7 @@ defmodule DMEx.Log.Watcher do
 
   A peer that vanished while the kernel still accepts our bytes: deadlines keep
   being met and nothing inside this VM can tell. TCP keepalive is the only
-  lever — see `guides/deployment.md`.
+  lever — see [the deployment guide](deployment.md).
   """
 
   use GenServer

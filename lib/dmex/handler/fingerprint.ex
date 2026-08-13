@@ -5,10 +5,12 @@ defmodule DMEx.Handler.Fingerprint do
   A consumer builds one at compile time from the modules its handler matches on
   and encodes it into the path of the `GET` it opens; the producer resolves it
   against its own message types to decide which rows to read.
-  `guides/fingerprint-spec.md` is the normative encoding, which a non-Elixir
+  [The Selection Filter](fingerprint-spec.md) is the normative encoding, which a
+  non-Elixir
   consumer has to reproduce exactly.
 
-  **A filter rather than the types themselves**: ARCHITECTURE.md has the sizing
+  **A filter rather than the types themselves**: [ARCHITECTURE](ARCHITECTURE.md) has
+  the sizing
   argument that rules out spelling them out, and the spec why a **static** set —
   built once, never added to — makes an
   [XOR filter](https://arxiv.org/abs/1912.08258) (Graf & Lemire) the right family

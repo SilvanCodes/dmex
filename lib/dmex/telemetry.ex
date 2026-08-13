@@ -38,7 +38,7 @@ defmodule DMEx.Telemetry do
   ### `[:dmex, :stream, :reclaim]`
 
   `DMEx.Log.Watcher` killed a connection that blew its deadline. Measurements:
-  `:overdue_by` in ms. Metadata: `:log`. `guides/deployment.md` covers what an
+  `:overdue_by` in ms. Metadata: `:log`. [The deployment guide](deployment.md) covers what an
   occasional one costs, what a steady rate means, and how to size
   `stall_timeout` against it.
 
