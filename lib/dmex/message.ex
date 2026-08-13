@@ -39,10 +39,10 @@ defmodule DMEx.Message do
   the wire or the database — and so a producer and a consumer can be refactored
   on their own schedules.
 
-  **This is the one line in a message module that must not be edited casually.**
-  Changing it orphans every row already appended under the old type: a consumer
-  stops resolving them and skips them silently, exactly the way renaming the
-  module used to. There is no rename tooling.
+  **This is the one line in a message module that must not be edited in place.**
+  Replacing it orphans every row already appended under the old string: a
+  consumer stops resolving them and skips them silently, exactly the way
+  renaming the module used to. `retired:` is how a type is changed instead.
 
   Restricted to `[A-Za-z0-9_]+` segments joined by dots, because the type goes
   onto an SSE `event:` line and SSE field lines have no escaping. Dots are
@@ -50,6 +50,33 @@ defmodule DMEx.Message do
   `"acme.orders.placed"` — which is worth using: two producers declaring a bare
   `"order_placed"` collide on a consumer that reads both, and nothing outside a
   single node can detect that.
+
+  ## `retired:` — the types this module used to append under
+
+      use DMEx.Message,
+        type: "acme.orders.placed",
+        retired: ["order_placed"],
+        fields: [:order_id]
+
+  A retired type resolves to this module everywhere a current one does: it is a
+  key in the node's index, a member of `types/0`, a `cast/1` clause on every
+  handler matching this struct, and a member of that handler's selection
+  fingerprint — so a subscription resuming from a cursor older than the rename
+  reads its own history. What it is not is a second thing to append under:
+  `type/0` is still one string, and it is the one that reaches the `type`
+  column.
+
+  Because the log is append-only, **a retirement is as permanent as the type it
+  replaces**. The rows stay resolvable only while the declaration that resolves
+  them is still compiled, so dropping the entry later re-orphans exactly the
+  rows it was added for.
+
+  It does not migrate the payload. A row older than the rename may also be older
+  than the current `fields:`, and reshaping it is `c:cast/1`'s job — the same
+  seam a field change already uses, now reached through a second type string.
+
+  A retired type collides node-wide like any other: two modules cannot both
+  answer for one string, whether either claims it as current or retired.
 
   ## `c:cast/1` — the read-side inverse
 
@@ -95,7 +122,7 @@ defmodule DMEx.Message do
   clause needed.
   """
 
-  @message_opts [:type, :fields]
+  @message_opts [:type, :fields, :retired]
   # Dot-separated segments rather than "the dot is a legal character", so the
   # degenerate namespaces — `"."`, `".foo"`, `"foo."` — are illegal by
   # construction rather than merely never written.
@@ -118,6 +145,13 @@ defmodule DMEx.Message do
   """
   @callback cast(data :: map()) :: struct()
 
+  @doc """
+  The wire types this module used to declare and still answers for.
+
+  `[]` unless `use DMEx.Message` was given `retired:`. Generated at compile time.
+  """
+  @callback retired() :: [String.t()]
+
   defmacro __using__(opts) do
     module = __CALLER__.module
 
@@ -133,6 +167,7 @@ defmodule DMEx.Message do
 
     type = type!(module, Keyword.fetch!(opts, :type))
     fields = opts |> Keyword.get(:fields, []) |> validate_fields!()
+    retired = retired!(module, type, Keyword.get(opts, :retired, []))
 
     quote do
       @behaviour DMEx.Message
@@ -152,6 +187,8 @@ defmodule DMEx.Message do
       def type, do: unquote(type)
 
       @impl true
+      def retired, do: unquote(retired)
+      @impl true
       def cast(data) when is_map(data), do: DMEx.Message.cast_default(__MODULE__, data)
 
       defoverridable cast: 1
@@ -167,6 +204,37 @@ defmodule DMEx.Message do
     if !(is_binary(type) and Regex.match?(@type_format, type)), do: raise_type(module, type)
 
     type
+  end
+
+  # A retirement is as permanent as the type it replaces: the rows appended under
+  # it are in an append-only log forever, so the declaration that resolves them
+  # has to outlive every one of them. Checked here so a list that would silently
+  # resolve nothing — a typo, or the current type restated — is a compile error
+  # in the module that wrote it.
+  defp retired!(module, type, values) when is_list(values) do
+    retired = Enum.map(values, &type!(module, &1))
+
+    cond do
+      type in retired ->
+        raise ArgumentError,
+              ":retired in #{inspect(module)} names #{inspect(type)}, which is its current " <>
+                "`type:`. A retired type is one this module *used* to append under and now " <>
+                "only reads."
+
+      retired != Enum.uniq(retired) ->
+        raise ArgumentError,
+              ":retired in #{inspect(module)} repeats a type: #{inspect(retired)}. Each one " <>
+                "resolves the same rows to the same module, so a repeat says nothing twice."
+
+      true ->
+        retired
+    end
+  end
+
+  defp retired!(module, _type, other) do
+    raise ArgumentError,
+          ":retired in #{inspect(module)} takes the types this module used to append under, " <>
+            "as a list of atoms or strings. Got: #{inspect(other)}"
   end
 
   defp raise_type(module, value) do
@@ -281,14 +349,23 @@ defmodule DMEx.Message do
   @spec index!([module()]) :: %{String.t() => module()}
   def index!(modules) when is_list(modules) do
     Enum.reduce(modules, %{}, fn module, acc ->
-      type = module.type()
-
-      case acc do
-        %{^type => already} -> raise_collision(type, already, module)
-        _ -> Map.put(acc, type, module)
-      end
+      Enum.reduce(declared(module), acc, fn type, acc ->
+        case acc do
+          %{^type => already} -> raise_collision(type, already, module)
+          _ -> Map.put(acc, type, module)
+        end
+      end)
     end)
   end
+
+  @doc """
+  Every type `module` answers for: the one it appends under, then its retired ones.
+
+  The `type/0` first is load-bearing at exactly one call site — `DMEx.Log`
+  appends under the head — and everywhere else this is a set.
+  """
+  @spec declared(module()) :: [String.t()]
+  def declared(module) when is_atom(module), do: [module.type() | module.retired()]
 
   @doc """
   Every type known to the node, from the cached index.

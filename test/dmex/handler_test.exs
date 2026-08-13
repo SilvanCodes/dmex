@@ -6,6 +6,7 @@ defmodule DMEx.HandlerTest do
   alias DMEx.Test.Handlers
   alias DMEx.Test.Messages.OrderPlaced
   alias DMEx.Test.Messages.OrderShipped
+  alias DMEx.Test.Messages.Renamed
 
   describe "the declaration" do
     test "attaches the behaviour" do
@@ -367,6 +368,36 @@ defmodule DMEx.HandlerTest do
 
       assert module.__dmex_cast__("order_placed", placed(1), %{"t" => "acme"})
       assert module.__dmex_cast__("order_placed", placed(1), %{"t" => "other"}) == nil
+    end
+
+    # The whole point of a retirement: rows appended before the rename still
+    # decode, through the same module and the same `cast/1`.
+    test "decodes a row arriving under a retired type" do
+      body = """
+      def handle_message(%DMEx.Test.Messages.Renamed{} = message, _md), do: message
+      """
+
+      module = compile_module(body)
+
+      assert %Renamed{order_id: 1} = module.__dmex_cast__("orders.placed", %{"order_id" => 1}, %{})
+
+      assert %Renamed{order_id: 1} =
+               module.__dmex_cast__("order_placed_legacy", %{"order_id" => 1}, %{})
+    end
+
+    # Decoding a retired type is worth nothing if the subscription never asks
+    # for it: the producer builds its SQL predicate out of the types this
+    # fingerprint admits.
+    test "selects a retired type in the fingerprint" do
+      body = """
+      def handle_message(%DMEx.Test.Messages.Renamed{}, _md), do: :ok
+      """
+
+      %{fingerprint: encoded} = declaration_of(body)
+      {:ok, filter} = Fingerprint.decode(encoded)
+
+      assert Fingerprint.member?(filter, "orders.placed")
+      assert Fingerprint.member?(filter, "order_placed_legacy")
     end
 
     test "answers for every clause" do

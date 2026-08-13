@@ -130,9 +130,12 @@ can desynchronise the two, and none of them is a compile:
 The last two are why changing a `type:` is a **migration, not a rename**: rows
 already appended keep the old string forever, so a consumer resuming from an old
 cursor cannot select its own history either, and dead messages recorded under it
-can never be replayed. The safe path is expand-contract — add a module for the
-new type, have handlers declare both, cut producers over, and drop the old
-module a deploy later.
+can never be replayed. The path is `retired:` — declare the new string as
+`type:` and the old one alongside it, so the module answers for both. Producers
+append under the new one from that deploy; consumers select and decode both, so
+history stays readable across the cut and through the rollout window where two
+versions are live. The declaration is permanent, because the rows are: dropping
+it later re-orphans exactly what it was added for. `DMEx.Message` has the rules.
 
 **The producer resolves it against its own compiled modules**, not against what
 its log contains. `SELECT DISTINCT type` goes stale silently: a producer

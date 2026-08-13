@@ -3,6 +3,7 @@ defmodule DMEx.MessageTest do
 
   alias DMEx.Test.Messages.OrderPlaced
   alias DMEx.Test.Messages.OrderShipped
+  alias DMEx.Test.Messages.Renamed
   alias DMEx.Test.Messages.WithCustomCast
   alias DMEx.Test.Messages.WithCustomEncoder
 
@@ -221,6 +222,72 @@ defmodule DMEx.MessageTest do
 
       assert_raise ArgumentError, ~r/declared by both.*give one of them a different/s, fn ->
         DMEx.Message.index!([OrderPlaced, twin])
+      end
+    end
+
+    test "keys a retired type to the same module as the current one" do
+      assert DMEx.Message.index!([Renamed]) ==
+               %{"orders.placed" => Renamed, "order_placed_legacy" => Renamed}
+    end
+
+    test "raises when one module's retired type is another's current one" do
+      # The rows would be ambiguous in exactly the way two current types are:
+      # whichever module lost resolves nothing.
+      twin = compile_message(~s|type: "order_placed"|)
+      retiring = compile_message(~s|type: "orders.placed_v9", retired: ["order_placed"]|)
+
+      assert_raise ArgumentError, ~r/declared by both/, fn ->
+        DMEx.Message.index!([twin, retiring])
+      end
+    end
+  end
+
+  describe "retired types" do
+    test "declared/1 lists the append type first, then the retired ones" do
+      assert DMEx.Message.declared(Renamed) == ["orders.placed", "order_placed_legacy"]
+      assert DMEx.Message.declared(OrderPlaced) == ["order_placed"]
+    end
+
+    test "a module still appends under one type only" do
+      assert Renamed.type() == "orders.placed"
+    end
+
+    test "a retired type resolves back to the module" do
+      DMEx.Message.refresh_index(:dmex)
+
+      assert DMEx.Message.for_type("order_placed_legacy") == Renamed
+      assert DMEx.Message.for_type("orders.placed") == Renamed
+    end
+
+    # The producer expands a consumer's filter against this set, so a string
+    # missing here cannot be selected however the consumer asks for it.
+    test "a retired type is a type the node knows" do
+      DMEx.Message.refresh_index(:dmex)
+
+      assert MapSet.member?(DMEx.Message.types(), "order_placed_legacy")
+    end
+
+    test "refuses a retired type that is the current one" do
+      assert_raise ArgumentError, ~r/which is its current/, fn ->
+        compile_message(~s|type: "a.b", retired: ["a.b"]|)
+      end
+    end
+
+    test "refuses a repeated retired type" do
+      assert_raise ArgumentError, ~r/repeats a type/, fn ->
+        compile_message(~s|type: "a.c", retired: ["a.old", "a.old"]|)
+      end
+    end
+
+    test "refuses a retired type outside the wire charset" do
+      assert_raise ArgumentError, ~r/must be an atom or a string matching/, fn ->
+        compile_message(~s|type: "a.d", retired: ["not a type"]|)
+      end
+    end
+
+    test "refuses a retired option that is not a list" do
+      assert_raise ArgumentError, ~r/takes the types this module used to append under/, fn ->
+        compile_message(~s|type: "a.e", retired: "a.old"|)
       end
     end
   end

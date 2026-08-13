@@ -267,7 +267,11 @@ defmodule DMEx.Handler do
 
   # Sorted, so the fingerprint is a function of the set and not of clause order —
   # which is the same reason `:messages` is a `MapSet`.
-  defp types(messages), do: messages |> Enum.map(& &1.type()) |> Enum.sort()
+  #
+  # Retired types are in it: a subscription that cannot *select* the strings its
+  # own history was appended under cannot read that history, which is the whole
+  # of what a retirement buys.
+  defp types(messages), do: messages |> Enum.flat_map(&DMEx.Message.declared(&1)) |> Enum.sort()
 
   @doc """
   Lists every handler compiled into the applications `DMEx.discovery/1` scans.
@@ -430,7 +434,7 @@ defmodule DMEx.Handler do
     quote do
       @doc false
       @spec __dmex_cast__(String.t(), term(), map()) :: struct() | nil
-      unquote_splicing(Enum.map(messages, &cast_clause/1))
+      unquote_splicing(Enum.flat_map(messages, &cast_clause/1))
       unquote(last_cast_clause(declaration))
 
       unquote_splicing(Enum.map(heads, &matcher_clause/1))
@@ -480,12 +484,19 @@ defmodule DMEx.Handler do
   # One clause per declared type, compiled from the set rather than looked up in
   # a map built from it at boot — and never `String.to_atom/1` on whatever the
   # log sent. A type with no clause falls to the `nil` above without decoding.
+  #
+  # A module's retired types get a clause each, to the same module and the same
+  # `cast/1`: the row is older than the rename, so whether its payload is older
+  # too is the message module's business, and `cast/1` is where that is already
+  # answered.
   defp cast_clause(module) do
-    quote do
-      def __dmex_cast__(unquote(module.type()), data, metadata) do
-        message = unquote(module).cast(data)
+    for type <- DMEx.Message.declared(module) do
+      quote do
+        def __dmex_cast__(unquote(type), data, metadata) do
+          message = unquote(module).cast(data)
 
-        if __dmex_match__(message, metadata), do: message
+          if __dmex_match__(message, metadata), do: message
+        end
       end
     end
   end

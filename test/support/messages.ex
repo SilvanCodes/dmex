@@ -40,4 +40,11 @@ defmodule DMEx.Test.Messages do
       }
     end
   end
+
+  # A type that has been through an expand-contract rename: rows exist in the log
+  # under both strings, and this module answers for both.
+  defmodule Renamed do
+    @moduledoc false
+    use DMEx.Message, type: "orders.placed", fields: [:order_id], retired: ["order_placed_legacy"]
+  end
 end
