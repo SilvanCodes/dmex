@@ -24,38 +24,59 @@ defmodule DMEx.Notifier.Postgres do
   def child_specs(opts) do
     name = name(opts)
 
-    # Hand-maintained, because Postgrex exports no list of its own connect
-    # options — there is no `Postgrex.start_option/0` to derive this from, so
-    # nothing links it to the driver at compile time and it can only drift.
-    # Taking rather than dropping is still the right direction: `repo.config()`
-    # carries Ecto's settings too (`:pool`, `:telemetry_prefix`), and handing
-    # those to Postgrex is a connection that fails to start.
-    #
-    # The failure mode of a missing key is quiet, which is why this is worth a
-    # comment: a 13th key a user sets — an `:ssl_opts` variant, say — reaches the
-    # repo's pool and not this connection, so the notifier works in dev against a
-    # plaintext database and silently falls back to polling in production, where
-    # `DMEx.Log.Dispatcher` covers it at one poll interval of latency and logs a
-    # warning once. Add the key here when that happens.
     conn_opts =
       Map.fetch!(opts, :repo).config()
-      |> Keyword.take([
-        :hostname,
-        :port,
-        :username,
-        :password,
-        :database,
-        :socket,
-        :socket_dir,
-        :ssl,
-        :ssl_opts,
-        :parameters,
-        :connect_timeout,
-        :socket_options
-      ])
+      |> Enum.reject(&ecto_only?/1)
       |> Keyword.merge(name: name, auto_reconnect: true)
 
     [Supervisor.child_spec({Postgrex.Notifications, conn_opts}, id: name)]
+  end
+
+  # Neither direction can be derived — Postgrex exports no list of its own
+  # connect options, and Ecto none of its repo ones — so one of the two lists
+  # has to be written out here and will drift. Which one is a choice between
+  # failure modes, and they are not comparable.
+  #
+  # Keeping only what Postgrex takes drifts *quietly*: a `:ssl_opts` variant a
+  # user sets reaches the repo's pool and not this connection, so the notifier
+  # works in dev against a plaintext database and in production silently falls
+  # back to polling — `DMEx.Log.Dispatcher` covers it at one poll interval and
+  # one warning, which is exactly quiet enough to survive a deploy.
+  #
+  # Rejecting what Ecto owns drifts *loudly*: an unrecognised key reaches
+  # `Postgrex.Notifications`, the connection refuses to start, and the log's
+  # tree fails at boot with the option named. It also drifts less often — this
+  # list is one library's documented repo options, closed and slow-moving, where
+  # Postgrex's connect options grow with every authentication and TLS feature.
+  # So a new driver option works here the day it exists, and a new Ecto option
+  # is a boot failure rather than a production degradation.
+  #
+  # `:scheme` and `:url` are URL-parsing residue rather than settings — Ecto has
+  # already exploded them into host, port, credentials and database.
+  defp ecto_only?({key, _value}) do
+    key in [
+      :adapter,
+      :caller,
+      :default_dynamic_repo,
+      :log,
+      :loggers,
+      :name,
+      :otp_app,
+      :ownership_timeout,
+      :pool,
+      :pool_size,
+      :priv,
+      :queue_interval,
+      :queue_target,
+      :read_only,
+      :repo,
+      :scheme,
+      :show_sensitive_data_on_connection_error,
+      :stacktrace,
+      :start_apps_before_migration,
+      :telemetry_prefix,
+      :url
+    ] or String.starts_with?(Atom.to_string(key), "migration_")
   end
 
   @impl DMEx.Notifier
