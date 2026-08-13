@@ -24,6 +24,14 @@ defmodule DMEx.Log.Status do
   The two slots are written by different processes — the dispatcher flips the
   flag, the stream arms its deadline — and never contend, since `:atomics`
   operations are per element. `DMEx.Log.Streams` holds the reference.
+
+  **Why not put the deadline in the registry entry**, which the stream owns and the
+  watcher already reads? `Registry.update_value/3` is the function that would do
+  it, and it raises for a `keys: :duplicate` registry — which this one has to be,
+  since every stream registers under one key. Even if it did not: the loop arms
+  three times and disarms twice per read cycle, at up to `max_batch_frequency`
+  cycles a second per connection, and `:atomics.put/3` is the cheaper write by a
+  wide margin.
   """
 
   @flag 1
