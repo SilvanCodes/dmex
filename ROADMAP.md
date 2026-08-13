@@ -125,10 +125,8 @@ subscription-id namespace that distinct handler `name:`s already give.
   cannot stand in for two.
 - **Whether the boot check needs a runtime backstop.** A log placed directly in a
   host's tree via `DMEx.Log.child_spec/1` never passes through
-  `__startable__!/2`. A node-local name claim on the schema, checked with
-  `whereis` before start, would cover it and fail immediately with both module
-  names instead of spending `__start__/1`'s deadline on a duplicate that never
-  dies.
+  `__startable__!/2`, so a duplicate name reaches `__start__/1`'s deadline instead
+  of failing immediately with both module names.
 
 ## Global Resource Limits
 
@@ -171,23 +169,14 @@ can be added later without revisiting delivery semantics.
 ### Open, if and when it lands
 
 - **Whether admission is per producer or per host.** The budget that matters is
-  the application's, and one application may mount several producers. A
-  per-producer cap fits where the watcher sits and is the wrong denominator for
-  what is being protected.
-- **What a rejected consumer does with a `503`.** DMEx's client should back off
-  and retry, which it already does for any failed connect — but a producer at
-  capacity and a producer that is down are different situations, and whether the
-  client distinguishes them is worth deciding.
-- **Whether shedding is worth having at all next to admission.** Refusing new
-  connections is simple, predictable, and never surprises an established
-  consumer. Shedding an existing one is strictly harsher, against a client that
-  did nothing wrong.
-- **How an operator sees the ceiling coming.** A budget only observable by being
-  hit is a bad budget. `[:dmex, :stream, :connect]` plus a live registry count is
-  most of a utilization signal already.
-- **What triggers building this at all** — a connection-count threshold, an
-  observed incident, or memory pressure the per-connection bounds demonstrably
-  failed to contain? Worth deciding the tripwire in advance.
+  the application's, and one application may mount several producers — so where
+  the watcher sits is the wrong denominator for what is being protected.
+- **Whether shedding is worth having next to admission.** Refusing a new
+  connection never surprises an established consumer; shedding one is strictly
+  harsher, against a client that did nothing wrong.
+- **How an operator sees the ceiling coming**, since a budget only observable by
+  being hit is a bad budget. `[:dmex, :stream, :connect]` plus a live registry
+  count is most of a utilization signal already.
 
 ## One Cursor, One Reader
 
