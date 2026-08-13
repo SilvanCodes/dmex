@@ -2,9 +2,13 @@ defmodule DMEx.Storage.SQLite do
   @moduledoc """
   The SQLite implementation of `DMEx.Storage`.
 
-  Raw SQL through `Ecto.Adapters.SQL.query/4`, like the Postgres adapter, and
-  for one of the same reasons — the read has to hand back `data` and `metadata`
-  as text. Here that costs nothing at all: the columns *are* text.
+  Raw SQL through `Ecto.Adapters.SQL`, like the Postgres adapter, and for one of
+  the same reasons — the read has to hand back `data` and `metadata` as text. Here
+  that costs nothing at all: the columns *are* text.
+
+  Only three things here are SQLite's own — `c:append/4`, which needs no lock;
+  `c:validate!/1`; and the dialect. Every statement comes from
+  `DMEx.Storage.SQL`, which says why.
 
   ## `append/4` takes no lock, because the engine is the lock
 
@@ -47,7 +51,8 @@ defmodule DMEx.Storage.SQLite do
 
   @behaviour DMEx.Storage
 
-  alias Ecto.Adapters.SQL
+  alias DMEx.Storage.SQL
+  alias Ecto.Adapters.SQL, as: Adapter
 
   # From the behaviour, not restated: see `DMEx.Storage.__table__/1`.
   @messages DMEx.Storage.__table__(:messages)
@@ -61,18 +66,45 @@ defmodule DMEx.Storage.SQLite do
   # these tables can disagree about the format.
   @now "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')"
 
+  # What this engine spells differently — `DMEx.Storage.SQL` has the vocabulary.
+  # No text projection and no JSON cast: the columns are text already, which is
+  # what `c:DMEx.Storage.read/5` asks for. Bytes are `length(CAST(x AS BLOB))`
+  # rather than `octet_length`, which needs SQLite 3.43 — exqlite can be built
+  # against the system library, so the portable spelling is the one that cannot be
+  # wrong.
+  #
+  # A function rather than an attribute, as on the Postgres side: an attribute
+  # cannot hold a closure, and three of these are one.
+  defp dialect(_opts) do
+    %{
+      messages: @messages,
+      cursors: @cursors,
+      dead_messages: @dead_messages,
+      param: "?",
+      now: @now,
+      text: &Function.identity/1,
+      json: &Function.identity/1,
+      bytes: &"length(CAST(#{&1} AS BLOB))",
+      type_agg: "coalesce(group_concat(DISTINCT type), '')",
+      types: &String.split(&1, ","),
+      timestamp: &datetime!/1
+    }
+  end
+
   # Public so `DMEx.Storage.SQLite.Migration` stamps its defaults with the same
-  # expression `advance_cursor/3` writes with — the counterpart to
+  # expression a cursor write uses — the counterpart to
   # `DMEx.Storage.Postgres.__table__/2`, shared for the same reason.
   @doc false
   @spec __now__() :: String.t()
   def __now__, do: @now
 
-  @impl DMEx.Storage
-  def default_notifier, do: DMEx.Notifier.Beam
+  # A `%DateTime{}` rather than the stored binary, because `t:DMEx.Storage.row/0`
+  # says so.
+  defp datetime!(text) when is_binary(text) do
+    {:ok, at, 0} = DateTime.from_iso8601(text)
 
-  @impl DMEx.Storage
-  def migration, do: DMEx.Storage.SQLite.Migration
+    at
+  end
 
   @impl DMEx.Storage
   def validate!(opts) do
@@ -115,6 +147,8 @@ defmodule DMEx.Storage.SQLite do
     end
   end
 
+  ## Appending — the one statement that is this engine's own
+
   @impl DMEx.Storage
   def append(type, data, metadata, opts) when is_binary(type) and is_binary(data) and is_binary(metadata) do
     sql = """
@@ -125,15 +159,17 @@ defmodule DMEx.Storage.SQLite do
 
     # One statement, so SQLite wraps it in an implicit write transaction of its
     # own — see the module documentation for why that is the whole locking story.
-    case SQL.query(Map.fetch!(opts, :repo), sql, [type, data, metadata]) do
+    case Adapter.query(Map.fetch!(opts, :repo), sql, [type, data, metadata]) do
       {:ok, %{rows: [[id]]}} -> {:ok, id}
       {:error, reason} -> {:error, reason}
     end
   end
 
+  ## Everything else, from the dialect
+
   @impl DMEx.Storage
   def read(cursor, max_rows, max_bytes, :all, opts) do
-    query(read_sql(""), [cursor, max_rows, max_bytes], opts)
+    SQL.read(dialect(opts), opts, "", [cursor, max_rows, max_bytes])
   end
 
   def read(cursor, max_rows, max_bytes, types, opts) when is_list(types) do
@@ -145,109 +181,54 @@ defmodule DMEx.Storage.SQLite do
     # Nothing here bounds the count. A selection is expanded from the compiled
     # `use DMEx.Message` modules of one application, so the reachable ceiling is
     # how many of those exist, and exqlite names its own parameter limit if one
-    # ever gets near it — where a raise from inside `c:DMEx.Storage.read/5`
-    # would kill the stream process, which handles `{:error, _}` and nothing
-    # else.
+    # ever gets near it.
+    #
+    # `?1` to `?3` are the parameters every read binds, so a selection appends its
+    # own from `?4` and nothing renumbers.
     placeholders = Enum.map_join(4..(3 + length(types))//1, ",", &"?#{&1}")
 
-    query(read_sql("AND type IN (#{placeholders})"), [cursor, max_rows, max_bytes | types], opts)
-  end
-
-  # Public so `DMEx.Storage.SQLiteTest` can EXPLAIN the real statement.
-  @doc false
-  def __read_sql__(predicate), do: read_sql(predicate)
-
-  # The four levels and why each of them is load-bearing: `DMEx.Storage.SQL`,
-  # which renders this statement for both engines because a divergence in this
-  # one is a data bug rather than a failure. What is SQLite's about it, and so
-  # lives here:
-  #
-  #   * No cast. The columns are text already, which is what
-  #     `c:DMEx.Storage.read/5` asks for.
-  #   * Bytes are `length(CAST(x AS BLOB))` rather than `octet_length` — the
-  #     latter needs SQLite 3.43, and exqlite can be built against the system
-  #     library, so the portable spelling is the one that cannot be wrong.
-  #   * `?1` to `?3` are the three parameters every read binds, and a selection
-  #     appends its types from `?4` on, so nothing here renumbers.
-  defp read_sql(predicate) do
-    DMEx.Storage.SQL.read_sql(%{
-      table: @messages,
-      param: "?",
-      cast: &Function.identity/1,
-      bytes: &"length(CAST(#{&1} AS BLOB))",
-      predicate: predicate
-    })
-  end
-
-  defp query(sql, params, opts) do
-    case SQL.query(Map.fetch!(opts, :repo), sql, params) do
-      {:ok, %{rows: rows}} -> {:ok, Enum.map(rows, &to_row/1)}
-      {:error, reason} -> {:error, reason}
-    end
+    SQL.read(dialect(opts), opts, "AND type IN (#{placeholders})", [cursor, max_rows, max_bytes | types])
   end
 
   @impl DMEx.Storage
-  def max_id(opts) do
-    case SQL.query(Map.fetch!(opts, :repo), "SELECT coalesce(max(id), 0) FROM #{@messages}", []) do
-      {:ok, %{rows: [[max_id]]}} -> {:ok, max_id}
-      {:error, reason} -> {:error, reason}
-    end
-  end
+  def max_id(opts), do: SQL.max_id(dialect(opts), opts)
 
   @impl DMEx.Storage
   def appended_since(cursor, opts) when is_integer(cursor) and cursor >= 0 do
-    # One statement, because the empty case runs once per poll interval per app
-    # and is the common one. `group_concat` takes DISTINCT only in its
-    # single-argument form, so the separator is not ours to choose — splitting on
-    # it is lossless anyway, since the `type` CHECK forbids a comma
-    # inside a type. See `DMEx.Storage.SQLite.Migration`.
-    sql = """
-    SELECT max(id), coalesce(group_concat(DISTINCT type), '')
-      FROM #{@messages}
-     WHERE id > ?1
-    """
-
-    case SQL.query(Map.fetch!(opts, :repo), sql, [cursor]) do
-      {:ok, %{rows: [[nil, _types]]}} -> {:ok, {nil, []}}
-      {:ok, %{rows: [[max_id, types]]}} -> {:ok, {max_id, String.split(types, ",")}}
-      {:error, reason} -> {:error, reason}
-    end
+    SQL.appended_since(dialect(opts), opts, cursor)
   end
 
   @impl DMEx.Storage
   def last_seen(subscription, opts) when is_binary(subscription) do
-    sql = "SELECT last_seen FROM #{@cursors} WHERE subscription = ?1"
-
-    case SQL.query(Map.fetch!(opts, :repo), sql, [subscription]) do
-      {:ok, %{rows: [[last_seen]]}} -> {:ok, last_seen}
-      {:ok, %{rows: []}} -> {:ok, nil}
-      {:error, reason} -> {:error, reason}
-    end
+    SQL.last_seen(dialect(opts), opts, subscription)
   end
 
   @impl DMEx.Storage
   def cursor(subscription, opts) when is_binary(subscription) do
-    sql = "SELECT last_seen, updated_at FROM #{@cursors} WHERE subscription = ?1"
+    SQL.cursor(dialect(opts), opts, subscription)
+  end
 
-    case SQL.query(Map.fetch!(opts, :repo), sql, [subscription]) do
-      {:ok, %{rows: [[last_seen, updated_at]]}} ->
-        {:ok, %{last_seen: last_seen, updated_at: datetime!(updated_at)}}
-
-      {:ok, %{rows: []}} ->
-        {:ok, nil}
-
-      {:error, reason} ->
-        {:error, reason}
-    end
+  @impl DMEx.Storage
+  def advance_cursor(subscription, last_seen, opts) when is_binary(subscription) and is_integer(last_seen) do
+    SQL.advance_cursor(dialect(opts), opts, subscription, last_seen)
   end
 
   @impl DMEx.Storage
   def delete_cursor(subscription, opts) when is_binary(subscription) do
-    sql = "DELETE FROM #{@cursors} WHERE subscription = ?1"
+    SQL.delete_cursor(dialect(opts), opts, subscription)
+  end
 
-    SQL.query!(Map.fetch!(opts, :repo), sql, [subscription])
+  @impl DMEx.Storage
+  def record_dead_message(row, opts), do: SQL.record_dead_message(dialect(opts), opts, row)
 
-    :ok
+  @impl DMEx.Storage
+  def list_dead_messages(subscription, opts) when is_binary(subscription) do
+    SQL.list_dead_messages(dialect(opts), opts, subscription)
+  end
+
+  @impl DMEx.Storage
+  def delete_dead_message(subscription, id, opts) when is_binary(subscription) and is_integer(id) do
+    SQL.delete_dead_message(dialect(opts), opts, subscription, id)
   end
 
   @impl DMEx.Storage
@@ -259,90 +240,12 @@ defmodule DMEx.Storage.SQLite do
   end
 
   @impl DMEx.Storage
-  def advance_cursor(subscription, last_seen, opts) when is_binary(subscription) and is_integer(last_seen) do
-    sql = """
-    INSERT INTO #{@cursors} (subscription, last_seen, updated_at)
-         VALUES (?1, ?2, #{@now})
-    ON CONFLICT (subscription)
-      DO UPDATE SET last_seen = excluded.last_seen,
-                    updated_at = #{@now}
-    """
-
-    SQL.query!(Map.fetch!(opts, :repo), sql, [subscription, last_seen])
-
-    :ok
-  end
+  def default_notifier, do: DMEx.Notifier.Beam
 
   @impl DMEx.Storage
-  def record_dead_message(
-        %{"subscription" => subscription, "id" => id, "type" => type, "data" => data, "metadata" => metadata},
-        opts
-      ) do
-    # Five plain parameters. The Postgres adapter's `$n::text::jsonb` exists to
-    # stop its driver re-encoding an already-encoded binary; text has no such
-    # trap to fall into.
-    sql = """
-    INSERT INTO #{@dead_messages} (subscription, id, type, data, metadata)
-         VALUES (?1, ?2, ?3, ?4, ?5)
-    ON CONFLICT (subscription, id)
-      DO UPDATE SET type = excluded.type,
-                    data = excluded.data,
-                    metadata = excluded.metadata,
-                    inserted_at = #{@now}
-    """
+  def migration, do: DMEx.Storage.SQLite.Migration
 
-    # A dead row arrives as the consumer held it, so the encode happens here.
-    params = [subscription, id, type, JSON.encode!(data), JSON.encode!(metadata)]
-
-    SQL.query!(Map.fetch!(opts, :repo), sql, params)
-
-    :ok
-  end
-
-  @impl DMEx.Storage
-  def list_dead_messages(subscription, opts) when is_binary(subscription) do
-    sql = """
-    SELECT id, type, data, metadata, inserted_at
-      FROM #{@dead_messages}
-     WHERE subscription = ?1
-     ORDER BY id
-    """
-
-    query(sql, [subscription], opts)
-  end
-
-  @impl DMEx.Storage
-  def delete_dead_message(subscription, id, opts) when is_binary(subscription) and is_integer(id) do
-    sql = "DELETE FROM #{@dead_messages} WHERE subscription = ?1 AND id = ?2"
-
-    SQL.query!(Map.fetch!(opts, :repo), sql, [subscription, id])
-
-    :ok
-  end
-
-  ## Row shaping
-
-  # This head **is** the SELECT list, in order: change the column list without
-  # changing the head and the rows come out mis-keyed. Not silently —
-  # `test/dmex/storage/conformance_test.exs` value-pins `type`, so the
-  # mismatch is a failing suite rather than a wrong wire frame.
-  defp to_row([id, type, data, metadata, inserted_at]) do
-    %{
-      id: id,
-      type: type,
-      data: data,
-      metadata: metadata,
-      inserted_at: datetime!(inserted_at)
-    }
-  end
-
-  ## Timestamps
-
-  # A `%DateTime{}` rather than the stored binary, because `t:DMEx.Storage.row/0`
-  # says so.
-  defp datetime!(text) when is_binary(text) do
-    {:ok, at, 0} = DateTime.from_iso8601(text)
-
-    at
-  end
+  # Public so `DMEx.Storage.SQLiteTest` can EXPLAIN the real statement.
+  @doc false
+  def __read_sql__(predicate), do: SQL.read_sql(dialect(%{}), predicate)
 end

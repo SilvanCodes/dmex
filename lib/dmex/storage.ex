@@ -264,8 +264,9 @@ defmodule DMEx.Storage do
   commit together or not at all.
 
   The adapter encodes `"data"` and `"metadata"` for its own columns — see
-  `t:dead_row/0`. Both shipped ones match the whole shape in the function head, so
-  a row short of a key raises rather than being written half-formed.
+  `t:dead_row/0`. Both shipped ones share one statement whose head is the whole
+  row shape, so a row short of a key raises rather than being written
+  half-formed.
 
   **Nothing about the failure is stored**, which is what lets
   `c:list_dead_messages/2` return the row as an ordinary `t:row/0`.
