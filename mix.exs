@@ -19,7 +19,6 @@ defmodule DMEx.MixProject do
       ],
       name: "DMEx",
       description: "A decentralized, broker-less message queue over plain HTTP and SSE.",
-      package: package(),
       docs: docs()
     ]
   end
@@ -83,13 +82,6 @@ defmodule DMEx.MixProject do
       "bench.micro": ["run bench/micro.exs"],
       "bench.e2e": ["run bench/e2e.exs"],
       "bench.fingerprint": ["run bench/fingerprint_sweep.exs"]
-    ]
-  end
-
-  defp package do
-    [
-      licenses: ["MIT"],
-      links: %{"GitHub" => @source_url}
     ]
   end
 
