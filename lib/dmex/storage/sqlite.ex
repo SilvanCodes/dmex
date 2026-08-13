@@ -6,9 +6,10 @@ defmodule DMEx.Storage.SQLite do
   the same reasons — the read has to hand back `data` and `metadata` as text. Here
   that costs nothing at all: the columns *are* text.
 
-  Only three things here are SQLite's own — `c:append/4`, which needs no lock;
-  `c:validate!/1`; and the dialect. Every statement comes from
-  `DMEx.Storage.SQL`, which says why.
+  Three things here are SQLite's own — `c:dialect/1`,
+  `c:DMEx.Storage.append/4`, which needs no lock, and
+  `c:DMEx.Storage.validate!/1`. Every statement comes from `DMEx.Storage.SQL`,
+  which says why.
 
   ## `append/4` takes no lock, because the engine is the lock
 
@@ -49,9 +50,8 @@ defmodule DMEx.Storage.SQLite do
   SQLite has no schemas. `validate!/1` raises rather than ignoring one.
   """
 
-  @behaviour DMEx.Storage
+  use DMEx.Storage.SQL
 
-  alias DMEx.Storage.SQL
   alias Ecto.Adapters.SQL, as: Adapter
 
   # From the behaviour, not restated: see `DMEx.Storage.__table__/1`.
@@ -66,16 +66,16 @@ defmodule DMEx.Storage.SQLite do
   # these tables can disagree about the format.
   @now "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')"
 
-  # What this engine spells differently — `DMEx.Storage.SQL` has the vocabulary.
-  # No text projection and no JSON cast: the columns are text already, which is
-  # what `c:DMEx.Storage.read/5` asks for. Bytes are `length(CAST(x AS BLOB))`
-  # rather than `octet_length`, which needs SQLite 3.43 — exqlite can be built
-  # against the system library, so the portable spelling is the one that cannot be
-  # wrong.
-  #
-  # A function rather than an attribute, as on the Postgres side: an attribute
-  # cannot hold a closure, and three of these are one.
-  defp dialect(_opts) do
+  @doc """
+  What this engine spells differently — `DMEx.Storage.SQL` has the vocabulary.
+
+  No text projection and no JSON cast: the columns are text already, which is what
+  `c:DMEx.Storage.read/5` asks for. Bytes are `length(CAST(x AS BLOB))` rather than
+  `octet_length`, which needs SQLite 3.43 — exqlite can be built against the system
+  library, so the portable spelling is the one that cannot be wrong.
+  """
+  @impl DMEx.Storage.SQL
+  def dialect(_opts) do
     %{
       messages: @messages,
       cursors: @cursors,
@@ -87,7 +87,10 @@ defmodule DMEx.Storage.SQLite do
       bytes: &"length(CAST(#{&1} AS BLOB))",
       type_agg: "coalesce(group_concat(DISTINCT type), '')",
       types: &String.split(&1, ","),
-      timestamp: &datetime!/1
+      timestamp: &datetime!/1,
+      # No array type, so a selection is N placeholders binding N parameters. The
+      # varying arity costs nothing: exqlite prepares every statement anyway.
+      selection: &{"AND type IN (#{placeholders(&1)})", &1}
     }
   end
 
@@ -165,72 +168,6 @@ defmodule DMEx.Storage.SQLite do
     end
   end
 
-  ## Everything else, from the dialect
-
-  @impl DMEx.Storage
-  def read(cursor, max_rows, max_bytes, :all, opts) do
-    SQL.read(dialect(opts), opts, "", [cursor, max_rows, max_bytes])
-  end
-
-  def read(cursor, max_rows, max_bytes, types, opts) when is_list(types) do
-    # SQLite has no array type, so a selection is N placeholders rather than one
-    # `= ANY($4)`. Still a *separate statement* and never a nullable predicate —
-    # see `c:DMEx.Storage.read/5`; the reason is the index, not the syntax. The
-    # varying arity costs nothing: exqlite prepares every statement anyway.
-    #
-    # Nothing here bounds the count. A selection is expanded from the compiled
-    # `use DMEx.Message` modules of one application, so the reachable ceiling is
-    # how many of those exist, and exqlite names its own parameter limit if one
-    # ever gets near it.
-    #
-    # `?1` to `?3` are the parameters every read binds, so a selection appends its
-    # own from `?4` and nothing renumbers.
-    placeholders = Enum.map_join(4..(3 + length(types))//1, ",", &"?#{&1}")
-
-    SQL.read(dialect(opts), opts, "AND type IN (#{placeholders})", [cursor, max_rows, max_bytes | types])
-  end
-
-  @impl DMEx.Storage
-  def max_id(opts), do: SQL.max_id(dialect(opts), opts)
-
-  @impl DMEx.Storage
-  def appended_since(cursor, opts) when is_integer(cursor) and cursor >= 0 do
-    SQL.appended_since(dialect(opts), opts, cursor)
-  end
-
-  @impl DMEx.Storage
-  def last_seen(subscription, opts) when is_binary(subscription) do
-    SQL.last_seen(dialect(opts), opts, subscription)
-  end
-
-  @impl DMEx.Storage
-  def cursor(subscription, opts) when is_binary(subscription) do
-    SQL.cursor(dialect(opts), opts, subscription)
-  end
-
-  @impl DMEx.Storage
-  def advance_cursor(subscription, last_seen, opts) when is_binary(subscription) and is_integer(last_seen) do
-    SQL.advance_cursor(dialect(opts), opts, subscription, last_seen)
-  end
-
-  @impl DMEx.Storage
-  def delete_cursor(subscription, opts) when is_binary(subscription) do
-    SQL.delete_cursor(dialect(opts), opts, subscription)
-  end
-
-  @impl DMEx.Storage
-  def record_dead_message(row, opts), do: SQL.record_dead_message(dialect(opts), opts, row)
-
-  @impl DMEx.Storage
-  def list_dead_messages(subscription, opts) when is_binary(subscription) do
-    SQL.list_dead_messages(dialect(opts), opts, subscription)
-  end
-
-  @impl DMEx.Storage
-  def delete_dead_message(subscription, id, opts) when is_binary(subscription) and is_integer(id) do
-    SQL.delete_dead_message(dialect(opts), opts, subscription, id)
-  end
-
   @impl DMEx.Storage
   def transaction(fun, opts) when is_function(fun, 0) do
     # `:immediate` here as well as in the repo's configuration, so the consumer
@@ -245,7 +182,6 @@ defmodule DMEx.Storage.SQLite do
   @impl DMEx.Storage
   def migration, do: DMEx.Storage.SQLite.Migration
 
-  # Public so `DMEx.Storage.SQLiteTest` can EXPLAIN the real statement.
-  @doc false
-  def __read_sql__(predicate), do: SQL.read_sql(dialect(%{}), predicate)
+  # `?4` onward: `?1` to `?3` are the parameters every read binds.
+  defp placeholders(types), do: Enum.map_join(4..(3 + length(types))//1, ",", &"?#{&1}")
 end

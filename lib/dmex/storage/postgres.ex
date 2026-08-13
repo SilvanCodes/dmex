@@ -5,9 +5,9 @@ defmodule DMEx.Storage.Postgres do
   Raw SQL through `Ecto.Adapters.SQL` rather than Ecto schemas: the `data::text`
   that `c:DMEx.Storage.read/5` requires cannot be expressed as a schema load.
 
-  Only three things here are Postgres's own — `c:append/4`, which serializes
-  itself; `c:validate!/1`; and the dialect. Every statement comes from
-  `DMEx.Storage.SQL`, which says why.
+  Three things here are Postgres's own — `c:dialect/1`, `c:DMEx.Storage.append/4`,
+  which serializes itself, and `c:DMEx.Storage.validate!/1`. Every statement comes
+  from `DMEx.Storage.SQL`, which says why.
 
   ## The driver never touches `jsonb`
 
@@ -24,9 +24,8 @@ defmodule DMEx.Storage.Postgres do
   is silent, so a test asserts `jsonb_typeof(data) = 'object'`.
   """
 
-  @behaviour DMEx.Storage
+  use DMEx.Storage.SQL
 
-  alias DMEx.Storage.SQL
   alias Ecto.Adapters.SQL, as: Adapter
 
   # From the behaviour, not restated: see `DMEx.Storage.__table__/1`.
@@ -39,11 +38,15 @@ defmodule DMEx.Storage.Postgres do
   # than per boot.
   @prefix_charset ~r/^[A-Za-z_][A-Za-z0-9_$]*$/
 
-  # What this engine spells differently — `DMEx.Storage.SQL` has the vocabulary.
-  # `now()` rather than `clock_timestamp()`: these are the cursor and
-  # dead-message clocks, and only the log's own `inserted_at` has to ascend with
-  # `id`, which is the migration's default rather than anything issued here.
-  defp dialect(opts) do
+  @doc """
+  What this engine spells differently — `DMEx.Storage.SQL` has the vocabulary.
+
+  `now()` rather than `clock_timestamp()`: these are the cursor and dead-message
+  clocks, and only the log's own `inserted_at` has to ascend with `id`, which is
+  the migration's default rather than anything issued here.
+  """
+  @impl DMEx.Storage.SQL
+  def dialect(opts) do
     %{
       messages: table(@messages, opts),
       cursors: table(@cursors, opts),
@@ -55,7 +58,9 @@ defmodule DMEx.Storage.Postgres do
       bytes: &"octet_length(#{&1})",
       type_agg: "coalesce(array_agg(DISTINCT type), '{}')",
       types: &Function.identity/1,
-      timestamp: &Function.identity/1
+      timestamp: &Function.identity/1,
+      # One array parameter, whatever the selection's size.
+      selection: &{"AND type = ANY($4)", [&1]}
     }
   end
 
@@ -116,61 +121,6 @@ defmodule DMEx.Storage.Postgres do
     id
   end
 
-  ## Everything else, from the dialect
-
-  @impl DMEx.Storage
-  def read(cursor, max_rows, max_bytes, :all, opts) do
-    SQL.read(dialect(opts), opts, "", [cursor, max_rows, max_bytes])
-  end
-
-  def read(cursor, max_rows, max_bytes, types, opts) when is_list(types) do
-    # A separate statement, not a nullable predicate — see `c:DMEx.Storage.read/5`.
-    # `$1` to `$3` are the parameters every read binds, so a selection appends its
-    # own from `$4` and nothing renumbers.
-    SQL.read(dialect(opts), opts, "AND type = ANY($4)", [cursor, max_rows, max_bytes, types])
-  end
-
-  @impl DMEx.Storage
-  def max_id(opts), do: SQL.max_id(dialect(opts), opts)
-
-  @impl DMEx.Storage
-  def appended_since(cursor, opts) when is_integer(cursor) and cursor >= 0 do
-    SQL.appended_since(dialect(opts), opts, cursor)
-  end
-
-  @impl DMEx.Storage
-  def last_seen(subscription, opts) when is_binary(subscription) do
-    SQL.last_seen(dialect(opts), opts, subscription)
-  end
-
-  @impl DMEx.Storage
-  def cursor(subscription, opts) when is_binary(subscription) do
-    SQL.cursor(dialect(opts), opts, subscription)
-  end
-
-  @impl DMEx.Storage
-  def advance_cursor(subscription, last_seen, opts) when is_binary(subscription) and is_integer(last_seen) do
-    SQL.advance_cursor(dialect(opts), opts, subscription, last_seen)
-  end
-
-  @impl DMEx.Storage
-  def delete_cursor(subscription, opts) when is_binary(subscription) do
-    SQL.delete_cursor(dialect(opts), opts, subscription)
-  end
-
-  @impl DMEx.Storage
-  def record_dead_message(row, opts), do: SQL.record_dead_message(dialect(opts), opts, row)
-
-  @impl DMEx.Storage
-  def list_dead_messages(subscription, opts) when is_binary(subscription) do
-    SQL.list_dead_messages(dialect(opts), opts, subscription)
-  end
-
-  @impl DMEx.Storage
-  def delete_dead_message(subscription, id, opts) when is_binary(subscription) and is_integer(id) do
-    SQL.delete_dead_message(dialect(opts), opts, subscription, id)
-  end
-
   @impl DMEx.Storage
   def transaction(fun, opts) when is_function(fun, 0), do: Map.fetch!(opts, :repo).transaction(fun)
 
@@ -181,10 +131,6 @@ defmodule DMEx.Storage.Postgres do
   def migration, do: DMEx.Storage.Postgres.Migration
 
   ## Naming
-
-  # Public so `DMEx.Storage.PostgresTest` can EXPLAIN the real statement.
-  @doc false
-  def __read_sql__(predicate, opts), do: SQL.read_sql(dialect(opts), predicate)
 
   defp table(name, opts), do: __table__(name, Map.get(opts, :prefix))
 

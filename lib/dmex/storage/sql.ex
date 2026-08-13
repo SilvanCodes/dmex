@@ -53,6 +53,18 @@ defmodule DMEx.Storage.SQL do
   to spell "the byte length of" and nothing more. A finished expression would hand
   back the ability to measure a different set of columns on one engine, which is
   the bug the read statement exists to make unrepresentable.
+
+  ## What an adapter is
+
+  `use DMEx.Storage.SQL` implements the eleven statements below from `c:dialect/1`
+  and nothing else, so a SQL adapter *is* its dialect plus the three callbacks
+  that are genuinely its own: `c:DMEx.Storage.append/4`,
+  `c:DMEx.Storage.transaction/2` and `c:DMEx.Storage.validate!/1`.
+
+  `DMEx.Storage` itself stays open to a store with no dialect at all — the
+  in-memory stub the test suite records reads through implements those eleven
+  callbacks directly, which is what keeps the behaviour a behaviour rather than a
+  SQL template.
   """
 
   alias Ecto.Adapters.SQL, as: Adapter
@@ -69,8 +81,63 @@ defmodule DMEx.Storage.SQL do
           bytes: (String.t() -> String.t()),
           type_agg: String.t(),
           types: (term() -> [String.t()]),
-          timestamp: (term() -> DateTime.t())
+          timestamp: (term() -> DateTime.t()),
+          selection: ([String.t()] -> {String.t(), [term()]})
         }
+
+  @doc """
+  This engine's dialect, for these options.
+
+  A function rather than a constant because `:prefix` reaches the table names, and
+  because three of the entries are closures, which a module attribute cannot hold.
+  """
+  @callback dialect(DMEx.Storage.opts()) :: dialect()
+
+  @doc false
+  defmacro __using__(_opts) do
+    quote do
+      @behaviour DMEx.Storage
+      @behaviour DMEx.Storage.SQL
+
+      @impl DMEx.Storage
+      def read(cursor, max_rows, max_bytes, types, opts),
+        do: DMEx.Storage.SQL.read(dialect(opts), opts, cursor, max_rows, max_bytes, types)
+
+      @impl DMEx.Storage
+      def max_id(opts), do: DMEx.Storage.SQL.max_id(dialect(opts), opts)
+
+      @impl DMEx.Storage
+      def appended_since(cursor, opts), do: DMEx.Storage.SQL.appended_since(dialect(opts), opts, cursor)
+
+      @impl DMEx.Storage
+      def last_seen(subscription, opts), do: DMEx.Storage.SQL.last_seen(dialect(opts), opts, subscription)
+
+      @impl DMEx.Storage
+      def cursor(subscription, opts), do: DMEx.Storage.SQL.cursor(dialect(opts), opts, subscription)
+
+      @impl DMEx.Storage
+      def advance_cursor(subscription, last_seen, opts),
+        do: DMEx.Storage.SQL.advance_cursor(dialect(opts), opts, subscription, last_seen)
+
+      @impl DMEx.Storage
+      def delete_cursor(subscription, opts), do: DMEx.Storage.SQL.delete_cursor(dialect(opts), opts, subscription)
+
+      @impl DMEx.Storage
+      def record_dead_message(row, opts), do: DMEx.Storage.SQL.record_dead_message(dialect(opts), opts, row)
+
+      @impl DMEx.Storage
+      def list_dead_messages(subscription, opts),
+        do: DMEx.Storage.SQL.list_dead_messages(dialect(opts), opts, subscription)
+
+      @impl DMEx.Storage
+      def delete_dead_message(subscription, id, opts),
+        do: DMEx.Storage.SQL.delete_dead_message(dialect(opts), opts, subscription, id)
+
+      # The one statement a test wants to EXPLAIN. One arity for both engines.
+      @doc false
+      def __read_sql__(predicate, opts), do: DMEx.Storage.SQL.read_sql(dialect(opts), predicate)
+    end
+  end
 
   ## Reading the log
 
@@ -137,11 +204,26 @@ defmodule DMEx.Storage.SQL do
     """
   end
 
-  @doc "See `c:DMEx.Storage.read/5`. `predicate` and its parameters are the adapter's."
-  @spec read(dialect(), DMEx.Storage.opts(), String.t(), [term()]) ::
+  @doc """
+  See `c:DMEx.Storage.read/5`.
+
+  A selection is a *separate statement*, never a nullable predicate — the reason
+  is the index rather than the syntax. `:selection` renders it and the parameters
+  it binds, because that is the one part of this statement the engines spell
+  incompatibly: one `= ANY($4)` against N placeholders. Either way `1` to `3` are
+  the parameters every read binds, so a selection appends its own and nothing
+  renumbers.
+  """
+  @spec read(dialect(), DMEx.Storage.opts(), non_neg_integer(), pos_integer(), pos_integer(), :all | [String.t()]) ::
           {:ok, [DMEx.Storage.row()]} | {:error, term()}
-  def read(dialect, opts, predicate, params) do
-    rows(dialect, opts, read_sql(dialect, predicate), params)
+  def read(dialect, opts, cursor, max_rows, max_bytes, :all) do
+    rows(dialect, opts, read_sql(dialect, ""), [cursor, max_rows, max_bytes])
+  end
+
+  def read(%{selection: selection} = dialect, opts, cursor, max_rows, max_bytes, types) when is_list(types) do
+    {predicate, params} = selection.(types)
+
+    rows(dialect, opts, read_sql(dialect, predicate), [cursor, max_rows, max_bytes | params])
   end
 
   @doc "See `c:DMEx.Storage.max_id/1`."

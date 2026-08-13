@@ -19,6 +19,18 @@ defmodule DMEx.Storage do
   too, and the functions under *Calling an adapter* take it first and dispatch
   on it.
 
+  ## Two ways to be an adapter
+
+  A SQL engine writes `use DMEx.Storage.SQL` and declares a **dialect** — the
+  eleven things Postgres and SQLite spell differently. That generates every
+  statement callback, leaving the engine only what is genuinely its own:
+  `c:append/4`, `c:transaction/2` and `c:validate!/1`. Both shipped adapters are
+  about eighty lines each because of it.
+
+  Anything else implements the callbacks directly. The suite's in-memory stub does,
+  which is what keeps this a behaviour rather than a SQL template — and is why the
+  dialect is `DMEx.Storage.SQL`'s callback and not one of these.
+
   ## Three contracts that are correctness, not style
 
   Each is easy to implement *almost* right. The first cannot be pinned by the

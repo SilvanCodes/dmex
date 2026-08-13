@@ -107,10 +107,10 @@ defmodule DMEx.Storage.SQLiteTest do
   ## Helpers
 
   # EXPLAIN QUERY PLAN over the adapter's real statement. Reaches for the
-  # private builder deliberately: what is under test is that statement, and no
+  # generated builder deliberately: what is under test is that statement, and no
   # restatement of it would prove anything.
-  defp explain(predicate, %{repo: repo}) do
-    sql = :erlang.apply(SQLite, :__read_sql__, [predicate])
+  defp explain(predicate, %{repo: repo} = opts) do
+    sql = :erlang.apply(SQLite, :__read_sql__, [predicate, opts])
     params = if predicate == "", do: [0, 3, 10_000_000], else: [0, 3, 10_000_000, "A"]
 
     repo
