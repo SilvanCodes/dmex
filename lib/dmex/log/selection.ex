@@ -51,6 +51,12 @@ defmodule DMEx.Log.Selection do
   The selection a handler's own declared message modules make. See `expand/1`
   for why this set is exact and that one is not.
 
+  Every type each module answers for — `DMEx.Message.declared/1`, so a retired
+  one is in it. That is what the fingerprint encodes
+  (`DMEx.Handler.__declaration__/1`), and a subscription that selected less here
+  than it selects over the wire would read different rows depending on how its
+  log happens to be bound.
+
   Which of the two a subscription gets is decided by the same value on both
   transports: a `nil` fingerprint is a handler with a clause that named no type
   — one is enough, whatever the others name, and a
@@ -59,7 +65,8 @@ defmodule DMEx.Log.Selection do
   """
   @spec declared(MapSet.t(module()), String.t() | nil) :: t()
   def declared(_messages, nil), do: :all
-  def declared(messages, _fingerprint), do: MapSet.new(messages, & &1.type())
+
+  def declared(messages, _fingerprint), do: MapSet.new(Enum.flat_map(messages, &DMEx.Message.declared/1))
 
   @doc "Whether a selection is concerned with any of the types just appended."
   @spec concerns?(t(), [String.t()]) :: boolean()

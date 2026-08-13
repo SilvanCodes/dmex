@@ -2,9 +2,19 @@ defmodule DMEx.Log.SelectionTest do
   use DMEx.Case, async: true
 
   alias DMEx.Handler
+  alias DMEx.Handler.Fingerprint
   alias DMEx.Log.Selection
   alias DMEx.Test.Handlers.Echo
   alias DMEx.Test.Messages.OrderPlaced
+  alias DMEx.Test.Messages.Renamed
+
+  defmodule RenamedConsumer do
+    @moduledoc false
+    use Handler, logs: [:test], name: :renamed_selection
+
+    @impl true
+    def handle_message(%Renamed{}, _metadata), do: :ok
+  end
 
   describe "declared/2" do
     test "is the handler's own types, exactly" do
@@ -12,6 +22,25 @@ defmodule DMEx.Log.SelectionTest do
 
       assert Selection.declared(declaration.messages, declaration.fingerprint) ==
                MapSet.new([OrderPlaced.type()])
+    end
+
+    test "carries the retired types the same handler requests over the wire" do
+      declaration = Handler.declaration!(RenamedConsumer)
+
+      assert Selection.declared(declaration.messages, declaration.fingerprint) ==
+               MapSet.new(DMEx.Message.declared(Renamed))
+    end
+
+    # The two transports must not read different rows for one declaration: the
+    # local set has to be a subset of what the fingerprint admits, or a row the
+    # SSE path delivers is one the local path never reads.
+    test "selects no type the handler's own fingerprint would reject" do
+      declaration = Handler.declaration!(RenamedConsumer)
+      {:ok, filter} = Fingerprint.decode(declaration.fingerprint)
+
+      local = Selection.declared(declaration.messages, declaration.fingerprint)
+
+      assert MapSet.subset?(local, Selection.expand(filter))
     end
 
     test "a nil fingerprint is the whole log, whatever the handler declares" do
