@@ -233,7 +233,7 @@ defmodule DMEx.Handler do
           config: keyword()
         }
   def __declared_opts__(module, opts) do
-    DMEx.validate_keys!(
+    Config.keys!(
       opts,
       @handler_opts ++ Config.handler_keys(),
       "`use DMEx.Handler` in #{inspect(module)}",
@@ -652,14 +652,7 @@ defmodule DMEx.Handler do
   defp config!(module, opts) do
     declared = Keyword.take(opts, Config.handler_keys())
 
-    try do
-      _ = Config.handler!(declared)
-    rescue
-      error in ArgumentError ->
-        reraise ArgumentError,
-                [message: "in `use DMEx.Handler` in #{inspect(module)}: #{error.message}"],
-                __STACKTRACE__
-    end
+    _ = Config.handler!(declared, "`use DMEx.Handler` in #{inspect(module)}")
 
     declared
   end

@@ -129,29 +129,77 @@ defmodule DMEx.Config do
         }
 
   @doc """
-  Builds a validated log config from `use DMEx.Log` options.
+  Checks one option vocabulary: no unknown key, no repeat, nothing required
+  missing.
 
-  Ignores keys that are not config settings, so a caller may hand over its whole
-  option list. Rejecting a *misspelled* key is therefore the caller's job;
-  `DMEx.Log` does it against its own keys plus `log_keys/0`.
+  Every vocabulary in DMEx comes through here — `use DMEx.Log`, `use DMEx.Handler`,
+  `use DMEx.Message`, `DMEx.Log.Plug`, `DMEx.Supervisor` and its `subscribe/2` — so
+  the six say the same thing about a missing or unknown key and none of them can
+  drift. `source` names the call site ("`use DMEx.Log` in MyApp.Log"); `hint` is
+  whatever else that one site has to say. Returning means every key in `required`
+  is present, so the code after it fetches rather than matching.
 
-  Raises `ArgumentError` on a value outside its setting's domain.
+  This is the *keys* half. `log!/2` and `handler!/2` are the values half, and a
+  site with settings calls both — the key check first, so a misspelling is reported
+  as a misspelling rather than as a value outside a domain it never reached.
   """
-  @spec log!(keyword()) :: log()
-  def log!(opts) when is_list(opts) do
-    @log_settings |> cast!(opts) |> validate!(@log_settings)
+  @spec keys!(Macro.t(), [atom()], String.t(), String.t(), [atom()]) :: :ok
+  def keys!(opts, known, source, hint, required \\ []) do
+    if !Keyword.keyword?(opts) do
+      raise ArgumentError, "#{source} takes a keyword list, got: #{Macro.to_string(opts)}"
+    end
+
+    all = Keyword.keys(opts)
+    keys = Enum.uniq(all)
+
+    unknown = keys -- known
+    repeated = Enum.uniq(all -- keys)
+    missing = required -- keys
+
+    cond do
+      unknown != [] ->
+        raise ArgumentError,
+              "unknown option#{if length(unknown) > 1, do: "s"} #{inspect(unknown)} " <>
+                "passed to #{source}. Known options: #{inspect(Enum.sort(known))}." <> hint
+
+      repeated != [] ->
+        raise ArgumentError,
+              "#{source} passes #{Enum.map_join(repeated, ", ", &inspect/1)} more than once. " <>
+                "Only one of them can take effect, so a repeat could only ever mean one of them." <> hint
+
+      missing != [] ->
+        raise ArgumentError,
+              "#{source} requires #{Enum.map_join(missing, ", ", &inspect/1)}." <> hint
+
+      true ->
+        :ok
+    end
   end
 
   @doc """
-  Builds a validated handler config from `subscribe/2` options.
+  Builds a validated log config from `use DMEx.Log` options.
 
-  Ignores keys that are not config settings. As with `log!/1`, rejecting a
-  misspelled key is the caller's job; `use DMEx.Handler` and
-  `DMEx.Supervisor.subscribe/2` both do it.
+  Ignores keys that are not config settings, so a caller may hand over its whole
+  option list — `keys!/5` is what rejects a *misspelled* one.
+
+  `source` prefixes the error, so a bad value names the declaration it came from
+  rather than needing the caller to catch and re-raise.
   """
-  @spec handler!(keyword()) :: handler()
-  def handler!(opts) when is_list(opts) do
-    @handler_settings |> cast!(opts) |> validate!(@handler_settings)
+  @spec log!(keyword(), String.t() | nil) :: log()
+  def log!(opts, source \\ nil) when is_list(opts) do
+    @log_settings |> cast!(opts) |> validate!(@log_settings, source)
+  end
+
+  @doc """
+  Builds a validated handler config from `use DMEx.Handler` or `subscribe/2`
+  options.
+
+  As with `log!/2`: unknown keys are `keys!/5`'s to reject, and `source` names the
+  site in the error.
+  """
+  @spec handler!(keyword(), String.t() | nil) :: handler()
+  def handler!(opts, source \\ nil) when is_list(opts) do
+    @handler_settings |> cast!(opts) |> validate!(@handler_settings, source)
   end
 
   @doc """
@@ -210,18 +258,22 @@ defmodule DMEx.Config do
   ## Validation
 
   # Driven by the same list the defaults come from, so a setting cannot be added
-  # with a default and no domain.
-  defp validate!(config, settings) do
+  # with a default and no domain. `source` is the declaration the options came
+  # from, which is why no caller has to rescue and re-raise to say where.
+  defp validate!(config, settings, source) do
     for {key, {_default, domain}} <- settings do
       value = Map.fetch!(config, key)
 
       if !in_domain?(value, domain) do
-        raise ArgumentError, "#{inspect(key)} must be #{describe(domain)}, got: #{inspect(value)}"
+        raise ArgumentError, "#{where(source)}#{inspect(key)} must be #{describe(domain)}, got: #{inspect(value)}"
       end
     end
 
     config
   end
+
+  defp where(nil), do: ""
+  defp where(source), do: "in #{source}: "
 
   # `max_batch_frequency` is not a count, so it may be fractional: a stream
   # reading once every five seconds is 0.2 Hz and has no integer spelling.

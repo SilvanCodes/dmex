@@ -152,47 +152,6 @@ defmodule DMEx do
         do: module
   end
 
-  # Every option vocabulary in DMEx — `use DMEx.Log`, `use DMEx.Handler`,
-  # `use DMEx.Message`, `DMEx.Supervisor.subscribe/2` — is checked here, so the
-  # four say the same thing about a missing or unknown key and none of them can
-  # drift. `source` names the call site ("`use DMEx.Log` in MyApp.Log"); `hint`
-  # is whatever else that one site has to say. Returning means every key in
-  # `required` is present, so the code after it fetches rather than matching.
-
-  @doc false
-  @spec validate_keys!(Macro.t(), [atom()], String.t(), String.t(), [atom()]) :: :ok
-  def validate_keys!(opts, known, source, hint, required \\ []) do
-    if !Keyword.keyword?(opts) do
-      raise ArgumentError, "#{source} takes a keyword list, got: #{Macro.to_string(opts)}"
-    end
-
-    all = Keyword.keys(opts)
-    keys = Enum.uniq(all)
-
-    unknown = keys -- known
-    repeated = Enum.uniq(all -- keys)
-    missing = required -- keys
-
-    cond do
-      unknown != [] ->
-        raise ArgumentError,
-              "unknown option#{if length(unknown) > 1, do: "s"} #{inspect(unknown)} " <>
-                "passed to #{source}. Known options: #{inspect(Enum.sort(known))}." <> hint
-
-      repeated != [] ->
-        raise ArgumentError,
-              "#{source} passes #{Enum.map_join(repeated, ", ", &inspect/1)} more than once. " <>
-                "Only one of them can take effect, so a repeat could only ever mean one of them." <> hint
-
-      missing != [] ->
-        raise ArgumentError,
-              "#{source} requires #{Enum.map_join(missing, ", ", &inspect/1)}." <> hint
-
-      true ->
-        :ok
-    end
-  end
-
   @doc """
   The jittered exponential backoff delay in ms before attempt `attempt`,
   counting from 1. Shared by reconnects and local retries.

@@ -109,7 +109,7 @@ defmodule DMEx.Log.Plug do
 
   @impl Plug
   def init(opts) do
-    DMEx.validate_keys!(
+    Config.keys!(
       opts,
       [:log_module],
       "`DMEx.Log.Plug`",

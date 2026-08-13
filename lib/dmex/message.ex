@@ -125,6 +125,8 @@ defmodule DMEx.Message do
   clause needed.
   """
 
+  alias DMEx.Config
+
   @message_opts [:type, :fields, :retired]
   # Dot-separated segments rather than "the dot is a legal character", so the
   # degenerate namespaces — `"."`, `".foo"`, `"foo."` — are illegal by
@@ -158,7 +160,7 @@ defmodule DMEx.Message do
   defmacro __using__(opts) do
     module = __CALLER__.module
 
-    DMEx.validate_keys!(
+    Config.keys!(
       opts,
       @message_opts,
       "`use DMEx.Message` in #{inspect(module)}",

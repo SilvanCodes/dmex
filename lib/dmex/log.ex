@@ -176,7 +176,7 @@ defmodule DMEx.Log do
   @doc false
   @spec __config__(module(), keyword(), [module()]) :: config()
   def __config__(module, opts, ecto_repos \\ []) do
-    DMEx.validate_keys!(
+    Config.keys!(
       opts,
       @log_opts ++ Config.log_keys(),
       "`use DMEx.Log` in #{inspect(module)}",

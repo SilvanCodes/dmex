@@ -108,7 +108,7 @@ defmodule DMEx.Supervisor do
     # and failed at the first subscribe with "nowhere to write this subscription's
     # cursor", naming neither the option nor the mistake. Same mechanism every
     # other vocabulary in DMEx uses.
-    DMEx.validate_keys!(
+    Config.keys!(
       opts,
       @supervisor_opts ++ @storage_opts,
       "`DMEx.Supervisor`",
@@ -251,7 +251,7 @@ defmodule DMEx.Supervisor do
     # caller rejects a non-handler identically.
     declaration = Handler.declaration!(handler)
 
-    DMEx.validate_keys!(
+    Config.keys!(
       opts,
       @subscription_opts ++ @storage_opts ++ Config.handler_keys(),
       "`DMEx.Supervisor.subscribe/2`",
