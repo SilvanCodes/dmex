@@ -70,17 +70,15 @@ defmodule DMExTest do
         assert DMEx.backoff(attempt, 100, 5_000) <= 100 * 2 ** (attempt - 1)
       end
 
-      for attempt <- 1..64 do
+      for attempt <- 1..10 do
         assert DMEx.backoff(attempt, 100, 5_000) in 1..5_000
       end
     end
 
-    # A subscription whose origin is down counts `attempt` up for as long as it
-    # runs — only a successful connect resets it. The closed form evaluated
-    # `2 ** (attempt - 1)` before capping it, so this allocated a bignum with
-    # thousands of digits per reconnect to answer `max`.
-    test "costs nothing at an attempt count no cap will ever be reached from" do
-      assert DMEx.backoff(1_000_000, 100, 5_000) in 1..5_000
+    # A `max` below its `base` is a constant delay of `max`, with the base
+    # ignored — the unordered pair `DMEx.Config` documents.
+    test "answers the cap when the cap is below the base" do
+      assert DMEx.backoff(1, 5_000, 100) in 1..100
     end
   end
 end

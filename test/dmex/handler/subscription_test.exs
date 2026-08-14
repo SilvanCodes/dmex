@@ -28,6 +28,26 @@ defmodule DMEx.Handler.SubscriptionTest.SleepingTransport do
   def heartbeat(sink), do: {:ok, sink}
 end
 
+defmodule DMEx.Handler.SubscriptionTest.DyingTransport do
+  @moduledoc """
+  A reader that dies without ever reporting a connection.
+
+  `DMEx.Transport.connected/1` is what resets the counter, so every one of these
+  is the failed attempt it was and the reconnect schedule is all that paces them.
+  """
+
+  @behaviour DMEx.Transport
+
+  @impl DMEx.Transport
+  def start_reader(_opts), do: spawn_link(fn -> exit(:econnrefused) end)
+
+  @impl DMEx.Transport
+  def write(sink, _rows), do: {:ok, sink, %{}}
+
+  @impl DMEx.Transport
+  def heartbeat(sink), do: {:ok, sink}
+end
+
 defmodule DMEx.Handler.SubscriptionTest.PoolDown do
   @moduledoc """
   The in-memory stub with a repo that is already gone.
@@ -77,8 +97,11 @@ defmodule DMEx.Handler.SubscriptionTest do
 
   use DMEx.Case, async: true
 
+  import ExUnit.CaptureLog
+
   alias DMEx.Config
   alias DMEx.Handler.Subscription
+  alias DMEx.Handler.SubscriptionTest.DyingTransport
   alias DMEx.Handler.SubscriptionTest.PoolDown
   alias DMEx.Handler.SubscriptionTest.SleepingTransport
   alias DMEx.Test.Handlers
@@ -113,19 +136,61 @@ defmodule DMEx.Handler.SubscriptionTest do
     end
   end
 
+  # The counter is what `DMEx.backoff/3` raises 2 to, so it is bounded here
+  # rather than clamped there: past the cap the delay is
+  # `reconnect_backoff_max` whatever the count says.
+  describe "reconnect backoff" do
+    test "counts failed connects up to a cap, holds there, and says so" do
+      ref = :telemetry_test.attach_event_handlers(self(), [[:dmex, :handler, :reconnect]])
+
+      log =
+        capture_log(fn ->
+          {:ok, pid} =
+            start(Storage.new(), Storage,
+              transport: DyingTransport,
+              config:
+                Config.handler!(
+                  checkpoint_interval: 60_000,
+                  reconnect_backoff_base: 1,
+                  reconnect_backoff_max: 2
+                )
+            )
+
+          assert attempts(ref, 13) == Enum.to_list(1..10) ++ [10, 10, 10]
+
+          GenServer.stop(pid)
+        end)
+
+      assert log =~ "has failed 10 consecutive connects"
+    end
+  end
+
   ## Helpers
 
-  defp start(storage, adapter) do
+  defp start(storage, adapter, opts \\ []) do
     Subscription.start_link(
-      subscription: "test/echo",
-      handler: Handlers.Echo,
-      origin: @url,
-      transport: SleepingTransport,
-      test: self(),
-      storage: Map.put(storage, :adapter, adapter),
-      config: Config.handler!(checkpoint_interval: 60_000),
-      registry: nil
+      Keyword.merge(
+        [
+          subscription: "test/echo",
+          handler: Handlers.Echo,
+          origin: @url,
+          transport: SleepingTransport,
+          test: self(),
+          storage: Map.put(storage, :adapter, adapter),
+          config: Config.handler!(checkpoint_interval: 60_000),
+          registry: nil
+        ],
+        opts
+      )
     )
+  end
+
+  defp attempts(ref, count) do
+    Enum.map(1..count, fn _ ->
+      assert_receive {[:dmex, :handler, :reconnect], ^ref, %{attempt: attempt}, _metadata}, 1_000
+
+      attempt
+    end)
   end
 
   # A type no clause of `Handlers.Echo` names, so the row is skipped — and a skip

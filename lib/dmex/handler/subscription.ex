@@ -1,4 +1,8 @@
 defmodule DMEx.Handler.Subscription do
+  # Where reconnect doubling stops, and where a reconnect stops being
+  # unremarkable. Above the moduledoc only because the moduledoc names it.
+  @max_attempts 10
+
   @moduledoc """
   One subscription: one transport, one handler, one cursor.
 
@@ -42,6 +46,13 @@ defmodule DMEx.Handler.Subscription do
   when to try again is decided here. `DMEx.Transport.connected/1` is what clears
   the backoff, so a reader that dies before establishing anything counts as the
   failed attempt it was.
+
+  The counter stops at `#{@max_attempts}`: past that the delay is
+  `reconnect_backoff_max` whatever the count says, so continuing to add to it
+  would only grow the exponent `DMEx.backoff/3` raises. Reaching it is the
+  escalation — the reconnect line stops being `debug` and becomes a warning on
+  every further attempt, since an origin that has refused this many consecutive
+  connects is no longer a blip and nothing else in the system will say so.
 
   ## Skips are checkpointed on a timer, not per row
 
@@ -266,14 +277,11 @@ defmodule DMEx.Handler.Subscription do
     # so an unwritten run of skips would be re-read and re-skipped for nothing.
     state = flush(state)
 
-    attempt = state.attempt + 1
+    attempt = min(state.attempt + 1, @max_attempts)
 
     delay = DMEx.backoff(attempt, state.config.reconnect_backoff_base, state.config.reconnect_backoff_max)
 
-    Logger.debug(fn ->
-      "DMEx #{state.subscription} (#{inspect(state.handler)}) reconnecting to " <>
-        "#{inspect(state.origin)} in #{delay}ms after #{inspect(reason)}"
-    end)
+    log(state, attempt, delay, reason)
 
     :telemetry.execute(
       [:dmex, :handler, :reconnect],
@@ -289,6 +297,24 @@ defmodule DMEx.Handler.Subscription do
     Process.send_after(self(), :connect, delay)
 
     %{state | attempt: attempt}
+  end
+
+  # At the cap, and from then on: an origin that has refused this many
+  # consecutive connects is not a blip, and a `debug` line is invisible in the
+  # deployment where that matters.
+  defp log(state, @max_attempts, delay, reason) do
+    Logger.warning(fn ->
+      "DMEx #{state.subscription} (#{inspect(state.handler)}) has failed " <>
+        "#{@max_attempts} consecutive connects to #{inspect(state.origin)}, " <>
+        "retrying in #{delay}ms after #{inspect(reason)}"
+    end)
+  end
+
+  defp log(state, _attempt, delay, reason) do
+    Logger.debug(fn ->
+      "DMEx #{state.subscription} (#{inspect(state.handler)}) reconnecting to " <>
+        "#{inspect(state.origin)} in #{delay}ms after #{inspect(reason)}"
+    end)
   end
 
   ## Checkpointing

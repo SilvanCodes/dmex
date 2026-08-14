@@ -205,10 +205,6 @@ defmodule DMEx.Log do
       notifier: %{
         adapter: notifier!(module, storage.adapter, opts),
         repo: repo,
-        # The one derivation of the notifier's process name. Both adapters read
-        # it rather than rebuilding it from `:log`, which is why `:log` is not
-        # in this map: naming their processes was the only thing they used it
-        # for. See `t:DMEx.Notifier.opts/0`.
         name: Module.concat(module, "Notifications"),
         channel: channel
       }

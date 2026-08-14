@@ -2,63 +2,49 @@ defmodule DMEx.Handler.Pipeline do
   @moduledoc """
   Processes one row: suppress, resolve, decode, handle, advance.
 
-  Every handler-side semantic lives here, and the order of operations *is* the
-  specification. `DMEx.Handler.DeadMessages` replays through `deliver/3` rather
-  than repeating any of it — see there for the one section it deliberately does
-  not inherit.
+  The order of operations *is* the specification, and every handler-side semantic
+  lives here. `DMEx.Handler.DeadMessages` replays through `deliver/3` rather than
+  repeating any of it — bar section 6, which it says why it does not inherit.
 
   ## 1. Duplicate suppression, by id
 
-  A row whose `id` is at or below the cursor was already committed, so it is
-  dropped before any transaction opens. This needs no dedupe table: delivery
-  within a subscription is strictly ordered and `last_seen` is durable, so
-  "already processed" is exactly "id not greater than the cursor". It cannot
-  cover a crash between a handler's side effects landing and its transaction
-  committing — see ARCHITECTURE's *Delivery semantics*.
+  A row at or below the cursor was already committed, so it is dropped before any
+  transaction opens. No dedupe table: delivery within a subscription is strictly
+  ordered and `last_seen` is durable, so "already processed" is exactly "id not
+  greater than the cursor". The one crash window it cannot cover is
+  ARCHITECTURE's *Delivery semantics*.
 
   ## 2. A message no clause matches is skipped, not an error
 
-  Two rows land here. One whose `type` resolves to no module at all: a
-  filter false positive admits one, and a whole-log handler is sent every type
-  its log holds, including those its application has never heard of. And one
-  whose type *does* resolve but whose value no clause head accepts, because
-  selection is by type while a clause may narrow further —
-  `%OrderPlaced{status: "paid"}` declares `OrderPlaced` and the log has no way to
-  send only the paid ones.
+  Two rows land here: one whose `type` resolves to no module at all (a filter
+  false positive, or a whole-log handler sent a type its application never
+  declared), and one whose type does resolve but whose value no clause head
+  accepts, since selection is by type while a clause may narrow further.
 
-  Neither is a fault. Both advance the cursor exactly as a handled row does —
-  they must, or a handler would wedge forever on the first row it does not want
-  — and both emit `[:dmex, :handler, :skip]`.
+  Both advance the cursor exactly as a handled row does — they must, or a handler
+  would wedge on the first row it does not want — and both emit
+  `[:dmex, :handler, :skip]`.
 
-  **They are one question, so they are one call.** `__dmex_cast__/3` — which
-  `DMEx.Handler` compiles from the handler's own clauses — decodes the row and
-  hands it back only if a clause head accepts it, and answers `nil` otherwise.
-  There is no separate type lookup to disagree with the clauses, and no way to
-  decode a row without asking whether it is wanted.
-
-  It is asked *before* the transaction opens, so a row nothing wants costs a
-  call and a struct match. Nothing calls the handler and rescues a
-  `FunctionClauseError` to find out, which leaves raising meaning only what
-  section 4 says it means.
+  **One question, so one call.** `__dmex_cast__/3`, compiled from the handler's
+  own clauses, decodes the row and returns it only if a clause head accepts it,
+  so no type lookup can disagree with the clauses. It is asked *before* the
+  transaction opens, and never by rescuing a `FunctionClauseError` — which leaves
+  raising meaning only what section 4 says it means.
 
   ## 2a. A skip's advance is coalesced; a handled message's is not
 
   A skip runs no handler, so its advance is atomic with *nothing*, and on a
   mostly-skipped stream a transaction per row is the entire cost of consuming
-  (measured — `bench/e2e/catchup_drain.exs`). So a skip advances
-  `:cursor`, sets `:pending`, and returns without touching the database; the run
-  is persisted by `flush/1` on a `checkpoint_interval` timer and before anything
-  re-reads the durable cursor.
+  (measured — `bench/e2e/catchup_drain.exs`). So it advances `:cursor`, sets
+  `:pending`, and touches no database; `flush/1` persists the run on a
+  `checkpoint_interval` timer and before anything re-reads the durable cursor.
 
-  **A handled message commits immediately and needs no flush.**
-  `c:DMEx.Storage.advance_cursor/3` sets `last_seen` absolutely, so advancing to a
-  handled row's id *subsumes* every pending skip below it — skips at 5, 6, 7
-  followed by a handled 8 leave the cursor at 8 either way. So coalescing leaves
-  the handler/cursor transaction untouched.
-
-  A crash with a pending run costs re-reading and re-skipping those rows,
-  bounded by `checkpoint_interval`. Nothing is lost and nothing is handled
-  twice, because a pending run is by definition rows no code ran for.
+  A handled message commits its own advance, and
+  `c:DMEx.Storage.advance_cursor/3` is absolute, so that advance *subsumes* every
+  pending skip below it — skips at 5, 6, 7 then a handled 8 leave the cursor at 8
+  either way, which is what leaves the handler/cursor transaction untouched. A
+  crash with a run pending costs re-reading and re-skipping rows no code ran for,
+  bounded by `checkpoint_interval`.
 
   ## 3. Decoding happens outside the transaction
 
@@ -68,25 +54,19 @@ defmodule DMEx.Handler.Pipeline do
   ## 4. Failures are retried a bounded number of times, then resolved
 
   A raise rolls the transaction back with the message still in hand, so a retry
-  is just calling the handler again — worth `max_attempts` tries for a transient
-  deadlock or a blipped downstream. Jittered, because a shared downstream fails
-  every handler at once.
+  is just calling the handler again — `max_attempts` of them, jittered because a
+  shared downstream fails every handler at once.
 
-  **Only the handler's own failure counts**, and that is enforced by tagging it
-  rather than by enumerating everything else. `handle!/2` is the one place a
-  handler is called, and it wraps whatever that call raised in
-  `DMEx.Handler.Pipeline.Failure`; the retry schedule rescues that and nothing
-  else. So a checkout that timed out, a dropped connection, a driver error, an
-  adapter that failed a match on its own query result, or the cursor write
-  itself, all leave untouched: no retry, no terminal action. Retrying would
-  re-run side effects that never failed, and section 6 would resolve a message
-  no handler rejected. The stream dies, the supervisor restarts it, and it
-  resumes from its durable cursor — which still points *below* this message,
-  since the advance went down with the transaction.
-
-  Tagging the handler rather than tagging storage is the direction that stays
-  true: "everything else" is open-ended and no allowlist of driver exceptions
-  stays complete, while "what the handler raised" is one call.
+  **Only the handler's own failure counts**, tagged rather than enumerated:
+  `handle!/2` is the one place a handler is called and it wraps what that call
+  raised in `Failure`, which is all the retry schedule rescues. A checkout
+  timeout, a driver error, an adapter's failed match on its own query result, or
+  the cursor write itself is neither retried nor resolved by section 6 — that
+  would re-run side effects which never failed and resolve a message no handler
+  rejected. It kills the stream instead, and the restart resumes from a durable
+  cursor still *below* this message, the advance having gone down with the
+  transaction. No allowlist of driver exceptions stays complete; "what the
+  handler raised" is one call.
 
   ## 5. The handler and the cursor share one transaction
 
@@ -95,33 +75,28 @@ defmodule DMEx.Handler.Pipeline do
 
   ## 6. `on_failure` is the terminal action, and there are three
 
-  The retry step is identical in all three. Both non-crashing modes commit an
-  **absolute** advance to the failing row's id, carrying any coalesced run of
-  skips below it (section 2a).
+  What reaches here ran and raised `max_attempts` times: never a storage failure
+  (section 4), never a row no clause wanted (section 2). The retry step is
+  identical in all three modes, and both non-crashing modes commit an
+  **absolute** advance to the failing row's id, carrying the coalesced skips
+  below it (section 2a).
 
-  **What reaches here is a handler that ran and raised, `max_attempts` times.**
-  A storage failure never does (section 4), and neither does a row no clause
-  wanted (section 2) — those are not messages a handler could not process.
+  **`:dead_message`** (the default) writes the row to `dmex_dead_messages` in that
+  same transaction, so a message is never skipped without being recorded or
+  recorded without being skipped. The only mode refusing both bad outcomes: one
+  message a handler cannot process stopping every *later* message, and losing the
+  failing one. The message and only the message is stored — see
+  `c:DMEx.Storage.record_dead_message/2`.
 
-  **`:dead_message`** (the default) advances past the failing message, writing it
-  to `dmex_dead_messages` first, in the same transaction — so there is no state
-  where a message was skipped without being recorded, or recorded without being
-  skipped. The default because it is the only mode refusing both bad outcomes:
-  one message a handler cannot process is not a reason for every *later* message
-  to stop arriving, nor a reason to lose the failing one. What is stored is the
-  message and only the message — see `c:DMEx.Storage.record_dead_message/2`.
+  **`:crash`** re-raises the handler's own exception and stacktrace without
+  advancing, so section 4's restart-and-resume happens here too and the log
+  re-streams the message that killed it, forever. Choose it when later messages
+  must not be processed without this one, or when a loud alarm beats a growing
+  table nobody watches. A jittered `reconnect_backoff_base` pause before the
+  re-raise keeps the loop off the log's database and off its siblings;
+  `DMEx.Handler.Subscriptions` sets no restart budget.
 
-  **`:crash`** re-raises with the original stacktrace and without advancing, so
-  section 4's restart-and-resume happens here too — a pending run of skips is
-  re-skipped, and the log's range scan re-streams the message that killed it,
-  forever. Choose it when later messages must not be processed without this one,
-  or when a loud alarm beats a growing table nobody watches. A jittered
-  `reconnect_backoff_base` pause before the re-raise keeps the loop off the log's
-  database and off its siblings; `DMEx.Handler.Subscriptions` deliberately sets
-  no restart budget.
-
-  **`:skip`** advances past the failing message without the handler having
-  succeeded. Nothing durable is recorded: the log line and
+  **`:skip`** advances past it with nothing durable recorded: the log line and
   `[:dmex, :handler, :failed]` are the only trace.
   """
 
@@ -134,13 +109,12 @@ defmodule DMEx.Handler.Pipeline do
     @moduledoc false
 
     # What `handle_message/2` raised, tagged so the pipeline can tell a verdict on
-    # one message from the infrastructure under it failing — section 4.
+    # one message from the infrastructure under it failing — section 4. It carries
+    # the original and its stacktrace, so `on_failure: :crash` can re-raise what a
+    # reader of the crash needs and not the tag it travelled in.
     #
-    # It carries the original and its stacktrace, and never escapes the pipeline
-    # as itself: `attempt/4` unwraps it into `{:failed, ...}` and `on_failure:
-    # :crash` re-raises the original. The one place it is visible from outside is
-    # `[:dmex, :handler, :message, :exception]`, where it is what says the handler
-    # raised rather than storage — see `DMEx.Telemetry`.
+    # Visible from outside at `[:dmex, :handler, :message, :exception]`, where it
+    # is what says the handler raised rather than storage — see `DMEx.Telemetry`.
     defexception [:exception, :stacktrace]
 
     @impl true
@@ -148,26 +122,18 @@ defmodule DMEx.Handler.Pipeline do
   end
 
   @typedoc """
-  One row as a transport yields it: string-keyed, with `data` and `metadata`
-  decoded one level.
-
-  All four keys are always present, and `data` and `metadata` are objects — at
-  least `%{}`, never `nil`. A message short of that is malformed and a transport
-  rejects it there, so nothing here re-checks or defaults.
-
-  Turning `data` into a message struct is the message module's job, here, per
-  row — so a transport produces the same shape whether it parsed a frame or read
-  the columns directly.
+  One row as a transport yields it: string-keyed, `data` and `metadata` decoded
+  one level and always objects, never `nil`. A row short of that is malformed and
+  a transport rejects it there, so nothing here re-checks or defaults.
   """
   @type decoded_row :: %{String.t() => term()}
 
   @typedoc """
   Everything processing a row needs, built once per subscription.
 
-  `:cursor` is the in-memory read position — the authority for duplicate
-  suppression, always at or ahead of the durable one. `:pending` says whether it
-  has been written yet (section 2a). A flag rather than a position, because a
-  position would be a second copy of `:cursor` that could go stale.
+  `:cursor` is the in-memory read position, always at or ahead of the durable
+  one; `:pending` says whether it has been written yet (section 2a) — a flag
+  rather than a position, which would be a second copy of `:cursor` to go stale.
   """
   @type t :: %{
           required(:storage) => Storage.opts(),
@@ -180,13 +146,11 @@ defmodule DMEx.Handler.Pipeline do
         }
 
   @doc """
-  Runs one row through the pipeline and returns the updated state.
+  Runs one row through the pipeline and returns the updated state: `:cursor` is
+  the new read position, `:pending` whether it awaits `flush/1`.
 
-  Read `:cursor` off the result for the new read position, and `:pending` for
-  whether it is waiting on `flush/1`.
-
-  Propagates whatever the handler raises once retries are exhausted and
-  `on_failure` says `:crash`, and anything storage raised at once, whatever
+  Propagates what the handler raised once retries are exhausted under
+  `on_failure: :crash`, and anything storage raised at once, whatever
   `on_failure` says — section 4.
   """
   @spec run(decoded_row(), t()) :: {:ok, t()}
@@ -194,43 +158,36 @@ defmodule DMEx.Handler.Pipeline do
 
   def run(%{"id" => id} = row, state) do
     case deliver(state, row, fn -> advance!(state, id) end) do
-      # No transaction and no write happened. The advance is deferred into
-      # `:pending` and settled by `flush/1` or by the next handled message —
-      # see section 2a.
+      # No transaction and no write happened: the advance is deferred into
+      # `:pending` and settled by `flush/1` or by the next handled message.
       :skipped ->
         {:ok, %{state | cursor: id, pending: true}}
 
       :handled ->
         {:ok, %{state | cursor: id, pending: false}}
 
-      {:failed, exception, stacktrace, attempts} ->
-        resolve(state, row, id, exception, stacktrace, attempts)
+      {:failed, failure, attempts} ->
+        resolve(state, row, failure, attempts)
     end
   end
 
   @typedoc """
-  What `deliver/3` did with a row, and — where a caller reports it — after how
-  many handler calls.
+  What `deliver/3` did with a row, and after how many handler calls. The failure
+  is the `Failure` the handler's raise was tagged with, so its exception and
+  stacktrace travel as one thing.
   """
-  @type verdict ::
-          :skipped
-          | :handled
-          | {:failed, Exception.t(), Exception.stacktrace(), pos_integer()}
+  @type verdict :: :skipped | :handled | {:failed, Exception.t(), pos_integer()}
 
   @doc """
   Resolves a row, hands it to the handler, and commits `commit` with it.
 
-  Sections 2 to 5 in one call: the cast that decides skip-or-deliver, the
-  `[:dmex, :handler, :skip]` event, the retry schedule, the
-  `[:dmex, :handler, :message]` span, and the rule that storage failing is not
-  the handler failing. `commit` runs inside the handler's transaction, after it
-  returns — the cursor advance here, the dead row's delete in
-  `DMEx.Handler.DeadMessages`, which is the only thing that differs between the
-  two callers of this.
+  Sections 2 to 5 in one call. `commit` runs inside the handler's transaction
+  after it returns — the cursor advance here, the dead row's delete in
+  `DMEx.Handler.DeadMessages`, the only difference between the two callers.
 
-  It never applies `on_failure`: a handler that ran out of attempts comes back
-  as `{:failed, ...}` and section 6 is `run/2`'s answer to it, so a caller for
-  which those terminal actions are meaningless does not inherit them.
+  It never applies `on_failure`: exhausted attempts come back as `{:failed, ...}`
+  and section 6 is `run/2`'s answer to that, so a caller for which those terminal
+  actions are meaningless does not inherit them.
   """
   @spec deliver(t(), decoded_row(), (-> any())) :: verdict()
   def deliver(state, %{"id" => id, "type" => type, "data" => data, "metadata" => metadata}, commit) do
@@ -253,7 +210,7 @@ defmodule DMEx.Handler.Pipeline do
   def flush(%{pending: false} = state), do: {:ok, state}
 
   def flush(%{pending: true, cursor: cursor} = state) do
-    commit!(state, fn -> advance!(state, cursor) end)
+    transaction!(state, fn -> advance!(state, cursor) end)
 
     :telemetry.execute(
       [:dmex, :handler, :checkpoint],
@@ -267,10 +224,9 @@ defmodule DMEx.Handler.Pipeline do
   @doc """
   Builds pipeline state from the handler's declaration, once per subscription.
 
-  The message set was derived and validated at compile time, so there is nothing
-  left for this to check but the handler itself — and nothing to carry, since
-  resolving a `type` is the handler's own `__dmex_cast__/3`, compiled
-  from that set.
+  The message set was derived and validated at compile time, and resolving a
+  `type` is the handler's own `__dmex_cast__/3` compiled from it, so there is
+  nothing left to check but the handler and nothing to carry.
   """
   @spec new(keyword()) :: t()
   def new(opts) do
@@ -284,15 +240,16 @@ defmodule DMEx.Handler.Pipeline do
 
     %{
       storage: Keyword.fetch!(opts, :storage),
-      ## Internals
       handler: handler,
       subscription: Keyword.get_lazy(opts, :subscription, fn -> subscription!(handler.__dmex__()) end),
       origin: Keyword.fetch!(opts, :origin),
       cursor: Keyword.get(opts, :cursor, 0),
       pending: false,
-      config: Keyword.get_lazy(opts, :config, fn -> DMEx.Config.handler!([]) end)
+      config: Keyword.fetch!(opts, :config)
     }
   end
+
+  ## Internals
 
   # `DMEx.Handler.Subscription` always names the subscription it runs, since it is one
   # of possibly several. A caller that did not — a test — only has an answer
@@ -319,7 +276,7 @@ defmodule DMEx.Handler.Pipeline do
     }
 
     :telemetry.span([:dmex, :handler, :message], telemetry, fn ->
-      commit!(state, fn ->
+      transaction!(state, fn ->
         handle!(state, delivery)
 
         commit.()
@@ -329,7 +286,7 @@ defmodule DMEx.Handler.Pipeline do
     end)
   rescue
     # The tag, and nothing else — section 4. Anything storage raised is not
-    # rescued at all, so it leaves by the same door `resolve/6` and `flush/1`
+    # rescued at all, so it leaves by the same door `resolve/4` and `flush/1`
     # use, with the cursor still below the message.
     failure in Failure ->
       if attempt < state.config.max_attempts do
@@ -342,10 +299,7 @@ defmodule DMEx.Handler.Pipeline do
 
         attempt(state, delivery, commit, attempt + 1)
       else
-        # The handler's own exception and the stacktrace of its raise, so
-        # `on_failure: :crash` re-raises what a reader of the crash needs and not
-        # the tag it travelled in.
-        {:failed, failure.exception, failure.stacktrace, attempt}
+        {:failed, failure, attempt}
       end
   end
 
@@ -362,23 +316,23 @@ defmodule DMEx.Handler.Pipeline do
 
   ## Terminal actions — see section 6
 
-  defp resolve(state, row, id, exception, stacktrace, attempts) do
+  defp resolve(state, %{"id" => id} = row, failure, attempts) do
     case state.config.on_failure do
       :crash ->
         1
         |> DMEx.backoff(state.config.reconnect_backoff_base, state.config.reconnect_backoff_max)
         |> Process.sleep()
 
-        reraise(exception, stacktrace)
+        reraise(failure.exception, failure.stacktrace)
 
       mode ->
-        commit!(state, fn ->
+        transaction!(state, fn ->
           if mode == :dead_message, do: record_dead!(state, row)
 
           advance!(state, id)
         end)
 
-        report(state, row, id, exception, attempts, mode)
+        report(state, row, failure, attempts, mode)
 
         {:ok, %{state | cursor: id, pending: false}}
     end
@@ -390,11 +344,11 @@ defmodule DMEx.Handler.Pipeline do
     Storage.record_dead_message(state.storage, dead)
   end
 
-  defp report(state, %{"type" => type}, id, exception, attempts, mode) do
+  defp report(state, %{"id" => id, "type" => type}, failure, attempts, mode) do
     Logger.error(fn ->
       "DMEx #{state.subscription} (#{inspect(state.handler)}) gave up on message #{id} " <>
         "(#{type}) from #{inspect(state.origin)} after #{attempts} " <>
-        "attempt(s): #{Exception.message(exception)} — on_failure: #{mode}"
+        "attempt(s): #{Exception.message(failure)} — on_failure: #{mode}"
     end)
 
     :telemetry.execute(
@@ -406,7 +360,7 @@ defmodule DMEx.Handler.Pipeline do
         type: type,
         origin: state.origin,
         on_failure: mode,
-        reason: Exception.message(exception)
+        reason: Exception.message(failure)
       }
     )
   end
@@ -431,7 +385,7 @@ defmodule DMEx.Handler.Pipeline do
   # different with it, and untagged because that is exactly what makes the retry
   # schedule pass it by. It names the subscription, since a crash log is where it
   # will be read.
-  defp commit!(state, fun) do
+  defp transaction!(state, fun) do
     case Storage.transaction(state.storage, fun) do
       {:ok, result} ->
         result

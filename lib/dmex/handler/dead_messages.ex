@@ -166,10 +166,10 @@ defmodule DMEx.Handler.DeadMessages do
 
         :error
 
-      {:failed, exception, _stacktrace, attempts} ->
+      {:failed, failure, attempts} ->
         Logger.warning(
           "DMEx replay of dead message #{row.id} for #{subscription} failed again after " <>
-            "#{attempts} attempt(s): #{Exception.message(exception)}"
+            "#{attempts} attempt(s): #{Exception.message(failure)}"
         )
 
         :error

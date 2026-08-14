@@ -129,8 +129,7 @@ defmodule DMEx do
   The jittered exponential backoff delay in ms before attempt `attempt`,
   counting from 1. Shared by reconnects and local retries.
 
-  A uniform draw from `[1, ceiling]`, where `ceiling` is `base * 2^(attempt - 1)`
-  capped at `max`.
+  A uniform draw from `[1, min(max, base * 2^(attempt - 1))]`.
 
   **Jitter is the point, not a refinement.** An event that fails many consumers
   at once — a producer restart, a network blip, a deploy — would otherwise bring
@@ -140,17 +139,14 @@ defmodule DMEx do
   The same argument applies to a producer's advertised `retry:` value, which is
   why DMEx's own client keeps its own schedule rather than reconnecting at
   exactly the advertised interval.
+
+  **Callers bound `attempt`** — `max_attempts` for a local retry, and
+  `DMEx.Handler.Subscription`'s own cap for a reconnect, where the counter would
+  otherwise climb for as long as an origin stays down. The power is evaluated
+  before the cap applies, so an unbounded counter would mean a `2^n` bignum per
+  reconnect, growing forever, to answer `max` every time.
   """
   @spec backoff(pos_integer(), pos_integer(), pos_integer()) :: pos_integer()
   def backoff(attempt, base, max) when is_integer(attempt) and attempt >= 1,
-    do: :rand.uniform(ceiling(base, max, attempt - 1))
-
-  # Doubling with an early exit rather than `min(max, base * 2^(attempt - 1))`.
-  # `attempt` is unbounded — a subscription whose origin is down counts up for as
-  # long as it runs, and only a successful connect resets it — and the power is
-  # evaluated before the cap, so the closed form allocates a `2^n` bignum per
-  # reconnect, growing forever, to answer `max` every time.
-  defp ceiling(ceiling, max, _doublings) when ceiling >= max, do: max
-  defp ceiling(ceiling, _max, 0), do: ceiling
-  defp ceiling(ceiling, max, doublings), do: ceiling(ceiling * 2, max, doublings - 1)
+    do: :rand.uniform(min(max, base * 2 ** (attempt - 1)))
 end

@@ -115,9 +115,11 @@ defmodule DMEx.Telemetry do
 
   Measurements: `:attempt`, `:delay`. Extra metadata: `:reason`.
 
-  A steadily climbing `:attempt` is a subscription that cannot connect;
-  `:reason` distinguishes a log restart from a poison message crash-looping from
-  a stream dropped for silence.
+  A climbing `:attempt` is a subscription that cannot connect; it stops climbing
+  at `DMEx.Handler.Subscription`'s cap, where the delay is
+  `reconnect_backoff_max` anyway and the event repeats at that pace, so a plateau
+  there is the stuck case rather than a recovery. `:reason` distinguishes a log
+  restart from a poison message crash-looping from a stream dropped for silence.
 
   **One reason deserves an alert of its own.** `{:no_matching_types, url}` is
   the log's `404` (`DMEx.Log.Plug`), which clears itself when the log deploys
