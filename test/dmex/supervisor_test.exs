@@ -473,8 +473,8 @@ defmodule DMEx.SupervisorTest do
   # inferred, not passed, and the config and storage are merged from three
   # sources. These name the four questions the tests above ask, so a change to the
   # subscription's state shape is four lines here rather than ten assertions.
-  defp origin(pid), do: :sys.get_state(pid).origin
+  defp origin(pid), do: :sys.get_state(pid).pipeline.origin
   defp transport(pid), do: :sys.get_state(pid).opts[:transport]
-  defp config(pid), do: :sys.get_state(pid).config
-  defp storage(pid), do: :sys.get_state(pid).storage
+  defp config(pid), do: :sys.get_state(pid).pipeline.config
+  defp storage(pid), do: :sys.get_state(pid).pipeline.storage
 end
