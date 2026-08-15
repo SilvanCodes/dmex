@@ -134,6 +134,13 @@ defmodule DMEx.Supervisor do
 
     storage = DMEx.Storage.opts(opts)
 
+    # What is about to be seeded and handed to every discovered subscription, so
+    # an option its adapter cannot honour — `prefix:` on SQLite — refuses the boot
+    # instead of silently reading the unprefixed tables. Only with a `repo:`: a
+    # supervisor is allowed to have no default, and `c:DMEx.Storage.validate!/1`
+    # reads the repo's own configuration.
+    if storage.repo, do: :ok = DMEx.Storage.validate!(storage)
+
     children =
       owned_logs(bindings) ++
         [

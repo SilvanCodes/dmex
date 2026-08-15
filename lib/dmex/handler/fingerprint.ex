@@ -11,8 +11,9 @@ defmodule DMEx.Handler.Fingerprint do
 
   **A filter rather than the types themselves**, above a handful of them:
   [ARCHITECTURE](ARCHITECTURE.md) has the measured crossover, and the number to
-  know here is the floor — `capacity/1` is `ceil(1.23n) + 32` slots, so a one-type
-  handler still encodes to 107 base64url characters and a literal list of its own
+  know here is the floor — `ceil(1.23n) + 32` slots rounded up to a multiple of
+  three (the filter is three equal blocks), so a one-type handler still encodes to
+  107 base64url characters and a literal list of its own
   types would be a fifth of that. What the filter buys is the *curve*: a URL whose
   length follows the selection rather than the producer's naming, and a ceiling in
   the low thousands of types rather than the low hundreds. The spec has why a

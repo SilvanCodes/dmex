@@ -142,16 +142,31 @@ defmodule DMEx.Handler.Subscription do
   # its way down — arrives as an **exit** from the `GenServer` call inside
   # `Ecto.Repo.transaction/1`, not as an exception, and a `rescue` alone let it
   # kill `terminate/2` before `stop_reader/1`.
+  #
+  # Only a graceful stop, because only that reaches here with the current state.
+  # A callback that raised leaves `state` at its last *return* — before the batch
+  # it died in — and `handle_call({:rows, _})` runs a whole batch inside one
+  # return, so a pending run there can sit below an advance a handled row in that
+  # same batch already committed. `c:DMEx.Storage.advance_cursor/3` is absolute,
+  # so flushing it would move the durable cursor backwards and re-run side
+  # effects that succeeded. The restart re-reads and re-skips instead.
   @impl GenServer
-  def terminate(_reason, state) do
-    try do
-      flush(state)
-    catch
-      _kind, _reason -> :ok
+  def terminate(reason, state) do
+    if graceful?(reason) do
+      try do
+        flush(state)
+      catch
+        _kind, _reason -> :ok
+      end
     end
 
     stop_reader(state)
   end
+
+  defp graceful?(:normal), do: true
+  defp graceful?(:shutdown), do: true
+  defp graceful?({:shutdown, _reason}), do: true
+  defp graceful?(_reason), do: false
 
   ## Connecting
 

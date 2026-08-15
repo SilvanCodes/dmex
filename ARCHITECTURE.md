@@ -76,9 +76,9 @@ can, both silently. Derived, that state is unrepresentable.
 
 **It travels as an XOR filter in the path**, and the trade is worth stating
 precisely, because it is not free at every size. What travels is the declared
-`type:` strings, not module names, and the filter has a fixed floor: `capacity/1`
-is `ceil(1.23n) + 32` slots at 2 bytes each plus an 8-byte seed, so a *one-type*
-handler encodes to 107 base64url characters. Against a comma-joined sorted list of
+`type:` strings, not module names, and the filter has a fixed floor: `ceil(1.23n) +
+32` slots rounded up to a multiple of three, at 2 bytes each plus an 8-byte seed,
+so a *one-type* handler encodes to 107 base64url characters. Against a comma-joined sorted list of
 ordinary type names (`acme.orders.event_n`, 19 characters):
 
 | types | filter | literal list |

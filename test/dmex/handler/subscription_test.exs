@@ -48,6 +48,24 @@ defmodule DMEx.Handler.SubscriptionTest.DyingTransport do
   def heartbeat(sink), do: {:ok, sink}
 end
 
+defmodule DMEx.Handler.SubscriptionTest.HandlesThenRaises do
+  @moduledoc """
+  Handles `order_placed` and raises on `order_shipped`.
+
+  The batch shape the stale-flush regression needs: a handled row commits its own
+  cursor advance, and a later row in the same batch kills the process.
+  """
+
+  use DMEx.Handler, logs: [:test], name: :handles_then_raises
+
+  alias DMEx.Test.Messages.OrderPlaced
+  alias DMEx.Test.Messages.OrderShipped
+
+  @impl true
+  def handle_message(%OrderPlaced{}, _metadata), do: :ok
+  def handle_message(%OrderShipped{}, _metadata), do: raise("handler exploded")
+end
+
 defmodule DMEx.Handler.SubscriptionTest.PoolDown do
   @moduledoc """
   The in-memory stub with a repo that is already gone.
@@ -102,6 +120,7 @@ defmodule DMEx.Handler.SubscriptionTest do
   alias DMEx.Config
   alias DMEx.Handler.Subscription
   alias DMEx.Handler.SubscriptionTest.DyingTransport
+  alias DMEx.Handler.SubscriptionTest.HandlesThenRaises
   alias DMEx.Handler.SubscriptionTest.PoolDown
   alias DMEx.Handler.SubscriptionTest.SleepingTransport
   alias DMEx.Test.Handlers
@@ -133,6 +152,45 @@ defmodule DMEx.Handler.SubscriptionTest do
 
       assert :ok = GenServer.stop(pid)
       assert_receive {:DOWN, ^ref, :process, ^reader, _reason}
+    end
+
+    # The crash path, where `state` is whatever the last *returned* callback left:
+    # a batch runs inside one `handle_call`, so a row it handled has committed an
+    # advance the stale state knows nothing about. `c:DMEx.Storage.advance_cursor/3`
+    # is absolute, so flushing the pending skip below it moved the durable cursor
+    # backwards and made the restart re-run side effects that had succeeded.
+    test "does not flush a stale pending run over an advance the same batch committed" do
+      storage = Storage.new()
+
+      Process.flag(:trap_exit, true)
+
+      {:ok, pid} =
+        start(storage, Storage,
+          handler: HandlesThenRaises,
+          config:
+            Config.handler!(
+              checkpoint_interval: 60_000,
+              max_attempts: 1,
+              on_failure: :crash,
+              reconnect_backoff_base: 1,
+              reconnect_backoff_max: 1
+            )
+        )
+
+      skip(pid)
+
+      capture_log(fn ->
+        catch_exit(
+          DMEx.Transport.deliver(pid, [
+            %{"id" => 2, "type" => "order_placed", "data" => %{"order_id" => 2}, "metadata" => %{}},
+            %{"id" => 3, "type" => "order_shipped", "data" => %{"order_id" => 3}, "metadata" => %{}}
+          ])
+        )
+
+        assert_receive {:EXIT, ^pid, _reason}
+      end)
+
+      assert {:ok, 2} = Storage.last_seen("test/echo", storage)
     end
   end
 

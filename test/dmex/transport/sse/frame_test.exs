@@ -151,6 +151,24 @@ defmodule DMEx.Transport.SSE.FrameTest do
       assert {:ok, :ignore} = Frame.decode("")
     end
 
+    # A valueless `data:` still puts a line in the buffer, so the block reached
+    # `JSON.decode/1` as `""` and came back an error — and a decode error kills the
+    # connection, which a reconnect from the durable cursor then repeats forever.
+    test "an empty data buffer is ignored, not a decode error" do
+      assert {:ok, :ignore} = Frame.decode("id: 5\nevent: T\ndata:")
+      assert {:ok, :ignore} = Frame.decode("id: 5\nevent: T\ndata: ")
+      assert {:ok, :ignore} = Frame.decode("id: 5\nevent: T\ndata")
+    end
+
+    # `retry: 0` is spec-legal ("reconnect at once") and a negative one is legal
+    # input too. Both reach `receive ... after` as a liveness deadline, where zero
+    # reads as silence and a negative raises.
+    test "a non-positive retry is not an interval" do
+      assert {:ok, :ignore} = Frame.decode("retry: 0")
+      assert {:ok, :ignore} = Frame.decode("retry: -1")
+      assert {:ok, {:retry, 50}} = Frame.decode("retry: 50")
+    end
+
     # Including the `previous/current` pair the wire used to carry: a position
     # is one integer now, so the old spelling is simply not an id.
     test "a non-integer id is not an id, so the block is not a message" do

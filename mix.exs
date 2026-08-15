@@ -89,7 +89,8 @@ defmodule DMEx.MixProject do
     [
       main: "DMEx",
       source_url: @source_url,
-      source_ref: "v#{@version}",
+      # No tags yet, so a `v#{@version}` ref 404s on every "Source" link.
+      source_ref: "trunk",
       extras: [
         "README.md",
         "guides/deployment.md",

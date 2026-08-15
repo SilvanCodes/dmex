@@ -121,8 +121,13 @@ defmodule DMEx.BenchHelper do
   def chunks(binary, size) do
     binary
     |> Stream.unfold(fn
-      "" -> nil
-      rest -> String.split_at(rest, min(size, byte_size(rest)))
+      "" ->
+        nil
+
+      rest ->
+        taken = min(size, byte_size(rest))
+
+        {binary_part(rest, 0, taken), binary_part(rest, taken, byte_size(rest) - taken)}
     end)
     |> Enum.to_list()
   end

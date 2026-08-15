@@ -162,7 +162,7 @@ defmodule DMEx.Supervisor.Bindings do
   defp raise_no_logs(supervisor) do
     raise ArgumentError,
           "DMEx.Supervisor.subscribe/2 has no `bindings:` to resolve this handler's `logs:` against. " <>
-            "them on the call, or start #{inspect(supervisor)} with them: " <>
-            "Pass them on the call, or start #{inspect(supervisor)} with them: `{DMEx.Supervisor, repo: MyApp.Repo, bindings: [...]}`."
+            "Pass them on the call, or start #{inspect(supervisor)} with them: " <>
+            "`{DMEx.Supervisor, repo: MyApp.Repo, bindings: [...]}`."
   end
 end

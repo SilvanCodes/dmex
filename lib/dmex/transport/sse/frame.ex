@@ -127,7 +127,14 @@ defmodule DMEx.Transport.SSE.Frame do
       %{id: id, event: event, data: [_ | _] = lines} ->
         # SSE joins consecutive `data:` lines with LF. DMEx always emits one,
         # but a generic producer may not.
-        lines |> Enum.reverse() |> Enum.join("\n") |> decode_row(id, event)
+        case lines |> Enum.reverse() |> Enum.join("\n") do
+          # A `data:` line with no value leaves the buffer empty, and the spec
+          # dispatches an event only for a non-empty one. Reaching `decode_row/3`
+          # with it would fail the JSON decode, and a decode failure kills the
+          # connection — so a spec-legal block would have been a reconnect loop.
+          "" -> {:ok, :ignore}
+          payload -> decode_row(payload, id, event)
+        end
 
       # Second, so a block carrying a message *and* a `retry:` yields only the
       # message and the interval is dropped. Spec-legal input; DMEx and every
@@ -186,9 +193,12 @@ defmodule DMEx.Transport.SSE.Frame do
     end
   end
 
+  # Positive only, which is what `t:decoded/0` and `DMEx.Transport.SSE.Decoder`
+  # both promise: `retry: 0` is spec-legal and would arm a zero timeout the
+  # reader treats as silence, and a negative one raises inside `receive/1`.
   defp put_integer(acc, key, value) do
     case Integer.parse(value) do
-      {int, ""} -> Map.put(acc, key, int)
+      {int, ""} when int > 0 -> Map.put(acc, key, int)
       _ -> acc
     end
   end
