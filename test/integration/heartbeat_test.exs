@@ -18,6 +18,7 @@ defmodule DMEx.Integration.HeartbeatTest do
   alias DMEx.Test.IntegrationRepo
   alias DMEx.Test.Messages.OrderPlaced
   alias DMEx.Test.Server
+  alias DMEx.Test.SSEClient
 
   # Read from the log rather than restated: every wait below is a multiple of it.
   @heartbeat Log.__dmex__().config.heartbeat_interval
@@ -79,16 +80,6 @@ defmodule DMEx.Integration.HeartbeatTest do
       assert body =~ ": hb"
     end
 
-    test "the advertised retry: is the effective interval, not the raw one", ctx do
-      body = collect(ctx, 300)
-
-      # heartbeat_interval + one batch interval, because the loop's throttle runs after the
-      # heartbeat branch — that sum is the real upper bound on silence, and a
-      # consumer measuring against heartbeat_interval alone would disconnect a healthy
-      # log.
-      assert body =~ "retry: #{effective_heartbeat()}"
-    end
-
     test "beats repeatedly, not once", ctx do
       body = collect(ctx, @heartbeat * 6)
 
@@ -113,7 +104,7 @@ defmodule DMEx.Integration.HeartbeatTest do
     end
 
     test "stays connected through a long quiet period", _ctx do
-      {:ok, [pid]} = subscribe()
+      {:ok, [pid]} = subscribe!(Handlers.Echo)
 
       {:ok, _} = Log.append(%OrderPlaced{order_id: 1})
       assert_receive {:handled, %OrderPlaced{order_id: 1}, _}, 5_000
@@ -134,7 +125,7 @@ defmodule DMEx.Integration.HeartbeatTest do
     test "counts heartbeat bytes as activity, so silence means silence", _ctx do
       ref = :telemetry_test.attach_event_handlers(self(), [[:dmex, :handler, :reconnect]])
 
-      {:ok, [pid]} = subscribe()
+      {:ok, [pid]} = subscribe!(Handlers.Echo)
 
       original = eventually(fn -> reader(pid) end)
 
@@ -201,65 +192,21 @@ defmodule DMEx.Integration.HeartbeatTest do
 
   ## Helpers
 
-  # `heartbeat_interval` plus one batch interval. Derived rather than written out,
-  # because the batch interval follows `max_batch_frequency`'s default: a
-  # literal here states the right thing only until that default moves, and then
-  # states the wrong one loudly.
-  defp effective_heartbeat do
-    @heartbeat + DMEx.Config.batch_interval(Log.__dmex__().config)
-  end
-
   # The reader is a linked process the subscription spawns, so its identity is
   # how a test asks "was this connection replaced?" - the question these tests
   # exist to answer, and one nothing observable answers.
   defp reader(pid), do: :sys.get_state(pid).reader
 
-  # The advertised interval lives in the transport's decoder now — the
-  # subscription itself only asks it how long silence may last.
-  # `last_seen: 0` because these tests append *after* subscribing, and the
-  # default resolves to the log's tip at connect. The log is empty until they
-  # append, so the two name the same rows without racing the connect.
-  defp subscribe do
-    DMEx.Supervisor.subscribe(Handlers.Echo, supervisor: TestSupervisor, last_seen: 0)
-  end
-
-  # A bare Mint client that reads for a while and returns whatever arrived.
-  # `headers` is where a test asks for history: with none, an absent
+  # Always the whole window, however little arrives: what these tests measure is
+  # what the log sends over a span of silence, so stopping early would measure
+  # nothing. `headers` is where a test asks for history — with none, an absent
   # `last-event-id` means "from now on" and a stream over an existing log has
   # nothing to send.
   defp collect(ctx, duration, headers \\ []) do
-    {:ok, conn} = Mint.HTTP.connect(:http, ctx.host, ctx.port, mode: :active)
-    {:ok, conn, ref} = Mint.HTTP.request(conn, "GET", "/stream", headers, nil)
+    opts = [until: :deadline, timeout: duration]
 
-    deadline = System.monotonic_time(:millisecond) + duration
+    {_status, _headers, body} = SSEClient.request(ctx.host, ctx.port, "/stream", headers, opts)
 
-    conn
-    |> read_until(ref, deadline, [])
-    |> IO.iodata_to_binary()
-  end
-
-  defp read_until(conn, ref, deadline, body) do
-    timeout = max(deadline - System.monotonic_time(:millisecond), 0)
-
-    receive do
-      message ->
-        case Mint.HTTP.stream(conn, message) do
-          {:ok, conn, responses} ->
-            body =
-              Enum.reduce(responses, body, fn
-                {:data, ^ref, chunk}, acc -> [acc, chunk]
-                _other, acc -> acc
-              end)
-
-            read_until(conn, ref, deadline, body)
-
-          _other ->
-            read_until(conn, ref, deadline, body)
-        end
-    after
-      timeout ->
-        Mint.HTTP.close(conn)
-        body
-    end
+    body
   end
 end

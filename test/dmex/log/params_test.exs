@@ -45,8 +45,6 @@ defmodule DMEx.Log.ParamsTest do
         "42abc",
         "0x2a",
         "١٢٣",
-        # Timestamps are not vocabulary at all any more, nor is the old
-        # `previous/current` pair.
         "2026-08-03T10:00:00Z",
         "2026-08-03",
         "1041/1042"

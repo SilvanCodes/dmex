@@ -10,24 +10,18 @@ defmodule DMEx.Transport.Local do
   **It is the same send loop.** `start_reader/1` starts a linked process that
   registers with `DMEx.Log.Streams` — the same registration a request process
   serving SSE makes — and runs `DMEx.Log.SendLoop.loop/2` with this module as its
-  transport. So a local subscription gets `LISTEN`/`NOTIFY` wakeups,
-  selection-based routing, pacing and `DMEx.Log.Watcher` reclaim by construction
-  rather than reimplementation. Only `c:DMEx.Transport.write/2` and
+  transport, so wakeups, routing, pacing and `DMEx.Log.Watcher` reclaim come by
+  construction. Only `c:DMEx.Transport.write/2` and
   `c:DMEx.Transport.heartbeat/1` differ.
 
-  **Backpressure is a call, not a window.** `write/2` is
-  `DMEx.Transport.deliver/2`, whose reply comes only after the pipeline has run
-  the whole batch, so the loop reads nothing meanwhile. The pipeline runs in the
-  *subscription* process, so a handler that never returns wedges that process
-  first and the reader behind it. `DMEx.Log.Watcher` reclaims the reader, which
-  stops the log holding a registration and a deadline for a stream that is not
-  draining — the same thing it does to a stalled request process.
+  **A handler that never returns wedges the reader.** `write/2` is
+  `DMEx.Transport.deliver/2` — see it for the backpressure — so the subscription
+  process stalls with the reader behind it, until `DMEx.Log.Watcher` reclaims the
+  reader as it would a stalled request process.
 
   **Selection is a list, not a filter.** Both ends are the same node, so the
-  handler's declared modules go straight into the read as a type list, where a
-  remote subscription would encode a `DMEx.Handler.Fingerprint` blob and expand
-  it on the other side — `DMEx.Log.Selection` owns both sets and says how they
-  differ.
+  handler's declared modules go into the read as a type list rather than a
+  `DMEx.Handler.Fingerprint` blob — `DMEx.Log.Selection` owns both sets.
   """
 
   @behaviour DMEx.Transport
@@ -84,14 +78,8 @@ defmodule DMEx.Transport.Local do
       |> Map.fetch!(:messages)
       |> Selection.declared(Keyword.get(opts, :fingerprint))
 
-    # The same ceremony `DMEx.Log.Plug` performs, from the same function: the
-    # reader registers itself so the entry dies with it, and the position is
-    # resolved under the deadline that registration arms.
-    #
-    # `DMEx.Handler.Request.position/2` is what turns a subscription's durable
-    # cursor into the two answers a connect can ask for, and `DMEx.Log.Plug`
-    # resolves a `last-event-id` header through the same pair — so neither side
-    # spells "from now on" differently, without the round trip.
+    # The same pair `DMEx.Log.Plug` resolves a `last-event-id` header through, so
+    # neither side spells "from now on" differently.
     position = Request.position(Keyword.fetch!(opts, :cursor), Keyword.fetch!(opts, :config))
 
     case SendLoop.start(log, transport: __MODULE__, position: position, selection: selection) do

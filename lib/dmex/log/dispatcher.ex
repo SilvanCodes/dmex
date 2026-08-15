@@ -4,18 +4,10 @@ defmodule DMEx.Log.Dispatcher do
 
   One per log, started by that log's supervisor. It subscribes to the log's
   `DMEx.Notifier` and runs a poll timer; on either signal it broadcasts a bare
-  `:wakeup` across `DMEx.Log.Streams`.
-
-  **Belt and suspenders.** The notifier gives low latency; the poll makes
-  dispatch *robust*. A missed or coalesced notification costs up to one poll
-  interval of latency and never a stuck consumer — the same arrangement Oban's
-  stager uses, and why a notifier that is down, or `:unsupported`, needs no
+  `:wakeup` across `DMEx.Log.Streams`, reading no rows and fanning out no data —
+  each stream reads for itself. The notifier gives latency and the poll makes
+  dispatch *robust*, so a notifier that is down, or `:unsupported`, needs no
   separate code path here: the poll runs alone.
-
-  **It never reads rows or fans out data.** Each stream reads for itself,
-  bounded by its own `max_batch_rows`, so this shared per-app process holds no
-  message data on any connection's behalf. `c:DMEx.Notifier.notify/2` covers
-  what a notification carries.
 
   **The poll must not wake connections for nothing.** Unconditional broadcast
   re-creates a thundering herd: a thousand connections at a one-second interval
@@ -23,13 +15,11 @@ defmodule DMEx.Log.Dispatcher do
   has been appended past `polled_through`, its own cursor, and broadcasts only
   if anything was — one cheap query per interval per *app*.
 
-  **Both signals route.** A wakeup goes only to connections whose selection
-  contains the appended type; a whole-log subscription matches everything. That
-  is why the poll asks for distinct types and not just `max(id)`. Only the poll
-  writes `polled_through` — a notification carries no id to advance it with — so
-  on a log appending more than once per interval the poll sees that movement
-  again and broadcasts too. Duplicate wakeups are fine: a spurious one costs a
-  read that finds nothing.
+  Both signals route: a wakeup goes only to connections whose selection contains
+  the appended type, which is why the poll asks for distinct types and not just
+  `max(id)`. Only the poll writes `polled_through`, so a log appending more than
+  once per interval broadcasts twice — fine, since a spurious wakeup costs a read
+  that finds nothing.
   """
 
   use GenServer
@@ -181,11 +171,11 @@ defmodule DMEx.Log.Dispatcher do
   defp broadcast(state, types) do
     streams = Streams.all(state.log)
 
-    # Two gates, and they answer different questions. `Selection.concerns?/2`
-    # asks whether this append is any of this connection's business at all;
-    # `Status.mark_pending/1` asks whether it already has a wakeup queued. The second is
-    # what bounds a stalled connection's mailbox at one wakeup rather than at the
-    # append rate times the stall duration, however long it stalls.
+    # Two gates answering different questions: `Selection.concerns?/2` whether
+    # this append is any of this connection's business at all,
+    # `Status.mark_pending/1` whether it already has a wakeup queued. The second
+    # is what bounds a stalled connection's mailbox at one wakeup rather than at
+    # the append rate times the stall duration, however long it stalls.
     woken =
       Enum.count(streams, fn {pid, status, selection} ->
         if Selection.concerns?(selection, types) and Status.mark_pending(status) do

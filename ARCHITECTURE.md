@@ -8,17 +8,6 @@
 
 ## Overview
 
-A decentralized message queue with **no single point of failure**. Every
-application that appends owns and persists its own append-only log — one SQL
-table — and streams it to consumers over HTTP with Server-Sent Events. No
-broker, no cluster, no shared infrastructure.
-
-- **Simple** — a SQL table and an HTTP endpoint.
-- **No SPOF** — a stream's availability depends only on its own application and
-  its own database.
-- **Replayable** — consumption removes nothing; any consumer can start or
-  restart anywhere in history.
-
 A subscription receives the message types its handler can decode, resolved
 server-side, so unselected rows are never read, framed or sent. A bare
 `GET /stream` still streams the whole log, which is what a browser
@@ -33,10 +22,11 @@ type over an append-only Postgres log.
 ## The log
 
 One append-only log per application: a totally-ordered stream of every message
-it appended, in one table. `DMEx.Storage.Migration` ships the DDL, and
-`DMEx.Storage.Postgres.Migration` is the authoritative column-by-column account —
-every type, default and constraint, with the reasoning beside it.
-`DMEx.Storage.SQLite.Migration` is the same schema on the other engine.
+it appended, in one table. `DMEx.Storage.Migration` runs it from a host
+migration; the DDL itself is the adapter's, and `DMEx.Storage.Postgres.Migration`
+is the authoritative column-by-column account — every type, default and
+constraint, with the reasoning beside it. `DMEx.Storage.SQLite.Migration` is the
+same schema on the other engine.
 
 What belongs here is what the columns *mean*:
 
@@ -190,9 +180,9 @@ through one prefix `forward`. The bare form is the whole log; the blob narrows
 it. There is no application segment and no query string: one mount serves
 exactly one log, and the mount path plus hostname identify it.
 
-A segment that is not decodable is a `400`. A trailing slash is the same
-resource as the bare mount. Any method other than `GET` is a `405` with an
-`Allow: GET` header.
+The status vocabulary for a malformed segment, an unmatched filter, a trailing
+slash and a non-`GET` method is
+[fingerprint-spec §11](guides/fingerprint-spec.md#11-the-stream-namespace).
 
 **Request headers**, validated by `DMEx.Log.Params`:
 

@@ -16,10 +16,8 @@ defmodule DMEx.Handler.Pipeline do
 
   ## 2. A message no clause matches is skipped, not an error
 
-  Two rows land here: one whose `type` resolves to no module at all (a filter
-  false positive, or a whole-log handler sent a type its application never
-  declared), and one whose type does resolve but whose value no clause head
-  accepts, since selection is by type while a clause may narrow further.
+  A row whose `type` resolves to no module, and a row whose type resolves but
+  whose value no clause head accepts, are the same thing here.
 
   Both advance the cursor exactly as a handled row does — they must, or a handler
   would wedge on the first row it does not want — and both emit
@@ -53,9 +51,10 @@ defmodule DMEx.Handler.Pipeline do
 
   ## 4. Failures are retried a bounded number of times, then resolved
 
-  A raise rolls the transaction back with the message still in hand, so a retry
-  is just calling the handler again — `max_attempts` of them, jittered because a
-  shared downstream fails every handler at once.
+  `handle_message/2` and the cursor advance share one transaction, so a raise
+  rolls both back with the message still in hand and a retry is just calling the
+  handler again — `max_attempts` of them, jittered because a shared downstream
+  fails every handler at once.
 
   **Only the handler's own failure counts**, tagged rather than enumerated:
   `handle!/2` is the one place a handler is called and it wraps what that call
@@ -68,11 +67,6 @@ defmodule DMEx.Handler.Pipeline do
   transaction. No allowlist of driver exceptions stays complete; "what the
   handler raised" is one call.
 
-  ## 5. The handler and the cursor share one transaction
-
-  `handle_message/2` succeeding is what advances `last_seen`, both in one
-  transaction. A raise rolls both back and propagates.
-
   ## 6. `on_failure` is the terminal action, and there are three
 
   What reaches here ran and raised `max_attempts` times: never a storage failure
@@ -83,18 +77,15 @@ defmodule DMEx.Handler.Pipeline do
 
   **`:dead_message`** (the default) writes the row to `dmex_dead_messages` in that
   same transaction, so a message is never skipped without being recorded or
-  recorded without being skipped. The only mode refusing both bad outcomes: one
-  message a handler cannot process stopping every *later* message, and losing the
-  failing one. The message and only the message is stored — see
-  `c:DMEx.Storage.record_dead_message/2`.
+  recorded without being skipped. The message and only the message is stored —
+  see `c:DMEx.Storage.record_dead_message/2`.
 
   **`:crash`** re-raises the handler's own exception and stacktrace without
   advancing, so section 4's restart-and-resume happens here too and the log
-  re-streams the message that killed it, forever. Choose it when later messages
-  must not be processed without this one, or when a loud alarm beats a growing
-  table nobody watches. A jittered `reconnect_backoff_base` pause before the
-  re-raise keeps the loop off the log's database and off its siblings;
-  `DMEx.Handler.Subscriptions` sets no restart budget.
+  re-streams the message that killed it, forever. A jittered
+  `reconnect_backoff_base` pause before the re-raise keeps the loop off the log's
+  database and off its siblings; `DMEx.Handler.Subscriptions` sets no restart
+  budget.
 
   **`:skip`** advances past it with nothing durable recorded: the log line and
   `[:dmex, :handler, :failed]` are the only trace.
@@ -145,14 +136,7 @@ defmodule DMEx.Handler.Pipeline do
           required(:config) => DMEx.Config.handler()
         }
 
-  @doc """
-  Runs one row through the pipeline and returns the updated state: `:cursor` is
-  the new read position, `:pending` whether it awaits `flush/1`.
-
-  Propagates what the handler raised once retries are exhausted under
-  `on_failure: :crash`, and anything storage raised at once, whatever
-  `on_failure` says — section 4.
-  """
+  @doc "Runs one row and returns the updated state."
   @spec run(decoded_row(), t()) :: {:ok, t()}
   def run(%{"id" => id}, %{cursor: cursor} = state) when id <= cursor, do: {:ok, state}
 
@@ -181,7 +165,7 @@ defmodule DMEx.Handler.Pipeline do
   @doc """
   Resolves a row, hands it to the handler, and commits `commit` with it.
 
-  Sections 2 to 5 in one call. `commit` runs inside the handler's transaction
+  Sections 2 to 4 in one call. `commit` runs inside the handler's transaction
   after it returns — the cursor advance here, the dead row's delete in
   `DMEx.Handler.DeadMessages`, the only difference between the two callers.
 
@@ -221,27 +205,16 @@ defmodule DMEx.Handler.Pipeline do
     {:ok, %{state | pending: false}}
   end
 
-  @doc """
-  Builds pipeline state from the handler's declaration, once per subscription.
-
-  The message set was derived and validated at compile time, and resolving a
-  `type` is the handler's own `__dmex_cast__/3` compiled from it, so there is
-  nothing left to check but the handler and nothing to carry.
-  """
+  @doc "Builds pipeline state from the handler's declaration, once per subscription."
   @spec new(keyword()) :: t()
   def new(opts) do
     handler = Keyword.fetch!(opts, :handler)
-
-    if !Handler.handler?(handler) do
-      raise ArgumentError,
-            "#{inspect(handler)} is not a DMEx handler. " <>
-              "Add `use DMEx.Handler` to it."
-    end
+    declaration = Handler.declaration!(handler)
 
     %{
       storage: Keyword.fetch!(opts, :storage),
       handler: handler,
-      subscription: Keyword.get_lazy(opts, :subscription, fn -> subscription!(handler.__dmex__()) end),
+      subscription: Keyword.get_lazy(opts, :subscription, fn -> subscription!(declaration) end),
       origin: Keyword.fetch!(opts, :origin),
       cursor: Keyword.get(opts, :cursor, 0),
       pending: false,
@@ -251,10 +224,10 @@ defmodule DMEx.Handler.Pipeline do
 
   ## Internals
 
-  # `DMEx.Handler.Subscription` always names the subscription it runs, since it is one
-  # of possibly several. A caller that did not — a test — only has an answer
-  # when there is exactly one, and it renders that answer through
-  # `Handler.subscription_id!/2` rather than concatenating its own.
+  # Only for a caller that omitted `subscription:` — a test. `DMEx.Handler.Subscription`
+  # and `DMEx.Handler.DeadMessages` always name theirs, since a handler may read several
+  # logs, and the answer is rendered through `Handler.subscription_id!/2` rather than
+  # concatenated here.
   defp subscription!(%{logs: [only], handler: handler}) do
     Handler.subscription_id!(handler, only)
   end

@@ -96,7 +96,9 @@ defmodule DMEx.Log.SendLoopTest do
 
   describe "reading and framing" do
     # One frame per row, one `chunk/2` per read. Batching is a write batch and
-    # nothing the consumer can observe: it sees three ordinary one-row frames.
+    # nothing the consumer can observe: it sees three ordinary one-row frames,
+    # each carrying its own row's id — never "the highest in this write" — which
+    # is what makes a generic client's `Last-Event-ID` land exactly.
     test "writes one frame per row, all of a read in one chunk", %{opts: opts} do
       Stub.put_rows(3, opts)
 
@@ -139,17 +141,6 @@ defmodule DMEx.Log.SendLoopTest do
 
       assert_receive {:done, _}, 1_000
       assert length(Stub.reads(opts)) == 3
-    end
-
-    # Each frame's `id:` is its own row's id — never "the highest in this write" —
-    # which is what makes a generic client's `Last-Event-ID` land exactly.
-    test "each frame's id is its own row's id", %{opts: opts} do
-      Stub.put_rows(3, opts)
-
-      run(opts, chunks: 1)
-
-      assert_received {:chunk, write}
-      assert ids(write) == [1, 2, 3]
     end
 
     test "the message type is the event name", %{opts: opts} do
@@ -397,13 +388,13 @@ defmodule DMEx.Log.SendLoopTest do
       refute Status.overdue?(status, now)
     end
 
-    test "an idle wait is budgeted for the interval it is waiting out", %{opts: opts} do
+    test "an idle wait is disarmed, not budgeted", %{opts: opts} do
       status = Status.new(1)
 
       start_loop(opts, status: status, stall_timeout: 5_000, heartbeat_interval: 60_000)
 
-      # A stream parked in `await_wakeup/1` is idle, not stuck: its deadline
-      # covers the heartbeat interval as well as the budget.
+      # A stream parked in `await_wakeup/1` is idle, not stuck: the wait is
+      # self-terminating, so it runs under no deadline at all.
       eventually(fn ->
         Status.deadline(status) > System.monotonic_time(:millisecond) + 60_000
       end)
@@ -448,11 +439,9 @@ defmodule DMEx.Log.SendLoopTest do
       assert measurements.bytes > 0
     end
 
-    # There is no `truncated` flag any more, because the byte bound is applied
-    # in the read rather than by trimming a batch already in hand — and `rows`
-    # against `max_batch_rows` says the same thing more precisely. A write
-    # carrying fewer rows than the limit, with `bytes` near `max_batch_bytes`,
-    # is a stream whose byte budget is what binds.
+    # The byte bound is applied in the read rather than by trimming a batch
+    # already in hand: fewer rows than `max_batch_rows`, with `bytes` near
+    # `max_batch_bytes`, is what a byte-bound write looks like.
     test "a byte-bounded write reports fewer rows than the row limit", %{opts: opts} do
       ref = :telemetry_test.attach_event_handlers(self(), [[:dmex, :stream, :write]])
 

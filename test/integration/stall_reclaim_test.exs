@@ -2,7 +2,7 @@ defmodule DMEx.Integration.StallReclaimTest do
   @moduledoc """
   A consumer that stops reading is reclaimed, with no transport configuration.
 
-  This is the failure the deployment guide used to hand to the operator:
+  The alternative is a failure handed to the operator instead:
   `send_timeout` on the web server's listener, set correctly, or a wedged
   request process held forever. Here the listener is left alone — the only
   socket options set are the small buffers that make the stall arrive in

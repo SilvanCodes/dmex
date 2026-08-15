@@ -7,36 +7,26 @@ defmodule DMEx.Transport.SSE.Decoder do
   reads and a read can contain several frames plus part of another. This
   accumulates and dispatches on the blank-line delimiter.
 
-  **Blocks carrying no row are dropped** — every block `Frame.decode/1` reports
-  as `:ignore`, which `t:DMEx.Transport.SSE.Frame.decoded/0` enumerates. The
-  `retry:` value is kept (see `retry/1`), because it is how a consumer learns
-  the interval to measure silence against.
+  **Blocks carrying no row are dropped**, every `:ignore` in
+  `t:DMEx.Transport.SSE.Frame.decoded/0`. The `retry:` value is kept (see
+  `retry/1`): it is how a consumer learns the interval to measure silence against.
 
   **The buffer is bounded.** A producer that never emits a blank line — broken,
   hostile, or simply mid-frame when it wedged — would grow it without limit.
   Exceeding `max_bytes` returns `{:error, :frame_too_large, decoder}`; the caller
   drops the connection and reconnects from `last_seen`, costing only a re-read.
 
-  **It accumulates iodata.** The obvious `buffer <> chunk` copies the whole
-  buffer every chunk — quadratic, and real TCP reads are small, so a large run
-  of frames arriving in 1 KB pieces would copy far more than it received.
-  Instead chunks are consed onto a list and flattened only when one contains a
-  line terminator. The flatten and the delimiter scan are both over the whole
-  accumulated buffer, so that is linear only while terminators are *rare* inside
-  a frame: DMEx puts the whole payload on one `data:` line, so every interior
-  chunk of a large frame skips both. A producer splitting `data:` over many
-  lines — which `Frame.decode/1` accepts — makes it quadratic in pushes again.
+  **It accumulates iodata.** `buffer <> chunk` would copy the whole buffer every
+  chunk; chunks are consed instead, flattened only when one carries a line
+  terminator — linear while terminators are rare inside a frame, quadratic again
+  for a producer that splits `data:` over many lines.
 
-  **A leading byte order mark is removed once, at the head of the stream** —
-  the event-stream grammar's first step. Left in, it becomes part of the first
-  block's first field *name*, which then matches nothing, so `Frame.decode/1`
-  reports the block `:ignore` and it disappears with no error. Against DMEx's
-  own producer that block is the `retry:` advertisement, so a consumer's
-  liveness budget would silently fall back to its assumed default; against a
-  third-party producer it is the first message. It is stripped here rather than
-  in `Frame.decode/1` because it is a property of the stream, not of a block:
-  only the first three bytes of the first chunk are a mark, and the same bytes
-  opening any later block are payload.
+  **A leading byte order mark is removed once, at the head of the stream** — the
+  event-stream grammar's first step, and a property of the stream rather than of
+  a block: the same bytes opening any later block are payload. Left in, it joins
+  the first field's *name*, which then matches nothing, so the first frame — the
+  `retry:` advertisement, against DMEx's own producer — disappears with no error
+  and a consumer's liveness budget silently falls back to its assumed default.
   """
 
   alias DMEx.Transport.SSE.Frame
@@ -60,12 +50,9 @@ defmodule DMEx.Transport.SSE.Decoder do
                   (first <> second) not in Frame.line_terminators(),
                   do: first <> second
 
-  # Why tolerate CR and CRLF at all, when DMEx's own encoder emits `\n` only?
-  # Because `guides/fingerprint-spec.md` is normative and public: a third-party
-  # producer may implement the wire contract in any language, and SSE's grammar
-  # allows all three terminators. Narrowing this to what one encoder happens to
-  # emit would make the spec a lie. The same argument covers the byte-order mark
-  # below, which the SSE specification requires stripping.
+  # CR and CRLF are tolerated, though DMEx's own encoder emits LF only, because
+  # `guides/fingerprint-spec.md` is normative: a third-party producer may use any
+  # terminator the SSE grammar allows. The same argument covers the BOM below.
 
   # Every terminator contains a CR or an LF, so the single-byte ones are the
   # cheap "could this chunk have completed a line?" test over the same set.
@@ -81,16 +68,13 @@ defmodule DMEx.Transport.SSE.Decoder do
           bom: binary() | :done
         }
 
-  # `extract/2` passes a decode failure through untouched, so the two types are
-  # structurally coupled and composing them says so.
   @type error :: :frame_too_large | Frame.error()
 
   @doc """
   Builds a decoder buffering at most `max_bytes` of an unterminated frame.
 
-  The default is read from `DMEx.Config`, not restated here, so the number has
-  one home. The one caller in `lib` passes `config.max_frame_bytes` outright;
-  the default is for tests and benchmarks that have no config to hand.
+  The default is `DMEx.Config`'s, for the tests and benchmarks with no config to
+  hand.
   """
   @spec new(pos_integer()) :: t()
   def new(max_bytes \\ DMEx.Config.defaults().handler[:max_frame_bytes]) when is_integer(max_bytes) and max_bytes > 0 do
@@ -98,8 +82,8 @@ defmodule DMEx.Transport.SSE.Decoder do
   end
 
   @doc """
-  Returns the producer's advertised interval in ms, or `nil` — the upper bound
-  on silence a consumer measures against.
+  Returns the producer's advertised interval in ms, or `nil` — the upper bound on
+  silence a consumer measures against.
   """
   @spec retry(t()) :: pos_integer() | nil
   def retry(%__MODULE__{retry: retry}), do: retry
@@ -107,10 +91,10 @@ defmodule DMEx.Transport.SSE.Decoder do
   @doc """
   Feeds a chunk in and returns every row it completed.
 
-  Rows come back in arrival order. A chunk that completes nothing returns an
-  empty list, which is the ordinary case for a frame still in flight.
+  Rows come back in arrival order; a chunk that completes nothing returns `[]`.
   """
-  @spec push(t(), binary()) :: {:ok, [Frame.decoded_row()], t()} | {:error, error(), t()}
+  @spec push(t(), binary()) ::
+          {:ok, [DMEx.Handler.Pipeline.decoded_row()], t()} | {:error, error(), t()}
   def push(%__MODULE__{} = decoder, chunk) when is_binary(chunk) do
     {chunk, bom} = strip_bom(decoder.bom, chunk)
 
@@ -132,11 +116,10 @@ defmodule DMEx.Transport.SSE.Decoder do
 
   @bom <<0xEF, 0xBB, 0xBF>>
 
-  # `:done` once the question is settled, so every chunk after the first costs
-  # one clause head. Until then the bytes seen so far are held back rather than
-  # buffered: a first read of one or two bytes is legal, and deciding on a
-  # partial prefix would either eat payload or leave a mark behind. At most two
-  # bytes are ever withheld, and only before the first frame can be complete.
+  # `:done` once the question is settled, so every chunk after the first costs one
+  # clause head. Until then the bytes seen so far are held back rather than
+  # buffered — at most two, and only before the first frame can be complete —
+  # because deciding on a partial prefix would eat payload or leave a mark behind.
   defp strip_bom(:done, chunk), do: {chunk, :done}
 
   defp strip_bom(seen, chunk) do
@@ -172,16 +155,11 @@ defmodule DMEx.Transport.SSE.Decoder do
     end
   end
 
-  # Both error paths — this one and `Frame.decode/1`'s above — throw away the rows
-  # the same `push/2` already decoded, where the reader one layer up does the
-  # opposite for a terminal HTTP response: `DMEx.Transport.SSE` hands the rows over
-  # and then exits, because holding them back would strand the subscription
-  # forever. Named rather than reconciled, because the two situations differ in the
-  # only way that matters: there, the terminal is the connection ending. Here the
-  # offending bytes are a property of the data, not of the chunking — the remainder
-  # is one unterminated block, and a malformed frame is malformed on every read —
-  # so a reconnect from the durable cursor replays them and fails identically.
-  # Returning the rows ahead would shorten one re-read and never buy progress.
+  # Both error paths throw away the rows this `push/2` already decoded, where
+  # `DMEx.Transport.SSE` hands rows over before exiting on a terminal response.
+  # The difference: a malformed frame is malformed on every read, so a reconnect
+  # from the durable cursor replays it and fails identically — returning the rows
+  # ahead would shorten one re-read and never buy progress.
   defp check_size(%{size: size, max_bytes: max} = decoder, _frames) when size > max do
     {:error, :frame_too_large, decoder}
   end

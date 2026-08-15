@@ -2,43 +2,31 @@ defmodule DMEx.Handler.Fingerprint do
   @moduledoc """
   A consumer's message set, encoded as an XOR filter for the request path.
 
-  A consumer builds one at compile time from the modules its handler matches on
-  and encodes it into the path of the `GET` it opens; the producer resolves it
-  against its own message types to decide which rows to read.
+  Built at compile time from the modules a handler matches on and encoded into
+  the path of the `GET` it opens; the producer resolves it against its own
+  message types to decide which rows to read.
   [The Selection Filter](fingerprint-spec.md) is the normative encoding, which a
-  non-Elixir
-  consumer has to reproduce exactly.
+  non-Elixir consumer has to reproduce exactly and which may never be
+  negotiated: disagreeing on a single constant produces false negatives rather
+  than a garbled filter, and false negatives are silent message loss.
 
   **A filter rather than the types themselves**, above a handful of them:
-  [ARCHITECTURE](ARCHITECTURE.md) has the measured crossover, and the number to
-  know here is the floor — `ceil(1.23n) + 32` slots rounded up to a multiple of
-  three (the filter is three equal blocks), so a one-type handler still encodes to
-  107 base64url characters and a literal list of its own
-  types would be a fifth of that. What the filter buys is the *curve*: a URL whose
-  length follows the selection rather than the producer's naming, and a ceiling in
-  the low thousands of types rather than the low hundreds. The spec has why a
-  **static** set — built once, never added to — makes an
-  [XOR filter](https://arxiv.org/abs/1912.08258) (Graf & Lemire) the right family
-  rather than Bloom or cuckoo. That compression is what makes a bare browser
-  `EventSource`, whose URL is the only thing it controls, capable of real
-  server-side selection at all.
-
-  **No false negatives**: every type the consumer selected is delivered. A false
-  positive costs one unwanted type crossing the wire, which the consumer's skip
-  path drops. That asymmetry is why the encoding may never be negotiated —
-  disagreeing on a single constant produces false negatives rather than a
-  garbled filter, and false negatives are silent message loss.
+  [ARCHITECTURE](ARCHITECTURE.md) has the measured crossover. The floor is
+  `ceil(1.23n) + 32` slots rounded up to a multiple of three, so even a one-type
+  handler encodes to 107 base64url characters; what the filter buys is the
+  *curve* — a URL whose length follows the selection rather than the producer's
+  naming, which is what makes a bare browser `EventSource`, whose URL is the
+  only thing it controls, capable of real server-side selection at all.
 
   **16-bit fingerprints, pinned and not selectable.** Membership is tested per
   *type string*, not per row, so a false positive admits one entire message type
-  for the life of a connection — at 8 bits, one unlucky draw is a connection
-  receiving all of the highest-volume type in the system. 16 bits costs 1.23
-  extra bytes per type and cuts that by 256×.
+  for the life of a connection; at 8 bits one unlucky draw is a connection
+  receiving all of the highest-volume type in the system.
 
   `build/1` and `encode/1` run **only at compile time**, in `DMEx.Handler`;
   `decode/1` runs at connect in `DMEx.Log.Params` and `member?/2` in
-  `DMEx.Log.Selection`. So a filter that cannot be constructed is a compile error
-  rather than a runtime fallback.
+  `DMEx.Log.Selection`, so a filter that cannot be constructed is a compile
+  error rather than a runtime fallback.
   """
 
   import Bitwise
@@ -71,9 +59,8 @@ defmodule DMEx.Handler.Fingerprint do
   @fingerprint_bytes div(@fingerprint_bits, 8)
   @fingerprint_mask bsl(1, @fingerprint_bits) - 1
 
-  # The XOR filter's space overhead. 1.23 is the constant from the paper; the
-  # +32 is the slack small sets need to peel reliably, since the asymptotic
-  # factor is not what governs at n = 3.
+  # §3 of the spec: 1.23 is the XOR filter's space constant, and the +32 is the
+  # slack small sets need to peel reliably at n = 3.
   @overhead 1.23
   @slack 32
 
@@ -105,7 +92,6 @@ defmodule DMEx.Handler.Fingerprint do
   Whether `type` is in the set the filter was built from.
 
   Never a false negative; a false positive at a rate of 2⁻¹⁶ per type tested.
-  Three array reads and no loop, whatever the set size.
   """
   @spec member?(t(), String.t()) :: boolean()
   def member?(%__MODULE__{} = filter, type) when is_binary(type) do
@@ -114,12 +100,8 @@ defmodule DMEx.Handler.Fingerprint do
 
   @doc """
   Encodes a filter as the path segment: the seed then the fingerprint array,
-  big-endian, as unpadded base64url.
-
-  Unpadded base64url specifically ([RFC 4648 §5](https://www.rfc-editor.org/rfc/rfc4648#section-5)):
-  its alphabet is entirely unreserved in a path segment under
-  [RFC 3986](https://www.rfc-editor.org/rfc/rfc3986#section-2.3), so the blob
-  needs no percent-encoding and no part of it can be read as a path separator.
+  big-endian, as unpadded base64url — §6 of the spec, whose alphabet is entirely
+  unreserved in a path segment and so needs no percent-encoding.
   """
   @spec encode(t()) :: String.t()
   def encode(%__MODULE__{seed: seed, fingerprints: fps}) do
@@ -129,13 +111,10 @@ defmodule DMEx.Handler.Fingerprint do
   @doc """
   Decodes a path segment back into a filter.
 
-  Rejects anything that is not base64url, and anything whose decoded length is
-  not a 64-bit seed followed by a whole, non-empty number of fingerprints
-  filling three equal blocks. A caller answers `{:error, :invalid}` with a `400`.
-
-  It cannot detect a blob that decodes cleanly but was built under a *different*
-  encoding; nothing can, which is why the constants are pinned rather than
-  negotiated.
+  Rejects anything that is not base64url, and anything whose decoded length §6
+  of the spec disallows; a caller answers `{:error, :invalid}` with a `400`. A
+  blob built under a *different* encoding decodes cleanly and cannot be
+  detected, which is why the constants are pinned rather than negotiated.
   """
   @spec decode(String.t()) :: {:ok, t()} | {:error, :invalid}
   def decode(blob) when is_binary(blob) do
@@ -304,8 +283,7 @@ defmodule DMEx.Handler.Fingerprint do
     slots + rem(3 - rem(slots, 3), 3)
   end
 
-  # Lemire's fastrange: a multiply and a shift, mapping a 32-bit value into
-  # [0, n) without a division and without the modulo bias `rem/2` would have.
+  # §4 of the spec: Lemire's fastrange over the low 32 bits, not a modulo.
   defp reduce(hash, n), do: bsr(band(hash, @u32) * n, 32)
 
   defp rotl64(x, n), do: band(bsl(x, n) ||| bsr(x, 64 - n), @u64)
@@ -314,9 +292,7 @@ defmodule DMEx.Handler.Fingerprint do
 
   defp mixed(key, seed), do: fmix64(band(key + seed, @u64))
 
-  # The murmur3 64-bit finalizer, over splitmix64 or a rotation of the SHA-256
-  # output: it is what the reference XOR filter implementations use, which makes
-  # the spec cheap to reproduce in another language.
+  # §2 of the spec: the murmur3 64-bit finalizer.
   defp fmix64(x) do
     x = band(bxor(x, bsr(x, 33)) * 0xFF51AFD7ED558CCD, @u64)
     x = band(bxor(x, bsr(x, 33)) * 0xC4CEB9FE1A85EC53, @u64)
@@ -326,14 +302,9 @@ defmodule DMEx.Handler.Fingerprint do
 
   ## Encoding
 
-  # Derived from the sorted type list rather than drawn at random, so the blob
-  # is a pure function of the message set: the same handler compiles to the same
-  # URL on every machine and every build, which makes it diffable, cacheable and
-  # correlatable in a proxy log. Sorted, so reordering clauses cannot mint a new
-  # URL.
-  #
-  # DMEx's own convention and *not* part of the wire format — a producer only
-  # reads the seed back out of the blob.
+  # §8 of the spec: derived from the sorted type list, so the blob is a pure
+  # function of the message set — DMEx's own convention, not part of the wire
+  # format, since a producer only reads the seed back out of the blob.
   defp seed(types) do
     types
     |> Enum.sort()

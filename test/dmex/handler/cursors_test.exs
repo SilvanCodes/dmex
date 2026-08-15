@@ -2,49 +2,20 @@ defmodule DMEx.Handler.CursorsTest.UnreadableCursors do
   @moduledoc """
   Storage whose `cursor/2` fails for any subscription starting with `"boom"`.
 
-  Local to this test because it models the one thing no other test needs: a
-  cursor read that fails while the *other* read succeeds. `rename!/3` reads two
-  cursors and has to say which one it could not read, which a real adapter can
-  only be made to do by taking the database away mid-call.
+  A cursor read that fails while the *other* one succeeds: `rename!/3` reads two
+  and has to say which it could not read, which a real adapter can only be made
+  to do by taking the database away mid-call. Only the callbacks `rename!/3`
+  reaches, so there is no `@behaviour` to satisfy with a dozen delegates.
   """
-
-  @behaviour DMEx.Storage
-
-  alias DMEx.Test.Storage
 
   @doc "Storage opts addressing this module. No store: nothing here reaches one."
   @spec opts() :: keyword()
   def opts, do: [storage: __MODULE__, repo: __MODULE__]
 
-  @impl DMEx.Storage
   def cursor("boom" <> _rest, _opts), do: {:error, :connection_closed}
   def cursor(_subscription, _opts), do: {:ok, %{last_seen: 7, updated_at: nil}}
 
-  @impl DMEx.Storage
   def transaction(fun, _opts), do: {:ok, fun.()}
-
-  @impl DMEx.Storage
-  def advance_cursor(_subscription, _last_seen, _opts), do: :ok
-
-  @impl DMEx.Storage
-  def delete_cursor(_subscription, _opts), do: :ok
-
-  @impl DMEx.Storage
-  defdelegate append(type, data, metadata, opts), to: Storage
-  @impl DMEx.Storage
-  defdelegate read(cursor, limit, max_bytes, types, opts), to: Storage
-  @impl DMEx.Storage
-  defdelegate max_id(opts), to: Storage
-  @impl DMEx.Storage
-  defdelegate appended_since(cursor, opts), to: Storage
-  @impl DMEx.Storage
-  defdelegate last_seen(subscription, opts), to: Storage
-  @impl DMEx.Storage
-  defdelegate record_dead_message(row, opts), to: Storage
-  @impl DMEx.Storage
-  defdelegate list_dead_messages(subscription, opts), to: Storage
-  @impl DMEx.Storage
-  defdelegate delete_dead_message(subscription, id, opts), to: Storage
 end
 
 defmodule DMEx.Handler.CursorsTest do
@@ -208,9 +179,9 @@ defmodule DMEx.Handler.CursorsTest do
       assert {:ok, nil} = Postgres.last_seen(@new, ctx.storage)
     end
 
-    # Both reads used to happen in one tuple, so a `to` that legitimately had a
-    # cursor answered for a `from` that could not be read at all — the operator
-    # was told to reset a subscription when the real fault was the database.
+    # Which read failed is the whole message: a `to` that legitimately has a
+    # cursor must not answer for a `from` the database could not be read for at
+    # all, or the operator resets a subscription over a connection fault.
     test "names the read it could not do, rather than blaming the target" do
       error =
         assert_raise ArgumentError, fn ->

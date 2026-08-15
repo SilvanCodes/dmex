@@ -146,7 +146,7 @@ for {storage, repo, tag} <- [
       # An empty list is a selection that admits nothing, which is a different
       # question from `:all`. No shipped caller passes one — the plug 404s an
       # empty expansion first — so nothing but this pins the two adapters to the
-      # same answer, and one of them used to build unbindable SQL out of it.
+      # same answer.
       test "an empty selection reads empty rather than failing", %{opts: opts} do
         {:ok, _} = append("A", %{n: 1}, opts)
 

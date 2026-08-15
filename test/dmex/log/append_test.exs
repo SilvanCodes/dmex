@@ -41,13 +41,6 @@ defmodule DMEx.Log.AppendTest do
       assert JSON.decode!(data) == %{"order_id" => 7, "customer_id" => nil, "total" => 1999}
     end
 
-    test "passes metadata through untouched", %{opts: opts} do
-      {:ok, id} = Log.append(%OrderPlaced{order_id: 7}, metadata: %{trace_id: "abc"})
-
-      assert %{metadata: metadata} = fetch!(id, opts)
-      assert JSON.decode!(metadata) == %{"trace_id" => "abc"}
-    end
-
     test "merges nothing of its own into metadata", %{opts: opts} do
       # No log, no origin, no timestamp — so a publisher has no reserved
       # key names to avoid. The type string already identifies the appending

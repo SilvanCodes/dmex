@@ -27,9 +27,8 @@ defmodule DMEx.Log.PlugTest do
       end
     end
 
-    # A mount used to accept anything: `log_modul:` raised the "requires" message,
-    # but `stall_timeout: 5_000` was silently ignored — and a reader would have no
-    # way to learn it belongs on the log module.
+    # Silently ignoring it would leave a reader no way to learn the option
+    # belongs on the log module.
     test "refuses an option it does not know, naming it" do
       assert_raise ArgumentError, ~r/unknown option \[:stall_timeout\]/s, fn ->
         LogPlug.init(log_module: StubLog, stall_timeout: 5_000)
@@ -199,10 +198,8 @@ defmodule DMEx.Log.PlugTest do
 
       stream(opts, plug, @whole_log)
 
-      # `heartbeat_interval` plus one batch interval, because the loop's throttle
-      # runs after the heartbeat branch — the sum is the real upper bound on
-      # silence. Derived rather than written out: a literal here was the drift this
-      # suite exists to catch.
+      # The sum, not the interval — `DMEx.ConfigTest` has the arithmetic.
+      # Derived rather than written out: a literal here is the drift to catch.
       retry = DMEx.Config.effective_heartbeat(StubLog.__dmex__().config)
 
       assert_received {:chunk, chunk}

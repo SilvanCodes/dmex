@@ -2,8 +2,7 @@ defmodule DMEx.Message do
   @moduledoc """
   Defines a message type.
 
-  Each message a producer emits is its own Elixir module — one struct per
-  message type, owned by the appending application:
+  One struct per message type, owned by the appending application:
 
       defmodule MyApp.Messages.OrderPlaced do
         use DMEx.Message,
@@ -11,9 +10,9 @@ defmodule DMEx.Message do
           fields: [:order_id, :customer_id, :total]
       end
 
-  `use DMEx.Message` takes `fields:` in exactly the shape `defstruct/1` takes
-  them and generates the `defstruct`, the `@derive JSON.Encoder`, `c:type/0` and
-  `c:cast/1`. Omit `fields:` entirely for a message carrying no data.
+  `fields:` is exactly what `defstruct/1` takes; it generates the `defstruct`,
+  the `@derive JSON.Encoder`, `c:type/0` and `c:cast/1`. Omit it entirely for a
+  message carrying no data.
 
   No `t/0` is generated. A field list says what the fields are and never what
   they hold, so a generated one could only say `term()` per field — and since a
@@ -28,94 +27,56 @@ defmodule DMEx.Message do
 
   ## `c:type/0` — the wire type
 
-  Declared, not derived. The string is the `type` column, the SSE
-  `event:` name, and the key a consumer resolves a row back to a module with:
-
-      MyApp.Messages.OrderPlaced.type()
-      #=> "order_placed"
-
-  It is deliberately independent of the module name, so a message module can be
-  renamed, moved between namespaces or reorganised without any of that reaching
-  the wire or the database — and so a producer and a consumer can be refactored
-  on their own schedules.
+  Declared, not derived: the string is the `type` column, the SSE `event:` name,
+  and the key a consumer resolves a row back to a module with. It is
+  deliberately independent of the module name, so a message module can be
+  renamed or moved without that reaching the wire or the database, and a producer
+  and a consumer can be refactored on their own schedules.
 
   **This is the one line in a message module that must not be edited in place.**
   Replacing it orphans every row already appended under the old string: a
-  consumer stops resolving them and skips them silently, exactly the way
-  renaming the module used to. `retired:` is how a type is changed instead.
+  consumer stops resolving them and skips them silently. `retired:` is how a
+  type is changed instead.
 
-  Restricted to `[A-Za-z0-9_]+` segments joined by single dots — so `"."`,
-  `".foo"` and `"foo."` are compile errors rather than merely never written —
-  because the type goes onto an SSE `event:` line and SSE field lines have no
-  escaping. **This is the rule.** The `type` column's CHECK constraint is a looser
-  backstop for rows that never came through here; it is not a second definition.
-
-  Dots are available for namespacing — `"acme.orders.placed"` — which is worth
-  using: two producers declaring a bare `"order_placed"` collide on a consumer
-  that reads both, and nothing outside a single node can detect that.
+  The charset — `[A-Za-z0-9_]+` segments joined by single dots — is enforced
+  here, because an SSE `event:` line has no escaping; the `type` column's CHECK
+  constraint is a looser backstop for rows that never came through here, not a
+  second definition. Namespacing with those dots is worth doing: two producers
+  declaring a bare `"order_placed"` collide on a consumer that reads both, and
+  nothing outside a single node can detect that.
 
   ## `retired:` — the types this module used to append under
 
-      use DMEx.Message,
-        type: "acme.orders.placed",
-        retired: ["order_placed"],
-        fields: [:order_id]
-
-  A retired type resolves to this module everywhere a current one does: it is a
-  key in the node's index, a member of `types/0`, a `cast/1` clause on every
-  handler matching this struct, and a member of that handler's selection
-  fingerprint — so a subscription resuming from a cursor older than the rename
-  reads its own history. What it is not is a second thing to append under:
-  `type/0` is still one string, and it is the one that reaches the `type`
-  column.
+  `retired: ["order_placed"]` on the module now declaring
+  `type: "acme.orders.placed"` resolves the old string to this module everywhere
+  the current one resolves — a key in the node's index, a member of `types/0`, a
+  `cast/1` clause on every handler matching this struct, a member of that
+  handler's selection fingerprint — so a subscription resuming from a cursor
+  older than the rename reads its own history. What it is not is a second thing
+  to append under: `type/0` is still one string, and it is the one that reaches
+  the `type` column.
 
   Because the log is append-only, **a retirement is as permanent as the type it
-  replaces**. The rows stay resolvable only while the declaration that resolves
-  them is still compiled, so dropping the entry later re-orphans exactly the
-  rows it was added for.
-
-  It does not migrate the payload. A row older than the rename may also be older
-  than the current `fields:`, and reshaping it is `c:cast/1`'s job — the same
-  seam a field change already uses, now reached through a second type string.
-
-  A retired type collides node-wide like any other: two modules cannot both
-  answer for one string, whether either claims it as current or retired.
+  replaces**: dropping the entry later re-orphans exactly the rows it was added
+  for. It does not migrate the payload either — a row older than the rename may
+  also be older than the current `fields:`, and reshaping it is `c:cast/1`'s job.
+  And it collides node-wide like any other type: two modules cannot both answer
+  for one string, whether either claims it as current or retired.
 
   ## `c:cast/1` — the read-side inverse
 
-  Turns a row's JSON-decoded `data` map back into the struct. The generated
-  default maps string keys onto the declared fields, keeps the struct's default
-  for anything absent, and ignores anything undeclared.
-
-  It is **overridable**, because the default can only be right for what JSON
-  models directly. A `DateTime` or a `Decimal` field comes back as a string, a
-  nested struct as a plain map, and each needs its own `cast/1`:
-
-      defmodule MyApp.Messages.OrderPlaced do
-        use DMEx.Message, type: "order_placed", fields: [:order_id, :placed_at]
-
-        @impl true
-        def cast(%{"placed_at" => placed_at} = data) do
-          %__MODULE__{
-            order_id: data["order_id"],
-            placed_at: DateTime.from_iso8601(placed_at) |> elem(1)
-          }
-        end
-      end
+  `cast_default/2` is the generated default, and it is **overridable**: that is
+  where a field JSON does not model directly — a `DateTime`, a `Decimal`, a
+  nested struct — is rebuilt.
 
   The write side is the stricter half, and this is the invariant it imposes:
-  **a message field must hold something `JSON.Encoder` already encodes.** A map,
-  a list, a string, a number, a boolean, `nil`, or a struct implementing the
-  protocol — `Date`, `DateTime`, `Time`, `NaiveDateTime`, `Duration`, and
-  `Decimal` where that dependency is present. A nested struct that derives
-  nothing is the case that bites: `JSON.encode!/1` raises
-  `Protocol.UndefinedError` on it inside `MyApp.Log.append/2`, before the row is
-  written and before the `[:dmex, :append, :start]` event. Enrichment past that
-  line belongs on the read side, in `cast/1`.
-
-  The derivation itself is replaceable, just not with a second `@derive`. An
-  explicit `defimpl JSON.Encoder, for: __MODULE__` wins over it, whichever order
-  the two compile in, and is the only way to change what a message encodes to.
+  **a message field must hold something `JSON.Encoder` already encodes.** A
+  nested struct that derives nothing is the case that bites: `JSON.encode!/1`
+  raises `Protocol.UndefinedError` on it inside `MyApp.Log.append/2`, before the
+  row is written and before the `[:dmex, :append, :start]` event. Enrichment past
+  that line belongs on the read side, in `cast/1`. An explicit
+  `defimpl JSON.Encoder, for: __MODULE__` is the only way to change what a
+  message encodes to.
 
   **Atom safety.** The default `cast/1` walks the struct's *own* fields and
   looks each up in the incoming map, rather than converting the incoming map's
@@ -299,23 +260,14 @@ defmodule DMEx.Message do
   @doc """
   Returns whether `module` was built with `use DMEx.Message`.
 
-  The mirror of `DMEx.Handler.handler?/1`: a handler matching on a struct that
-  is not a message should be rejected by name rather than blow up as an
-  `UndefinedFunctionError` on `type/0`.
+  The mirror of `DMEx.Handler.handler?/1`. Tested by the `@dmex_message`
+  attribute `use DMEx.Message` persists into the BEAM, not by the presence of
+  `type/0` and `cast/1` — a shape any struct can have by coincidence, and every
+  module of every application depending on `:dmex` is offered to this predicate.
 
-  Tested by the `@dmex_message` attribute `use DMEx.Message` persists into the
-  BEAM, not by the presence of `type/0` and `cast/1`. Those two are a shape a
-  module can have by coincidence, and every module of every application
-  depending on `:dmex` is offered to this predicate — a stranger admitted here
-  has its `type/0` called and the result folded into the node's type set, where
-  at worst it collides with a real message and fails the boot in
-  `index!/1` naming a module that has nothing to do with DMEx.
-
-  `module_info/1` rather than `__info__/1`, since the scan reaches Erlang
-  modules too.
-
-  `Code.ensure_loaded?/1`, so this never blocks. `DMEx.Handler` calls it at
-  compile time and does its own `Code.ensure_compiled!/1` first, since the
+  `module_info/1` rather than `__info__/1`, since the scan reaches Erlang modules
+  too, and `Code.ensure_loaded?/1` so this never blocks: `DMEx.Handler` calls it
+  at compile time and does its own `Code.ensure_compiled!/1` first, since the
   parallel compiler resolves a struct pattern without loading the module.
   """
   @spec message?(module()) :: boolean()
@@ -341,15 +293,16 @@ defmodule DMEx.Message do
   @doc """
   `modules` keyed by the type each declares, raising if two of them declare one.
 
-  What turns a `type` off the wire back into a module without
-  `String.to_atom/1`.
-
+  What turns a `type` off the wire back into a module without `String.to_atom/1`.
   It raises rather than letting the second module win, because a swallowed
   collision is silent message loss: whichever module lost is unreachable, and
   every row of that type is skipped by every consumer.
 
   Checked once at boot rather than at compile time — a collision is a property of
-  the module *set*, which no single module's compilation can see.
+  the module *set*, which no single module's compilation can see. This is the
+  within-one-scan half of that check and `collision!/3` is the across-scans half;
+  deliberately two, so a hand-built module list pins this one without going
+  through application discovery.
   """
   @spec index!([module()]) :: %{String.t() => module()}
   def index!(modules) when is_list(modules) do

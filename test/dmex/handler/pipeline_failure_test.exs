@@ -1,93 +1,21 @@
 defmodule DMEx.Handler.PipelineFailureTest.FlakyStorage do
   @moduledoc """
-  The in-memory stub with a scripted `transaction/2`.
+  The in-memory stub with a write that raises.
 
-  Local to this test rather than in `test/support`, because it models the one
-  thing no other test cares about: storage failing *underneath* a handler that
-  did nothing wrong. The script is a list of faults, one consumed per
-  `transaction/2` call, `:ok` meaning "behave normally".
-
-  `advance: :raise` is the other half of that: a write raises rather than
-  returning a tagged error — `Ecto.Adapters.SQL.query!/4` is what both shipped
-  adapters use — and the pipeline has to read that as storage failing rather than
-  as a verdict on the message.
+  `Ecto.Adapters.SQL.query!/4` is what both shipped adapters use, so a failing
+  write raises rather than returning a tagged error, and the pipeline has to read
+  that as storage failing rather than as a verdict on the message. Only the
+  callbacks such a run reaches, so there is no `@behaviour` to satisfy with a
+  dozen delegates.
   """
-
-  @behaviour DMEx.Storage
 
   alias DMEx.Test.Storage
 
-  @doc "Storage opts whose `transaction/2` follows `faults`, then behaves."
-  @spec new([:ok | :timeout | :commit | :down], keyword()) :: DMEx.Storage.opts()
-  def new(faults, opts \\ []) do
-    {:ok, pid} = Agent.start_link(fn -> faults end)
-
-    Storage.new() |> Map.put(:faults, pid) |> Map.put(:advance, Keyword.get(opts, :advance))
+  def advance_cursor(_subscription, _last_seen, _opts) do
+    raise DBConnection.ConnectionError, "connection closed"
   end
 
-  @impl DMEx.Storage
-  def advance_cursor(subscription, last_seen, opts) do
-    case Map.fetch!(opts, :advance) do
-      :raise -> raise DBConnection.ConnectionError, "connection closed"
-      nil -> Storage.advance_cursor(subscription, last_seen, opts)
-    end
-  end
-
-  @impl DMEx.Storage
-  def transaction(fun, opts) do
-    case next_fault(opts) do
-      # A pool that is already down: `Ecto.Repo.transaction/1` calls it, so this
-      # leaves as an exit rather than as an exception.
-      :down ->
-        exit(:noproc)
-
-      # A checkout that timed out: the callback never ran.
-      :timeout ->
-        {:error, :pool_timeout}
-
-      # A commit that failed after the callback returned — a serialization
-      # failure, say. The callback ran and its writes rolled back.
-      :commit ->
-        state = Agent.get(store(opts), & &1)
-        _ = fun.()
-        Agent.update(store(opts), fn _ -> state end)
-
-        {:error, :serialization_failure}
-
-      :ok ->
-        Storage.transaction(fun, opts)
-    end
-  end
-
-  defp next_fault(opts) do
-    Agent.get_and_update(Map.fetch!(opts, :faults), fn
-      [] -> {:ok, []}
-      [fault | rest] -> {fault, rest}
-    end)
-  end
-
-  defp store(opts), do: Map.fetch!(opts, :store)
-
-  @impl DMEx.Storage
-  defdelegate append(type, data, metadata, opts), to: Storage
-  @impl DMEx.Storage
-  defdelegate read(cursor, limit, max_bytes, types, opts), to: Storage
-  @impl DMEx.Storage
-  defdelegate max_id(opts), to: Storage
-  @impl DMEx.Storage
-  defdelegate appended_since(cursor, opts), to: Storage
-  @impl DMEx.Storage
-  defdelegate last_seen(subscription, opts), to: Storage
-  @impl DMEx.Storage
-  defdelegate cursor(subscription, opts), to: Storage
-  @impl DMEx.Storage
-  defdelegate delete_cursor(subscription, opts), to: Storage
-  @impl DMEx.Storage
-  defdelegate record_dead_message(row, opts), to: Storage
-  @impl DMEx.Storage
-  defdelegate list_dead_messages(subscription, opts), to: Storage
-  @impl DMEx.Storage
-  defdelegate delete_dead_message(subscription, id, opts), to: Storage
+  defdelegate transaction(fun, opts), to: Storage
 end
 
 defmodule DMEx.Handler.PipelineFailureTest do
@@ -107,6 +35,7 @@ defmodule DMEx.Handler.PipelineFailureTest do
   alias DMEx.Storage.Postgres
   alias DMEx.Test.Handlers
   alias DMEx.Test.Messages.OrderPlaced
+  alias DMEx.Test.Storage
   alias Ecto.Adapters.SQL
 
   @url "https://orders.internal/stream"
@@ -262,9 +191,6 @@ defmodule DMEx.Handler.PipelineFailureTest do
       assert dead_count() == 1
     end
 
-    # The stored row is the log row, verbatim — same columns, same meanings —
-    # which is what makes replay a matter of handing it back rather than
-    # rebuilding a message out of it.
     test "stores the message exactly as the log held it", ctx do
       state = state(ctx, handler: Handlers.Raising, on_failure: :dead_message)
 
@@ -277,8 +203,6 @@ defmodule DMEx.Handler.PipelineFailureTest do
                  FROM dmex_dead_messages
                """)
 
-      # The declared identity, not the module name — which is what makes
-      # renaming the handler free.
       assert subscription == "test/raising"
       # The log's own id, not a surrogate — so duplicate suppression
       # still means what it always meant.
@@ -332,13 +256,7 @@ defmodule DMEx.Handler.PipelineFailureTest do
 
     # A cursor moves both ways — `DMEx.Handler.Cursors.reset!/2` — so the same
     # message can reach the same subscription twice, and the second failure has
-    # to be recordable. It used to conflict on `(subscription, id)`, which
-    # aborted the transaction the advance shared and crash-looped the
-    # subscription on a row it had already given up on.
-    #
-    # The atomicity that conflict incidentally proved is now pinned by "on the
-    # terminal action is the same answer, not a different one", which fails the
-    # commit itself rather than leaning on a constraint.
+    # to be recordable.
     test "records a message it is handed a second time", ctx do
       state = state(ctx, handler: Handlers.Raising, on_failure: :dead_message)
 
@@ -380,17 +298,19 @@ defmodule DMEx.Handler.PipelineFailureTest do
     test "does not dead-letter a message the handler never rejected" do
       # Fails for every attempt and heals in time for the terminal action —
       # a transient blip, which is exactly what retries exist for.
-      opts = FlakyStorage.new([:commit, :commit, :commit])
+      opts = Storage.new()
+      Storage.fail_transaction([:commit, :commit, :commit], opts)
       state = stub_state(opts, handler: Handlers.Echo, max_attempts: 3)
 
       assert_raise RuntimeError, ~r/did not commit/, fn -> Pipeline.run(row(1), state) end
 
       assert stub_dead("test/echo", opts) == []
-      assert {:ok, nil} = FlakyStorage.last_seen("test/echo", opts)
+      assert {:ok, nil} = Storage.last_seen("test/echo", opts)
     end
 
     test "does not consume the handler's retry attempts" do
-      opts = FlakyStorage.new([:commit, :commit, :commit])
+      opts = Storage.new()
+      Storage.fail_transaction([:commit, :commit, :commit], opts)
       state = stub_state(opts, handler: Handlers.Echo, max_attempts: 3)
 
       catch_error(Pipeline.run(row(1), state))
@@ -407,8 +327,8 @@ defmodule DMEx.Handler.PipelineFailureTest do
     # re-running side effects that never failed, and then dead-lettered a message
     # the handler had processed successfully three times.
     test "a write that raises is storage failing, not a verdict on the message" do
-      opts = FlakyStorage.new([], advance: :raise)
-      state = stub_state(opts, handler: Handlers.Echo, max_attempts: 3)
+      opts = Storage.new()
+      state = stub_state(opts, handler: Handlers.Echo, max_attempts: 3, adapter: FlakyStorage)
 
       assert_raise DBConnection.ConnectionError, fn -> Pipeline.run(row(1), state) end
 
@@ -416,35 +336,38 @@ defmodule DMEx.Handler.PipelineFailureTest do
       refute_received {:handled, _, _}
 
       assert stub_dead("test/echo", opts) == []
-      assert {:ok, nil} = FlakyStorage.last_seen("test/echo", opts)
+      assert {:ok, nil} = Storage.last_seen("test/echo", opts)
     end
 
     test "propagates when the callback never even ran" do
-      opts = FlakyStorage.new([:timeout])
+      opts = Storage.new()
+      Storage.fail_transaction([:timeout], opts)
       state = stub_state(opts, handler: Handlers.Echo, max_attempts: 3)
 
       assert_raise RuntimeError, ~r/did not commit: :pool_timeout/, fn -> Pipeline.run(row(1), state) end
 
       refute_received {:handled, _, _}
       assert stub_dead("test/echo", opts) == []
-      assert {:ok, nil} = FlakyStorage.last_seen("test/echo", opts)
+      assert {:ok, nil} = Storage.last_seen("test/echo", opts)
     end
 
     # The two commits answer the same event the same way. Here the handler
     # genuinely failed, retries ran out, and it is the terminal action's own
     # transaction that cannot commit.
     test "on the terminal action is the same answer, not a different one" do
-      opts = FlakyStorage.new([:ok, :ok, :ok, :commit])
+      opts = Storage.new()
+      Storage.fail_transaction([:ok, :ok, :ok, :commit], opts)
       state = stub_state(opts, handler: Handlers.Raising, max_attempts: 3)
 
       assert_raise RuntimeError, ~r/did not commit/, fn -> Pipeline.run(row(1), state) end
 
       assert stub_dead("test/raising", opts) == []
-      assert {:ok, nil} = FlakyStorage.last_seen("test/raising", opts)
+      assert {:ok, nil} = Storage.last_seen("test/raising", opts)
     end
 
     test "in flush/1 is not silently swallowed either" do
-      opts = FlakyStorage.new([:timeout])
+      opts = Storage.new()
+      Storage.fail_transaction([:timeout], opts)
       state = stub_state(opts, handler: Handlers.Echo, max_attempts: 3)
 
       assert_raise RuntimeError, ~r/did not commit/, fn ->
@@ -473,7 +396,7 @@ defmodule DMEx.Handler.PipelineFailureTest do
 
   defp stub_state(storage, opts) do
     Pipeline.new(
-      storage: Map.put(storage, :adapter, FlakyStorage),
+      storage: Map.put(storage, :adapter, Keyword.get(opts, :adapter, Storage)),
       handler: Keyword.fetch!(opts, :handler),
       origin: @url,
       cursor: 0,
@@ -489,7 +412,7 @@ defmodule DMEx.Handler.PipelineFailureTest do
   end
 
   defp stub_dead(subscription, storage) do
-    {:ok, rows} = FlakyStorage.list_dead_messages(subscription, storage)
+    {:ok, rows} = Storage.list_dead_messages(subscription, storage)
 
     rows
   end

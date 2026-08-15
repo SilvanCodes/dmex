@@ -19,11 +19,6 @@ defmodule DMEx.Transport.SSE do
   in the order they arrive and rows go out with `DMEx.Transport.deliver/2` as
   they decode, so a response that ends the connection is reached only after
   everything ahead of it has already been run.
-
-  **Backpressure.** `deliver/2` blocks until the pipeline has run the batch, and
-  only on its return does the reader call `Mint.HTTP.stream/2` again. The TCP
-  receive window closes behind it and the producer's `chunk/2` blocks on it —
-  ARCHITECTURE's "the consumer has no buffer".
   """
 
   @behaviour DMEx.Transport
@@ -63,7 +58,7 @@ defmodule DMEx.Transport.SSE do
     config = Keyword.fetch!(opts, :config)
     uri = opts |> Keyword.fetch!(:origin) |> URI.parse()
 
-    {conn, ref} = open(uri, opts, config)
+    {conn, ref} = open(uri, opts)
 
     # After the request is on the wire and not before: this is what clears the
     # subscription's backoff, so it has to mean a connection that happened.
@@ -84,16 +79,16 @@ defmodule DMEx.Transport.SSE do
   # Exits rather than returning an error: to the subscription a connection that
   # never opened and one that opened and died are the same event, and both are
   # answered by the same jittered retry.
-  defp open(uri, opts, config) do
+  defp open(uri, opts) do
     case Mint.HTTP.connect(Request.scheme(uri), uri.host, uri.port, mode: :active) do
-      {:ok, conn} -> request(conn, uri, opts, config)
+      {:ok, conn} -> request(conn, uri, opts)
       {:error, reason} -> exit(reason)
     end
   end
 
-  defp request(conn, uri, opts, config) do
+  defp request(conn, uri, opts) do
     path = Request.path(uri, Keyword.get(opts, :fingerprint))
-    headers = Request.headers(Keyword.fetch!(opts, :cursor), config)
+    headers = Request.headers(Keyword.fetch!(opts, :cursor), Keyword.fetch!(opts, :config))
 
     case Mint.HTTP.request(conn, "GET", path, headers, nil) do
       {:ok, conn, ref} ->

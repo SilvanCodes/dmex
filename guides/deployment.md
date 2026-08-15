@@ -9,10 +9,9 @@ connections and manages its own timeouts.
 
 ## 1. Stuck connections are reclaimed for you
 
-The send loop cannot reclaim itself — **a process blocked in `chunk/2` is not
-running**, and neither is one blocked in a read against a database that stopped
-answering. So every blocking step states a deadline before it enters, and
-`DMEx.Log.Watcher` — one process per log — kills whatever is past one:
+Every blocking step in the send loop states a deadline before it enters
+([every blocking step has a deadline](../ARCHITECTURE.md#every-blocking-step-has-a-deadline)),
+and `DMEx.Log.Watcher` — one process per log — kills whatever is past one:
 
 ```elixir
 defmodule MyApp.Log do
@@ -51,11 +50,10 @@ consumer; a steady rate is either a consumer that cannot keep up or a
 `max_batch_rows` and `max_batch_bytes` — rows, and `data` + `metadata` + `type`
 octets — bound the same read, and whichever binds first ends it.
 
-Both are memory bounds, over different costs — see
-[producer memory is one batch](../ARCHITECTURE.md#producer-memory-is-one-batch-bounded-in-rows-and-bytes).
-The byte cap counts what the database can see, and the row cap bounds the fixed
-~1 KB per row that turning it into terms costs, which no budget in database
-octets can.
+Both are memory bounds over different heap costs — the byte cap counts database
+octets, the row cap the fixed ~1 KB per row of terms — see
+[producer memory is one batch](../ARCHITECTURE.md#producer-memory-is-one-batch-bounded-in-rows-and-bytes)
+for why there are two, and `DMEx.Config` for the defaults.
 
 To size it, add both: `max_batch_bytes` plus `max_batch_rows` kilobytes is the
 worst-case transient read memory of one open stream, and open streams multiply it.
@@ -169,10 +167,6 @@ not raw query load.
 A reclaimed stream returns whatever it had checked out: the pool monitors its
 client, so killing a request process wedged on a query or a checkout hands that
 connection back rather than leaking it.
-
-Pool checkout queueing appears somewhere between 50 and 200 concurrent streams
-on a 10-connection pool; `bench/e2e/fanout_reads.exs` finds where your own
-ceiling is.
 
 ## What DMEx deliberately does not do
 

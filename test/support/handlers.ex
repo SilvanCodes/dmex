@@ -37,11 +37,8 @@ defmodule DMEx.Test.Handlers do
 
   defmodule Echo do
     @moduledoc """
-    Reports every message it handles and does nothing else.
-
-    `last_seen: 0` because tests subscribe and *then* append: the default —
-    unset — resolves to the log's tip at connect, which races those appends.
-    A test wanting the default says so at its subscribe call.
+    Reports every message it handles and does nothing else. `last_seen: 0`
+    because tests subscribe and *then* append, which the unset default races.
     """
     use DMEx.Handler, logs: [:test], name: :echo, last_seen: 0
 
@@ -58,17 +55,9 @@ defmodule DMEx.Test.Handlers do
 
   defmodule EchoWholeLog do
     @moduledoc """
-    `Echo` with server-side selection turned off.
-
-    The catch-all clause is the whole of that: it names no type, so no
-    fingerprint is built, the subscription reads the log entire, and every type
-    this application has a module for is decoded rather than only the one named
-    above. A second module rather than a `subscribe/2` option, for the same
-    reason the message set is one — the handler module is the complete
-    declaration of what the subscription *is*, and a call site that could vary it
-    could disagree with it.
-
-    Both clauses report, so a test can tell which one a row reached.
+    `Echo` with server-side selection off: a catch-all clause names no type, so
+    no fingerprint is built and the whole log is read. Both clauses report, so a
+    test can tell which one a row reached.
     """
     use DMEx.Handler, logs: [:test], name: :echo_whole_log
 
@@ -91,12 +80,8 @@ defmodule DMEx.Test.Handlers do
 
   defmodule Sink do
     @moduledoc """
-    A handler that names no type at all.
-
-    Legal, and the diagnostic shape: it reads the whole log, decodes whatever
-    this application has a module for, and skips the rest — so what it reports
-    and what `[:dmex, :handler, :skip]` says together describe everything the log
-    is emitting.
+    Names no type at all: reads the whole log and reports whatever this
+    application has a module for, skipping the rest.
     """
     use DMEx.Handler, logs: [:test], name: :sink
 
@@ -112,12 +97,8 @@ defmodule DMEx.Test.Handlers do
 
   defmodule WholeLogNarrowed do
     @moduledoc """
-    Asks for the whole log, and still turns messages down.
-
-    Its second clause names no type — so there is no fingerprint — but narrows on
-    the *metadata*. Naming no type is a property of the first argument alone,
-    where accepting a message is the whole head, so a whole-log cast still has to
-    ask whether some clause wants this one.
+    Asks for the whole log and still turns messages down: its second clause
+    names no type, so there is no fingerprint, but narrows on the metadata.
     """
     use DMEx.Handler, logs: [:test], name: :whole_log_narrowed
 
@@ -139,13 +120,7 @@ defmodule DMEx.Test.Handlers do
   end
 
   defmodule EchoAll do
-    @moduledoc """
-    `Echo` with a wider message set.
-
-    A second module rather than an option, because the list is part of the
-    declaration now: a handler subscribed to a list that does not contain what
-    it matches on is unrepresentable, and the price is a module per combination.
-    """
+    @moduledoc "`Echo` with a wider message set: two message types rather than one."
     use DMEx.Handler, logs: [:test], name: :echo_all
 
     alias DMEx.Test.Handlers
@@ -165,10 +140,8 @@ defmodule DMEx.Test.Handlers do
 
   defmodule Narrowed do
     @moduledoc """
-    Matches a field's value, not just the type.
-
-    Selection is by type, so the log sends every `OrderPlaced`; the ones this
-    clause turns down are skipped rather than raising.
+    Matches a field's value, not just the type: the `OrderPlaced`s this clause
+    turns down are skipped rather than raising.
     """
     use DMEx.Handler, logs: [:test], name: :narrowed
 
@@ -200,10 +173,8 @@ defmodule DMEx.Test.Handlers do
 
   defmodule RaisesFunctionClause do
     @moduledoc """
-    Raises a `FunctionClauseError` from inside its body.
-
-    The distinction the skip path has to keep: a clause head that did not match
-    means the handler was never entered, while this one was and failed.
+    Raises a `FunctionClauseError` from inside its body: the skip path has to
+    tell a head that never matched from one that was entered and failed.
     """
     use DMEx.Handler, logs: [:test], name: :raises_function_clause
 
@@ -217,11 +188,8 @@ defmodule DMEx.Test.Handlers do
 
   defmodule Fanned do
     @moduledoc """
-    One handler, two logs.
-
-    Its two subscriptions have their own cursors and their own connections; the
-    only thing they share is this module. `:other` is bound alongside `:test`
-    wherever a test starts a supervisor that discovers this file.
+    One handler, two logs (`:test` and `:other`), with its own cursor and its
+    own connection per subscription and nothing shared but the module.
     """
     use DMEx.Handler, logs: [:test, :other], name: :fanned, last_seen: 0
 
@@ -268,10 +236,8 @@ defmodule DMEx.Test.Handlers do
 
   defmodule WritesThenRaises do
     @moduledoc """
-    Writes to a scratch table and then raises.
-
-    The rollback probe: if the row is gone afterwards, the callback and the
-    cursor advance really did share one transaction.
+    Writes to a scratch table and then raises: if the row is gone afterwards,
+    the callback and the cursor advance really did share one transaction.
     """
     use DMEx.Handler, logs: [:test], name: :writes_then_raises
 
@@ -325,10 +291,8 @@ defmodule DMEx.Test.Handlers do
 
   defmodule FailTimes do
     @moduledoc """
-    Raises for the first N calls, then succeeds.
-
-    The transient failure retries exist for — a deadlock, a blipped downstream —
-    as opposed to a handler that is simply broken.
+    Raises for the first N calls, then succeeds: the transient failure retries
+    exist for, as opposed to a handler that is simply broken.
     """
     use DMEx.Handler, logs: [:test], name: :fail_times
 
@@ -340,10 +304,9 @@ defmodule DMEx.Test.Handlers do
     @doc """
     Makes the next `count` calls raise.
 
-    Kept in the process dictionary rather than the application environment: this
-    handler is invoked synchronously in the calling test's own process, so a
-    per-process counter is what keeps parallel tests from consuming each other's
-    failures.
+    Per-process rather than in the application environment: this handler runs in
+    the calling test's own process, so parallel tests cannot consume each
+    other's failures.
     """
     def set(count) do
       Process.put(@key, count)
@@ -369,12 +332,10 @@ defmodule DMEx.Test.Handlers do
 
   defmodule SlowCommit do
     @moduledoc """
-    Reports, then stalls before returning.
-
-    Puts a wide, deliberate window between a handler's side effect landing and
-    its transaction committing — which is precisely the gap DMEx's duplicate
-    suppression cannot cover, and the reason delivery is at-least-once rather
-    than exactly-once. Killing the stream on receipt lands squarely inside it.
+    Reports, then stalls before returning: a wide window between a handler's
+    side effect landing and its transaction committing, which is the gap
+    duplicate suppression cannot cover. Killing the stream on receipt lands
+    squarely inside it.
     """
     use DMEx.Handler, logs: [:test], name: :slow_commit
 

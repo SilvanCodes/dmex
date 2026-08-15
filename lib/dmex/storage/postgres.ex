@@ -26,6 +26,7 @@ defmodule DMEx.Storage.Postgres do
 
   use DMEx.Storage.SQL
 
+  alias DMEx.Storage.SQL
   alias Ecto.Adapters.SQL, as: Adapter
 
   # From the behaviour, not restated: see `DMEx.Storage.__table__/1`.
@@ -45,7 +46,7 @@ defmodule DMEx.Storage.Postgres do
   clocks, and only the log's own `inserted_at` has to ascend with `id`, which is
   the migration's default rather than anything issued here.
   """
-  @impl DMEx.Storage.SQL
+  @impl SQL
   def dialect(opts) do
     %{
       messages: table(@messages, opts),
@@ -56,7 +57,7 @@ defmodule DMEx.Storage.Postgres do
       text: &"#{&1}::text",
       json: &"#{&1}::text::jsonb",
       bytes: &"octet_length(#{&1})",
-      type_agg: "coalesce(array_agg(DISTINCT type), '{}')",
+      type_agg: "array_agg(DISTINCT type)",
       types: &Function.identity/1,
       timestamp: &Function.identity/1,
       # One array parameter, whatever the selection's size.
@@ -88,18 +89,21 @@ defmodule DMEx.Storage.Postgres do
           "`prefix:` must be a schema name as a string or nil, got: #{inspect(prefix)}"
   end
 
-  ## Appending — the one statement that is this engine's own
+  ## Appending
 
   @impl DMEx.Storage
   def append(type, data, metadata, opts) when is_binary(type) and is_binary(data) and is_binary(metadata) do
     repo = Map.fetch!(opts, :repo)
+    sql = SQL.append_sql(dialect(opts))
 
     repo.transaction(fn ->
-      # First, and released only by COMMIT. See DMEx.Storage's module
-      # documentation for why anything shorter reintroduces silent id gaps.
+      # First, and released only by COMMIT — `c:DMEx.Storage.append/4` says why
+      # anything shorter reintroduces silent id gaps.
       lock!(repo, opts)
 
-      insert!(repo, type, data, metadata, opts)
+      %{rows: [[id]]} = Adapter.query!(repo, sql, [type, data, metadata])
+
+      id
     end)
   end
 
@@ -107,18 +111,6 @@ defmodule DMEx.Storage.Postgres do
     {classid, objid} = Map.fetch!(opts, :lock)
 
     Adapter.query!(repo, "SELECT pg_advisory_xact_lock($1, $2)", [classid, objid])
-  end
-
-  defp insert!(repo, type, data, metadata, opts) do
-    sql = """
-    INSERT INTO #{table(@messages, opts)} (type, data, metadata)
-         VALUES ($1, $2::text::jsonb, $3::text::jsonb)
-      RETURNING id
-    """
-
-    %{rows: [[id]]} = Adapter.query!(repo, sql, [type, data, metadata])
-
-    id
   end
 
   @impl DMEx.Storage

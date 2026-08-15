@@ -18,7 +18,6 @@ defmodule DMEx.Integration.UnknownTypeTest do
 
   use DMEx.IntegrationCase
 
-  alias DMEx.Storage.Postgres
   alias DMEx.Test.Handlers
   alias DMEx.Test.IntegrationLog, as: Log
   alias DMEx.Test.Messages.OrderPlaced
@@ -31,7 +30,7 @@ defmodule DMEx.Integration.UnknownTypeTest do
   end
 
   test "a type the consumer did not select never arrives, and the rest do", _ctx do
-    subscribe(Handlers.Echo)
+    subscribe!(Handlers.Echo)
 
     # Interleaved deliberately: an unselected type first, so a consumer that
     # wedged on it would never deliver anything at all.
@@ -48,11 +47,11 @@ defmodule DMEx.Integration.UnknownTypeTest do
     # tip. It moved straight over ids 1 and 3 without those rows ever being
     # sent — a selective stream sees a sparse subset of one id space, not a
     # space of its own.
-    eventually(fn -> cursor() == {:ok, id} end)
+    eventually(fn -> cursor("test/echo") == {:ok, id} end)
   end
 
   test "selecting nothing that was appended receives nothing, and that is not a stall", _ctx do
-    subscribe(Handlers.Echo)
+    subscribe!(Handlers.Echo)
 
     for n <- 1..5, do: {:ok, _} = Log.append(%OrderShipped{order_id: n, carrier: "dhl"})
 
@@ -66,7 +65,7 @@ defmodule DMEx.Integration.UnknownTypeTest do
     # read an index seek, which is the same price whether the next matching row
     # is one id away or ten million.
     refute_receive {:handled, _, _}, 500
-    assert cursor() == {:ok, nil}
+    assert cursor("test/echo") == {:ok, nil}
 
     # Anchored on a positive: without this the two assertions above also pass
     # for a subscription that never connected at all. One selected row proves
@@ -74,7 +73,7 @@ defmodule DMEx.Integration.UnknownTypeTest do
     {:ok, placed} = Log.append(%OrderPlaced{order_id: 6})
 
     assert_receive {:handled, %OrderPlaced{order_id: 6}, _}, 5_000
-    eventually(fn -> cursor() == {:ok, placed} end)
+    eventually(fn -> cursor("test/echo") == {:ok, placed} end)
   end
 
   test "the whole log still arrives, and still skips, for a whole-log handler", _ctx do
@@ -83,7 +82,7 @@ defmodule DMEx.Integration.UnknownTypeTest do
     # log" apart from "log has appended nothing".
     ref = :telemetry_test.attach_event_handlers(self(), [[:dmex, :handler, :skip]])
 
-    subscribe(Handlers.EchoWholeLog)
+    subscribe!(Handlers.EchoWholeLog)
 
     {:ok, _} = append_undecodable!()
     {:ok, id} = Log.append(%OrderPlaced{order_id: 2})
@@ -102,7 +101,7 @@ defmodule DMEx.Integration.UnknownTypeTest do
   # still resolves, through the modules its own application knows, and reaches
   # the clause that named no type.
   test "a whole-log handler decodes a type it never named", _ctx do
-    subscribe(Handlers.EchoWholeLog)
+    subscribe!(Handlers.EchoWholeLog)
 
     {:ok, _} = Log.append(%OrderShipped{order_id: 1, carrier: "dhl"})
 
@@ -117,12 +116,7 @@ defmodule DMEx.Integration.UnknownTypeTest do
   test "unsubscribing settles a pending run of skips", _ctx do
     # Far longer than this test runs, so the only thing that can write the
     # cursor is the flush on the way down.
-    {:ok, _} =
-      DMEx.Supervisor.subscribe(Handlers.EchoWholeLog,
-        supervisor: TestSupervisor,
-        last_seen: 0,
-        checkpoint_interval: 600_000
-      )
+    {:ok, _} = subscribe!(Handlers.EchoWholeLog, checkpoint_interval: 600_000)
 
     ref = :telemetry_test.attach_event_handlers(self(), [[:dmex, :handler, :skip]])
 
@@ -140,7 +134,7 @@ defmodule DMEx.Integration.UnknownTypeTest do
     # The same list does double duty: it is what makes decoding possible and
     # what narrows the stream. Widening it is one edit — of the handler module,
     # which is where the list lives.
-    subscribe(Handlers.EchoAll)
+    subscribe!(Handlers.EchoAll)
 
     {:ok, _} = Log.append(%OrderPlaced{order_id: 1})
     {:ok, _} = Log.append(%OrderShipped{order_id: 2, carrier: "dhl"})
@@ -149,24 +143,12 @@ defmodule DMEx.Integration.UnknownTypeTest do
     assert_receive {:handled, %OrderShipped{order_id: 2, carrier: "dhl"}, _}, 5_000
   end
 
-  # The message set is part of the module now, so "the same handler with a
-  # different list" is a different module.
-  # `last_seen: 0`: these tests append after subscribing, and the default
-  # resolves to the tip at connect, which would race them.
-  defp subscribe(handler) do
-    {:ok, _} = DMEx.Supervisor.subscribe(handler, supervisor: TestSupervisor, last_seen: 0)
-  end
-
   # A row whose `type` no compiled module declares — the only thing a
-  # whole-log handler skips now that it resolves everything its application
+  # whole-log handler skips, since it resolves everything its own application
   # knows. Appended through the storage adapter, because `Log.append/2` takes the
   # type off a message module and a module is exactly what this row must not
   # have. No `NOTIFY` either, so it arrives on the dispatcher's next poll.
   defp append_undecodable! do
     DMEx.Storage.append(Log.__dmex__().storage, @undecodable, JSON.encode!(%{"order_id" => 1}), "{}")
-  end
-
-  defp cursor(subscription \\ "test/echo") do
-    Postgres.last_seen(subscription, %{repo: DMEx.Test.IntegrationRepo, prefix: nil})
   end
 end

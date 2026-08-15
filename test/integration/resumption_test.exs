@@ -20,7 +20,7 @@ defmodule DMEx.Integration.ResumptionTest do
   end
 
   test "killing the stream loses nothing and repeats nothing", _ctx do
-    {:ok, [pid]} = subscribe(Handlers.Echo)
+    {:ok, [pid]} = subscribe!(Handlers.Echo)
 
     for n <- 1..5, do: {:ok, _} = Log.append(%OrderPlaced{order_id: n})
     assert drain(5) == [1, 2, 3, 4, 5]
@@ -53,7 +53,7 @@ defmodule DMEx.Integration.ResumptionTest do
     # default — unset — that second resolution asks the log for its tip, past
     # everything appended so far, and the redelivery this test is about would be
     # skipped rather than repeated.
-    {:ok, [pid]} = subscribe(Handlers.SlowCommit, last_seen: 0)
+    {:ok, [pid]} = subscribe!(Handlers.SlowCommit, last_seen: 0)
 
     for n <- 1..3, do: {:ok, _} = Log.append(%OrderPlaced{order_id: n})
 
@@ -65,7 +65,7 @@ defmodule DMEx.Integration.ResumptionTest do
   end
 
   test "resumes from the durable cursor rather than from the beginning", _ctx do
-    {:ok, [pid]} = subscribe(Handlers.Echo)
+    {:ok, [pid]} = subscribe!(Handlers.Echo)
 
     for n <- 1..5, do: {:ok, _} = Log.append(%OrderPlaced{order_id: n})
     assert drain(5) == [1, 2, 3, 4, 5]
@@ -86,7 +86,7 @@ defmodule DMEx.Integration.ResumptionTest do
   end
 
   test "messages appended while disconnected are delivered on reconnect", _ctx do
-    {:ok, [pid]} = subscribe(Handlers.Echo)
+    {:ok, [pid]} = subscribe!(Handlers.Echo)
 
     {:ok, _} = Log.append(%OrderPlaced{order_id: 1})
     assert drain(1) == [1]
@@ -103,7 +103,7 @@ defmodule DMEx.Integration.ResumptionTest do
   test "a killed stream mid-batch skips nothing and repeats at most the one in flight", _ctx do
     # The slow handler guarantees the kill lands mid-drain rather than between
     # frames, which is the case duplicate suppression exists for.
-    {:ok, [pid]} = subscribe(Handlers.Slow)
+    {:ok, [pid]} = subscribe!(Handlers.Slow)
 
     for n <- 1..10, do: {:ok, _} = Log.append(%OrderPlaced{order_id: n})
 
@@ -121,35 +121,20 @@ defmodule DMEx.Integration.ResumptionTest do
   end
 
   test "the cursor is what a restarted stream reads, and it is committed per message", _ctx do
-    subscribe(Handlers.Echo)
+    subscribe!(Handlers.Echo)
 
     for n <- 1..3, do: {:ok, _} = Log.append(%OrderPlaced{order_id: n})
     drain(3)
 
     {:ok, tip} = Postgres.max_id(Log.__dmex__().storage)
 
-    eventually(fn -> cursor() == {:ok, tip} end)
+    eventually(fn -> cursor("test/echo") == {:ok, tip} end)
   end
 
   ## Helpers
 
-  # `last_seen: 0` throughout: these tests subscribe and then append, and the
-  # default — unset — resolves to the log's tip at *connect*, which races the
-  # appends. The log is empty at subscribe time, so the whole log is the same
-  # set of rows without the race.
-  defp subscribe(handler, opts \\ []) do
-    DMEx.Supervisor.subscribe(
-      handler,
-      Keyword.merge([supervisor: TestSupervisor, last_seen: 0], opts)
-    )
-  end
-
   defp await_cursor(id) do
-    eventually(fn -> cursor() == {:ok, id} end)
-  end
-
-  defp cursor do
-    Postgres.last_seen("test/echo", %{repo: DMEx.Test.IntegrationRepo, prefix: nil})
+    eventually(fn -> cursor("test/echo") == {:ok, id} end)
   end
 
   defp drain(count) do

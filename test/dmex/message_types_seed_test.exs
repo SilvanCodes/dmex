@@ -100,7 +100,7 @@ defmodule DMEx.MessageTypesSeedTest do
   end
 
   test "runs the collision check at boot, not on the first request" do
-    assert start_error(otp_app: :dmex_fake_host, bindings: [fake: Collide.Log]) =~
+    assert start_error(options(otp_app: :dmex_fake_host, bindings: [fake: Collide.Log])) =~
              ~s(message type "fake_collision" is declared by both)
   end
 
@@ -142,18 +142,6 @@ defmodule DMEx.MessageTypesSeedTest do
 
   defp start_supervisor(opts) do
     start_supervised!({DMEx.Supervisor, options(opts)})
-  end
-
-  # A raise in `init/1` reaches the caller as an exit, not an exception.
-  defp start_error(opts) do
-    Process.flag(:trap_exit, true)
-
-    {:error, {%ArgumentError{message: message}, _stacktrace}} =
-      DMEx.Supervisor.start_link(options(opts))
-
-    message
-  after
-    Process.flag(:trap_exit, false)
   end
 
   defp options(opts) do

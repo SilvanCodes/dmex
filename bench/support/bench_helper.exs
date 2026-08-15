@@ -63,38 +63,6 @@ defmodule DMEx.BenchHelper do
     end
   end
 
-  @doc "Starts Bandit on an ephemeral port and returns the base URL."
-  def start_server! do
-    Application.ensure_all_started(:bandit)
-
-    {:ok, server} =
-      Bandit.start_link(
-        plug: DMEx.Test.Server.Router,
-        scheme: :http,
-        ip: {127, 0, 0, 1},
-        port: 0,
-        startup_log: false
-      )
-
-    {:ok, {_ip, port}} = ThousandIsland.listener_info(server)
-
-    "http://127.0.0.1:#{port}"
-  end
-
-  @doc """
-  Empties every DMEx table, so a run does not measure the previous one's rows.
-
-  `dmex_dead_messages` included: a run whose handler gave up leaves rows there
-  that the next run would otherwise inherit.
-  """
-  def reset_log! do
-    Ecto.Adapters.SQL.query!(
-      IntegrationRepo,
-      "TRUNCATE dmex_messages, dmex_cursors, dmex_dead_messages RESTART IDENTITY CASCADE",
-      []
-    )
-  end
-
   @doc """
   `count` log rows whose `data` is roughly `payload_bytes` of JSON.
 

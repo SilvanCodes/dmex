@@ -68,9 +68,6 @@ defmodule DMEx.Storage.SQLiteTest do
   describe "read/5" do
     # A selection is expanded from one application's compiled message modules, so
     # this is far past anything reachable — and it is still an ordinary read.
-    # Refusing it here used to *raise* from inside a callback the stream handles
-    # `{:error, _}` from, so the same input that returned rows on Postgres killed
-    # the connection on SQLite.
     test "binds a selection far larger than anything a handler can declare", %{opts: opts} do
       types = for n <- 1..1_000, do: "T#{n}"
 

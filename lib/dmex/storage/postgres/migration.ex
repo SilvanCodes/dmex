@@ -77,9 +77,13 @@ defmodule DMEx.Storage.Postgres.Migration do
       add(:inserted_at, :timestamptz, null: false, default: fragment("clock_timestamp()"))
     end
 
-    # For exactly one query shape — `DMEx.Storage.Migration` covers when the
-    # planner takes it, and `c:DMEx.Storage.read/5` why that makes a selective
-    # read a *separate statement* rather than one nullable predicate.
+    # For exactly one query shape: a selective subscription's `id > cursor` plus
+    # a type predicate. Every whole-log read is a range scan the primary key
+    # already serves, and `c:DMEx.Storage.read/5` says why a selective read is a
+    # *separate statement* rather than one nullable predicate. It costs one index
+    # entry per append, paid whether or not anyone selects against it, because
+    # the alternative is that server-side selection saves bandwidth and no
+    # database work at all.
     #
     # Measured once, on a 500k-row skewed log (one type at 99%, one at 0.9%, one
     # at 0.1%): the 0.1% type gets `Index Scan using dmex_messages_type_id_index`,

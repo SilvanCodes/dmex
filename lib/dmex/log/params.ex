@@ -3,31 +3,17 @@ defmodule DMEx.Log.Params do
   What a connect request said, validated.
 
   A path segment and one request header describe a subscription, and that is the
-  whole of it:
-
-  | carried in | meaning | absent | invalid |
-  | --- | --- | --- | --- |
-  | the path segment | which message types | the whole log | `400` |
-  | `last-event-id` | resume after this id | from now on | `400` |
+  whole of it: the segment says which message types (absent, the whole log), and
+  `last-event-id` which id to resume after — one non-negative integer, `0` being
+  the whole log, or absent for the log's tip at connect. That absence is the only
+  spelling of "from now on"; a `latest` token would be a second one. Either one
+  present but outside its vocabulary is a `400`, and validation is strict:
+  `~r/\\A\\d+\\z/`, so `"5abc"` is one too.
 
   **DMEx defines no request headers.** See the wire contract in
-  [ARCHITECTURE](ARCHITECTURE.md), which also covers why the selection goes in the
-  path.
-
-  This module takes a path and request headers rather than a `Plug.Conn`, which
-  keeps it pure, free of any optional dependency, and testable without a socket.
-
-  ## The `Last-Event-ID` vocabulary
-
-  One integer, or nothing:
-
-    * **a non-negative integer id** — resume after it, which is exactly what a
-      client echoing back a frame's `id:` asks for. `0` is the whole log.
-    * **absent** — from the log's tip at connect, so nothing already appended is
-      delivered. The header's absence is the only spelling of "from now on";
-      a `latest` token would be a second one.
-
-  Validation is strict: `~r/\\A\\d+\\z/`, so `"5abc"` is a `400`.
+  [ARCHITECTURE](ARCHITECTURE.md), which also covers why the selection goes in
+  the path. Taking a path and request headers rather than a `Plug.Conn` keeps this
+  module pure, free of any optional dependency, and testable without a socket.
   """
 
   alias DMEx.Handler.Fingerprint
@@ -58,11 +44,10 @@ defmodule DMEx.Log.Params do
   @doc """
   Parses a request's path and headers.
 
-  `path_info` is what the mount handed the plug — `[]` for a bare
-  `GET /stream`, one segment for anything under it.
-
-  Returns `{:error, {:invalid, source, value}}` for a header or segment that is
-  present but outside its vocabulary, which the caller answers with a `400`.
+  `path_info` is what the mount handed the plug — `[]` for a bare `GET /stream`,
+  one segment for anything under it. `{:error, {:invalid, source, value}}` is a
+  header or segment that is present but outside its vocabulary, which the caller
+  answers with a `400`.
   """
   @spec parse([String.t()], [{String.t(), String.t()}]) :: {:ok, t()} | {:error, error()}
   def parse(path_info, req_headers) when is_list(path_info) and is_list(req_headers) do
@@ -115,9 +100,10 @@ defmodule DMEx.Log.Params do
     end
   end
 
-  # HTTP header names are case-insensitive and Plug downcases them. A header
-  # sent twice arrives joined, which is outside every vocabulary here and so is
-  # the `400` it should be: there is no sensible way to pick a resume position.
+  # HTTP header names are case-insensitive and Plug downcases them. Two of them
+  # are joined here rather than picked between, so a duplicate lands outside
+  # every vocabulary and gets the `400` it should: there is no sensible way to
+  # choose a resume position.
   defp fetch(req_headers, name) do
     case for {^name, value} <- req_headers, do: value do
       [] -> :error

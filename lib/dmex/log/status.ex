@@ -2,28 +2,15 @@ defmodule DMEx.Log.Status do
   @moduledoc """
   One connection's shared status: its wakeup flag and its deadline.
 
-  Two things about a stream process have to be readable from *outside* it,
-  because the interesting case is precisely the one where that process is not
-  running: whether it already has a wakeup queued, and by when it expects to be
-  past whatever it is blocked in. Both are single machine words written far more
-  often than read, so both live in one `:atomics` reference of two slots.
-
-  **The wakeup flag** is what keeps mailbox depth O(1) rather than O(append rate
-  × stall duration): a stalled connection is blocked inside `chunk/2` and cannot
-  service its mailbox while appends keep arriving, and since a wakeup carries no
-  information, N of them and one are the same instruction. So the dispatcher
-  only sends when the flag flips from clear to pending. `:atomics.exchange/3`
-  makes `mark_pending/1` a test-and-set, so two dispatchers cannot both conclude
-  they should send.
-
-  **The deadline** is what `DMEx.Log.Watcher` enforces from outside: the loop
-  calls `arm/2` before each blocking step, and a deadline in the past means it
-  did not clear one. `System.monotonic_time(:millisecond)`, so it is immune to
-  wall-clock adjustment and comparable between the writer and the reader.
-
-  The two slots are written by different processes — the dispatcher flips the
-  flag, the stream arms its deadline — and never contend, since `:atomics`
-  operations are per element. `DMEx.Log.Streams` holds the reference.
+  Two single machine words that have to be readable from *outside* the stream
+  process, because the interesting case is precisely the one where that process
+  is not running, and both written far more often than read — so both live in one
+  `:atomics` reference of two slots, held by `DMEx.Log.Streams`. The dispatcher
+  writes the flag, the stream arms the deadline, and `:atomics` operations are
+  per element, so the two never contend. `mark_pending/1` is a test-and-set,
+  which is what bounds a stalled connection's mailbox at one wakeup however long
+  it stalls; the deadline is `System.monotonic_time(:millisecond)`, so the stream
+  that writes it and the watcher that reads it compare the same clock.
 
   **Why not put the deadline in the registry entry**, which the stream owns and the
   watcher already reads? `Registry.update_value/3` is the function that would do
@@ -67,8 +54,8 @@ defmodule DMEx.Log.Status do
   @doc """
   Marks the connection as having a wakeup queued, and says whether it already did.
 
-  Returns `true` when this call flipped the flag from clear to pending — that
-  is, when the caller should actually send.
+  `true` means this call flipped the flag from clear to pending — that is, that
+  the caller should actually send.
   """
   @spec mark_pending(t()) :: boolean()
   def mark_pending(ref), do: :atomics.exchange(ref, @flag, 1) == 0

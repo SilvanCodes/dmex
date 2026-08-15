@@ -62,11 +62,8 @@ defmodule DMEx.SupervisorTest do
       assert Process.whereis(DMEx.Supervisor.subscriptions(TestSupervisor))
     end
 
-    # The entry point had no typo protection: `rep:` booted clean and failed at the
-    # first subscribe with a message about cursors, naming neither the option nor
-    # the mistake.
     test "refuses an option it does not know, naming it" do
-      assert start_error(rep: Repo) =~ "unknown option [:rep]"
+      assert start_error(options(rep: Repo)) =~ "unknown option [:rep]"
     end
 
     # Every test but the discovery ones passes `otp_app: nil`, since this suite
@@ -114,10 +111,10 @@ defmodule DMEx.SupervisorTest do
     end
 
     test "refuses to start when a discovered handler's log is not bound" do
-      assert start_error(otp_app: :dmex, bindings: [other: @other]) =~
+      assert start_error(options(otp_app: :dmex, bindings: [other: @other])) =~
                ~r/reads "test", which is not in `bindings:`/
 
-      assert start_error(otp_app: :dmex, bindings: [other: @other]) =~ "Known logs: other"
+      assert start_error(options(otp_app: :dmex, bindings: [other: @other])) =~ "Known logs: other"
     end
 
     test "starts a log module bound in bindings:" do
@@ -154,7 +151,8 @@ defmodule DMEx.SupervisorTest do
     end
 
     test "rejects a logs entry that is neither a module nor a URL" do
-      assert start_error(bindings: [owned: Enum]) =~ "which is not a module built with `use DMEx.Log`"
+      assert start_error(options(bindings: [owned: Enum])) =~
+               "which is not a module built with `use DMEx.Log`"
     end
   end
 
@@ -196,47 +194,45 @@ defmodule DMEx.SupervisorTest do
   # one of them shows up in the "unknown log" message.
   describe "bindings:" do
     test "rejects a name that is not a legal identifier" do
-      assert start_error(bindings: [{"Orders", @url}]) =~
+      assert start_error(options(bindings: [{"Orders", @url}])) =~
                ~s(a log name must be an atom or a string matching)
     end
 
     test "rejects a URL with no scheme, naming the entry" do
-      assert start_error(bindings: [test: "orders.internal/stream"]) =~
+      assert start_error(options(bindings: [test: "orders.internal/stream"])) =~
                ~r/URL for "test".*no scheme/s
     end
 
     test "rejects a non-http scheme" do
-      assert start_error(bindings: [test: "ftp://orders.internal/stream"]) =~
+      assert start_error(options(bindings: [test: "ftp://orders.internal/stream"])) =~
                ~r/URL for "test".*not http or https/s
     end
 
-    # `URI.parse/1` answers `%URI{scheme: "http", host: nil}` for this, which
-    # used to fall past the http clause and be reported as a bad scheme — a
-    # message naming the one part of the URL that was fine.
+    # `URI.parse/1` answers `%URI{scheme: "http", host: nil}` for this, so a
+    # scheme check alone reports the one part of the URL that was fine.
     test "rejects an http URL with no host, saying so" do
-      assert start_error(bindings: [test: "http:stream"]) =~
+      assert start_error(options(bindings: [test: "http:stream"])) =~
                ~r/URL for "test".*no host/s
     end
 
     test "rejects something that is neither a URL nor a module" do
-      assert start_error(bindings: [test: nil]) =~
+      assert start_error(options(bindings: [test: nil])) =~
                ~r/URL for "test".*neither a log module nor a non-empty string/s
     end
 
     test "rejects an entry that is not a pair" do
-      assert start_error(bindings: ["nope"]) =~ "must be `name: url_or_module`"
+      assert start_error(options(bindings: ["nope"])) =~ "must be `name: url_or_module`"
     end
 
-    # `Map.new/2` let the last one win, so a repeat silently discarded a log's
-    # target — and with it the transport every subscription on that name uses.
-    # `DMEx.Handler`'s own `logs:` has always refused this.
+    # A repeat would silently discard a log's target — and with it the transport
+    # every subscription on that name uses.
     test "rejects a repeated name" do
-      assert start_error(bindings: [test: @url, test: Log]) =~
+      assert start_error(options(bindings: [test: @url, test: Log])) =~
                ~s(`bindings:` names "test" twice)
     end
 
     test "rejects a logs option that is not a list" do
-      assert start_error(bindings: "nope") =~ "`bindings:` must be a keyword list"
+      assert start_error(options(bindings: "nope")) =~ "`bindings:` must be a keyword list"
     end
   end
 
@@ -306,7 +302,7 @@ defmodule DMEx.SupervisorTest do
     # Whether the log narrows the stream is the handler's clauses' to say, so
     # there is no option for it anywhere — here least of all, where a call site
     # able to vary it could disagree with the module.
-    test "rejects `selective:`, which is no longer an option anywhere" do
+    test "rejects `selective:`, which is not an option anywhere" do
       assert_raise ArgumentError, ~r/\[:selective\].*belong to the handler module/s, fn ->
         subscribe(Handlers.Echo, selective: false)
       end
@@ -431,33 +427,10 @@ defmodule DMEx.SupervisorTest do
 
   ## Helpers
 
-  # A raise in init/1 does not reach the caller as an exception — the supervisor
-  # dies and the link delivers an exit — so this traps it and returns the
-  # message. What matters is that it refuses to start at all.
-  defp start_error(opts) do
-    Process.flag(:trap_exit, true)
+  defp start_supervisor(opts), do: start_supervised!({DMEx.Supervisor, options(opts)})
 
-    {:error, {%ArgumentError{message: message}, _stacktrace}} =
-      DMEx.Supervisor.start_link(
-        Keyword.merge(
-          [name: TestSupervisor, otp_app: nil, repo: Repo, bindings: @logs],
-          opts
-        )
-      )
-
-    message
-  after
-    Process.flag(:trap_exit, false)
-  end
-
-  defp start_supervisor(opts) do
-    start_supervised!(
-      {DMEx.Supervisor,
-       Keyword.merge(
-         [name: TestSupervisor, otp_app: nil, repo: Repo, bindings: @logs],
-         opts
-       )}
-    )
+  defp options(opts) do
+    Keyword.merge([name: TestSupervisor, otp_app: nil, repo: Repo, bindings: @logs], opts)
   end
 
   defp subscribe(handler, opts \\ []) do

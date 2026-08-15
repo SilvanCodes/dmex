@@ -7,16 +7,12 @@ defmodule DMEx.Notifier.Beam do
 
   The scope is per log rather than global, so two logs in one application do not
   contend for one process and cannot deliver into each other. Nothing needs
-  configuring: `:pg` works on a single node, and reaches every connected node
-  when the BEAM is clustered.
+  configuring.
 
-  **Reaching other nodes is the whole of what `:pg` buys here.** The only member
-  of a scope's group is the log's own `DMEx.Log.Dispatcher`, a process registered
-  under a name a plain `send/2` would reach — so on a single node this is an ETS
-  lookup and a local send where a direct send would do, and anyone weighing `:pg`
-  for a one-node deployment should read that as costing a little and buying
-  nothing. It is here for the clustered case, where the group is the only thing
-  that knows which nodes have a dispatcher.
+  **`:pg` is here for the clustered case**, where the group is the only thing that
+  knows which nodes have a dispatcher. On a single node it is an ETS lookup and a
+  local send to the log's own `DMEx.Log.Dispatcher`, which a plain `send/2` would
+  reach.
 
   **What it does not reach** is a writer outside this cluster — another OS
   process, or a second BEAM opening the same SQLite file. Those appends surface
@@ -53,15 +49,12 @@ defmodule DMEx.Notifier.Beam do
     channel = Map.fetch!(opts, :channel)
 
     # Three of the five elements exist only because `c:DMEx.Notifier.listen/1`
-    # fixes the delivered shape to the one Postgrex sends directly — see there
-    # for why. The ref is minted rather than faked with some other term because
-    # the contract types it as a `reference()`, and one allocation per notify is
-    # cheaper than a contract with an exception in it.
+    # fixes the delivered shape to Postgrex's — see there for why. The ref is a
+    # real one because the contract types it as a `reference()`.
     ref = make_ref()
 
-    # Cluster-wide: `get_members/2` returns remote members too, and a send to
-    # one is an ordinary distributed send. It answers `[]` for a scope that is
-    # not running, so there is nothing to guard.
+    # Cluster-wide: `get_members/2` returns remote members too, and answers `[]`
+    # for a scope that is not running, so there is nothing to guard.
     for pid <- :pg.get_members(scope(opts), channel) do
       send(pid, {:notification, self(), ref, channel, type})
     end

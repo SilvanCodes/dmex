@@ -3,8 +3,7 @@ defmodule DMEx.Test.Database do
   Database availability probing and setup for the test suites.
 
   Tests needing Postgres are tagged `:database` and excluded when none is
-  reachable, so the pure units still run without one. SQLite tests are tagged
-  `:sqlite` and need no server at all, which is what lets the storage layer be
+  reachable; `:sqlite` tests need no server at all, so the storage layer is
   exercised on a machine with nothing running.
   """
 
@@ -84,23 +83,18 @@ defmodule DMEx.Test.Database do
   @spec migrate!() :: :ok
   def migrate! do
     Enum.each(@repos, fn repo ->
-      # Down first, so an edit to `DMEx.Storage.Migration` takes effect on the next run.
-      # Its DDL is deliberately re-runnable — `create_if_not_exists` throughout —
-      # which means a *changed* column default or a new index would otherwise be
-      # skipped against a database from before the edit, and the suite would test
-      # yesterday's schema. Greenfield: the tables are cheap and hold nothing
-      # worth keeping between runs.
+      # Down first, so an edit to `DMEx.Storage.Migration` takes effect on the
+      # next run: its DDL is deliberately re-runnable, so a changed column
+      # default or a new index would otherwise be skipped against a database
+      # from before the edit and the suite would test yesterday's schema.
       Ecto.Migrator.down(repo, 1, Install, log: false)
       Ecto.Migrator.up(repo, 1, Install, log: false)
     end)
   end
 
   @doc """
-  Whether the SQLite adapter is available.
-
-  Which is whether its optional dependency compiled — there is no server to
-  reach, so `:sqlite` tests are excluded only in a build that left the driver
-  out entirely.
+  Whether the SQLite adapter is available — that is, whether its optional
+  dependency compiled. There is no server to reach.
   """
   @spec sqlite_available?() :: boolean()
   def sqlite_available?, do: Code.ensure_loaded?(SQLite3)
@@ -108,11 +102,9 @@ defmodule DMEx.Test.Database do
   @doc """
   Creates the SQLite test database, discarding whatever was there.
 
-  Deleting the file is how a changed DDL takes effect: the migration is
-  deliberately re-runnable, so an added index or a changed default would
-  otherwise be skipped against a database from before the edit — the same reason
-  `migrate!/0` runs `down` first on Postgres. The `-wal` and `-shm` siblings go
-  too, or SQLite reopens the old database through them.
+  Deleting the file is how a changed DDL takes effect, for the reason
+  `migrate!/0` runs `down` first. The `-wal` and `-shm` siblings go too, or
+  SQLite reopens the old database through them.
   """
   @spec setup_sqlite!() :: :ok
   def setup_sqlite! do

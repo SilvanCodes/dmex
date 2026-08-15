@@ -1,6 +1,7 @@
 defmodule DMEx.Log.StreamsTest do
   use DMEx.Case, async: true
 
+  alias DMEx.Log.Status
   alias DMEx.Log.Streams
 
   defmodule FakeLog do
@@ -25,6 +26,10 @@ defmodule DMEx.Log.StreamsTest do
     me = self()
 
     assert [{^me, ^status, :all}] = Streams.all(FakeLog)
+
+    # Registration hands back a status already armed against the connect-path
+    # writes, which happen before the send loop exists.
+    refute Status.overdue?(status, System.monotonic_time(:millisecond))
   end
 
   test "all/1 hands back every registered stream" do

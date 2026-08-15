@@ -3,26 +3,18 @@ defmodule DMEx.Log.Selection do
   Which message types a connection asked for.
 
   `:all` is a whole-log subscription; a `MapSet` is a selective one, already
-  resolved to concrete type names. One value reaches four places — the
-  `DMEx.Log.Streams` entry it rides in, `DMEx.Log.Dispatcher`'s routing
-  decision, the read's type predicate in `DMEx.Log.SendLoop`, and the `matched:`
-  measurement both transports emit — so every question asked of it is answered
-  here, and the two transports cannot answer one differently.
+  resolved to concrete type names. Every question asked of that value is answered
+  here — by the `DMEx.Log.Streams` entry it rides in, `DMEx.Log.Dispatcher`'s
+  routing, the read's type predicate in `DMEx.Log.SendLoop` and the `matched:`
+  measurement both transports emit — so the two transports cannot answer one
+  differently.
 
-  ## Two constructors, and they do not build the same set
-
-  `expand/1` is the wire's: a `DMEx.Handler.Fingerprint` blob tested against
-  every message type the node knows. Membership there is probabilistic, so the
-  set admits a type the consumer never declared at 2⁻¹⁶ per type tested.
-
-  `declared/2` is `DMEx.Transport.Local`'s: the handler's declared modules are
-  in this VM, so no blob is built and the set is exact.
-
-  A local subscription therefore reads a *subset* of what the same handler reads
-  over SSE. Deliberate, and not observable at either end: `DMEx.Handler.Pipeline`
-  decodes by clause and drops a row no clause matches, so a false positive costs
-  one row read. Making the local path encode a fingerprint and expand it back
-  would buy nothing but those false positives.
+  The two constructors do not build the same set: `expand/1`'s membership is a
+  `DMEx.Handler.Fingerprint` test, so it admits a type the consumer never declared
+  at 2⁻¹⁶ per type tested, while `declared/2` works from modules in this VM and is
+  exact. A local subscription therefore reads a *subset* of what the same handler
+  reads over SSE, which nothing observes: `DMEx.Handler.Pipeline` drops a row no
+  clause matches, so a false positive costs one row read.
   """
 
   alias DMEx.Handler.Fingerprint
@@ -31,14 +23,10 @@ defmodule DMEx.Log.Selection do
   @type t :: :all | MapSet.t(String.t())
 
   @doc """
-  Expands a parsed `DMEx.Log.Params` selection.
-
-  Against the node's compiled message modules, rather than against what the log
-  happens to contain — see `DMEx.Message.types/0` for why those are not
-  interchangeable, and why the set is not per log.
-
-  An empty `MapSet` is a filter that matched nothing, which `DMEx.Log.Plug`
-  answers with a `404`.
+  Expands a parsed `DMEx.Log.Params` selection against the node's compiled message
+  modules, not against what the log happens to contain — see
+  `DMEx.Message.types/0` for why those are not interchangeable. An empty `MapSet`
+  matched nothing, which `DMEx.Log.Plug` answers with a `404`.
   """
   @spec expand(:all | Fingerprint.t()) :: t()
   def expand(:all), do: :all
@@ -48,20 +36,14 @@ defmodule DMEx.Log.Selection do
   end
 
   @doc """
-  The selection a handler's own declared message modules make. See `expand/1`
-  for why this set is exact and that one is not.
+  The selection a handler's own declared message modules make, exactly — see
+  `expand/1` for why the wire's is not.
 
-  Every type each module answers for — `DMEx.Message.declared/1`, so a retired
-  one is in it. That is what the fingerprint encodes
-  (`DMEx.Handler.__declaration__/1`), and a subscription that selected less here
-  than it selects over the wire would read different rows depending on how its
-  log happens to be bound.
-
-  Which of the two a subscription gets is decided by the same value on both
-  transports: a `nil` fingerprint is a handler with a clause that named no type
-  — one is enough, whatever the others name, and a
-  `t:DMEx.Handler.declaration/0` carries no separate field — and it means the
-  same thing here as it does on the wire, the whole log.
+  Every type each module answers for, retired ones included, since that is what
+  the fingerprint encodes: selecting less here than over the wire would read
+  different rows depending on how the log happens to be bound. A `nil`
+  fingerprint is a handler with a clause that named no type, and means the whole
+  log here as it does on the wire.
   """
   @spec declared(MapSet.t(module()), String.t() | nil) :: t()
   def declared(_messages, nil), do: :all
@@ -84,10 +66,8 @@ defmodule DMEx.Log.Selection do
   def size(selection), do: MapSet.size(selection)
 
   @doc """
-  The selection as the read's type predicate wants it.
-
-  A list rather than a `MapSet`, because there this is a query parameter, not a
-  membership test.
+  The selection as the read's type predicate wants it: a list rather than a
+  `MapSet`, because there it is a query parameter and not a membership test.
   """
   @spec to_list(t()) :: :all | [String.t()]
   def to_list(:all), do: :all

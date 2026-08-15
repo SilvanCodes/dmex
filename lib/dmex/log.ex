@@ -8,16 +8,8 @@ defmodule DMEx.Log do
 
   A log module is a handle, not a process pool. It carries which storage adapter
   and repo an append goes through, and thereby which `dmex_messages` table. Name
-  it in `DMEx.Supervisor`'s `bindings:` — an application may own several — and mount
-  its endpoint:
-
-      children = [
-        MyApp.Repo,
-        {DMEx.Supervisor, repo: MyApp.Repo, bindings: [orders: MyApp.Log]}
-      ]
-
-      # in a Plug.Router
-      forward "/stream", to: DMEx.Log.Plug, log_module: MyApp.Log
+  it in `DMEx.Supervisor`'s `bindings:` — an application may own several — and
+  mount `DMEx.Log.Plug` to serve it; the README has the whole snippet.
 
       MyApp.Log.append(%MyApp.Messages.OrderPlaced{order_id: 7})
       #=> {:ok, 1042}
@@ -25,16 +17,11 @@ defmodule DMEx.Log do
   Generic code holding a log module in a variable calls through the variable —
   `log.append(message)` — so there is no second form to keep in step.
 
-  **Appending is just writing a row.** No RPC, no broker call, no network hop:
-  the insert plus the notification that wakes live streams is the entire story.
-
-    * The wire type comes from the message's **own module**
-      (`c:DMEx.Message.type/0`), never from a call argument, so it cannot
-      disagree with the struct it describes.
-    * Nothing records which log appended the message. Whether a `type` says
-      where it came from is the producer's choice of a namespaced one — see
-      `DMEx.Message`, which is also where the collision that follows from
-      declining is described.
+  **Appending is just writing a row.** No RPC, no broker call, no network hop: the
+  insert plus the notification that wakes live streams is the entire story. The
+  wire type comes from the message's **own module** (`c:DMEx.Message.type/0`),
+  never from a call argument, so it cannot disagree with the struct it describes,
+  and nothing records which log appended a message — see `DMEx.Message`.
 
   ## Options
 
@@ -79,14 +66,10 @@ defmodule DMEx.Log do
 
   ## Why appends are serialized
 
-  `append/2` requires that **id assignment order equals commit order**: every
-  read path is an `id > cursor ORDER BY id` scan, which would advance straight
-  over a lower id that had not committed yet and lose it permanently and
-  silently.
-
-  *How* that is bought is the storage adapter's, not this module's, and the two
-  shipped ones differ. `DMEx.Storage` states both answers and what they mean for
-  a caller appending inside its own transaction.
+  `append/2` requires that **id assignment order equals commit order**, for the
+  reason above. *How* that is bought differs between the two shipped adapters:
+  `DMEx.Storage` states both answers, and what they mean for a caller appending
+  inside its own transaction.
 
   ## Telemetry
 
@@ -123,10 +106,8 @@ defmodule DMEx.Log do
       @dmex DMEx.Log.__config__(__MODULE__, opts, ecto_repos)
 
       @doc """
-      This log's resolved configuration.
-
-      Built at compile time, so the append path costs one function call rather
-      than a keyword traversal.
+      This log's resolved configuration, built at compile time so an append costs
+      one function call rather than a keyword traversal.
       """
       @spec __dmex__() :: DMEx.Log.config()
       def __dmex__, do: @dmex
@@ -149,9 +130,8 @@ defmodule DMEx.Log do
       def child_spec(_opts), do: DMEx.Log.child_spec(__MODULE__)
 
       @doc """
-      Starts this log's supervision subtree.
-
-      Usually called for you by putting `MyApp.Log` in a supervision tree.
+      Starts this log's supervision subtree, which putting `MyApp.Log` in a
+      supervision tree does for you.
       """
       @spec start_link() :: Supervisor.on_start()
       def start_link, do: DMEx.Log.start_link(__MODULE__)
@@ -161,10 +141,10 @@ defmodule DMEx.Log do
   @typedoc """
   A log's compile-time resolved configuration.
 
-  Four keys, and `:repo`, `:prefix`, `:lock` and `:channel` are not among them:
-  each belongs to exactly one of the two adapter handles, which carry their own
-  adapter module — see `t:DMEx.Storage.opts/0`. A caller wanting the lock reads
-  `config.storage.lock`, and there is no second copy to disagree with it.
+  `:repo`, `:prefix`, `:lock` and `:channel` live *inside* one of the two adapter
+  handles rather than beside them, so there is no second copy to disagree with —
+  a caller wanting the lock reads `config.storage.lock`. See
+  `t:DMEx.Storage.opts/0`.
   """
   @type config :: %{
           log: module(),
@@ -231,8 +211,7 @@ defmodule DMEx.Log do
     Storage.validate!(storage)
 
     # Whatever the notifier needs sits between the registry and the dispatcher,
-    # and this module has no idea what it is. Postgres puts a LISTEN connection
-    # here; `DMEx.Notifier.Beam` puts a `:pg` scope.
+    # and this module has no idea what it is.
     children =
       [Streams.child_spec(log)] ++
         Notifier.child_specs(notifier) ++
@@ -240,24 +219,14 @@ defmodule DMEx.Log do
         watcher_children(log, config)
 
     # `:one_for_one` because no child here holds state derived from a sibling
-    # that would outlive that sibling's restart, and the one cross-child
-    # dependency is already covered:
-    #
-    #   * The dispatcher subscribes to the notifier, monitors it, and re-listens
-    #     on its next poll — so a notifier restarting under it costs one poll
-    #     interval of latency and nothing else. That is the same path a notifier
-    #     that has not started yet takes.
-    #   * A dying registry takes its streams with it: `Registry` links to every
-    #     process it holds an entry for, so it cannot restart into a world of
-    #     live connections registered nowhere. The clients reconnect. See
-    #     `DMEx.Log.Streams`.
-    #
-    # `:rest_for_one` would therefore restart working children to rebuild
-    # nothing, and it is `DMEx.Supervisor` — where the registry *does* own what
-    # its siblings put in it — that needs the stronger strategy.
-    #
-    # Restart is also where a registered name can still be held by the previous
-    # incarnation, which is what `__start__/1` waits out.
+    # that would outlive that sibling's restart. The dispatcher monitors the
+    # notifier and re-listens on its next poll, so a notifier restarting under it
+    # costs one poll interval of latency; a dying registry takes its streams with
+    # it, so it cannot restart into a world of live connections registered
+    # nowhere (see `DMEx.Log.Streams`). `:rest_for_one` would therefore restart
+    # working children to rebuild nothing, and it is `DMEx.Supervisor` — where
+    # the registry *does* own what its siblings put in it — that needs the
+    # stronger strategy.
     __start__(fn ->
       Supervisor.start_link(children,
         strategy: :one_for_one,

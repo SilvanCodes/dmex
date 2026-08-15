@@ -3,9 +3,7 @@ defmodule DMEx.Supervisor.Bindings do
   What a log name means: a log module this VM owns, or the URL of someone else's
   stream.
 
-  The binding is also the whole of the transport choice, which is why nothing
-  configures one — a module is read in this VM (`DMEx.Transport.Local`), a URL over
-  HTTP (`DMEx.Transport.SSE`). There would be nothing left for an option to say.
+  The target is also the whole of the transport choice — see `DMEx.Supervisor`.
 
   Both functions here are pure functions of the `bindings:` option, so nothing has to
   be running to answer them. That is why `DMEx.Supervisor.init/1` resolves every
@@ -53,17 +51,11 @@ defmodule DMEx.Supervisor.Bindings do
     end
   end
 
-  # `Registry.meta/2` raises its own "unknown registry" `ArgumentError` when
-  # nothing is running under that name, which is the same answer as no metadata —
-  # so this rescues rather than checking `whereis` first, where the registry could
-  # die in the window between the two.
   defp seeded!(supervisor) do
-    case Registry.meta(Supervisor.registry(supervisor), :bindings) do
+    case Supervisor.meta(supervisor, :bindings) do
       {:ok, bindings} -> bindings
       :error -> raise_no_logs(supervisor)
     end
-  rescue
-    ArgumentError -> raise_no_logs(supervisor)
   end
 
   @doc """
@@ -93,8 +85,7 @@ defmodule DMEx.Supervisor.Bindings do
           "them with no escaping."
       )
 
-    # A repeat used to collapse silently, and this is the copy where the loser is a
-    # whole log's target and therefore its transport.
+    # One name is one target, so a repeat is a mistake and not a merge.
     if Map.has_key?(logs, name) do
       raise ArgumentError,
             "`bindings:` names #{inspect(name)} twice. One name is one log — one target, one " <>

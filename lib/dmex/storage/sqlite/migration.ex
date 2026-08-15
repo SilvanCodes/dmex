@@ -52,12 +52,6 @@ defmodule DMEx.Storage.SQLite.Migration do
   does not imply. It is load-bearing twice over: for the unescaped SSE `event:`
   line, and because it guarantees no comma appears in a type — which is what
   makes `DMEx.Storage.SQLite`'s `group_concat` split lossless.
-
-  ## No `:prefix`
-
-  SQLite has no schemas. A `:prefix` raises here rather than being ignored,
-  because tables silently landing somewhere other than where an operator wrote
-  them is worse than a failed migration.
   """
 
   use Ecto.Migration
@@ -76,7 +70,7 @@ defmodule DMEx.Storage.SQLite.Migration do
   @doc false
   @spec up([Migration.table()], String.t() | nil) :: :ok
   def up(tables, prefix) do
-    refuse_prefix!(prefix)
+    SQLite.__refuse_prefix__(prefix)
 
     if :messages in tables, do: up_messages()
     if :cursors in tables, do: up_cursors()
@@ -88,22 +82,13 @@ defmodule DMEx.Storage.SQLite.Migration do
   @doc false
   @spec down([Migration.table()], String.t() | nil) :: :ok
   def down(tables, prefix) do
-    refuse_prefix!(prefix)
+    SQLite.__refuse_prefix__(prefix)
 
     if :dead_messages in tables, do: execute("DROP TABLE IF EXISTS #{@dead_messages}")
     if :cursors in tables, do: execute("DROP TABLE IF EXISTS #{@cursors}")
     if :messages in tables, do: execute("DROP TABLE IF EXISTS #{@messages}")
 
     :ok
-  end
-
-  defp refuse_prefix!(nil), do: :ok
-
-  defp refuse_prefix!(prefix) do
-    raise ArgumentError,
-          "SQLite has no schemas, so DMEx cannot create its tables in " <>
-            "#{inspect(prefix)}. Drop `:prefix`, or give this database a file of " <>
-            "its own — which is what a schema would have bought."
   end
 
   # The `type` CHECK is a backstop and deliberately looser than the real rule —
@@ -121,7 +106,7 @@ defmodule DMEx.Storage.SQLite.Migration do
     """)
 
     # The same one the Postgres migration creates, for the same query — see
-    # `DMEx.Storage.Migration` for when it earns its per-append cost.
+    # `DMEx.Storage.Postgres.Migration` for when it earns its per-append cost.
     execute("""
     CREATE INDEX IF NOT EXISTS #{@messages}_type_id_index
         ON #{@messages} (type, id)

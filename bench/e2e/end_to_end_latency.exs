@@ -21,8 +21,10 @@
 # are uniformly distributed relative to appends.
 
 alias DMEx.BenchHelper, as: Helper
+alias DMEx.IntegrationCase
 alias DMEx.Test.IntegrationLog, as: Log
 alias DMEx.Test.Messages.OrderPlaced
+alias DMEx.Test.Server
 
 Helper.section("end_to_end_latency — append to handler, percentiles")
 
@@ -46,13 +48,13 @@ defmodule Bench.LatencyHandler do
 end
 
 Helper.start_repo!()
-Helper.reset_log!()
+IntegrationCase.truncate_all!()
 
 Helper.start_log!()
 
 :persistent_term.put(:bench_latency_owner, self())
 
-url = Helper.start_server!() <> "/stream"
+url = Server.start!(on_exit: false) <> "/stream"
 
 Helper.start_supervisor!(Bench.Supervisor, url)
 

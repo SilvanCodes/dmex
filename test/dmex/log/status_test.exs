@@ -2,29 +2,20 @@ defmodule DMEx.Log.StatusTest do
   use DMEx.Case, async: true
 
   alias DMEx.Log.Status
-  alias DMEx.Log.Streams
 
   test "a fresh flag is clear" do
     refute Status.pending?(Status.new(5_000))
   end
 
+  # This is the whole point: a stalled connection is blocked in chunk/2 and
+  # cannot service its mailbox, so without the flag `:wakeup` messages would
+  # pile up at the append rate for the duration of the stall.
   test "the first flip says send, the second says nothing more" do
     ref = Status.new(5_000)
 
     assert Status.mark_pending(ref)
     refute Status.mark_pending(ref)
     refute Status.mark_pending(ref)
-  end
-
-  # This is the whole point: a stalled connection is blocked in chunk/2 and
-  # cannot service its mailbox, so without the flag `:wakeup` messages would
-  # pile up at the append rate for the duration of the stall.
-  test "a stalled connection accumulates one wakeup, not one per append" do
-    ref = Status.new(5_000)
-
-    sent = Enum.count(1..1_000, fn _ -> Status.mark_pending(ref) end)
-
-    assert sent == 1
   end
 
   test "clearing re-arms it" do
@@ -132,61 +123,6 @@ defmodule DMEx.Log.StatusTest do
 
       :ok = Status.arm(ref, 10_000)
       assert Status.pending?(ref)
-    end
-  end
-
-  describe "in a registry entry" do
-    defmodule FakeLog do
-      @moduledoc false
-    end
-
-    setup do
-      start_supervised!(Streams.child_spec(FakeLog))
-
-      :ok
-    end
-
-    test "registration hands back the connection's own status, armed" do
-      now = System.monotonic_time(:millisecond)
-
-      assert {:ok, ref} = Streams.register(FakeLog, 5_000, :all)
-
-      refute Status.pending?(ref)
-      assert Status.mark_pending(ref)
-      refute Status.overdue?(ref, now)
-    end
-
-    test "the dispatcher reaches it through the entry" do
-      {:ok, mine} = Streams.register(FakeLog, 5_000, :all)
-
-      for {_pid, status, _selection} <- Streams.all(FakeLog), do: Status.mark_pending(status)
-
-      # Same flag, reached from another code path — which is what lets the
-      # dispatcher coalesce without any shared table.
-      assert Status.pending?(mine)
-    end
-
-    # No monitor, no sweep, no table: a connection cannot outlive its own status
-    # because the status *is* part of its registry entry.
-    test "the status dies with the connection, with nothing watching for it" do
-      parent = self()
-
-      pid =
-        spawn(fn ->
-          {:ok, _ref} = Streams.register(FakeLog, 5_000, :all)
-          send(parent, :registered)
-          Process.sleep(:infinity)
-        end)
-
-      assert_receive :registered
-      assert Streams.count(FakeLog) == 1
-
-      Process.exit(pid, :kill)
-
-      eventually(fn -> Streams.count(FakeLog) == 0 end)
-
-      # Nothing left to iterate, so nothing left to leak.
-      assert Streams.all(FakeLog) == []
     end
   end
 end

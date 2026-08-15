@@ -11,21 +11,15 @@ defmodule DMEx.Handler.RequestTest do
   alias DMEx.Config
   alias DMEx.Handler.Request
   alias DMEx.Log.Params
+  alias DMEx.Test.SSEClient
 
   defp config(opts \\ []), do: Config.handler!(opts)
-
-  defp header(headers, name) do
-    case List.keyfind(headers, name, 0) do
-      {^name, value} -> value
-      nil -> nil
-    end
-  end
 
   describe "headers/2" do
     test "asks for the stream" do
       headers = Request.headers(0, config())
 
-      assert header(headers, "accept") == "text/event-stream"
+      assert SSEClient.header(headers, "accept") == "text/event-stream"
     end
 
     # The whole of it. A subscription is identified by its URL and positioned by
@@ -79,8 +73,9 @@ defmodule DMEx.Handler.RequestTest do
     end
 
     test "headers/2 carries it through" do
-      assert :none |> Request.headers(config(last_seen: 499)) |> header("last-event-id") ==
-               "499"
+      headers = Request.headers(:none, config(last_seen: 499))
+
+      assert SSEClient.header(headers, "last-event-id") == "499"
     end
   end
 

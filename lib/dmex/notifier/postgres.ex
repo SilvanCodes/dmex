@@ -32,27 +32,16 @@ defmodule DMEx.Notifier.Postgres do
     [Supervisor.child_spec({Postgrex.Notifications, conn_opts}, id: name)]
   end
 
-  # Neither direction can be derived — Postgrex exports no list of its own
-  # connect options, and Ecto none of its repo ones — so one of the two lists
-  # has to be written out here and will drift. Which one is a choice between
-  # failure modes, and they are not comparable.
-  #
-  # Keeping only what Postgrex takes drifts *quietly*: a `:ssl_opts` variant a
-  # user sets reaches the repo's pool and not this connection, so the notifier
-  # works in dev against a plaintext database and in production silently falls
-  # back to polling — `DMEx.Log.Dispatcher` covers it at one poll interval and
-  # one warning, which is exactly quiet enough to survive a deploy.
-  #
-  # Rejecting what Ecto owns drifts *loudly*: an unrecognised key reaches
-  # `Postgrex.Notifications`, the connection refuses to start, and the log's
-  # tree fails at boot with the option named. It also drifts less often — this
-  # list is one library's documented repo options, closed and slow-moving, where
-  # Postgrex's connect options grow with every authentication and TLS feature.
-  # So a new driver option works here the day it exists, and a new Ecto option
-  # is a boot failure rather than a production degradation.
-  #
-  # `:scheme` and `:url` are URL-parsing residue rather than settings — Ecto has
-  # already exploded them into host, port, credentials and database.
+  # Neither direction can be derived — Postgrex exports no list of its own connect
+  # options, and Ecto none of its repo ones — so one list is written out here and
+  # will drift. Rejecting what Ecto owns drifts *loudly*: an unrecognised key
+  # reaches `Postgrex.Notifications` and the log's tree fails at boot with the
+  # option named. Keeping only what Postgrex takes drifts *quietly* instead — a
+  # `:ssl_opts` variant reaching the repo's pool and not this connection, so
+  # production silently falls back to polling — and drifts more often, since
+  # Postgrex's connect options grow with every authentication and TLS feature
+  # where Ecto's repo options are closed and slow-moving. `:scheme` and `:url` are
+  # URL-parsing residue Ecto has already exploded into host, port and credentials.
   defp ecto_only?({key, _value}) do
     key in [
       :adapter,
@@ -85,9 +74,7 @@ defmodule DMEx.Notifier.Postgres do
     # true` means Postgrex records the subscription and re-issues every `LISTEN`
     # when the connection comes back. Answering it as anything else would take
     # the dispatcher down every time a log boots ahead of its database.
-    #
-    # The ref is dropped because there is nothing to hand it to: the behaviour
-    # has no `unlisten` and deliberately so — see `c:DMEx.Notifier.listen/1`.
+    # The ref is dropped: there is no `unlisten` — see `c:DMEx.Notifier.listen/1`.
     with pid when is_pid(pid) <- Process.whereis(name(opts)),
          {tag, _ref} when tag in [:ok, :eventually] <-
            safe_listen(pid, Map.fetch!(opts, :channel)) do

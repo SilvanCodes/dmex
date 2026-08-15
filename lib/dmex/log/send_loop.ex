@@ -2,45 +2,23 @@ defmodule DMEx.Log.SendLoop do
   @moduledoc """
   The log's send loop: read, send, wait, repeat.
 
-  There is no separate catch-up mode and no distinction between a "catching up"
-  and a "live tailing" connection — the same loop, differing only in whether it
-  finds rows waiting when it reads. A consumer far behind the tip finds a full
-  `max_batch_rows` on every read and writes batches back-to-back until it
-  drains.
-
-  A selective connection is not a distinct mode either: its read carries one
-  extra predicate, the type list its `DMEx.Log.Selection` resolved to at connect.
-
-  This module reads, paces, tracks the cursor and holds the deadlines; it never
-  frames anything and never touches a socket (`DMEx.Transport` is the other half).
-
-  It does nothing to a row: what a read returns is what a transport writes.
-
-  Memory per connection is one batch and reads are gated on sends completing, so
-  a stalled reader stalls its own loop and nothing else — ARCHITECTURE's
-  "producer memory is one batch" and "reads are gated on sends". The cursor is
-  the only source of truth.
+  There is no catch-up mode: a consumer far behind the tip is this same loop
+  finding a full `max_batch_rows` on every read, and a selective connection is
+  this same loop with one extra predicate on its read. This module reads, paces,
+  tracks the cursor and holds the deadlines; framing and sockets are
+  `DMEx.Transport`'s, a row goes out exactly as the read returned it, and
+  ARCHITECTURE's "producer memory is one batch", "reads are gated on sends" and
+  "pacing has one owner" are what the loop's shape buys — `DMEx.Config` says what
+  each bound caps.
 
   ## Every step that can wedge is taken under a deadline
 
   Three of them: the read, and either write. Each arms `stall_timeout` in this
   connection's `DMEx.Log.Status` first, and `DMEx.Log.Watcher` enforces it from
-  outside.
-
-  The idle wait and the throttle **disarm** instead. Both are self-terminating —
-  a `receive` with an `after`, and a `Process.sleep/1` — so neither can wedge, and
-  a deadline over one is a budget for a wait that already has its own. They used to
-  arm `stall_timeout` plus the interval they were waiting out, which was a second
-  arithmetic on top of `DMEx.Config.effective_heartbeat/1` and did not agree with
-  it.
-
-  ## Pacing
-
-  The loop is sequential, so `max_batch_frequency`, `max_batch_rows` and
-  `max_batch_bytes` compose: it reads at most `max_batch_rows` rows or
-  `max_batch_bytes`, `max_batch_frequency` times a second. `DMEx.Config` says
-  what each caps, and ARCHITECTURE's "pacing has one owner" why the producer owns
-  all three.
+  outside. The idle wait and the throttle **disarm** instead: both are
+  self-terminating — a `receive` with an `after`, and a `Process.sleep/1` — so a
+  deadline over either would be a second, disagreeing expression of
+  `DMEx.Config.effective_heartbeat/1`.
   """
 
   alias DMEx.Log.Selection
@@ -54,11 +32,10 @@ defmodule DMEx.Log.SendLoop do
   @typedoc """
   Everything the loop carries between iterations.
 
-  The log's settings are carried as `config:` rather than copied out field by
-  field: they are read once per *read*, never per row, and a second spelling of
-  `t:DMEx.Config.log/0` is a second place for a setting to be added and forgotten.
-  Only `batch_interval` is here in its own right, because it is derived — the
-  reciprocal of `max_batch_frequency`, taken once rather than per iteration.
+  The log's settings ride as `config:` rather than copied out field by field, so
+  there is no second spelling of `t:DMEx.Config.log/0` to add a setting to and
+  forget. `batch_interval` is the one derived value here, taken once per
+  connection rather than per iteration.
   """
   @type state :: %{
           required(:storage) => Storage.opts(),
@@ -75,9 +52,8 @@ defmodule DMEx.Log.SendLoop do
   @doc """
   Runs the send loop until the sink closes, then returns it.
 
-  Called inline from whichever process owns the sink — a web server's request
-  process for `DMEx.Transport.SSE`, since there the request *is* the stream, or
-  the reader process `DMEx.Transport.Local` starts. Either way the loop is
+  Called inline from whichever process owns the sink — the request process for
+  `DMEx.Transport.SSE`, the reader for `DMEx.Transport.Local` — so the loop is
   sequential and blocking, which is what makes reads gated on sends.
   """
   @spec loop(Transport.sink(), state()) :: Transport.sink()
@@ -128,19 +104,10 @@ defmodule DMEx.Log.SendLoop do
   @doc """
   Registers this process as one of `log`'s streams and builds the loop's state.
 
-  The whole connect ceremony, in one call because it is one thing happening: the
-  registration, the cursor `position` resolves to, the
-  `[:dmex, :stream, :connect]` event and the state. Both transports come through
-  here, so neither can register differently, resolve "from now on" differently, or
-  report a connect the other would report differently — and there is no `:status`
-  option because registering is what produces one.
-
-  Registering first is deliberate: it is before the first read, so an append
-  landing in between is picked up by that read, and before anything that can
-  block, so resolving the cursor is under `DMEx.Log.Watcher` like every other
-  query. `{:error, reason}` means the cursor could not be resolved; the entry is
-  registered by then, and unregistering it is the caller's — `DMEx.Log.Plug` does
-  it on every path out.
+  Registering comes first: before the first read, so an append landing in between
+  is picked up by it, and before anything that can block, so the cursor query is
+  under `DMEx.Log.Watcher`. `{:error, reason}` leaves the entry registered for the
+  caller to drop.
 
   ## Options
 
@@ -152,57 +119,41 @@ defmodule DMEx.Log.SendLoop do
   @spec start(module(), keyword()) :: {:ok, state()} | {:error, term()}
   def start(log, opts) do
     selection = Keyword.get(opts, :selection, :all)
-    config = log.__dmex__().config
+    %{storage: storage, config: config} = log.__dmex__()
 
     {:ok, status} = Streams.register(log, config.stall_timeout, selection)
 
-    with {:ok, cursor} <- resolve_cursor(log, Keyword.get(opts, :position, 0)) do
-      {:ok, connect(log, Keyword.fetch!(opts, :transport), cursor, selection, status)}
+    with {:ok, cursor} <- resolve_cursor(storage, Keyword.get(opts, :position, 0)) do
+      :telemetry.execute(
+        [:dmex, :stream, :connect],
+        %{cursor: cursor, matched: Selection.size(selection)},
+        %{log: log, selective: Selection.selective?(selection)}
+      )
+
+      {:ok,
+       %{
+         log: log,
+         transport: Keyword.fetch!(opts, :transport),
+         storage: storage,
+         cursor: cursor,
+         config: config,
+         batch_interval: DMEx.Config.batch_interval(config),
+         last_sent_at: nil,
+         status: status,
+         # Fixed for the connection's lifetime: a consumer wanting a different
+         # selection asks for a different resource, which is a different URL.
+         types: Selection.to_list(selection)
+       }}
     end
   end
 
-  @doc false
-  @spec connect(module(), module(), non_neg_integer(), Selection.t(), Status.t()) :: state()
-  def connect(log, transport, cursor, selection, status) do
-    %{storage: storage, config: config} = log.__dmex__()
+  # `:now` is the log's tip, which costs a query. An error is returned rather
+  # than fallen back from: 0 would turn a momentary pool exhaustion into a
+  # whole-log replay, and every subscription with no cursor yet arrives here, so
+  # that is the default path rather than an exotic one.
+  defp resolve_cursor(storage, :now), do: Storage.max_id(storage)
 
-    :telemetry.execute(
-      [:dmex, :stream, :connect],
-      %{cursor: cursor, matched: Selection.size(selection)},
-      %{log: log, selective: Selection.selective?(selection)}
-    )
-
-    %{
-      log: log,
-      transport: transport,
-      storage: storage,
-      cursor: cursor,
-      config: config,
-      batch_interval: DMEx.Config.batch_interval(config),
-      last_sent_at: nil,
-      status: status,
-      # Fixed for the connection's lifetime: a consumer wanting a different
-      # selection asks for a different resource, which is a different URL.
-      types: Selection.to_list(selection)
-    }
-  end
-
-  @doc """
-  Resolves what a connect asked for into the cursor the loop takes.
-
-  `:now` is the log's tip, which is the log's own to name and costs a query;
-  anything else is already a position.
-
-  An error is returned rather than fallen back from: 0 would turn a momentary
-  pool exhaustion into a whole-log replay, and since every subscription with no
-  cursor yet arrives here that is the default path, not an exotic one. What to
-  do about it is the caller's — a 503, or an exit its subscription retries
-  after — and both cost one jittered reconnect.
-  """
-  @spec resolve_cursor(module(), :now | non_neg_integer()) :: {:ok, non_neg_integer()} | {:error, term()}
-  def resolve_cursor(log, :now), do: Storage.max_id(log.__dmex__().storage)
-
-  def resolve_cursor(_log, cursor) when is_integer(cursor), do: {:ok, cursor}
+  defp resolve_cursor(_storage, cursor) when is_integer(cursor), do: {:ok, cursor}
 
   ## The loop's steps
 

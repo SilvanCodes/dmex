@@ -10,7 +10,6 @@ defmodule DMEx.Integration.VerticalSliceTest do
 
   use DMEx.IntegrationCase
 
-  alias DMEx.Storage.Postgres
   alias DMEx.Test.Handlers
   alias DMEx.Test.IntegrationLog, as: Log
   alias DMEx.Test.IntegrationRepo
@@ -36,7 +35,7 @@ defmodule DMEx.Integration.VerticalSliceTest do
   end
 
   test "delivers an appended message to a handler and commits the cursor", _ctx do
-    subscribe(Handlers.Echo)
+    subscribe!(Handlers.Echo)
 
     {:ok, id} = Log.append(%OrderPlaced{order_id: 7, total: 1999})
 
@@ -46,7 +45,7 @@ defmodule DMEx.Integration.VerticalSliceTest do
     assert metadata == %{}
 
     # The cursor is durable, not in-memory: this is a real committed row.
-    eventually(fn -> Postgres.last_seen("test/echo", consumer_opts()) == {:ok, id} end)
+    eventually(fn -> cursor("test/echo") == {:ok, id} end)
   end
 
   test "delivers a backlog appended before the consumer ever connected", _ctx do
@@ -54,13 +53,13 @@ defmodule DMEx.Integration.VerticalSliceTest do
     # for anyone — it is simply the log, read from id 0.
     for n <- 1..5, do: {:ok, _} = Log.append(%OrderPlaced{order_id: n})
 
-    subscribe(Handlers.Echo)
+    subscribe!(Handlers.Echo)
 
     assert received_order_ids(5) == [1, 2, 3, 4, 5]
   end
 
   test "delivers new messages live on an already-open connection", _ctx do
-    subscribe(Handlers.Echo)
+    subscribe!(Handlers.Echo)
 
     {:ok, _} = Log.append(%OrderPlaced{order_id: 1})
     assert_receive {:handled, %OrderPlaced{order_id: 1}, _}, 5_000
@@ -73,7 +72,7 @@ defmodule DMEx.Integration.VerticalSliceTest do
   end
 
   test "preserves publisher metadata verbatim", _ctx do
-    subscribe(Handlers.Echo)
+    subscribe!(Handlers.Echo)
 
     {:ok, _} =
       Log.append(%OrderPlaced{order_id: 1}, metadata: %{trace_id: "abc", retry: 2})
@@ -83,7 +82,7 @@ defmodule DMEx.Integration.VerticalSliceTest do
   end
 
   test "delivers in log order", _ctx do
-    subscribe(Handlers.Echo)
+    subscribe!(Handlers.Echo)
 
     for n <- 1..20, do: {:ok, _} = Log.append(%OrderPlaced{order_id: n})
 
@@ -91,8 +90,8 @@ defmodule DMEx.Integration.VerticalSliceTest do
   end
 
   test "two handlers on one log each get everything, with their own cursors", _ctx do
-    subscribe(Handlers.Echo)
-    subscribe(SecondHandler)
+    subscribe!(Handlers.Echo)
+    subscribe!(SecondHandler)
 
     {:ok, id} = Log.append(%OrderPlaced{order_id: 1})
 
@@ -100,8 +99,7 @@ defmodule DMEx.Integration.VerticalSliceTest do
     assert_receive {:second, %OrderPlaced{order_id: 1}}, 5_000
 
     eventually(fn ->
-      Postgres.last_seen("test/echo", consumer_opts()) == {:ok, id} and
-        Postgres.last_seen("test/second", consumer_opts()) == {:ok, id}
+      cursor("test/echo") == {:ok, id} and cursor("test/second") == {:ok, id}
     end)
   end
 
@@ -151,7 +149,7 @@ defmodule DMEx.Integration.VerticalSliceTest do
     end
 
     test "the cursor row is keyed by the declared pair, not the module name", _ctx do
-      subscribe(Slice)
+      subscribe!(Slice)
 
       {:ok, id} = Log.append(%OrderPlaced{order_id: 1})
       assert_receive {:sliced, %OrderPlaced{order_id: 1}}, 5_000
@@ -162,7 +160,7 @@ defmodule DMEx.Integration.VerticalSliceTest do
     # Benefit (b), directly: a rename is what a refactoring tool does without
     # asking, and it must not replay a log.
     test "a renamed handler module continues the cursor rather than replaying", _ctx do
-      subscribe(Slice)
+      subscribe!(Slice)
       {:ok, first} = Log.append(%OrderPlaced{order_id: 1})
       assert_receive {:sliced, %OrderPlaced{order_id: 1}}, 5_000
 
@@ -178,7 +176,7 @@ defmodule DMEx.Integration.VerticalSliceTest do
     # Benefit (a): the URL is provenance, never identity, so repointing a
     # log name at a different host needs no migration.
     test "repointing the log's URL continues the cursor", _ctx do
-      subscribe(Slice)
+      subscribe!(Slice)
       {:ok, first} = Log.append(%OrderPlaced{order_id: 1})
       assert_receive {:sliced, %OrderPlaced{order_id: 1}}, 5_000
 
@@ -201,7 +199,7 @@ defmodule DMEx.Integration.VerticalSliceTest do
     # the identity, so a type gained by adding a clause is handled from the tip
     # onward and its history is *not* replayed. Getting it takes Cursors.move!/3.
     test "adding a clause handles that type from the tip, without replaying", _ctx do
-      subscribe(Slice)
+      subscribe!(Slice)
 
       {:ok, _} = Log.append(%OrderShipped{order_id: 1, carrier: "dhl"})
       {:ok, second} = Log.append(%OrderPlaced{order_id: 2})
@@ -226,7 +224,7 @@ defmodule DMEx.Integration.VerticalSliceTest do
   defp resubscribe(from, to, opts) do
     stop(from, opts)
 
-    subscribe(to)
+    subscribe!(to)
   end
 
   # Waiting for the cursor *before* stopping is not incidental. A handler sends
@@ -247,7 +245,7 @@ defmodule DMEx.Integration.VerticalSliceTest do
   end
 
   defp await_cursor(id) do
-    eventually(fn -> Postgres.last_seen("test/slice", consumer_opts()) == {:ok, id} end)
+    eventually(fn -> cursor("test/slice") == {:ok, id} end)
   end
 
   defp cursor_rows do
@@ -257,17 +255,6 @@ defmodule DMEx.Integration.VerticalSliceTest do
       []
     ).rows
   end
-
-  # `last_seen: 0` throughout: these tests append first and subscribe after,
-  # which is the backlog they are about. The default — unset — would correctly
-  # skip all of it.
-  defp subscribe(handler, opts \\ [last_seen: 0]) do
-    {:ok, _} = DMEx.Supervisor.subscribe(handler, [supervisor: TestSupervisor] ++ opts)
-
-    :ok
-  end
-
-  defp consumer_opts, do: %{repo: IntegrationRepo, prefix: nil}
 
   defp received_order_ids(count) do
     for _ <- 1..count do

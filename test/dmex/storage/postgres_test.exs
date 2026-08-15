@@ -66,9 +66,7 @@ defmodule DMEx.Storage.PostgresTest do
   end
 
   # At boot rather than at the first query, so an option that will never be
-  # honoured fails where it was written — `c:DMEx.Storage.validate!/1`. A
-  # `:prefix` used to surface downstream, as whatever it happened to render to
-  # once spliced into a quoted identifier.
+  # honoured fails where it was written — `c:DMEx.Storage.validate!/1`.
   describe "validate!/1" do
     test "accepts a log's options and a subscription's", %{opts: opts} do
       assert :ok = Postgres.validate!(opts)

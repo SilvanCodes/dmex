@@ -2,39 +2,21 @@ defmodule DMEx.Log.Watcher do
   @moduledoc """
   Reclaims connections that stopped making progress.
 
-  One per log, started by that log's supervisor. It holds no state about any
-  connection: every sweep reads the live set out of `DMEx.Log.Streams`,
-  compares each armed deadline against the clock, and kills whatever is past it.
+  One per log, started by that log's supervisor, holding no state about any
+  connection: every sweep reads the live set out of `DMEx.Log.Streams`, compares
+  each armed deadline against the clock, and kills whatever is past it. That is
+  ARCHITECTURE's "every blocking step has a deadline", enforced from outside
+  because a wedged process is not running to enforce it itself.
 
-  ## Why anything is needed at all
+  Its own process rather than a job on `DMEx.Log.Dispatcher`'s timer: the
+  dispatcher queries the database inside its handler, so pool exhaustion would
+  block the sweep at exactly the moment connections are stalling.
 
-  The send loop bounds memory by construction, but it cannot reclaim itself:
-  **a process blocked in `chunk/2` cannot time itself out, because it is not
-  running.** Nor can one blocked in a read against a database that stopped
-  answering, or waiting on a pool checkout that never returns.
-
-  So the loop states its budget before entering each blocking step (see
-  `DMEx.Log.Status`) and this process enforces it from outside. That is the
-  whole mechanism: no per-connection timer, no progress heuristics, no
-  inspecting another process's state. Socket options are still worth setting —
-  [the deployment guide](deployment.md) says why — but nothing here depends on them.
-
-  ## Why the kill is untrappable
-
-  `Process.exit(pid, :kill)`, never a gentler reason. An ordinary exit signal
-  sent to a process trapping exits becomes a message in its mailbox — and the
-  mailbox is exactly what a wedged process is not servicing. Killing also frees
-  a process suspended on a busy port, which is what a blocked `chunk/2` is.
-
-  That reclaims the request process, its registry entry, the database connection
-  it had checked out (the pool monitors its client), and the socket through the
-  web server's teardown. **Dropping a connection is not a delivery event** —
-  ARCHITECTURE says why, and it is what makes it safe to be blunt.
-
-  ## What it cannot see
-
-  A peer that vanished while the kernel still accepts our bytes: deadlines keep
-  being met and nothing inside this VM can tell. TCP keepalive is the only
+  **The kill is untrappable**, because an exit signal sent to a process trapping
+  exits becomes a message in the mailbox a wedged process is not servicing, and
+  `:kill` also frees one suspended on a busy port — which is what a blocked
+  `chunk/2` is. What it cannot see is a peer that vanished while the kernel still
+  accepts our bytes: deadlines keep being met, and TCP keepalive is the only
   lever — see [the deployment guide](deployment.md).
   """
 
@@ -97,11 +79,9 @@ defmodule DMEx.Log.Watcher do
   ## Internals
 
   # One clock reading for the whole pass, so every connection is judged against
-  # the same instant however long the walk takes.
-  #
-  # The list comes out of the registry in this process, so a sweep costs one
-  # atomics read per connection and nothing that can block. A deadline is a
-  # deadline whatever the connection selected.
+  # the same instant however long the walk takes. The list comes out of the
+  # registry in this process, so a sweep costs one atomics read per connection
+  # and nothing that can block.
   defp reclaim_overdue(state) do
     now = System.monotonic_time(:millisecond)
 

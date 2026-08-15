@@ -46,17 +46,6 @@ defmodule DMEx.Storage.SQLiteMigrationTest do
       assert columns["inserted_at"].dflt_value =~ "strftime"
     end
 
-    test "inserted_at is stamped fixed-width, to the millisecond" do
-      {:ok, _} = insert("A", ~s({"n":1}))
-
-      assert [[at]] = query("SELECT inserted_at FROM dmex_messages ORDER BY id DESC LIMIT 1")
-
-      # 24 bytes exactly. Fixed width is what makes byte comparison equal
-      # chronological comparison — see `DMEx.Storage.SQLite.Migration`.
-      assert byte_size(at) == 24
-      assert {:ok, _datetime, 0} = DateTime.from_iso8601(at)
-    end
-
     test "carries the selective read's index, on the columns that query needs" do
       indexes = index_columns("dmex_messages")
 
@@ -110,9 +99,7 @@ defmodule DMEx.Storage.SQLiteMigrationTest do
   # which is the only thing making these columns orderable at all — SQLite has no
   # timestamp type. See `DMEx.Storage.SQLite.Migration`. All three tables, because the
   # format is one invariant and holding it for `dmex_messages` alone would be an
-  # accident rather than a property. (This subsumes the `dmex_messages`-only
-  # assertion that used to sit in the first describe block: same two assertions,
-  # widened to the other two tables.)
+  # accident rather than a property.
   describe "the stored timestamp format" do
     test "every default renders the adapter's one expression rather than copying it" do
       for {table, column} <- @timestamps do

@@ -32,17 +32,21 @@
 # one pool.
 
 alias DMEx.BenchHelper, as: Helper
+alias DMEx.IntegrationCase
 alias DMEx.Test.IntegrationLog, as: Log
 alias DMEx.Test.Messages.OrderPlaced
+alias DMEx.Test.Server
+alias DMEx.Test.SSEClient
 
 Helper.section("fanout_reads — read amplification and pool contention")
 
 Helper.start_repo!()
-Helper.reset_log!()
+IntegrationCase.truncate_all!()
 
 Helper.start_log!()
 
-port = Helper.start_server!() |> URI.parse() |> Map.fetch!(:port)
+base = Server.start!(on_exit: false)
+port = base |> URI.parse() |> Map.fetch!(:port)
 
 # Counted from the log's own telemetry rather than inferred, so this is
 # what the loop really did.
@@ -84,24 +88,13 @@ slow_checkout = System.convert_time_unit(5, :millisecond, :native)
 # configuration it is describing.
 cap = Log.__dmex__().config.max_batch_frequency
 
-# A deliberately dumb SSE client: it reads and discards. The point is to hold a
-# connection open and let the log do its per-connection work.
+# A deliberately dumb SSE client: it holds a connection open for the whole
+# round and never acts on what arrives. The point is the per-connection work
+# the log does; each client is killed at the end of its round, so the window
+# only has to outlast one.
 connect = fn ->
   spawn(fn ->
-    {:ok, conn} = Mint.HTTP.connect(:http, "127.0.0.1", port, mode: :active)
-    {:ok, conn, _ref} = Mint.HTTP.request(conn, "GET", "/stream", [], nil)
-
-    drain = fn drain, conn ->
-      receive do
-        message ->
-          case Mint.HTTP.stream(conn, message) do
-            {:ok, conn, _responses} -> drain.(drain, conn)
-            _other -> :ok
-          end
-      end
-    end
-
-    drain.(drain, conn)
+    SSEClient.request("127.0.0.1", port, "/stream", [], until: :deadline, timeout: 60_000)
   end)
 end
 

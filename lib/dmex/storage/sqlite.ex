@@ -13,11 +13,10 @@ defmodule DMEx.Storage.SQLite do
 
   ## `append/4` takes no lock, because the engine is the lock
 
-  `DMEx.Storage` covers why id assignment order must equal commit order, and why
-  an engine with one database-wide write transaction satisfies it without a
-  lock: a second writer cannot execute its INSERT — cannot draw a rowid — until
-  the first has committed, so the interleaving the Postgres adapter guards
-  against is unrepresentable.
+  `c:DMEx.Storage.append/4` covers why id assignment order must equal commit
+  order. SQLite has one writer database-wide, so a second writer cannot execute
+  its INSERT — cannot draw a rowid — until the first has committed, and the
+  interleaving the Postgres adapter guards against is unrepresentable.
 
   So an append is one statement, `INSERT ... RETURNING id`, which is its own
   implicit write transaction. Wrapping it in `repo.transaction/1` would
@@ -33,18 +32,6 @@ defmodule DMEx.Storage.SQLite do
   `BEGIN`, leaving only the retryable case. `validate!/1` refuses a repo without
   it at boot, and `transaction/2` passes the mode itself.
 
-  ## Payloads are stored verbatim
-
-  `data` and `metadata` are TEXT holding JSON, so the bytes read back are the
-  bytes the publisher wrote — key order and duplicate keys included, where
-  Postgres's `jsonb` normalizes both away. A `json_valid` CHECK keeps the one
-  guarantee `jsonb` gave. See `DMEx.Storage.SQLite.Migration`.
-
-  ## Timestamps are millisecond text
-
-  `inserted_at` is fixed-width ISO-8601 to the millisecond, so byte order is
-  time order.
-
   ## No `:prefix`
 
   SQLite has no schemas. `validate!/1` raises rather than ignoring one.
@@ -52,6 +39,7 @@ defmodule DMEx.Storage.SQLite do
 
   use DMEx.Storage.SQL
 
+  alias DMEx.Storage.SQL
   alias Ecto.Adapters.SQL, as: Adapter
 
   # From the behaviour, not restated: see `DMEx.Storage.__table__/1`.
@@ -61,9 +49,7 @@ defmodule DMEx.Storage.SQLite do
 
   # `strftime('%f')` renders `SS.SSS`, so every stored value is fixed-width and
   # comparable as bytes, which is what makes `updated_at` orderable at all —
-  # SQLite has no timestamp type. Stated once: `DMEx.Storage.SQLite.Migration` renders
-  # all three of its column defaults from `__now__/0` below, so no writer of
-  # these tables can disagree about the format.
+  # SQLite has no timestamp type.
   @now "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')"
 
   @doc """
@@ -74,7 +60,7 @@ defmodule DMEx.Storage.SQLite do
   `octet_length`, which needs SQLite 3.43 — exqlite can be built against the system
   library, so the portable spelling is the one that cannot be wrong.
   """
-  @impl DMEx.Storage.SQL
+  @impl SQL
   def dialect(_opts) do
     %{
       messages: @messages,
@@ -85,7 +71,7 @@ defmodule DMEx.Storage.SQLite do
       text: &Function.identity/1,
       json: &Function.identity/1,
       bytes: &"length(CAST(#{&1} AS BLOB))",
-      type_agg: "coalesce(group_concat(DISTINCT type), '')",
+      type_agg: "group_concat(DISTINCT type)",
       types: &String.split(&1, ","),
       timestamp: &datetime!/1,
       # No array type, so a selection is N placeholders binding N parameters. The
@@ -101,6 +87,20 @@ defmodule DMEx.Storage.SQLite do
   @spec __now__() :: String.t()
   def __now__, do: @now
 
+  # Public so `DMEx.Storage.SQLite.Migration` refuses a `:prefix` in the same
+  # words: one rule, whichever half of DMEx is asked to honour it — the same
+  # move `__now__/0` makes for the timestamp format.
+  @doc false
+  @spec __refuse_prefix__(String.t() | nil) :: :ok
+  def __refuse_prefix__(nil), do: :ok
+
+  def __refuse_prefix__(prefix) do
+    raise ArgumentError,
+          "SQLite has no schemas, so #{inspect(__MODULE__)} cannot honour " <>
+            "`prefix: #{inspect(prefix)}`. Drop it, or give this database a file " <>
+            "of its own — which is what a schema would have bought."
+  end
+
   # A `%DateTime{}` rather than the stored binary, because `t:DMEx.Storage.row/0`
   # says so.
   defp datetime!(text) when is_binary(text) do
@@ -111,16 +111,7 @@ defmodule DMEx.Storage.SQLite do
 
   @impl DMEx.Storage
   def validate!(opts) do
-    case Map.get(opts, :prefix) do
-      nil ->
-        :ok
-
-      prefix ->
-        raise ArgumentError,
-              "SQLite has no schemas, so #{inspect(__MODULE__)} cannot honour " <>
-                "`prefix: #{inspect(prefix)}`. Drop it, or give this log a database " <>
-                "file of its own — which is what a schema would have bought."
-    end
+    __refuse_prefix__(Map.get(opts, :prefix))
 
     validate_transaction_mode!(opts)
   end
@@ -150,15 +141,11 @@ defmodule DMEx.Storage.SQLite do
     end
   end
 
-  ## Appending — the one statement that is this engine's own
+  ## Appending
 
   @impl DMEx.Storage
   def append(type, data, metadata, opts) when is_binary(type) and is_binary(data) and is_binary(metadata) do
-    sql = """
-    INSERT INTO #{@messages} (type, data, metadata)
-         VALUES (?1, ?2, ?3)
-      RETURNING id
-    """
+    sql = SQL.append_sql(dialect(opts))
 
     # One statement, so SQLite wraps it in an implicit write transaction of its
     # own — see the module documentation for why that is the whole locking story.

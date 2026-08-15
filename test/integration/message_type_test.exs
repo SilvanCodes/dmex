@@ -54,11 +54,10 @@ defmodule DMEx.Integration.MessageTypeTest do
 
   test "a consumer resolves rows by declared type, not by the appending module's name" do
     # Appended *before* the subscription exists, so these are rows already in the
-    # log — the case a module rename used to orphan permanently.
+    # log — the case a module rename would otherwise orphan permanently.
     {:ok, _} = Log.append(%OrderPlaced{order_id: 1, customer_id: 10, total: 999})
 
-    {:ok, _} =
-      DMEx.Supervisor.subscribe(RenamedConsumer, supervisor: TestSupervisor, last_seen: 0)
+    {:ok, _} = subscribe!(RenamedConsumer)
 
     # Decoded into the consumer's own struct, with the producer's field values
     # intact: the type carried the identity across two unrelated module names.

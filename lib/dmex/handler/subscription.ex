@@ -20,33 +20,23 @@ defmodule DMEx.Handler.Subscription do
   `on_failure: :crash` rests on.
 
   **Resumption is cursor-driven.** Every connect, first or thousandth, re-reads
-  the durable cursor and hands it to the reader. Nothing in memory is trusted,
-  which is what makes a dropped connection a non-event; `last_seen:` applies only
-  when there is no cursor at all.
+  the durable cursor: nothing in memory is trusted, so a dropped connection is a
+  non-event and `last_seen:` applies only when there is no cursor at all.
 
   **Reconnects are jittered, and counted to #{@max_attempts}.** Pacing belongs
   here because each reconnect reads a *different application's* database, and one
   policy covers every transport: a reader says only that it died.
   `DMEx.Transport.connected/1` is the only thing that clears the count, so a
   reader that died before establishing anything counts as the failed attempt it
-  was. Past the cap the delay is `reconnect_backoff_max` whatever the count says,
-  so `DMEx.backoff/3` is spared a growing exponent, and the reconnect line
-  becomes a warning on every further attempt — nothing else in the system says an
-  origin has refused this many consecutive connects. Restarts are not paced here
-  at all; `DMEx.Handler.Pipeline` pauses before it re-raises.
+  was. Restarts are not paced here at all; `DMEx.Handler.Pipeline` pauses before
+  it re-raises.
 
   **Skips are checkpointed on a timer, not per row.** `DMEx.Handler.Pipeline`
-  defers a skipped row's cursor advance and this process settles it: a
-  `checkpoint_interval` timer, armed per process rather than per connection, plus
-  a flush before a reconnect (which re-reads the durable cursor) and in
-  `terminate/2` (so a clean stop does not discard skips). That callback only runs
-  because this process **traps exits** — a non-trapping child is killed outright
-  by `Supervisor.terminate_child/2`. Trapping is also what turns a reader's death
-  into an ordinary reconnect.
-
-  **Backpressure is the absence of a buffer.** Rows run through the pipeline
-  inline, one at a time, inside the reader's `DMEx.Transport.deliver/2` call:
-  ARCHITECTURE's "the consumer has no buffer".
+  defers a skipped row's cursor advance and this process settles it — on a
+  `checkpoint_interval` timer, before a reconnect, and in `terminate/2`. That
+  callback only runs because this process **traps exits** — a non-trapping child
+  is killed outright by `Supervisor.terminate_child/2`. Trapping is also what
+  turns a reader's death into an ordinary reconnect.
   """
 
   use GenServer
@@ -79,15 +69,17 @@ defmodule DMEx.Handler.Subscription do
 
     Process.flag(:trap_exit, true)
 
-    # Before anything opens, which is what enforces one live stream per
-    # subscription id: a second subscribe/2 for the same identity fails in init
-    # rather than after both have started clobbering one cursor.
+    # Registered before anything opens, so `unsubscribe/2` can find this process
+    # by id. The duplicate guard is the supervisor's — a subscription id *is* the
+    # child id — and this only catches a `Subscription` started outside one.
     case register(opts[:registry], subscription) do
       {:ok, _pid} ->
-        # Two things, and no copy of either: `:opts` is the reader's whole input,
-        # carrying the `:transport` that `DMEx.Transport.start_reader/1`
-        # dispatches on, and the pipeline holds this subscription's identity,
-        # storage and config — which is what log lines and telemetry read.
+        # Both carry handler, subscription, storage, origin and config, and the
+        # copy is deliberate: `:opts` is the list a reader is handed whole —
+        # `DMEx.Transport.start_reader/1` dispatches on its `:transport`, and a
+        # reader reads the rest of it too — while the pipeline is what everything
+        # in *this* process reads, and the only one of the two carrying the
+        # moving `:cursor`.
         state = %{opts: opts, pipeline: Pipeline.new(opts), reader: nil, attempt: 0}
 
         # Per process rather than per connection: a pending run of skips outlives
@@ -120,8 +112,8 @@ defmodule DMEx.Handler.Subscription do
     {:noreply, reconnect(%{state | reader: nil}, reason)}
   end
 
-  # A reader this subscription has already given up on — killed by `terminate/2` —
-  # signalling after the fact.
+  # A stray message is not worth a crash: nothing this process owns sends one,
+  # and a subscription that dies of an unknown `handle_info` loses a live stream.
   def handle_info(_message, state), do: {:noreply, state}
 
   # The reader's handoff: running the batch inside the call is what blocks it

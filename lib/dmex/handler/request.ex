@@ -3,16 +3,9 @@ defmodule DMEx.Handler.Request do
   What a subscription says on connect.
 
   The consumer half of the contract `DMEx.Log.Params` validates on the log side,
-  kept pure so both ends are data rather than buried in a process. Used by
-  `DMEx.Transport.SSE` — there is no request to build without a wire, and
-  `position/2` is the one part `DMEx.Transport.Local` shares.
-
-  The only header DMEx contributes is `last-event-id`, alongside the `accept`
-  every SSE client sends; `DMEx.Log.Params` documents its vocabulary.
-
-  **Nothing here converts anything.** A durable cursor, a configured
-  `last_seen:` and the header are one domain in one unit, so `position/2` is a
-  choice between two of them and no arithmetic at all.
+  kept pure so both ends are data. **Nothing here converts anything**: a durable
+  cursor, a configured `last_seen:` and the header are one domain in one unit,
+  so `position/2` is a choice between two of them and no arithmetic at all.
   """
 
   alias DMEx.Config
@@ -30,9 +23,8 @@ defmodule DMEx.Handler.Request do
   end
 
   @doc """
-  Builds the `last-event-id` header for a cursor, or none at all.
-
-  An empty list is the whole of "from now on": the header's absence is what says it.
+  Builds the `last-event-id` header for a cursor, or none at all: the header's
+  absence is the whole of "from now on".
   """
   @spec last_event_id(cursor(), Config.handler()) :: [{String.t(), String.t()}]
   def last_event_id(cursor, config) do
@@ -43,22 +35,18 @@ defmodule DMEx.Handler.Request do
   end
 
   @doc """
-  Where this subscription is asking to start.
-
-  A durable cursor wins over `last_seen:` whenever there is one — that is the
-  whole of resumption.
+  Where this subscription is asking to start: a durable cursor wins over
+  `last_seen:` whenever there is one.
   """
   @spec position(cursor(), Config.handler()) :: position()
   def position(:none, config), do: config.last_seen || :now
   def position(cursor, _config) when is_integer(cursor), do: cursor
 
   @doc """
-  Builds the path to request: the log's stream URL, plus the selection segment.
-
-  `fingerprint` is `nil` for a whole-log subscription, which requests the bare
-  `/stream`. Otherwise it is the handler's compile-time `DMEx.Handler.Fingerprint` blob,
-  appended as a path segment rather than a query parameter — see the wire
-  contract in [ARCHITECTURE](ARCHITECTURE.md) for why.
+  Builds the path to request: the log's stream URL, plus the selection segment —
+  `nil` for a whole-log subscription, which requests the bare `/stream`. It is a
+  path segment rather than a query parameter; the wire contract in
+  [ARCHITECTURE](ARCHITECTURE.md) has why.
   """
   @spec path(URI.t(), String.t() | nil) :: String.t()
   def path(%URI{path: path}, fingerprint \\ nil), do: join(path || "/", fingerprint)

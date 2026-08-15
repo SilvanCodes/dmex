@@ -74,9 +74,9 @@ defmodule DMEx.Supervisor do
   alias DMEx.Supervisor.Bindings
 
   @default_name __MODULE__
-  # The storage vocabulary. `DMEx.Storage.opts/1` reads exactly these three and is
-  # the only constructor, so the defaults live there and this is just what
-  # `subscribe/2` accepts.
+  # The storage vocabulary, shared by this child spec and `subscribe/2`.
+  # `DMEx.Storage.opts/1` reads exactly these three and is the only constructor,
+  # so the defaults live there.
   @storage_opts [:storage, :repo, :prefix]
   # This child spec's own vocabulary, and `subscribe/2`'s. `:handler` is
   # deliberately absent from the second: it is the positional argument, so a stray
@@ -104,10 +104,6 @@ defmodule DMEx.Supervisor do
 
   @impl Supervisor
   def init({name, opts}) do
-    # The entry point had no typo protection at all: `rep: MyApp.Repo` booted clean
-    # and failed at the first subscribe with "nowhere to write this subscription's
-    # cursor", naming neither the option nor the mistake. Same mechanism every
-    # other vocabulary in DMEx uses.
     Config.keys!(
       opts,
       @supervisor_opts ++ @storage_opts,
@@ -153,15 +149,13 @@ defmodule DMEx.Supervisor do
 
     # `:rest_for_one` because the registry owns what the subscriptions register
     # in, so everything after a dead child is rebuilt. The discovered
-    # subscriptions are a child list rather than something a process starts, which
-    # is the only shape a supervisor can put back: a `Task` or a one-shot
-    # `GenServer` is gone from the child list once it has run, whatever its
-    # `:restart` says, so an owned log's death used to cost every discovered
-    # subscription for the lifetime of the node with nothing logged.
+    # subscriptions have to be a child list rather than something a process
+    # starts: that is the only shape a supervisor can put back, since a `Task` or
+    # a one-shot `GenServer` is gone from the child list once it has run,
+    # whatever its `:restart` says.
     #
-    # A subscription started at runtime by `subscribe/2` is still lost that way —
-    # it is in no child list by construction — and that is the remaining half of
-    # the same problem.
+    # A subscription started at runtime by `subscribe/2` is in no child list by
+    # construction, so a registry restart loses it.
     Supervisor.init(children, strategy: :rest_for_one)
   end
 
@@ -198,8 +192,6 @@ defmodule DMEx.Supervisor do
     handlers
   end
 
-  # Names both modules, because "duplicate subscription id" without them is a
-  # riddle in an application with thirty handlers.
   defp reject_duplicate_ids!(handlers) do
     for handler <- handlers, id <- Handler.subscription_ids(handler), reduce: %{} do
       seen ->
@@ -360,6 +352,19 @@ defmodule DMEx.Supervisor do
   @spec subscriptions(atom()) :: atom()
   def subscriptions(name \\ @default_name), do: Module.concat(name, "Subscriptions")
 
+  # `Registry.meta/2` raises its own "unknown registry" `ArgumentError` when
+  # nothing is running under that name, which is the same answer as no metadata —
+  # so this rescues rather than checking `whereis` first, where the registry could
+  # die in the window between the two. The one reader, so
+  # `DMEx.Supervisor.Bindings` does not need a second copy of that reasoning.
+  @doc false
+  @spec meta(atom(), atom()) :: {:ok, term()} | :error
+  def meta(supervisor, key) do
+    Registry.meta(registry(supervisor), key)
+  rescue
+    ArgumentError -> :error
+  end
+
   ## Storage resolution
 
   # One resolution, two ways to reach it with no `repo:`. A `nil` supervisor is
@@ -390,17 +395,11 @@ defmodule DMEx.Supervisor do
     storage
   end
 
-  # `Registry.meta/2` raises its own "unknown registry" `ArgumentError` when nothing
-  # is running under that name, which is the same answer as no default — so this
-  # rescues rather than checking `whereis` first, where the registry could die in
-  # the window between the two.
   defp seeded_storage!(supervisor) do
-    case Registry.meta(registry(supervisor), :storage) do
+    case meta(supervisor, :storage) do
       {:ok, %{repo: repo} = default} when not is_nil(repo) -> default
       _ -> raise_no_repo(supervisor)
     end
-  rescue
-    ArgumentError -> raise_no_repo(supervisor)
   end
 
   defp raise_no_repo(supervisor) do

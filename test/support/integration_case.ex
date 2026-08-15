@@ -12,6 +12,7 @@ defmodule DMEx.IntegrationCase do
 
   use ExUnit.CaseTemplate
 
+  alias DMEx.Storage.Postgres
   alias DMEx.Test.Handlers
   alias DMEx.Test.IntegrationRepo
   alias DMEx.Test.Server
@@ -22,7 +23,15 @@ defmodule DMEx.IntegrationCase do
       import DMEx.Case, only: [eventually: 1, eventually: 2, eventually: 3]
 
       import DMEx.IntegrationCase,
-        only: [start_stack!: 0, start_stack!: 1, start_supervisor!: 1, start_supervisor!: 2]
+        only: [
+          cursor: 1,
+          start_stack!: 0,
+          start_stack!: 1,
+          start_supervisor!: 1,
+          start_supervisor!: 2,
+          subscribe!: 1,
+          subscribe!: 2
+        ]
 
       alias DMEx.Test.IntegrationRepo, as: Repo
 
@@ -31,8 +40,7 @@ defmodule DMEx.IntegrationCase do
 
       # Here rather than per file: every integration test drives real
       # reconnects, reclaims and dead messages, so DMEx's own warnings are the
-      # behaviour under test and not output worth reading. Eleven files opted in
-      # by hand and three forgot, which is the wrong default.
+      # behaviour under test and not output worth reading.
       @moduletag :capture_log
     end
   end
@@ -106,6 +114,30 @@ defmodule DMEx.IntegrationCase do
       {DMEx.Supervisor,
        name: TestSupervisor, otp_app: Keyword.get(opts, :otp_app), repo: IntegrationRepo, bindings: bindings}
     )
+  end
+
+  @doc """
+  Subscribes `handler` through the suite's supervisor, from the start of the log.
+
+  `last_seen: 0` rather than the default: an integration test either appends
+  before it subscribes, or subscribes and then appends. The default — unset —
+  resolves to the log's tip at *connect*, which skips the backlog in the first
+  case and races the appends in the second. Nothing here predates its own
+  subscription, so 0 names exactly the rows the test wrote.
+
+  Caller options merge last, so a call site can still override `last_seen:`.
+  """
+  @spec subscribe!(module(), keyword()) :: {:ok, [pid()]} | {:error, term()}
+  def subscribe!(handler, opts \\ []) do
+    defaults = [supervisor: TestSupervisor, last_seen: 0]
+
+    DMEx.Supervisor.subscribe(handler, Keyword.merge(defaults, opts))
+  end
+
+  @doc "The durable cursor for `subscription`, read straight from the database."
+  @spec cursor(String.t()) :: {:ok, non_neg_integer() | nil} | {:error, term()}
+  def cursor(subscription) do
+    Postgres.last_seen(subscription, %{repo: IntegrationRepo, prefix: nil})
   end
 
   @doc """

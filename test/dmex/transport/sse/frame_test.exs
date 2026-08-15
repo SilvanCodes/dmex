@@ -169,8 +169,7 @@ defmodule DMEx.Transport.SSE.FrameTest do
       assert {:ok, {:retry, 50}} = Frame.decode("retry: 50")
     end
 
-    # Including the `previous/current` pair the wire used to carry: a position
-    # is one integer now, so the old spelling is simply not an id.
+    # A position is one integer, so any other spelling is simply not an id.
     test "a non-integer id is not an id, so the block is not a message" do
       assert {:ok, :ignore} = Frame.decode(~s(id: abc\nevent: T\ndata: {"data":{},"metadata":{}}))
       assert {:ok, :ignore} = Frame.decode(~s(id: 4/5\nevent: T\ndata: {"data":{},"metadata":{}}))

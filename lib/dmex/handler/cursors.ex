@@ -3,27 +3,16 @@ defmodule DMEx.Handler.Cursors do
   Reads and moves a subscription's read position.
 
   DMEx owns `last_seen` and application code never touches it in normal
-  operation. These are the operator-facing exceptions: inspecting where a
-  subscription has got to, replaying part of a log, and migrating a cursor when
-  a subscription's declared identity changes.
+  operation; these are the operator-facing exceptions.
 
   ## Changing a declaration costs a migration
 
   A different `name:`, or a different key for that log in `DMEx.Supervisor`'s
   `bindings:`, mints a new identity with no cursor — `DMEx.Handler` covers what does
-  and does not change one. Migrate it next to the code change that causes it:
+  and does not change one. Migrate it in an `Ecto.Migration`'s `up/0`, next to
+  the code change that causes it:
 
-      defmodule MyApp.Repo.Migrations.RenameOrderProjection do
-        use Ecto.Migration
-
-        def up do
-          DMEx.Handler.Cursors.rename!(
-            "orders/order_handler",
-            "orders/order_projection",
-            repo: MyApp.Repo
-          )
-        end
-      end
+      DMEx.Handler.Cursors.rename!("orders/order_handler", "orders/order_projection", repo: MyApp.Repo)
 
   ## Options
 
@@ -43,9 +32,8 @@ defmodule DMEx.Handler.Cursors do
   @doc """
   Returns where `handler`'s subscription has got to, and when it last moved.
 
-  `nil` if it has never committed a position — the normal state for a
-  subscription started with the default `last_seen:` on a quiet log, since
-  nothing writes a cursor until it has consumed something.
+  `nil` if it has never committed a position: nothing writes a cursor until the
+  subscription has consumed something.
   """
   @spec position(module(), keyword()) ::
           {:ok, %{last_seen: non_neg_integer(), updated_at: term()} | nil}
@@ -59,17 +47,10 @@ defmodule DMEx.Handler.Cursors do
   @doc """
   Moves `handler`'s cursor to `last_seen`, so the next connect resumes after it.
 
-  `move!(h, 41)` and `last_seen: 41` name the same exclusive position in the
-  same units — `DMEx.Config` covers that vocabulary. The difference is only
-  durability: this writes the row, the option stands in for one until there is a row.
-
-  `0` replays the whole log — not the same as `reset!/2`, since a cursor at 0
-  still exists and `last_seen:` stays ignored. Every message after that position
-  which this subscription selects is redelivered, so the handler must tolerate
-  it.
-
-  A cursor is nothing but a subscription and a position, so this runs from a
-  migration or a console with no handler running.
+  `move!(h, 41)` and `last_seen: 41` name the same exclusive position in the same
+  units — `DMEx.Config` covers that vocabulary — differing only in durability.
+  `0` replays every message this subscription selects, and is not `reset!/2`: a
+  cursor at 0 still exists, so `last_seen:` stays ignored.
   """
   @spec move!(module(), non_neg_integer(), keyword()) :: :ok
   def move!(handler, last_seen, opts) when is_atom(handler) and is_integer(last_seen) and last_seen >= 0 do
@@ -96,13 +77,10 @@ defmodule DMEx.Handler.Cursors do
   @doc """
   Carries the position of subscription `from` over to `to`, removing the old row.
 
-  Both are identifier strings, since `from` is by definition the identity
-  nothing declares any longer. Both steps happen in one transaction, so a rename
-  cannot half-apply and leave two cursors — or none. Raises if `to` already has
-  a cursor.
-
-  Returns `:ok` even when `from` has no cursor: there was nothing to carry, and
-  the rename is still correctly applied.
+  Identifier strings rather than modules: `from` is by definition the identity
+  nothing declares any longer. Both steps run in one transaction, so a rename
+  cannot half-apply. Raises if `to` already has a cursor; returns `:ok` when
+  `from` has none, since there was nothing to carry.
   """
   @spec rename!(String.t(), String.t(), keyword()) :: :ok
   def rename!(from, to, opts) when is_binary(from) and is_binary(to) do

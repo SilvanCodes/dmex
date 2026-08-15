@@ -4,7 +4,7 @@ defmodule DMEx.Storage.SQL do
 
   Internal to DMEx: an adapter calls this and nothing else does.
 
-  `DMEx.Storage.Postgres` and `DMEx.Storage.SQLite` are the same eleven statements
+  `DMEx.Storage.Postgres` and `DMEx.Storage.SQLite` are the same statements
   against two spellings of SQL. Written out twice they diverged in ways nothing
   caught — a `now()` that is transaction-start on one engine and statement-time on
   the other, an `appended_since` that lost a type, an `ON CONFLICT` on one insert
@@ -12,9 +12,10 @@ defmodule DMEx.Storage.SQL do
   module owns the statements, which is what makes the two engines' answers the
   same answer by construction rather than by review.
 
-  What an adapter keeps is what genuinely differs: `c:DMEx.Storage.append/4`,
-  where Postgres takes an advisory lock and SQLite relies on having one writer;
-  `c:DMEx.Storage.validate!/1`; and the dialect below.
+  What an adapter keeps is what genuinely differs: the dialect below,
+  `c:DMEx.Storage.append/4`, where Postgres takes an advisory lock and SQLite
+  relies on having one writer, and the callbacks that name an engine's own
+  choices, `c:DMEx.Storage.validate!/1` among them.
 
   ## The dialect
 
@@ -46,6 +47,10 @@ defmodule DMEx.Storage.SQL do
       lossless because the `type` CHECK forbids one inside a type.
     * `:timestamp` — how a stored timestamp becomes the `%DateTime{}`
       `t:DMEx.Storage.row/0` promises. Postgres's driver already returns one.
+    * `:selection` — how a list of types becomes a predicate and the parameters
+      it binds. Postgres has an array type and binds one `= ANY($4)`; SQLite has
+      neither and renders N placeholders. Why that is a separate statement
+      rather than a nullable predicate is on `read/6`.
 
   `:text`, `:json` and `:bytes` are per-column functions rather than finished
   expressions, and that is the point of the split: *which* columns are measured,
@@ -56,15 +61,14 @@ defmodule DMEx.Storage.SQL do
 
   ## What an adapter is
 
-  `use DMEx.Storage.SQL` implements the eleven statements below from `c:dialect/1`
-  and nothing else, so a SQL adapter *is* its dialect plus the three callbacks
-  that are genuinely its own: `c:DMEx.Storage.append/4`,
-  `c:DMEx.Storage.transaction/2` and `c:DMEx.Storage.validate!/1`.
+  `use DMEx.Storage.SQL` implements every statement below from `c:dialect/1` and
+  nothing else, so a SQL adapter *is* its dialect plus the callbacks that are
+  genuinely its own.
 
   `DMEx.Storage` itself stays open to a store with no dialect at all — the
-  in-memory stub the test suite records reads through implements those eleven
-  callbacks directly, which is what keeps the behaviour a behaviour rather than a
-  SQL template.
+  in-memory stub the test suite records reads through implements those callbacks
+  directly, which is what keeps the behaviour a behaviour rather than a SQL
+  template.
   """
 
   alias Ecto.Adapters.SQL, as: Adapter
@@ -137,6 +141,27 @@ defmodule DMEx.Storage.SQL do
       @doc false
       def __read_sql__(predicate, opts), do: DMEx.Storage.SQL.read_sql(dialect(opts), predicate)
     end
+  end
+
+  ## Appending
+
+  @doc """
+  Renders the append statement.
+
+  The one statement not generated into the adapter, because
+  `c:DMEx.Storage.append/4` is where the engines genuinely differ: Postgres runs
+  it inside a transaction holding `pg_advisory_xact_lock`, SQLite lets it be its
+  own implicit write transaction. Only the running is theirs — the statement is
+  rendered here like every other, so an `ON CONFLICT` or a cast cannot appear on
+  one engine's insert and not its twin.
+  """
+  @spec append_sql(dialect()) :: String.t()
+  def append_sql(%{messages: table, param: param, json: json}) do
+    """
+    INSERT INTO #{table} (type, data, metadata)
+         VALUES (#{param}1, #{json.("#{param}2")}, #{json.("#{param}3")})
+      RETURNING id
+    """
   end
 
   ## Reading the log

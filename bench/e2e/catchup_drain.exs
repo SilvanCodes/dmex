@@ -29,7 +29,9 @@
 # log's `max_batch_frequency`, not by anything the design imposes.
 
 alias DMEx.BenchHelper, as: Helper
+alias DMEx.IntegrationCase
 alias DMEx.Test.Messages.OrderPlaced
+alias DMEx.Test.Server
 alias Ecto.Adapters.SQL
 
 Helper.section("catchup_drain — replay rate, and which stage is the bottleneck")
@@ -60,7 +62,7 @@ defmodule Bench.CountingHandler do
 end
 
 Helper.start_repo!()
-Helper.reset_log!()
+IntegrationCase.truncate_all!()
 
 Helper.start_log!()
 
@@ -82,7 +84,7 @@ end
 
 seed.(backlog)
 
-base = Helper.start_server!()
+base = Server.start!(on_exit: false)
 port = base |> URI.parse() |> Map.fetch!(:port)
 url = base <> "/stream"
 

@@ -10,8 +10,8 @@ defmodule DMEx.Transport.SSE.Frame do
 
   The column-to-slot table, and why each column goes where it does, is in
   [ARCHITECTURE](ARCHITECTURE.md)'s wire contract. `id:` is the row's own id, so a
-  client echoing
-  it back as `Last-Event-ID` — which `DMEx.Log.Params` validates — resumes after it.
+  client echoing it back as `Last-Event-ID` — which `DMEx.Log.Params` validates —
+  resumes after it.
 
   ## Encoding
 
@@ -34,33 +34,22 @@ defmodule DMEx.Transport.SSE.Frame do
 
   @line_terminators ["\r\n", "\n", "\r"]
 
-  @typedoc "A log row on the log's side, as `c:DMEx.Storage.read/5` returns it."
-  @type row :: DMEx.Storage.row()
-
-  @typedoc """
-  A log row on the reader's side, as `decode/1` yields it.
-
-  String-keyed and one level decoded; turning `data` into a message struct is
-  the message module's job, later, in the pipeline.
-  """
-  @type decoded_row :: DMEx.Handler.Pipeline.decoded_row()
-
   @typedoc """
   One decoded frame block.
 
-  `:message` is the only kind that carries a row. `:retry` is the producer's
-  advertised interval. `:ignore` is everything else: a heartbeat comment, a
-  block with an empty `data:` buffer, a field vocabulary this does not know.
+  `:message` is the only kind that carries a row; `:retry` is the producer's
+  advertised interval. `:ignore` is everything else: a heartbeat comment, a block
+  with an empty `data:` buffer, a field vocabulary this does not know.
   """
-  @type decoded :: {:message, decoded_row()} | {:retry, pos_integer()} | :ignore
+  @type decoded ::
+          {:message, DMEx.Handler.Pipeline.decoded_row()} | {:retry, pos_integer()} | :ignore
 
   @type error :: {:invalid_json, term()} | {:invalid_data_shape, term()}
 
   @doc """
-  The SSE line terminators: CRLF, LF and CR.
-
-  The grammar fact, stated here once: `DMEx.Transport.SSE.Decoder` derives its
-  blank-line delimiters from this set at compile time.
+  The SSE line terminators: CRLF, LF and CR — the grammar fact stated once, which
+  `DMEx.Transport.SSE.Decoder` derives its blank-line delimiters from at compile
+  time.
   """
   @spec line_terminators() :: [binary(), ...]
   def line_terminators, do: @line_terminators
@@ -71,7 +60,7 @@ defmodule DMEx.Transport.SSE.Frame do
   `:data` and `:metadata` are spliced verbatim and must therefore already be
   JSON text.
   """
-  @spec encode_row(row()) :: iodata()
+  @spec encode_row(DMEx.Storage.row()) :: iodata()
   def encode_row(%{id: id, type: type, data: data, metadata: metadata}) do
     [
       "id: ",
@@ -89,19 +78,12 @@ defmodule DMEx.Transport.SSE.Frame do
   @doc """
   Encodes a lone `retry:` frame, sent at stream open.
 
-  Dispatches nothing: an SSE parser applies `retry:` the moment it parses the
-  line, while an event is dispatched only if the data buffer is non-empty when
-  the blank line arrives.
+  Dispatches nothing: `retry:` applies at parse time.
   """
   @spec encode_retry(pos_integer()) :: iodata()
   def encode_retry(ms) when is_integer(ms) and ms > 0, do: ["retry: ", Integer.to_string(ms), "\n\n"]
 
-  @doc """
-  Encodes a heartbeat, as an SSE comment frame.
-
-  Comment lines are ignored by every spec-compliant SSE client, so heartbeats
-  never pollute the message stream or require consumer-side handling.
-  """
+  @doc "Encodes a heartbeat, as an SSE comment frame — ignored by every compliant client."
   @spec encode_heartbeat() :: iodata()
   def encode_heartbeat, do: ": hb\n\n"
 
@@ -109,16 +91,10 @@ defmodule DMEx.Transport.SSE.Frame do
   Parses one complete frame block — the field lines between blank lines, without
   the terminating blank line itself.
 
-  A block is a message only if it carries **all three** of `id:`, `event:` and a
-  non-empty `data:`. Anything short of that is `:ignore` rather than an error:
-  per the SSE specification an event is dispatched only when the data buffer is
-  non-empty, and a producer is free to send comments and bare fields.
-
-  `id:` is one integer; anything else leaves the block without an id, so it is
-  `:ignore`.
-
-  A `data:` payload whose `data` or `metadata` is absent, `null`, or anything
-  other than an object is `{:error, {:invalid_data_shape, payload}}` — a
+  A message needs **all three** of `id:` (one integer), `event:` and a non-empty
+  `data:`; anything less is `:ignore` rather than an error, since SSE dispatches
+  an event only for a non-empty data buffer. A payload whose `data` or
+  `metadata` is not an object is `{:error, {:invalid_data_shape, payload}}` — a
   malformed message, not a row.
   """
   @spec decode(binary()) :: {:ok, decoded()} | {:error, error()}
@@ -137,9 +113,8 @@ defmodule DMEx.Transport.SSE.Frame do
         end
 
       # Second, so a block carrying a message *and* a `retry:` yields only the
-      # message and the interval is dropped. Spec-legal input; DMEx and every
-      # SSE server it has met send `retry:` in a frame of its own, and the cost
-      # of missing one is that `SSE.liveness/1` keeps the previous interval.
+      # message: missing an interval costs `SSE.liveness/1` nothing but the
+      # previous one.
       %{retry: retry} ->
         {:ok, {:retry, retry}}
 
@@ -180,9 +155,6 @@ defmodule DMEx.Transport.SSE.Frame do
   end
 
   # The value is everything after the colon, minus one optional leading space.
-  # A comment and an empty line are both `:ignore`: `collect_field/2` has one
-  # clause for everything that is not a field it wants, so nothing distinguishes
-  # them.
   defp parse_line(":" <> _comment), do: :ignore
 
   defp parse_line(line) do

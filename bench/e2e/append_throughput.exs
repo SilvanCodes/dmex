@@ -24,6 +24,7 @@
 # work into fewer, larger messages.
 
 alias DMEx.BenchHelper, as: Helper
+alias DMEx.IntegrationCase
 alias DMEx.Test.IntegrationLog, as: Log
 alias DMEx.Test.Messages.OrderPlaced
 alias Ecto.Adapters.SQL
@@ -51,7 +52,7 @@ end
 
 for concurrency <- [1, 2, 8, 32] do
   Helper.section("concurrency #{concurrency}")
-  Helper.reset_log!()
+  IntegrationCase.truncate_all!()
 
   Benchee.run(
     %{

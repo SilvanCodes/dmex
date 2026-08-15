@@ -53,6 +53,9 @@ defmodule DMEx.HandlerTest do
       assert Fingerprint.encode(built) == fingerprint
     end
 
+    # No separate boolean: a nil fingerprint *is* that answer, and two fields
+    # saying the same thing could only ever disagree. `DMEx.Supervisor` passes
+    # whatever is here with no decision of its own.
     test "a whole-log handler declares the same set, with no fingerprint" do
       assert %{messages: messages, fingerprint: nil} = Handlers.EchoWholeLog.__dmex__()
 
@@ -81,16 +84,9 @@ defmodule DMEx.HandlerTest do
       assert is_binary(fingerprint)
     end
 
-    # No separate boolean: a nil fingerprint *is* that answer, and two fields
-    # saying the same thing could only ever disagree. `DMEx.Supervisor` passes
-    # whatever is here with no decision of its own.
-    test "a clause naming no type is carried as a nil fingerprint" do
-      assert Handlers.EchoWholeLog.__dmex__().fingerprint == nil
-    end
-
     test "a clause naming no type is what turns selection off, wherever it sits" do
       assert %{fingerprint: nil, messages: %MapSet{}} =
-               declaration_of("""
+               compile("""
                def handle_message(_message, _metadata), do: :ok
                def handle_message(%DMEx.Test.Messages.OrderPlaced{}, _metadata), do: :ok
                """)
@@ -102,7 +98,7 @@ defmodule DMEx.HandlerTest do
     test "a variable struct pattern names no type either" do
       for pattern <- ["%module{}", "%module{} = message", "message = %module{}"] do
         assert %{fingerprint: nil, messages: %MapSet{}} =
-                 declaration_of("""
+                 compile("""
                  def handle_message(%DMEx.Test.Messages.OrderPlaced{}, _metadata), do: :ok
                  def handle_message(#{pattern}, _metadata), do: {:other, module}
                  """)
@@ -393,7 +389,7 @@ defmodule DMEx.HandlerTest do
       def handle_message(%DMEx.Test.Messages.Renamed{}, _md), do: :ok
       """
 
-      %{fingerprint: encoded} = declaration_of(body)
+      %{fingerprint: encoded} = compile(body)
       {:ok, filter} = Fingerprint.decode(encoded)
 
       assert Fingerprint.member?(filter, "orders.placed")
@@ -528,8 +524,6 @@ defmodule DMEx.HandlerTest do
   defp compile_module(body), do: compile_module_raw("logs: [:orders], name: :some_id", body)
 
   defp messages_of(body), do: body |> compile() |> Map.fetch!(:messages)
-
-  defp declaration_of(body), do: compile(body)
 
   defp compile_raw(declaration, body) do
     compile_module_raw(declaration, body).__dmex__()

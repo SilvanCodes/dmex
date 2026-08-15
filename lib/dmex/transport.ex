@@ -15,34 +15,12 @@ defmodule DMEx.Transport do
   `c:start_reader/1` starts, and splitting the callbacks would put a grammar in
   one module and its only other user in another, free to drift.
 
-  Nothing here guards against *mismatched* ends being paired, because nothing
-  can pair them: a transport is inferred from a `bindings:` entry, never
-  configured — see `DMEx.Supervisor`.
-
   ## The receive side is a process
 
   `c:start_reader/1` spawns a process linked to the subscription. It connects,
-  reads, and hands each batch over with `deliver/2` — a blocking call, so a
-  reader is *inside* the pipeline's run and reads nothing meanwhile.
-
-  Everything that can go wrong is an exit. So a subscription has one failure
-  path — a linked process died — rather than a vocabulary of return values, and
-  a connection ending mid-batch cannot take back the rows it already handed
-  over, because the handover was a call that returned. There is no way to
-  express "here are rows *and* the connection is finished" and therefore no way
-  to lose the first half of it.
-
-  ## What a transport must preserve
-
-  **No buffer.** At most one batch may be in flight, and the reader must not
-  produce the next until `deliver/2` returns — ARCHITECTURE's "the consumer has
-  no buffer". A transport that queues rows for later has replaced a structural
-  guarantee with a bound somebody has to choose.
-
-  **Rows are handled in the process that owns the cursor.** `deliver/2` hands
-  them to the subscription and they are run there. A reader running the pipeline
-  itself would put the handler callback and the cursor advance in different
-  processes.
+  reads, and hands each batch over with `deliver/2`. Everything that can go
+  wrong is an exit, so a subscription has one failure path — a linked process
+  died — rather than a vocabulary of return values.
   """
 
   @typedoc "A transport's send-side state — a `Plug.Conn`, a pid, whatever it needs."
@@ -65,9 +43,8 @@ defmodule DMEx.Transport do
   Signals liveness on a stream that has been idle for a whole heartbeat interval.
 
   A no-op for a transport whose reader cannot mistake silence for death.
-
-  Unmeasured on purpose, unlike `c:write/2`: `[:dmex, :stream, :heartbeat]`
-  carries no measurements at all, so there is no third element to return.
+  Unmeasured, unlike `c:write/2`: `[:dmex, :stream, :heartbeat]` carries no
+  measurements at all.
   """
   @callback heartbeat(sink()) :: {:ok, sink()} | {:error, term()}
 
@@ -80,15 +57,9 @@ defmodule DMEx.Transport do
 
   Takes the subscription's whole option list and uses what it needs, plus
   `:cursor` — where to resume — and `:owner`, the pid `deliver/2` and
-  `connected/1` are called with.
-
-  `:origin` is the option every transport reads, and it is deliberately the
-  *general* name: only the transport knows whether the binding resolved to a URL
-  or a log module, so each narrows it on the way in — `DMEx.Transport.SSE` keeps
-  a `url`, `DMEx.Transport.Local` a `log`. That is specialization rather than
-  drift; renaming either to `origin` would trade a name that says what the value
-  *is* for one that says where the slot came from, and renaming `:origin` itself
-  to `url` would be wrong for the local half, where it is a module.
+  `connected/1` are called with. `:origin` is the binding, narrowed by each
+  transport on the way in: a URL for `DMEx.Transport.SSE`, a log module for
+  `DMEx.Transport.Local`.
 
   Failing to connect is an ordinary exit from the reader rather than a return
   value here, so opening a connection and losing one are the same event to the
@@ -98,10 +69,8 @@ defmodule DMEx.Transport do
 
   ## Calling a transport
 
-  # As in `DMEx.Storage`: nothing calls a transport module directly. The receive
-  # side dispatches on the `:transport` in the subscription's options — the same
-  # list a reader is started from, so the module travels with the value it acts
-  # on. The send side takes it as its own argument instead, because a sink is a
+  # The receive side dispatches on the `:transport` in the subscription's own
+  # options; the send side takes the module as an argument, because a sink is a
   # `Plug.Conn` or a bare pid and cannot carry one.
 
   @doc "Starts the reader named by `opts`. See `c:start_reader/1`."
@@ -119,10 +88,10 @@ defmodule DMEx.Transport do
   @doc """
   Hands one read's rows to the subscription, and waits for it to run them.
 
-  The reader's whole output. Blocking is the backpressure: the call returns when
-  the last row has been through `DMEx.Handler.Pipeline`, so a reader that reads
-  again on return can never be ahead of the handler by more than the batch it
-  already gave away.
+  Blocking is the backpressure — ARCHITECTURE's "the consumer has no buffer":
+  the call returns once the last row has been through `DMEx.Handler.Pipeline`,
+  in the process that owns the cursor, so a reader that reads again on return is
+  never ahead of the handler by more than the batch it already gave away.
   """
   @spec deliver(pid(), [DMEx.Handler.Pipeline.decoded_row()]) :: :ok
   def deliver(owner, rows), do: GenServer.call(owner, {:rows, rows}, :infinity)

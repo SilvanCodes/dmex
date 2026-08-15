@@ -63,6 +63,24 @@ defmodule DMEx.Case do
     do_eventually(fun, deadline, interval)
   end
 
+  @doc """
+  Starts a supervisor that is expected to refuse, and returns its message.
+
+  A raise in `init/1` does not reach the caller as an exception — the supervisor
+  dies and the link delivers an exit — so this traps it. `opts` is the whole
+  option list, defaults and all.
+  """
+  @spec start_error(keyword()) :: String.t()
+  def start_error(opts) do
+    Process.flag(:trap_exit, true)
+
+    {:error, {%ArgumentError{message: message}, _stacktrace}} = DMEx.Supervisor.start_link(opts)
+
+    message
+  after
+    Process.flag(:trap_exit, false)
+  end
+
   defp do_eventually(fun, deadline, interval) do
     case fun.() do
       falsy when falsy in [nil, false] ->

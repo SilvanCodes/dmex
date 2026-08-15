@@ -6,78 +6,13 @@ defmodule DMEx do
   message log — one ordinary SQL table — and streams it directly to its readers
   over HTTP. See [ARCHITECTURE](ARCHITECTURE.md) for the design.
 
-  ## Installing
-
-  DMEx's tables live in your database, so they are yours to migrate — see
-  `DMEx.Storage.Migration` for the per-role subsets.
-
-      defmodule MyApp.Repo.Migrations.AddDMEx do
-        use Ecto.Migration
-
-        def up, do: DMEx.Storage.Migration.up()
-        def down, do: DMEx.Storage.Migration.down()
-      end
-
-  ## Appending
-
-  An application that appends declares a log module and one module per message
-  type, mounts the endpoint, and writes rows:
-
-      defmodule MyApp.Log do
-        use DMEx.Log, repo: MyApp.Repo
-      end
-
-      defmodule MyApp.Messages.OrderPlaced do
-        use DMEx.Message,
-          type: "order_placed",
-          fields: [:order_id, :customer_id, :total]
-      end
-
-      # in a Plug.Router
-      forward "/stream", to: DMEx.Log.Plug, log_module: MyApp.Log
-
-      MyApp.Log.append(%MyApp.Messages.OrderPlaced{order_id: 7})
-      #=> {:ok, 1042}
-
-  ## Reading
-
-  A handler module declares its subscriptions in full: which logs, under what
-  name, and — from the structs its clauses match on — which message types.
-
-      defmodule MyApp.OrderProjection do
-        use DMEx.Handler, logs: [:orders], name: :order_projection
-
-        @impl true
-        def handle_message(%MyApp.Messages.OrderPlaced{} = message, _metadata) do
-          :ok
-        end
-      end
-
-  ## Starting it
-
-  One child, naming every log this application knows about — its own as modules,
-  everyone else's as URLs:
-
-      children = [
-        MyApp.Repo,
-        {DMEx.Supervisor,
-         otp_app: :my_app,
-         repo: MyApp.Repo,
-         bindings: [
-           catalogue: MyApp.Log,
-           orders: "https://orders.internal/stream"
-         ]}
-      ]
-
-  `DMEx.Supervisor` has the vocabulary: what each kind of binding means, why it
-  is also what chooses the transport, why handler modules are not listed, and
-  every option.
-
-  A log bound to a module is read in this VM — a query and a handler call, no
-  socket and no round trip through this application's own web server — and a
-  handler cannot tell the difference. Those URLs are static configuration of the
-  reading application: a discovery service in that path would reintroduce
-  exactly the shared infrastructure DMEx exists to avoid.
+  Three declarations: `DMEx.Log` for the log an application owns,
+  `DMEx.Message` for one message type, `DMEx.Handler` for what a consumer reads
+  and does with each row. `DMEx.Supervisor` is the one child spec, and holds the
+  option vocabulary: what each log binding means, why it is also what chooses
+  the transport, and why handler modules are not listed.
+  [README](README.md) has the migration, the three declarations and the child
+  spec end to end.
 
   DMEx owns the read position (`last_seen`), keyed by the declared `"log/id"`
   pair rather than the module name, which is what makes renaming a handler free.

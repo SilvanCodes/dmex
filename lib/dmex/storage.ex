@@ -21,11 +21,9 @@ defmodule DMEx.Storage do
 
   ## Two ways to be an adapter
 
-  A SQL engine writes `use DMEx.Storage.SQL` and declares a **dialect** — the
-  eleven things Postgres and SQLite spell differently. That generates every
-  statement callback, leaving the engine only what is genuinely its own:
-  `c:append/4`, `c:transaction/2` and `c:validate!/1`. Both shipped adapters are
-  about eighty lines each because of it.
+  A SQL engine writes `use DMEx.Storage.SQL` and declares a **dialect** — what
+  Postgres and SQLite spell differently. That generates every statement
+  callback, leaving the engine only what is genuinely its own.
 
   Anything else implements the callbacks directly. The suite's in-memory stub does,
   which is what keeps this a behaviour rather than a SQL template — and is why the
@@ -33,34 +31,15 @@ defmodule DMEx.Storage do
 
   ## Three contracts that are correctness, not style
 
-  Each is easy to implement *almost* right. The first cannot be pinned by the
-  conformance suite — the Ecto sandbox is one connection, so nothing inside it can
-  append concurrently — and lives in `test/integration/append_ordering_test.exs`,
-  which runs 8 writers against a real database. The other two are conformance
-  tests.
+  Each is easy to implement *almost* right, and each is stated on the callback
+  it constrains: `c:append/4` must make id assignment order equal commit order,
+  `c:read/5` must return `data` and `metadata` as JSON *text*, and
+  `c:last_seen/2` must distinguish "no cursor" from "cursor at 0".
 
-  **`c:append/4` must make id assignment order equal commit order.** If T1 takes
-  `id=100` and T2 takes `id=101` but T2 commits first, a reader scanning
-  `id > 99 ORDER BY id` sees 101, advances past it, and **permanently skips
-  message 100** — silently, because `last_seen` advanced over the gap. Postgres
-  separates the two moments, so `DMEx.Storage.Postgres` has to serialize appends
-  itself: `pg_advisory_xact_lock`, never `pg_advisory_lock`, and never released
-  explicitly. An engine where the separation cannot arise satisfies this without
-  a lock — SQLite has one writer database-wide, so the second cannot draw a
-  rowid until the first has committed.
-
-  **`c:read/5` must return `data` and `metadata` as JSON *text*.**
-  `DMEx.Transport.SSE.Frame.encode_row/1` splices those columns into the wire
-  frame byte-for-byte, so any cast belongs in the query (`data::text`), not in
-  post-processing — and an engine storing them as text pays nothing at all. An
-  adapter that lets its driver decode a JSON column into a map hands `Frame` a
-  map where it expects text. This is what makes per-row work a
-  memcpy rather than a decode plus an encode — paid once per connection for the
-  same rows, since every connection issues its own read.
-
-  **`c:last_seen/2` must distinguish "no cursor" from "cursor at 0".** It
-  returns `nil`, not `0`, when a subscription has never committed anything,
-  which is what makes the `last_seen:` option apply exactly once.
+  The first is the one the conformance suite cannot pin — the Ecto sandbox is
+  one connection, so nothing inside it can append concurrently — so it lives in
+  `test/integration/append_ordering_test.exs`, which runs 8 writers against a
+  real database. The other two are conformance tests.
 
   ## How a write fails
 
@@ -79,16 +58,6 @@ defmodule DMEx.Storage do
   DMEx rescues it — `DMEx.Handler.Pipeline` tags what the *handler* raised and
   rescues only that, so a storage failure kills the subscription with the cursor
   still below the message it was processing.
-
-  ## The contract is executable
-
-  `test/dmex/storage/conformance_test.exs` runs one suite against every shipped
-  adapter and asserts nothing about how an engine keeps its promises: an adapter
-  is finished when that file and the append-ordering integration test pass, and a
-  change to this behaviour is one edit there rather than one per engine.
-  Engine-specific behaviour — query plans, driver error shapes, the two places the
-  storage formats genuinely differ — lives in `postgres_test.exs` and
-  `sqlite_test.exs` beside it.
   """
 
   @typedoc """
@@ -124,19 +93,7 @@ defmodule DMEx.Storage do
 
   `:inserted_at` is a `DateTime.t()` and never a `NaiveDateTime.t()`: a naive
   timestamp renders without the trailing `Z`, which would silently change every
-  frame on the wire. `DMEx.Storage.Postgres.Migration` uses `timestamptz` for
-  exactly this reason, `DMEx.Storage.SQLite` parses its text column back into a
-  `DateTime`, and `conformance_test.exs` asserts the struct for every adapter.
-
-  **`:inserted_at` means two different things, by table.** From `c:read/5` it is
-  when the message was appended; from `c:list_dead_messages/2` it is when the row
-  landed in `dmex_dead_messages`. A dead row's append time is deliberately not
-  carried over — pruning that table needs an axis answering "how long has this
-  been sitting here", which append time cannot. The column keeps one name anyway,
-  which is what makes a dead row *structurally* a log row; see
-  `c:list_dead_messages/2`. Nothing in DMEx reads the field either way; it is
-  observability, and `DMEx.Handler.DeadMessages.list/2` is the one place a
-  reader has to know which of the two it is holding.
+  frame on the wire.
   """
   @type row :: %{
           required(:id) => pos_integer(),
@@ -149,9 +106,15 @@ defmodule DMEx.Storage do
   @doc """
   Appends one message and returns its assigned id.
 
-  Must make id assignment order equal commit order — see the module
-  documentation for why that is load-bearing, and for the two ways the shipped
-  adapters buy it.
+  Must make id assignment order equal commit order. An engine that assigns ids
+  at INSERT and makes rows visible at COMMIT can commit two appends out of
+  allocation order, and a reader scanning `id > cursor ORDER BY id` then
+  advances straight over the row that had not committed yet and **loses it
+  permanently and silently** — `last_seen` has moved past the gap.
+  `DMEx.Storage.Postgres` buys the order with `pg_advisory_xact_lock`, never
+  `pg_advisory_lock` and never released explicitly; an engine with one writer
+  database-wide, as SQLite has, satisfies the contract with no lock at all. See
+  *Appends are serialized per app* in `ARCHITECTURE.md` for the trade.
 
   `data` and `metadata` arrive as already-encoded JSON binaries, handed to the
   database without decoding, and nothing DMEx owns is merged into `metadata`.
@@ -168,7 +131,7 @@ defmodule DMEx.Storage do
   Reads rows with `id > cursor` in ascending id order, bounded by **both** a row
   count and a byte budget, optionally narrowed to a set of message types.
 
-  Three things an adapter must get right:
+  Four things an adapter must get right:
 
     * **Both bounds are applied inside the query.** `max_bytes` caps
       `octet_length(data) + octet_length(metadata) + octet_length(type)`
@@ -186,6 +149,13 @@ defmodule DMEx.Storage do
       subscription, or a list already expanded by `DMEx.Log.Plug`. A
       `($4 IS NULL OR type = ANY($4))` shape is a correct query and a
       ruinous plan, defeating the index on both branches.
+
+    * **`data` and `metadata` come back as JSON *text*.**
+      `DMEx.Transport.SSE.Frame.encode_row/1` splices those columns into the
+      wire frame byte-for-byte, so any cast belongs in the query (`data::text`)
+      rather than in post-processing, and an engine storing them as text pays
+      nothing at all. An adapter that lets its driver decode a JSON column into
+      a map hands `Frame` a map where it expects text.
 
   Nothing about the log's tip comes back: the wire carries no `max_id`, so a
   consumer cannot tell how far behind it is.
@@ -229,8 +199,11 @@ defmodule DMEx.Storage do
   committed one.
 
   Keyed by the subscription's declared identifier rather than the handler
-  module, so renaming the module does not mint a new subscription. See the
-  module documentation for why `nil` and `0` must not be conflated.
+  module, so renaming the module does not mint a new subscription.
+
+  It returns `nil`, not `0`, for a subscription that has never committed
+  anything: conflating the two is what would stop the `last_seen:` option
+  applying exactly once.
   """
   @callback last_seen(subscription :: String.t(), opts()) ::
               {:ok, non_neg_integer() | nil} | {:error, term()}
@@ -300,6 +273,11 @@ defmodule DMEx.Storage do
 
   `t:row/0` shape — what `c:read/5` returns and the pipeline consumes — because
   the stored columns are the log's columns, so replay needs no reshaping.
+
+  One column means something else here. `:inserted_at` is when the row landed in
+  `dmex_dead_messages`, not when the message was appended; that append time is
+  deliberately not carried over, because pruning this table needs an axis
+  answering "how long has this been sitting here", which append time cannot.
   """
   @callback list_dead_messages(subscription :: String.t(), opts()) ::
               {:ok, [row()]} | {:error, term()}
@@ -403,14 +381,10 @@ defmodule DMEx.Storage do
 
   ## Calling an adapter
 
-  # The whole caller-facing surface, one function per callback. Each takes the
-  # `t:opts/0` map first and hands it back to its own `:adapter` last, so a
-  # caller holds one value where it used to hold a pair, and no call site can
-  # pair one adapter's options with another adapter. `c:default_notifier/0` and
-  # `c:migration/0` are the two callbacks with no function here, both because
-  # their callers hold no `t:opts/0`: `DMEx.Log` asks the module for a notifier
-  # while it is still building the map, and a migration runs in the host's
-  # `Ecto.Migration` with only the repo to hand.
+  # `c:default_notifier/0` and `c:migration/0` are the two callbacks with no
+  # function here, both because their callers hold no `t:opts/0`: `DMEx.Log` asks
+  # the module for a notifier while it is still building the map, and a migration
+  # runs in the host's `Ecto.Migration` with only the repo to hand.
 
   @doc "Appends one message. See `c:append/4`."
   @spec append(opts(), String.t(), binary(), binary()) :: {:ok, pos_integer()} | {:error, term()}
@@ -491,10 +465,8 @@ defmodule DMEx.Storage do
   from inside the compilation still building the adapter, and only this form
   waits for it.
 
-  Takes the module rather than `t:opts/0` because two of the three callers hold
-  no handle: `DMEx.Log` asks while it is still building the map, and a migration
-  runs in the host's `Ecto.Migration` with only the repo to hand. What each
-  caller does with `:none` differs — one skips, two raise — so that stays theirs.
+  What each caller does with `:none` differs — one skips, two raise — so that
+  stays theirs.
   """
   @spec optional(module(), atom(), [term()]) :: {:ok, term()} | :none
   def optional(adapter, callback, args) when is_atom(callback) and is_list(args) do
@@ -522,12 +494,10 @@ defmodule DMEx.Storage do
 
   ## Table names
 
-  # The three table names, stated once. Both adapters' SQL and both migrations'
-  # DDL render these rather than repeating the literals — the same move as
-  # `DMEx.Storage.Postgres.__table__/2`, which is already the one renderer for a
-  # prefix-qualified name so that DDL and queries cannot disagree about it.
-  # Here rather than on an adapter because the names are the *behaviour's*: an
-  # engine implements these tables, it does not get to pick what they are called.
+  # The three table names, stated once: both adapters' SQL and both migrations'
+  # DDL render these rather than repeating the literals. Here rather than on an
+  # adapter because the names are the *behaviour's* — an engine implements these
+  # tables, it does not get to pick what they are called.
   #
   # Atoms, because `Ecto.Migration.table/2` wants one and every other site
   # interpolates, where an atom renders as its own name.

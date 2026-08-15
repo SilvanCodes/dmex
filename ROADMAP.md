@@ -82,51 +82,28 @@ Nothing worth having is on the other side of it:
   raises rather than being reconciled, which keeps the schema derived in exactly
   one place and a migration unable to drift from the log it migrates.
 
-**What stays true regardless.** The wire contract is untouched — none of this is
-observable to a consumer. The lock and channel still key on the schema and
-nothing else — the channel loses its `"dmex_"` because the schema now carries
-one, which is a spelling and not a rekeying; what changes is the derivation's
-justification, because once the invariant holds, keying on the table and
-keying on the log module are the same key and `DMEx.Log`'s "two logs on one table
-would take different locks" describes a shape that can no longer be built. N
-nodes running one log module against one table stays legal, which is why the
-duplicate check is node-local. Binding one local log to two names
-(`bindings: [orders: MyApp.Log, mirror: MyApp.Log]`) is lost, and buys only a second
-subscription-id namespace that distinct handler `name:`s already give.
+**What stays true regardless.** None of it is observable to a consumer, the lock
+and channel still key on the schema
+([appends are serialized per app](ARCHITECTURE.md#appends-are-serialized-per-app)),
+and N nodes running one log module against one table stays legal — which is why
+the duplicate check is node-local. Binding one local log to two names is lost,
+and buys only a second subscription-id namespace that distinct handler `name:`s
+already give.
 
 ### Open, if and when it lands
 
-- **Discovery needs an exclusion, and it is per boot rather than per module.**
-  Sixteen `use DMEx.Log` modules live in `test/`, several deliberately
-  misconfigured for compile-error tests, and with local logs out of `bindings:`
-  there is no way to say "start only this one". The test suite is the loudest case
-  but not the shape-defining one: a **log module arriving through a dependency**
-  starts a dispatcher, a `LISTEN` connection and a watcher in every application
-  that depends on it, and `DMEx.discovery/1` scanning every application declaring
-  `:dmex` is exactly what makes a shared package work; and **one codebase built
-  into several releases** has only `bindings:` today to say that the web release
-  binds the log and the worker release does not. Both are the same compiled
-  module in different deployments, so a compile-time `start: false` cannot
-  express either and a runtime allowlist on `DMEx.Supervisor` can express all
-  three. Neither is a correctness problem — N nodes on one log module stays legal
-  — and handlers carry the same exposure today. Undecided.
-- **The test suite is where the bill lands.** Those sixteen logs share one repo
-  with no prefix — the suite is the largest existing consumer of the shape being
-  forbidden, and gets away with it because nothing appends across them
-  concurrently. Each real one needs its own schema and a `CREATE SCHEMA` plus
-  `:messages` migration.
-- **One existing test is the forbidden shape on purpose.**
-  `DMEx.Test.CoTenantLog` is a second log module on `DMEx.Test.IntegrationLog`'s
-  table, and `DMEx.Storage.Postgres.AppendOrderingTest` exists to watch the two
-  exclude each other — which is the thing keying the lock on the table rather
-  than the module buys, and the thing that becomes unbuildable. Whether the
-  property survives as a test at all is open: N nodes on one log module is the
-  only legal spelling left, and a node-local registered name means one node
-  cannot stand in for two.
-- **Whether the boot check needs a runtime backstop.** A log placed directly in a
-  host's tree via `DMEx.Log.child_spec/1` never passes through
-  `__startable__!/2`, so a duplicate name reaches `__start__/1`'s deadline instead
-  of failing immediately with both module names.
+- Whether discovery needs a per-boot exclusion: a dependency's log module starts
+  a dispatcher, a `LISTEN` connection and a watcher in every application that
+  depends on it, and one codebase built into several releases has only
+  `bindings:` to say which release binds the log.
+- The log modules in `test/support/log.ex` would all need naming, and with local
+  logs out of `bindings:` there is no way to say "start only this one".
+- Whether `DMEx.Test.CoTenantLog`'s append-ordering property survives as a test,
+  once a second log module on one table is unbuildable.
+- Each existing log needs its own schema and a `CREATE SCHEMA` plus `:messages`
+  migration.
+- Whether the boot check needs a runtime backstop: a log placed in a host's tree
+  via `DMEx.Log.child_spec/1` never passes through `__startable__!/2`.
 
 ## Global Resource Limits
 
@@ -168,15 +145,12 @@ can be added later without revisiting delivery semantics.
 
 ### Open, if and when it lands
 
-- **Whether admission is per producer or per host.** The budget that matters is
-  the application's, and one application may mount several producers — so where
-  the watcher sits is the wrong denominator for what is being protected.
-- **Whether shedding is worth having next to admission.** Refusing a new
-  connection never surprises an established consumer; shedding one is strictly
-  harsher, against a client that did nothing wrong.
-- **How an operator sees the ceiling coming**, since a budget only observable by
-  being hit is a bad budget. `[:dmex, :stream, :connect]` plus a live registry
-  count is most of a utilization signal already.
+- Whether admission is per producer or per host — one application may mount
+  several producers, so the watcher is the wrong denominator.
+- Whether shedding is worth having next to admission, given that refusing a new
+  connection never surprises an established consumer and shedding one does.
+- How an operator sees the ceiling coming, since a budget only observable by
+  being hit is a bad budget.
 
 ## One Cursor, One Reader
 
@@ -257,45 +231,22 @@ only after the heal.
 
 **What stays true regardless.** The wire contract is untouched: ownership is
 consumer-side, and a producer cannot tell how many nodes a consumer runs. The
-residual window is already specified — an owner whose connection dies while it is
-inside `handle_message/2` loses the lock before it notices, so a new owner can run
-one handler concurrently with it, but the old one **cannot commit**: its advance
-needs the dead connection, and pipeline section 4 lets that failure through
-untagged, killing the subscription with the cursor still below the message. That
-is bit-for-bit the case *Delivery semantics* already documents —
-side effects landing before the transaction commits — so local-repo effects roll
-back and external ones need the idempotency they already needed. Nothing here
-adds a failure mode; it removes one. N nodes running one *log* module stays
-legal, unaffected and separately argued under
-[One Log, One Table](#one-log-one-table): this is about readers of a cursor, not
-writers of a log.
+residual window — an owner whose connection dies inside `handle_message/2` loses
+the lock but **cannot commit**: its advance needs the dead connection, and
+pipeline section 4 lets that failure through untagged, killing the subscription
+with the cursor still below the message — is bit-for-bit the case
+[Delivery semantics](ARCHITECTURE.md#delivery-semantics) already documents, so
+nothing here adds a failure mode. N nodes running one *log* module is argued
+separately under [One Log, One Table](#one-log-one-table).
 
 ### Open, if and when it lands
 
-- **Whether detection is enough.** Owner stamping alone is not exclusion, and on
-  a two-replica deploy it reports the problem forever without fixing it. It may
-  also be the honest end state: the fix is one replica, and a loud warning is how
-  an operator learns that. Whether a foreign owner warns or crashes the
-  subscription belongs here.
-- **Whether exclusive ownership stays opt-in on Postgres.** Default-on is the
-  safe direction and costs every consumer a connection per subscription, which is
-  the wrong bill for the single-replica deployment that is the common case.
-- **What paces a standby's retry.** `reconnect_backoff_base` is the existing
-  vocabulary and the wrong quantity — it paces a consumer against a producer's
-  socket, while this paces a cheap local query — and failover latency is bounded
-  by whatever is chosen. A standby probably also wants to be visible: a
-  subscription that is deliberately idle looks exactly like one that is broken.
-- **Operator tools take the lock too, or say why not.**
-  `DMEx.Handler.DeadMessages.replay!/2` and `DMEx.Handler.Cursors.move!/3` run from a
-  console on any node and write cursors while an owner is streaming. `Cursors`
-  already says a move takes effect at the next reconnect; replay commits through
-  `deliver/3` and is the sharper case.
-- **Whether ownership should key on the handler instead of the subscription.** A
-  multi-log handler holding one claim per log can end up split across nodes,
-  which is correct per cursor and may still surprise — its logs are bound
-  together in one module for a reason.
-- **What the local transport means for this.** `DMEx.Transport.Local` puts producer
-  and consumer in one application, so N nodes of it are N appenders and N
-  readers. Ownership applies unchanged, because the cursor is in the shared repo —
-  but it is the deployment where "scale the app" and "scale the consumer" are the
-  same action, so it is where this bites first.
+- Whether detection (owner stamping) is enough on its own, and whether a foreign
+  owner warns or crashes the subscription.
+- Whether exclusive ownership stays opt-in on Postgres.
+- What paces a standby's retry, and how a deliberately idle standby stays
+  distinguishable from a broken one.
+- Whether `DMEx.Handler.DeadMessages.replay!/2` and
+  `DMEx.Handler.Cursors.move!/3` take the lock too.
+- Whether ownership keys on the handler instead of the subscription.
+- What `DMEx.Transport.Local` means for it.

@@ -2,127 +2,69 @@ defmodule DMEx.Telemetry do
   @moduledoc """
   Every `:telemetry` event DMEx emits.
 
-  No functions — this module exists so the event vocabulary is written down in
-  one place and versioned with the code. Renaming an event is a breaking change
-  for every dashboard built on it, and that should be visible in a diff.
+  No functions — the vocabulary is written down here so that renaming an event,
+  which breaks every dashboard built on it, is visible in a diff.
 
   ## Log
 
-  ### `[:dmex, :append, :start | :stop | :exception]`
+  | event | measurements | metadata |
+  | --- | --- | --- |
+  | `[:dmex, :append, :start]` / `:stop` / `:exception` | a `:telemetry.span/3` | `:log`, `:type` |
+  | `[:dmex, :stream, :connect]` | `:cursor`, `:matched` | `:log`, `:selective` |
+  | `[:dmex, :stream, :write]` | `:rows`, `:bytes` where bytes are meaningful | `:log` |
+  | `[:dmex, :stream, :heartbeat]` | — | `:log` |
+  | `[:dmex, :stream, :reclaim]` | `:overdue_by` in ms | `:log` |
+  | `[:dmex, :dispatcher, :broadcast]` | `:streams`, `:woken`, `:types` | `:log` |
 
-  A `:telemetry.span/3` around the append. Metadata: `:log`, `:type`.
-
-  The one to alert on is `:exception` — an append that raises is a message the
-  application believes it emitted and did not.
-
-  ### `[:dmex, :stream, :connect]`
-
-  A consumer opened a stream. Measurements: `:cursor`, the resolved starting
-  position, and `:matched`, the types the connection admits as
-  `DMEx.Log.Selection.size/1` counts them — `nil` for a whole-log one, and for a
-  local reader the handler's own declared types, which need no resolution and so
-  have no `404` for an empty one. Metadata: `:log`, `:selective`.
-
-  ### `[:dmex, :stream, :write]`
-
-  One write to one connection. Measurements: `:rows`, plus `:bytes` on a
-  transport where bytes are meaningful. Metadata: `:log`. `:rows` sitting at
-  `max_batch_rows` write after write is what catch-up looks like.
-
-  ### `[:dmex, :stream, :heartbeat]`
-
-  A liveness tick on an idle connection — an SSE comment frame, nothing on the
-  wire for a local reader. Metadata: `:log`. Heartbeats stopping while
-  connections remain open means loops are wedged.
-
-  ### `[:dmex, :stream, :reclaim]`
-
-  `DMEx.Log.Watcher` killed a connection that blew its deadline. Measurements:
-  `:overdue_by` in ms. Metadata: `:log`. [The deployment guide](deployment.md) covers what an
-  occasional one costs, what a steady rate means, and how to size
-  `stall_timeout` against it.
-
-  ### `[:dmex, :dispatcher, :broadcast]`
-
-  An append (or a poll that saw one) woke the connections. Measurements:
-  `:streams` registered, `:woken` — the difference is coalescing and type
-  routing at work — and `:types`, how many distinct types the burst covered.
-  Metadata: `:log`.
+  `:matched` counts the types a connection admits, as `DMEx.Log.Selection.size/1`
+  counts them, and is `nil` for a whole-log connect. `:reclaim` is
+  `DMEx.Log.Watcher` killing a connection that blew its deadline — [the
+  deployment guide](deployment.md) sizes `stall_timeout` against its rate.
 
   ## Handler
 
   Every handler event carries `:subscription`, `:handler` and `:origin`.
   `:subscription` — `"orders/order_projection"` — is the durable identity
-  (`DMEx.Handler`), so it is what a dashboard should group and alert on;
-  `:handler` is the module, which is what a human reads in a log line. After one
-  refactor they usually differ. `:origin` is where the rows came from: a URL, or
-  the module of a log this application owns.
+  (`DMEx.Handler`), so it is what a dashboard groups and alerts on; `:handler` is
+  the module, which is what a human reads in a log line. After one refactor they
+  usually differ. `:origin` is where the rows came from: a URL, or the module of
+  a log this application owns.
 
-  ### `[:dmex, :handler, :message, :start | :stop | :exception]`
+  | event | measurements | extra metadata |
+  | --- | --- | --- |
+  | `[:dmex, :handler, :message, :start]` / `:stop` / `:exception` | a `:telemetry.span/3` | `:type`, `:id`, `:attempt`, plus `:reason` on `:exception` |
+  | `[:dmex, :handler, :skip]` | `:id` | `:type` |
+  | `[:dmex, :handler, :checkpoint]` | `:cursor` | — |
+  | `[:dmex, :handler, :failed]` | `:id`, `:attempts` | `:type`, `:on_failure`, `:reason` |
+  | `[:dmex, :handler, :reconnect]` | `:attempt`, `:delay` | `:reason` |
 
-  A `:telemetry.span/3` around **one attempt** at one message: the handler call
-  and the cursor advance, in their transaction. Extra metadata:
-  `:type`, `:id`, `:attempt`.
+  One `:message` span per **attempt** at one message — the handler call and the
+  cursor advance, in their transaction — so an `:exception` at `attempt: 1`
+  followed by a `:stop` at `attempt: 2` is a transient failure recovering. On
+  `:exception`, the handler's own raise arrives wrapped in
+  `DMEx.Handler.Pipeline.Failure` (`Exception.message/1` reads through to the
+  original, `.exception` is it) and anything else is storage failing, which is
+  not retried and not resolved by `on_failure` — so the wrapper is what
+  separates a message a handler rejected from a database that went away.
 
-  One span per attempt, so an `:exception` at `attempt: 1` followed by a `:stop`
-  at `attempt: 2` is a transient failure recovering. Per attempt rather than per
-  sequence because an attempt's duration is what a handler costs, where a
-  sequence's is mostly backoff.
+  `:skip` is a row no clause matched, outside any `:message` span. Its ratio to
+  `:checkpoint`, which persists a coalesced run of skipped rows, is the
+  coalescing ratio: one checkpoint per thousand skips is the mechanism working,
+  one per skip means runs are being broken up by handled rows.
 
-  On `:exception`, `:reason` says which half failed. The handler's own raise
-  arrives wrapped in `DMEx.Handler.Pipeline.Failure` — `Exception.message/1`
-  reads through to the original, and `.exception` is it — and anything else is
-  storage failing, which is not retried and not resolved by `on_failure`. So the
-  wrapper is the signal, not noise: it is what tells a message a handler rejected
-  from a database that went away.
+  `:failed` is a message that exhausted its local retries, emitted for
+  `:dead_message` and `:skip` only — `:crash` re-raises, so the supervisor's
+  report is the record there.
 
-  ### `[:dmex, :handler, :skip]`
-
-  A row no clause matched — `DMEx.Handler.Pipeline` covers the two ways that
-  happens. Neither reached a handler, so neither is inside a `:message` span.
-  Measurements: `:id`. Extra metadata: `:type`.
-
-  **Worth a dashboard even though it is not a fault**: a consumer silently
-  discarding most of a stream and one silently discarding the single type it
-  wanted look identical without it.
-
-  ### `[:dmex, :handler, :checkpoint]`
-
-  A coalesced run of skipped rows was written to `dmex_cursors`. Measurements:
-  `:cursor`, the position persisted — named for what it is, since `:id` on the
-  sibling handler events is a log row's own id. Never fires on a stream whose
-  rows are all handled. Its rate against `[:dmex, :handler, :skip]` is the
-  coalescing ratio: one per thousand skips is the mechanism working, one per skip
-  means runs are being broken up by handled rows.
-
-  ### `[:dmex, :handler, :failed]`
-
-  A message that exhausted its local retries. Measurements: `:id`, `:attempts`.
-  Extra metadata: `:type`, `:on_failure`, `:reason`.
-
-  Emitted for `:dead_message` and `:skip`. `:crash` re-raises instead, so the
-  supervisor's own report is the record there. Worth an alert either way: under
-  the default the subscription keeps running, so this event and a growing
-  `dmex_dead_messages` are the only signs something is being given up on.
+  `:reconnect`'s `{:no_matching_types, url}` reason deserves an alert of its own:
+  it is the log's `404` (`DMEx.Log.Plug`), which clears itself when the log
+  deploys those types, so a steady rate is a subscription pointed at the wrong
+  log.
 
   There is deliberately **no socket-gating event and no lag event**:
   backpressure is not a decision this side makes but what happens while the
   process is in a handler (ARCHITECTURE's "the consumer has no buffer"), and
   "how far behind am I" is not answerable from a frame (ARCHITECTURE's *wire
   contract* — no `max_id`, no clock).
-
-  ### `[:dmex, :handler, :reconnect]`
-
-  Measurements: `:attempt`, `:delay`. Extra metadata: `:reason`.
-
-  A climbing `:attempt` is a subscription that cannot connect; it stops climbing
-  at `DMEx.Handler.Subscription`'s cap, where the delay is
-  `reconnect_backoff_max` anyway and the event repeats at that pace, so a plateau
-  there is the stuck case rather than a recovery. `:reason` distinguishes a log
-  restart from a poison message crash-looping from a stream dropped for silence.
-
-  **One reason deserves an alert of its own.** `{:no_matching_types, url}` is
-  the log's `404` (`DMEx.Log.Plug`), which clears itself when the log deploys
-  those types — so a steady rate is a subscription pointed at the wrong log.
   """
 end

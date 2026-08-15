@@ -383,15 +383,14 @@ defmodule DMEx.Handler.PipelineTest do
   end
 
   describe "telemetry" do
-    test "spans each handled message" do
+    test "spans each handled message", ctx do
       ref =
         :telemetry_test.attach_event_handlers(self(), [
           [:dmex, :handler, :message, :start],
           [:dmex, :handler, :message, :stop]
         ])
 
-      state =
-        state(%{storage: %{adapter: Postgres, repo: Repo, prefix: nil}}, handler: Handlers.Echo, cursor: 0)
+      state = state(ctx, handler: Handlers.Echo, cursor: 0)
 
       Pipeline.run(row(1), state)
 
@@ -402,14 +401,13 @@ defmodule DMEx.Handler.PipelineTest do
       assert_receive {[:dmex, :handler, :message, :stop], ^ref, %{duration: _}, %{handler: Handlers.Echo}}
     end
 
-    test "reports an exception rather than swallowing it" do
+    test "reports an exception rather than swallowing it", ctx do
       ref =
         :telemetry_test.attach_event_handlers(self(), [
           [:dmex, :handler, :message, :exception]
         ])
 
-      state =
-        state(%{storage: %{adapter: Postgres, repo: Repo, prefix: nil}}, handler: Handlers.Raising, cursor: 0)
+      state = state(ctx, handler: Handlers.Raising, cursor: 0)
 
       catch_error(Pipeline.run(row(1), state))
 

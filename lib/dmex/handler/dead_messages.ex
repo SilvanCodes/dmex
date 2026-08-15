@@ -9,12 +9,9 @@ defmodule DMEx.Handler.DeadMessages do
       DMEx.Handler.DeadMessages.replay!(MyApp.OrderProjection, repo: MyApp.Repo)
 
   The stored columns are `dmex_messages`' columns, so a dead row *is* a log row:
-  replay hands the same message back rather than rebuilding one from parts. It
-  does have to restate it, though — a stored row is `t:DMEx.Storage.row/0`
-  (atom keys, JSON text, as a driver returns it) while the pipeline consumes
-  `t:DMEx.Handler.Pipeline.decoded_row/0` (string keys, decoded one level, as a
-  transport yields it). See `c:DMEx.Storage.record_dead_message/2` for the shape
-  and for what is deliberately not stored.
+  replay hands the same message back rather than rebuilding one from parts. See
+  `c:DMEx.Storage.record_dead_message/2` for the shape and for what is
+  deliberately not stored.
 
   ## Replay is the pipeline, minus `on_failure`
 
@@ -33,11 +30,9 @@ defmodule DMEx.Handler.DeadMessages do
   ## Replay does not touch the cursor
 
   The subscription advanced past a dead message long ago, and moving the cursor
-  backwards would redeliver everything in between. So `replay!/2` calls the
-  handler directly and deletes the row on success, in one transaction. It
-  follows that replay bypasses duplicate suppression, which consults only the
-  cursor — so a handler can be called for a message whose side effects partly
-  landed on an earlier attempt.
+  backwards would redeliver everything in between. Replay therefore bypasses
+  duplicate suppression, which consults only the cursor — so a handler can be
+  called for a message whose side effects partly landed on an earlier attempt.
 
   ## Options
 
@@ -64,10 +59,8 @@ defmodule DMEx.Handler.DeadMessages do
   is when the row landed in `dmex_dead_messages`, not when the message was
   appended, which is not carried over.
 
-  Returns storage's `{:error, reason}` rather than raising, because a listing is
-  something a caller inspects; `replay!/2` raises on the same failure, having no
-  tagged return to carry it and no business reporting an unreachable database as
-  a count.
+  Returns storage's `{:error, reason}` rather than raising, unlike `replay!/2`,
+  which has no tagged return to carry it.
   """
   @spec list(module(), keyword()) :: {:ok, [Storage.row()]} | {:error, term()}
   def list(handler, opts) when is_atom(handler) do
@@ -80,17 +73,13 @@ defmodule DMEx.Handler.DeadMessages do
   Feeds every dead message back to `handler`, deleting the ones it accepts.
 
   Each message gets its own transaction containing the handler call and the
-  delete, so a message is removed from the table exactly when the handler
-  finally accepts it. One that raises through its retries is left in place and
-  does not stop the rest.
+  delete; one that raises through its retries is left in place and does not stop
+  the rest. Retries follow the handler's own `use DMEx.Handler` config, and any
+  of `DMEx.Config`'s handler keys may be overridden here for this one run.
 
-  Takes the handler's own `use DMEx.Handler` config, so replay retries on the
-  schedule that subscription is configured for; any of `DMEx.Config`'s handler
-  keys may be overridden here for this one run.
-
-  Returns `%{replayed: n, failed: n}`, where `failed` also counts a row no
-  clause matches — it is a row still in the table, and the log line says what to
-  do about it. Raises if storage itself fails, which is not a message a handler
+  Returns `%{replayed: n, failed: n}`, where `failed` also counts a row no clause
+  matches — it is a row still in the table, and the log line says what to do
+  about it. Raises if storage itself fails, which is not a message a handler
   rejected and not a count.
   """
   @spec replay!(module(), keyword()) :: %{replayed: non_neg_integer(), failed: non_neg_integer()}

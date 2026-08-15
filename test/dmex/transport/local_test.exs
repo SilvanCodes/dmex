@@ -135,9 +135,8 @@ defmodule DMEx.Transport.LocalTest do
   end
 
   describe "the reader" do
-    # The same entry an HTTP request process makes, carrying the same selection —
-    # which is what gets a local reader wakeup routing and watcher reclaim
-    # without reimplementing either.
+    # The same entry an HTTP request process makes, so wakeup routing and
+    # watcher reclaim work on a local reader unchanged.
     test "registers with the log, carrying its selection" do
       subscribe(Handlers.Echo)
 
@@ -181,9 +180,7 @@ defmodule DMEx.Transport.LocalTest do
     start_supervised!({DMEx.Supervisor, name: TestSupervisor, otp_app: nil, repo: Repo, bindings: @logs})
   end
 
-  # `last_seen: 0` throughout: every test here appends first and subscribes
-  # after, which is the backlog these assertions are about. The default —
-  # unset — would correctly skip all of it.
+  # `last_seen: 0` throughout: these tests append first and subscribe after.
   defp subscribe(handler, opts \\ [last_seen: 0]) do
     {:ok, pids} = DMEx.Supervisor.subscribe(handler, [supervisor: TestSupervisor] ++ opts)
 

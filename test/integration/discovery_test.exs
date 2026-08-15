@@ -11,7 +11,6 @@ defmodule DMEx.Integration.DiscoveryTest do
 
   use DMEx.IntegrationCase
 
-  alias DMEx.Storage.Postgres
   alias DMEx.Test.IntegrationLog, as: Log
   alias DMEx.Test.Messages.OrderPlaced
 
@@ -27,7 +26,7 @@ defmodule DMEx.Integration.DiscoveryTest do
 
     assert_receive {:handled, %OrderPlaced{order_id: 7}, _metadata}, 5_000
 
-    eventually(fn -> Postgres.last_seen("test/echo", consumer_opts()) == {:ok, id} end)
+    eventually(fn -> cursor("test/echo") == {:ok, id} end)
   end
 
   test "a handler on two logs commits a cursor per subscription", _ctx do
@@ -35,9 +34,7 @@ defmodule DMEx.Integration.DiscoveryTest do
 
     # Both names point at the same log, so both subscriptions see the same row
     # and advance their own cursor to it.
-    eventually(fn -> Postgres.last_seen("test/fanned", consumer_opts()) == {:ok, id} end)
-    eventually(fn -> Postgres.last_seen("other/fanned", consumer_opts()) == {:ok, id} end)
+    eventually(fn -> cursor("test/fanned") == {:ok, id} end)
+    eventually(fn -> cursor("other/fanned") == {:ok, id} end)
   end
-
-  defp consumer_opts, do: %{repo: DMEx.Test.IntegrationRepo, prefix: nil}
 end

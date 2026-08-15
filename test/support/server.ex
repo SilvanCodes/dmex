@@ -25,10 +25,16 @@ defmodule DMEx.Test.Server do
   Starts a server on an ephemeral port and returns its base URL.
 
   Registers cleanup with the calling test, so nothing leaks between cases.
+  `on_exit: false` skips that, for a benchmark: there is no ExUnit callback to
+  hang the teardown on, and the run's own exit takes the listener with it.
   """
   @spec start!(keyword()) :: String.t()
   def start!(opts \\ []) do
     plug = Keyword.get(opts, :plug, Router)
+
+    # Idempotent, and the benches need it: `mix run` starts the application but
+    # a script is not obliged to have anything listening yet.
+    {:ok, _} = Application.ensure_all_started(:bandit)
 
     {:ok, pid} =
       Bandit.start_link(
@@ -39,16 +45,18 @@ defmodule DMEx.Test.Server do
         startup_log: false
       )
 
-    ExUnit.Callbacks.on_exit(fn ->
-      ref = Process.monitor(pid)
-      Process.exit(pid, :normal)
+    if Keyword.get(opts, :on_exit, true) do
+      ExUnit.Callbacks.on_exit(fn ->
+        ref = Process.monitor(pid)
+        Process.exit(pid, :normal)
 
-      receive do
-        {:DOWN, ^ref, :process, ^pid, _} -> :ok
-      after
-        1_000 -> :ok
-      end
-    end)
+        receive do
+          {:DOWN, ^ref, :process, ^pid, _} -> :ok
+        after
+          1_000 -> :ok
+        end
+      end)
+    end
 
     {:ok, {_ip, port}} = ThousandIsland.listener_info(pid)
 

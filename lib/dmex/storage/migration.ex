@@ -34,30 +34,6 @@ defmodule DMEx.Storage.Migration do
     * `:storage` — the `DMEx.Storage` adapter whose DDL to run. Defaults to the
       shipped adapter for the repo's engine, so only an adapter DMEx does not
       ship has to name itself here.
-
-  ## The two indexes
-
-  **The primary key on `id`** serves every whole-log read directly: those are
-  `id > cursor` range scans and nothing else. **`(type, id)`** serves a
-  selective subscription's `id > cursor` plus a type predicate, and the planner
-  takes it only when the selection is rare enough to be cheaper — the `EXPLAIN`
-  session that measured the crossover is recorded beside the index in
-  `DMEx.Storage.Postgres.Migration`. It costs one
-  index entry per append, paid whether or not anyone selects against it, because
-  the alternative is that server-side selection saves bandwidth and no database
-  work at all.
-
-  ## The `type` CHECK
-
-  `type` is restricted to `[A-Za-z0-9_.]+` because it goes on the wire as
-  an SSE `event:` line and SSE field lines have no escaping. Everything else on
-  the wire is spliced JSON, whose grammar already forbids raw control characters
-  inside strings.
-
-  A database constraint rather than a check in the append path, because it has
-  to hold for every writer of the table: `use DMEx.Message` enforces the same
-  charset on a declared `type:` at compile time, a backfill or a psql session
-  goes nowhere near it.
   """
 
   use Ecto.Migration

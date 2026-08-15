@@ -87,7 +87,8 @@ defmodule DMEx.MixProject do
 
   defp docs do
     [
-      main: "DMEx",
+      # The README, since the `DMEx` moduledoc no longer repeats its quickstart.
+      main: "readme",
       source_url: @source_url,
       # No tags yet, so a `v#{@version}` ref 404s on every "Source" link.
       source_ref: "trunk",
@@ -97,6 +98,51 @@ defmodule DMEx.MixProject do
         "guides/fingerprint-spec.md",
         "ARCHITECTURE.md",
         "ROADMAP.md"
+      ],
+      groups_for_modules: [
+        Declaring: [DMEx.Log, DMEx.Message, DMEx.Handler, DMEx.Supervisor],
+        Operating: [
+          DMEx.Config,
+          DMEx.Handler.Cursors,
+          DMEx.Handler.DeadMessages,
+          DMEx.Storage.Migration,
+          DMEx.Telemetry
+        ],
+        Storage: [
+          DMEx.Storage,
+          DMEx.Storage.Postgres,
+          DMEx.Storage.Postgres.Migration,
+          DMEx.Storage.SQLite,
+          DMEx.Storage.SQLite.Migration,
+          DMEx.Storage.SQL
+        ],
+        Transports: [
+          DMEx.Transport,
+          DMEx.Transport.Local,
+          DMEx.Transport.SSE,
+          DMEx.Transport.SSE.Decoder,
+          DMEx.Transport.SSE.Frame
+        ],
+        "Producer internals": [
+          DMEx.Log.Plug,
+          DMEx.Log.Dispatcher,
+          DMEx.Log.Params,
+          DMEx.Log.Selection,
+          DMEx.Log.SendLoop,
+          DMEx.Log.Status,
+          DMEx.Log.Streams,
+          DMEx.Log.Watcher,
+          DMEx.Notifier,
+          DMEx.Notifier.Beam,
+          DMEx.Notifier.Postgres
+        ],
+        "Consumer internals": [
+          DMEx.Handler.Fingerprint,
+          DMEx.Handler.Request,
+          DMEx.Handler.Subscription,
+          DMEx.Handler.Subscriptions,
+          DMEx.Supervisor.Bindings
+        ]
       ]
     ]
   end

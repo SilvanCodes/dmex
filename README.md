@@ -105,17 +105,13 @@ back rather than rebuilding a message from parts:
 
 ## Backpressure
 
-**A consumer has no buffer at all**, and that is the whole mechanism. Rows run
-through the pipeline inline on the socket path, so while a handler is running
-the socket is not re-armed, the TCP receive window closes, and the producer's
-`chunk/2` blocks on it. The producer's send loop is gated the same way: the
-next read cannot happen until the previous write returns.
-
-Nothing is configurable on the consumer side. Pacing is `max_batch_frequency`,
-`max_batch_rows` and `max_batch_bytes` on the **producer** — the party whose
-database, memory and request processes they protect. See ARCHITECTURE.md
-ARCHITECTURE's "reads are gated on sends", "the consumer has no buffer" and
-"pacing has one owner".
+**A consumer has no buffer at all**, and that is the whole mechanism: rows run
+through the pipeline inline on the socket path, so while a handler is running the
+socket is not re-armed, the TCP receive window closes, and the producer's
+`chunk/2` blocks on it. Pacing is the producer's — the party whose database,
+memory and request processes it protects — and `DMEx.Config` has the three
+settings. See [ARCHITECTURE.md](ARCHITECTURE.md)'s "reads are gated on sends",
+"the consumer has no buffer" and "pacing has one owner".
 
 ## Operating it
 

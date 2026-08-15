@@ -21,6 +21,7 @@ defmodule DMEx.Test.Storage do
             dead: [],
             fail: nil,
             fail_max_id: nil,
+            fail_transaction: [],
             hang: nil
 
   @doc """
@@ -76,10 +77,6 @@ defmodule DMEx.Test.Storage do
 
   This is the failure no transport-level timeout can see: a query that never
   comes back wedges the send loop with a healthy socket underneath it.
-
-  Both this and `fail/2` are scoped to `read/5` and take no callback name:
-  reads are the only call these tests inject faults into, and an argument
-  naming a callback that is never consulted is a silent no-op.
   """
   @spec hang(DMEx.Storage.opts()) :: :ok
   def hang(opts), do: update(&%{&1 | hang: true}, opts)
@@ -93,6 +90,26 @@ defmodule DMEx.Test.Storage do
   """
   @spec fail_max_id(term(), DMEx.Storage.opts()) :: :ok
   def fail_max_id(reason \\ :boom, opts), do: update(&%{&1 | fail_max_id: reason}, opts)
+
+  @doc """
+  Makes the next `transaction/2` calls follow `script`, one entry per call.
+
+  Storage failing *underneath* a caller that did nothing wrong, in the shapes a
+  real pool fails in:
+
+    * `:ok` — behaves normally.
+    * `:timeout` — `{:error, :pool_timeout}`: the checkout timed out, so the
+      callback never ran.
+    * `:commit` — the callback ran and its writes rolled back, then
+      `{:error, :serialization_failure}`: a commit that failed after the fact.
+    * `:down` — a pool that is already gone. `Ecto.Repo.transaction/1` calls it,
+      so this leaves as an **exit** rather than as a value, which is the one
+      shape a `rescue` cannot see.
+
+  Calls past the end of the script behave normally.
+  """
+  @spec fail_transaction([:ok | :timeout | :commit | :down], DMEx.Storage.opts()) :: :ok
+  def fail_transaction(script, opts), do: update(&%{&1 | fail_transaction: script}, opts)
 
   ## DMEx.Storage
 
@@ -197,7 +214,25 @@ defmodule DMEx.Test.Storage do
   end
 
   @impl DMEx.Storage
-  def transaction(fun, _opts), do: {:ok, fun.()}
+  def transaction(fun, opts) do
+    case next_transaction_fault(opts) do
+      :ok ->
+        {:ok, fun.()}
+
+      :timeout ->
+        {:error, :pool_timeout}
+
+      :commit ->
+        written = Map.take(get(opts), [:rows, :cursors, :dead])
+        _ = fun.()
+        update(&Map.merge(&1, written), opts)
+
+        {:error, :serialization_failure}
+
+      :down ->
+        exit(:noproc)
+    end
+  end
 
   @impl DMEx.Storage
   def advance_cursor(subscription, last_seen, opts) when is_binary(subscription) do
@@ -269,6 +304,13 @@ defmodule DMEx.Test.Storage do
     if get(opts).hang, do: Process.sleep(:infinity)
 
     :ok
+  end
+
+  defp next_transaction_fault(opts) do
+    Agent.get_and_update(store(opts), fn
+      %{fail_transaction: [fault | rest]} = state -> {fault, %{state | fail_transaction: rest}}
+      state -> {:ok, state}
+    end)
   end
 
   defp update(fun, opts) do

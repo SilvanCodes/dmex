@@ -65,9 +65,8 @@ defmodule DMEx.ConfigTest do
       end
     end
 
-    # There are no floors and no ceilings any more, because there is nothing to
-    # clamp: pacing is log configuration and no consumer ever asks for a
-    # different value. A log that wants a 10 ms window may simply have one.
+    # Nothing to clamp against: pacing is log configuration, and no consumer
+    # ever asks for a different value.
     test "takes any positive pacing value, with nothing to clamp it against" do
       assert Config.log!(max_batch_frequency: 200).max_batch_frequency == 200
       assert Config.log!(max_batch_rows: 9_000).max_batch_rows == 9_000
