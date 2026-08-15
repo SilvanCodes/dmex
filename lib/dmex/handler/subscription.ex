@@ -72,7 +72,7 @@ defmodule DMEx.Handler.Subscription do
     # Registered before anything opens, so `unsubscribe/2` can find this process
     # by id. The duplicate guard is the supervisor's — a subscription id *is* the
     # child id — and this only catches a `Subscription` started outside one.
-    case register(opts[:registry], subscription) do
+    case register(Keyword.fetch!(opts, :registry), subscription) do
       {:ok, _pid} ->
         # Both carry handler, subscription, storage, origin and config, and the
         # copy is deliberate: `:opts` is the list a reader is handed whole —
@@ -112,9 +112,23 @@ defmodule DMEx.Handler.Subscription do
     {:noreply, reconnect(%{state | reader: nil}, reason)}
   end
 
-  # A stray message is not worth a crash: nothing this process owns sends one,
-  # and a subscription that dies of an unknown `handle_info` loses a live stream.
-  def handle_info(_message, state), do: {:noreply, state}
+  # A reader this subscription already gave up on, signalling after the fact:
+  # `reconnect/2` cleared `:reader` before this arrived and the next connect
+  # starts a new one, so there is nothing to do and nothing to say.
+  def handle_info({:EXIT, _pid, _reason}, state), do: {:noreply, state}
+
+  # A stray message is not worth a crash: a subscription that dies of an unknown
+  # `handle_info` loses a live stream. Logged rather than swallowed, because
+  # nothing this process owns sends one, so the sender is outside it.
+  def handle_info(message, state) do
+    Logger.warning(
+      "DMEx #{state.pipeline.subscription} (#{inspect(state.pipeline.handler)}) ignored an " <>
+        "unexpected message: #{inspect(message)}. Only its reader and its own checkpoint timer " <>
+        "send this process anything. The subscription continues regardless."
+    )
+
+    {:noreply, state}
+  end
 
   # The reader's handoff: running the batch inside the call is what blocks it
   # until the pipeline is done, which is the whole of the backpressure.
@@ -284,8 +298,6 @@ defmodule DMEx.Handler.Subscription do
 
     state
   end
-
-  defp register(nil, _subscription), do: {:ok, self()}
 
   defp register(registry, subscription) do
     Registry.register(registry, {:subscription, subscription}, nil)

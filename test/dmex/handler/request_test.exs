@@ -13,6 +13,8 @@ defmodule DMEx.Handler.RequestTest do
   alias DMEx.Log.Params
   alias DMEx.Test.SSEClient
 
+  @accept {"accept", "text/event-stream"}
+
   defp config(opts \\ []), do: Config.handler!(opts)
 
   describe "headers/2" do
@@ -40,52 +42,46 @@ defmodule DMEx.Handler.RequestTest do
 
   describe "the resume position" do
     test "a durable cursor is sent as itself" do
-      assert Request.last_event_id(1_042, config()) == [{"last-event-id", "1042"}]
+      assert Request.headers(1_042, config()) == [@accept, {"last-event-id", "1042"}]
     end
 
     test "a cursor of zero is still a cursor" do
       # Not the same as having none: a handler that committed 0 has a position.
-      assert Request.last_event_id(0, config()) == [{"last-event-id", "0"}]
+      assert Request.headers(0, config()) == [@accept, {"last-event-id", "0"}]
     end
 
     test "the durable cursor wins over last_seen:, whatever it says" do
       for last_seen <- [nil, 0, 99] do
-        assert Request.last_event_id(7, config(last_seen: last_seen)) ==
-                 [{"last-event-id", "7"}]
+        assert Request.headers(7, config(last_seen: last_seen)) ==
+                 [@accept, {"last-event-id", "7"}]
       end
     end
 
     # One domain, one unit: the option is already the cursor the header carries,
     # so nothing is computed anywhere between them.
     test "last_seen: with no cursor is sent as itself" do
-      assert Request.last_event_id(:none, config(last_seen: 499)) == [{"last-event-id", "499"}]
+      assert Request.headers(:none, config(last_seen: 499)) == [@accept, {"last-event-id", "499"}]
     end
 
     test "last_seen: 0 is the whole log" do
-      assert Request.last_event_id(:none, config(last_seen: 0)) == [{"last-event-id", "0"}]
+      assert Request.headers(:none, config(last_seen: 0)) == [@accept, {"last-event-id", "0"}]
     end
 
     # The absence of the header is the whole of "from now on" — there is no
     # token, so an unset `last_seen` sends nothing at all.
     test "last_seen: unset with no cursor sends no header" do
-      assert Request.last_event_id(:none, config()) == []
+      assert Request.headers(:none, config()) == [@accept]
       assert Request.position(:none, config()) == :now
-    end
-
-    test "headers/2 carries it through" do
-      headers = Request.headers(:none, config(last_seen: 499))
-
-      assert SSEClient.header(headers, "last-event-id") == "499"
     end
   end
 
   describe "the URL" do
     test "uses the path it was given" do
-      assert Request.path(URI.parse("https://orders.internal/stream")) == "/stream"
+      assert Request.path(URI.parse("https://orders.internal/stream"), nil) == "/stream"
     end
 
     test "falls back to the root" do
-      assert Request.path(URI.parse("https://orders.internal")) == "/"
+      assert Request.path(URI.parse("https://orders.internal"), nil) == "/"
     end
 
     test "picks the scheme Mint needs" do

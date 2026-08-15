@@ -35,7 +35,7 @@ defmodule DMEx.HandlerTest do
                logs: ["test"],
                name: "echo_all",
                messages: messages
-             } = Handlers.EchoAll.__dmex__()
+             } = Handlers.EchoAll.__dmex_handler__()
 
       assert messages == MapSet.new([OrderPlaced, OrderShipped])
     end
@@ -43,11 +43,11 @@ defmodule DMEx.HandlerTest do
     # The modules are the only copy of the set: the strings are read off them,
     # here as everywhere else, rather than cached beside them.
     test "carries no type strings of its own" do
-      refute Map.has_key?(Handlers.EchoAll.__dmex__(), :types)
+      refute Map.has_key?(Handlers.EchoAll.__dmex_handler__(), :types)
     end
 
     test "the fingerprint is those modules' types encoded, so the two cannot disagree" do
-      %{messages: messages, fingerprint: fingerprint} = Handlers.EchoAll.__dmex__()
+      %{messages: messages, fingerprint: fingerprint} = Handlers.EchoAll.__dmex_handler__()
 
       assert {:ok, built} = messages |> Enum.map(& &1.type()) |> Enum.sort() |> Fingerprint.build()
       assert Fingerprint.encode(built) == fingerprint
@@ -57,7 +57,7 @@ defmodule DMEx.HandlerTest do
     # saying the same thing could only ever disagree. `DMEx.Supervisor` passes
     # whatever is here with no decision of its own.
     test "a whole-log handler declares the same set, with no fingerprint" do
-      assert %{messages: messages, fingerprint: nil} = Handlers.EchoWholeLog.__dmex__()
+      assert %{messages: messages, fingerprint: nil} = Handlers.EchoWholeLog.__dmex_handler__()
 
       assert messages == MapSet.new([OrderPlaced])
     end
@@ -67,7 +67,7 @@ defmodule DMEx.HandlerTest do
     # has just run on every matched module — and because a constant is what
     # makes "one URL per deployment" literal.
     test "carries the message set encoded as a selection fingerprint" do
-      %{fingerprint: fingerprint, messages: messages} = Handlers.EchoAll.__dmex__()
+      %{fingerprint: fingerprint, messages: messages} = Handlers.EchoAll.__dmex_handler__()
 
       assert is_binary(fingerprint)
       assert {:ok, decoded} = Fingerprint.decode(fingerprint)
@@ -80,7 +80,7 @@ defmodule DMEx.HandlerTest do
     end
 
     test "selection defaults to on" do
-      assert %{fingerprint: fingerprint} = Handlers.Echo.__dmex__()
+      assert %{fingerprint: fingerprint} = Handlers.Echo.__dmex_handler__()
       assert is_binary(fingerprint)
     end
 
@@ -279,7 +279,7 @@ defmodule DMEx.HandlerTest do
     end
 
     test "a handler naming no type at all is legal, and decodes the same way" do
-      assert Handlers.Sink.__dmex__().messages == MapSet.new([])
+      assert Handlers.Sink.__dmex_handler__().messages == MapSet.new([])
 
       assert %OrderPlaced{order_id: 7} =
                Handlers.Sink.__dmex_cast__(OrderPlaced.type(), %{"order_id" => 7}, %{})
@@ -526,7 +526,7 @@ defmodule DMEx.HandlerTest do
   defp messages_of(body), do: body |> compile() |> Map.fetch!(:messages)
 
   defp compile_raw(declaration, body) do
-    compile_module_raw(declaration, body).__dmex__()
+    compile_module_raw(declaration, body).__dmex_handler__()
   end
 
   # Compiled into a uniquely-named module each time, so nothing here depends on

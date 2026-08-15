@@ -87,6 +87,15 @@ defmodule DMEx.Handler.SubscriptionTest do
   alias DMEx.Test.Storage
 
   @url "https://orders.internal/stream"
+  @registry __MODULE__.Registry
+
+  # `init/1` registers before it connects, so every subscription started here
+  # needs a live registry to register in.
+  setup do
+    start_supervised!({Registry, keys: :unique, name: @registry})
+
+    :ok
+  end
 
   describe "terminate/2" do
     test "flushes a pending run of skips" do
@@ -186,6 +195,39 @@ defmodule DMEx.Handler.SubscriptionTest do
     end
   end
 
+  describe "an unexpected message" do
+    test "is logged, and does not take the subscription down" do
+      {:ok, pid} = start(Storage.new(), Storage)
+
+      log =
+        capture_log(fn ->
+          send(pid, :nonsense)
+
+          # Answered only after the message ahead of it, so the warning is out
+          # before the capture ends.
+          :sys.get_state(pid)
+        end)
+
+      assert log =~ "DMEx test/echo (DMEx.Test.Handlers.Echo) ignored an unexpected message: :nonsense"
+      assert Process.alive?(pid)
+    end
+
+    # A reader this subscription already gave up on, signalling after the fact.
+    # Frequent, and there is nothing to say about it.
+    test "from an exit that is not the current reader's says nothing at all" do
+      {:ok, pid} = start(Storage.new(), Storage)
+      gone = spawn(fn -> :ok end)
+
+      log =
+        capture_log(fn ->
+          send(pid, {:EXIT, gone, :killed})
+          :sys.get_state(pid)
+        end)
+
+      assert log == ""
+    end
+  end
+
   ## Helpers
 
   defp start(storage, adapter, opts \\ []) do
@@ -199,7 +241,7 @@ defmodule DMEx.Handler.SubscriptionTest do
           test: self(),
           storage: Map.put(storage, :adapter, adapter),
           config: Config.handler!(checkpoint_interval: 60_000),
-          registry: nil
+          registry: @registry
         ],
         opts
       )

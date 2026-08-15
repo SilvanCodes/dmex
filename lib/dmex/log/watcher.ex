@@ -55,13 +55,16 @@ defmodule DMEx.Log.Watcher do
 
   @impl GenServer
   def init(log) do
-    state = %{log: log, interval: log.__dmex__().config.stall_check_interval}
+    state = %{log: log, interval: log.__dmex_log__().config.stall_check_interval}
 
     schedule(state)
 
     {:ok, state}
   end
 
+  # No catch-all below: the only senders are this process' own `:sweep` timer
+  # and `sweep/1`'s call, so an unexpected message is impossible and crashing on
+  # one is free — the supervisor restarts a watcher that holds no state.
   @impl GenServer
   def handle_info(:sweep, state) do
     schedule(state)
@@ -69,9 +72,6 @@ defmodule DMEx.Log.Watcher do
 
     {:noreply, state}
   end
-
-  @impl GenServer
-  def handle_info(_message, state), do: {:noreply, state}
 
   @impl GenServer
   def handle_call(:sweep, _from, state), do: {:reply, reclaim_overdue(state), state}

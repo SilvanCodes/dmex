@@ -200,7 +200,7 @@ defmodule DMEx.Log.PlugTest do
 
       # The sum, not the interval — `DMEx.ConfigTest` has the arithmetic.
       # Derived rather than written out: a literal here is the drift to catch.
-      retry = DMEx.Config.effective_heartbeat(StubLog.__dmex__().config)
+      retry = DMEx.Config.effective_heartbeat(StubLog.__dmex_log__().config)
 
       assert_received {:chunk, chunk}
       assert chunk == "retry: #{retry}\n\n"

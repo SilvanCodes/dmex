@@ -109,8 +109,8 @@ defmodule DMEx.Log do
       This log's resolved configuration, built at compile time so an append costs
       one function call rather than a keyword traversal.
       """
-      @spec __dmex__() :: DMEx.Log.config()
-      def __dmex__, do: @dmex
+      @spec __dmex_log__() :: DMEx.Log.config()
+      def __dmex_log__, do: @dmex
 
       @doc """
       Appends `message` to this log and returns its assigned id.
@@ -191,6 +191,32 @@ defmodule DMEx.Log do
     }
   end
 
+  @doc """
+  Returns whether `module` was built with `use DMEx.Log`.
+  """
+  @spec log?(module()) :: boolean()
+  def log?(module) when is_atom(module) do
+    Code.ensure_loaded?(module) and function_exported?(module, :__dmex_log__, 0)
+  end
+
+  @doc """
+  Returns `log`'s declaration, raising the same way for every caller if it has
+  none.
+
+  The one door onto `__dmex_log__/0`, as `DMEx.Handler.declaration!/1` is onto
+  `__dmex_handler__/0`: the accessor is generated, so a caller holding a module
+  that is not a log would otherwise get `UndefinedFunctionError` instead of the
+  sentence that names the fix.
+  """
+  @spec declaration!(module()) :: config()
+  def declaration!(log) when is_atom(log) do
+    if !log?(log) do
+      raise ArgumentError, "#{inspect(log)} is not a DMEx log. Add `use DMEx.Log` to it."
+    end
+
+    log.__dmex_log__()
+  end
+
   @doc false
   @spec child_spec(module()) :: Supervisor.child_spec()
   def child_spec(log) do
@@ -204,7 +230,7 @@ defmodule DMEx.Log do
   @doc false
   @spec start_link(module()) :: Supervisor.on_start()
   def start_link(log) do
-    %{storage: storage, notifier: notifier, config: config} = log.__dmex__()
+    %{storage: storage, notifier: notifier, config: config} = declaration!(log)
 
     # Here rather than at compile time, because an adapter may need to read the
     # repo's configuration — and the repo is started by now.
@@ -304,7 +330,7 @@ defmodule DMEx.Log do
   def __append__(log, message, opts) when is_atom(log) do
     validate_append_opts!(opts)
 
-    %{storage: storage, notifier: notifier} = log.__dmex__()
+    %{storage: storage, notifier: notifier} = declaration!(log)
 
     type = type!(message)
     data = JSON.encode!(message)

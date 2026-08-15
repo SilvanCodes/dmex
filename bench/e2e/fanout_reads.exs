@@ -86,7 +86,7 @@ slow_checkout = System.convert_time_unit(5, :millisecond, :native)
 
 # Read from the log rather than restated, so the line cannot drift from the
 # configuration it is describing.
-cap = Log.__dmex__().config.max_batch_frequency
+cap = Log.__dmex_log__().config.max_batch_frequency
 
 # A deliberately dumb SSE client: it holds a connection open for the whole
 # round and never acts on what arrives. The point is the per-connection work

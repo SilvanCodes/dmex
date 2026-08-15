@@ -118,7 +118,7 @@ defmodule DMEx.Transport.LocalTest do
     test "a never-committed cursor reaches the pipeline as 0, not :none" do
       [pid] = subscribe(Handlers.Echo, last_seen: 0)
 
-      assert {:ok, nil} = Postgres.last_seen("test/echo", Log.__dmex__().storage)
+      assert {:ok, nil} = Postgres.last_seen("test/echo", Log.__dmex_log__().storage)
 
       eventually(fn -> reader(pid) != nil end)
 

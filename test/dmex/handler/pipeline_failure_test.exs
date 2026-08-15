@@ -30,6 +30,7 @@ defmodule DMEx.Handler.PipelineFailureTest do
   use DMEx.Case, async: true, database: true
 
   alias DMEx.Config
+  alias DMEx.Handler
   alias DMEx.Handler.Pipeline
   alias DMEx.Handler.PipelineFailureTest.FlakyStorage
   alias DMEx.Storage.Postgres
@@ -395,9 +396,12 @@ defmodule DMEx.Handler.PipelineFailureTest do
   end
 
   defp stub_state(storage, opts) do
+    handler = Keyword.fetch!(opts, :handler)
+
     Pipeline.new(
       storage: Map.put(storage, :adapter, Keyword.get(opts, :adapter, Storage)),
-      handler: Keyword.fetch!(opts, :handler),
+      handler: handler,
+      subscription: Handler.subscription_id!(handler, :test),
       origin: @url,
       cursor: 0,
       config:
@@ -421,9 +425,12 @@ defmodule DMEx.Handler.PipelineFailureTest do
     {config_opts, opts} =
       Keyword.split(opts, [:on_failure, :max_attempts, :reconnect_backoff_base, :reconnect_backoff_max])
 
+    handler = Keyword.fetch!(opts, :handler)
+
     Pipeline.new(
       storage: ctx.storage,
-      handler: Keyword.fetch!(opts, :handler),
+      handler: handler,
+      subscription: Handler.subscription_id!(handler, :test),
       origin: @url,
       cursor: 0,
       # A short backoff: these tests are about which terminal action runs, not

@@ -21,7 +21,7 @@ defmodule DMEx.Integration.HeartbeatTest do
   alias DMEx.Test.SSEClient
 
   # Read from the log rather than restated: every wait below is a multiple of it.
-  @heartbeat Log.__dmex__().config.heartbeat_interval
+  @heartbeat Log.__dmex_log__().config.heartbeat_interval
 
   defmodule Router do
     @moduledoc false

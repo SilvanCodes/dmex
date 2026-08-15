@@ -114,7 +114,7 @@ defmodule DMEx.Log.DispatcherTest do
     test "wake a stream without waiting for the poll" do
       start_supervised!(Streams.child_spec(BeamLog))
 
-      for spec <- DMEx.Notifier.child_specs(BeamLog.__dmex__().notifier), do: start_supervised!(spec)
+      for spec <- DMEx.Notifier.child_specs(BeamLog.__dmex_log__().notifier), do: start_supervised!(spec)
 
       pid = start_supervised!({Dispatcher, log: BeamLog})
 

@@ -39,6 +39,12 @@ defmodule DMEx.BenchHelper do
   standalone and second in line.
   """
   def start_log! do
+    # `test_helper.exs`'s line for the suite, which `mix run` never loads: the
+    # message modules here live in `:dmex`, and nothing depends on `:dmex`, so no
+    # application scan reaches them. Without it every selective filter expands to
+    # the empty set and the log answers 404 to a benchmark's own consumer.
+    DMEx.Message.refresh_index(:dmex)
+
     case DMEx.Test.IntegrationLog.start_link() do
       {:ok, pid} -> pid
       {:error, {:already_started, pid}} -> pid

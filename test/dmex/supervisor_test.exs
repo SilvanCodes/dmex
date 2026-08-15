@@ -102,7 +102,7 @@ defmodule DMEx.SupervisorTest do
       assert Handlers.Echo in discovered
       assert Handlers.FailTimes in discovered
 
-      # Not a handler at all, and a log module answers `__dmex__/0` too.
+      # Not a handler at all, and a log module answers `__dmex_log__/0` too.
       refute Handlers.NotAHandler in discovered
       refute Log in discovered
 

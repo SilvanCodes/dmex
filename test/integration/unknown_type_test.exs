@@ -149,6 +149,6 @@ defmodule DMEx.Integration.UnknownTypeTest do
   # type off a message module and a module is exactly what this row must not
   # have. No `NOTIFY` either, so it arrives on the dispatcher's next poll.
   defp append_undecodable! do
-    DMEx.Storage.append(Log.__dmex__().storage, @undecodable, JSON.encode!(%{"order_id" => 1}), "{}")
+    DMEx.Storage.append(Log.__dmex_log__().storage, @undecodable, JSON.encode!(%{"order_id" => 1}), "{}")
   end
 end

@@ -311,6 +311,7 @@ defmodule DMEx.Handler.DeadMessagesTest do
       Pipeline.new(
         storage: ctx.storage,
         handler: @handler,
+        subscription: @subscription,
         origin: @url,
         cursor: id - 1,
         config: Config.handler!(on_failure: :dead_message, max_attempts: 1)

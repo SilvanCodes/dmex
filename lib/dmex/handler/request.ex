@@ -22,12 +22,8 @@ defmodule DMEx.Handler.Request do
     [{"accept", "text/event-stream"}] ++ last_event_id(cursor, config)
   end
 
-  @doc """
-  Builds the `last-event-id` header for a cursor, or none at all: the header's
-  absence is the whole of "from now on".
-  """
-  @spec last_event_id(cursor(), Config.handler()) :: [{String.t(), String.t()}]
-  def last_event_id(cursor, config) do
+  # The header's absence is the whole of "from now on".
+  defp last_event_id(cursor, config) do
     case position(cursor, config) do
       :now -> []
       cursor -> [{"last-event-id", Integer.to_string(cursor)}]
@@ -49,7 +45,7 @@ defmodule DMEx.Handler.Request do
   [ARCHITECTURE](ARCHITECTURE.md) has why.
   """
   @spec path(URI.t(), String.t() | nil) :: String.t()
-  def path(%URI{path: path}, fingerprint \\ nil), do: join(path || "/", fingerprint)
+  def path(%URI{path: path}, fingerprint), do: join(path || "/", fingerprint)
 
   defp join(path, nil), do: path
   defp join(path, fingerprint), do: String.trim_trailing(path, "/") <> "/" <> fingerprint

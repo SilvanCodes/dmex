@@ -100,7 +100,7 @@ defmodule DMEx.Handler do
                   "\"/\" can separate them with no escaping — which rules out UUIDs, dots and dashes."
 
   @typedoc """
-  A handler's compile-time declaration, as returned by its `__dmex__/0`.
+  A handler's compile-time declaration, as returned by its `__dmex_handler__/0`.
 
   `:messages` is the module set the clauses named, and the only copy of it: the
   type *strings* are read off those modules rather than snapshotted here.
@@ -166,8 +166,8 @@ defmodule DMEx.Handler do
       @doc """
       This handler's resolved declaration.
       """
-      @spec __dmex__() :: DMEx.Handler.declaration()
-      def __dmex__, do: unquote(Macro.escape(declaration))
+      @spec __dmex_handler__() :: DMEx.Handler.declaration()
+      def __dmex_handler__, do: unquote(Macro.escape(declaration))
 
       unquote(matcher(env, declaration))
     end
@@ -252,14 +252,10 @@ defmodule DMEx.Handler do
 
   @doc """
   Returns whether `module` was built with `use DMEx.Handler`.
-
-  `handle_message/2` is half the test because a log module answers `__dmex__/0`
-  too, and discovery scans the same applications both live in.
   """
   @spec handler?(module()) :: boolean()
   def handler?(module) when is_atom(module) do
-    Code.ensure_loaded?(module) and function_exported?(module, :__dmex__, 0) and
-      function_exported?(module, :handle_message, 2)
+    Code.ensure_loaded?(module) and function_exported?(module, :__dmex_handler__, 0)
   end
 
   @doc """
@@ -330,7 +326,7 @@ defmodule DMEx.Handler do
             "#{inspect(handler)} is not a DMEx handler. Add `use DMEx.Handler` to it."
     end
 
-    handler.__dmex__()
+    handler.__dmex_handler__()
   end
 
   defp id(declaration, log), do: log <> "/" <> declaration.name

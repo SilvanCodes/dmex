@@ -20,7 +20,7 @@ defmodule DMEx.Integration.StallReclaimTest do
 
   # Read from the log rather than restated: these two drive every deadline below,
   # and a test that hardcodes them passes while measuring the wrong window.
-  @config Log.__dmex__().config
+  @config Log.__dmex_log__().config
   @stall_timeout @config.stall_timeout
   @check_interval @config.stall_check_interval
 

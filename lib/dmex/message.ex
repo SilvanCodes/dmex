@@ -300,9 +300,9 @@ defmodule DMEx.Message do
 
   Checked once at boot rather than at compile time — a collision is a property of
   the module *set*, which no single module's compilation can see. This is the
-  within-one-scan half of that check and `collision!/3` is the across-scans half;
-  deliberately two, so a hand-built module list pins this one without going
-  through application discovery.
+  within-one-scan half of that check and `refresh_index/1`'s merge is the
+  across-scans half; deliberately two, so a hand-built module list pins this one
+  without going through application discovery.
   """
   @spec index!([module()]) :: %{String.t() => module()}
   def index!(modules) when is_list(modules) do
@@ -414,16 +414,11 @@ defmodule DMEx.Message do
     :persistent_term.get(@index_key, nil) || refresh_index()
   end
 
-  @doc """
-  `module`, or a raise when it is not the module already holding `type`.
-
-  The merge step of `refresh_index/1`, where the two sides are separate scans
-  rather than two modules in one: a rescan of an application meets its own
-  modules again and must stay quiet, a second module claiming the type must not.
-  """
-  @spec collision!(String.t(), module(), module()) :: module()
-  def collision!(_type, module, module), do: module
-  def collision!(type, already, module), do: raise_collision(type, already, module)
+  # The merge step of `refresh_index/1`, where the two sides are separate scans
+  # rather than two modules in one: a rescan of an application meets its own
+  # modules again and must stay quiet, a second module claiming the type must not.
+  defp collision!(_type, module, module), do: module
+  defp collision!(type, already, module), do: raise_collision(type, already, module)
 
   # Names both modules: "duplicate message type" on its own is a riddle in an
   # application with thirty of them.

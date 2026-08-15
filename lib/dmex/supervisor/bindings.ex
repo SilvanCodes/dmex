@@ -101,8 +101,7 @@ defmodule DMEx.Supervisor.Bindings do
   end
 
   defp target!(name, module) when is_atom(module) and not is_nil(module) do
-    # `append/2` rather than `__dmex__/0`: a handler answers that one too.
-    if Code.ensure_loaded?(module) and function_exported?(module, :append, 2) do
+    if DMEx.Log.log?(module) do
       module
     else
       raise ArgumentError,

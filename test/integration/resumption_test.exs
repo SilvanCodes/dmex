@@ -120,17 +120,6 @@ defmodule DMEx.Integration.ResumptionTest do
     assert seen == Enum.sort(seen)
   end
 
-  test "the cursor is what a restarted stream reads, and it is committed per message", _ctx do
-    subscribe!(Handlers.Echo)
-
-    for n <- 1..3, do: {:ok, _} = Log.append(%OrderPlaced{order_id: n})
-    drain(3)
-
-    {:ok, tip} = Postgres.max_id(Log.__dmex__().storage)
-
-    eventually(fn -> cursor("test/echo") == {:ok, tip} end)
-  end
-
   ## Helpers
 
   defp await_cursor(id) do

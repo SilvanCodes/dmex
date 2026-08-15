@@ -43,16 +43,19 @@ defmodule DMEx.Storage do
 
   ## How a write fails
 
-  **A read returns `{:error, reason}`; a write returns `:ok` or raises.** Reads
-  have callers with somewhere to go — `DMEx.Log.SendLoop` closes the connection,
-  `DMEx.Log.Plug` answers `503`, `DMEx.Handler.DeadMessages.list/2` hands the
-  tuple back — while the four writes (`c:advance_cursor/3`,
-  `c:record_dead_message/2`, `c:delete_dead_message/3`, `c:delete_cursor/2`) have
-  none, and the path that matters is inside `c:transaction/2` beside a handler's
-  side effects, where a raise is the only outcome that rolls both back together.
-  An error tuple there leaves the transaction open and committing.
+  **A read returns `{:error, reason}`; a write returns `:ok` or raises** — except
+  `c:append/4`, which answers `{:ok, id}` or `{:error, reason}`, because a row can
+  be refused on its own merits where a cursor advance can only fail with its
+  connection. Reads have callers with somewhere to go — `DMEx.Log.SendLoop` closes
+  the connection, `DMEx.Log.Plug` answers `503`,
+  `DMEx.Handler.DeadMessages.list/2` hands the tuple back — while the four writes
+  (`c:advance_cursor/3`, `c:record_dead_message/2`, `c:delete_dead_message/3`,
+  `c:delete_cursor/2`) have none, and the path that matters is inside
+  `c:transaction/2` beside a handler's side effects, where a raise is the only
+  outcome that rolls both back together. An error tuple there leaves the
+  transaction open and committing.
 
-  So an adapter raises: `Ecto.Adapters.SQL.query!/4` rather than a match on
+  So those four raise: `Ecto.Adapters.SQL.query!/4` rather than a match on
   `query/4`'s reply, which means the exception a crash log carries is the
   driver's own, naming the constraint or the connection that failed. Nothing in
   DMEx rescues it — `DMEx.Handler.Pipeline` tags what the *handler* raised and

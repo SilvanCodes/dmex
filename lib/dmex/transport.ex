@@ -35,6 +35,10 @@ defmodule DMEx.Transport do
 
   It must not return until the rows have been taken, since the loop reads again
   as soon as it does.
+
+  The send side takes the transport module as an argument, because a sink is a
+  `Plug.Conn` or a bare pid and cannot carry one; the receive side dispatches on
+  the `:transport` in the subscription's own options.
   """
   @callback write(sink(), [DMEx.Storage.row()]) ::
               {:ok, sink(), map()} | {:error, term()}
@@ -67,23 +71,9 @@ defmodule DMEx.Transport do
   """
   @callback start_reader(keyword()) :: pid()
 
-  ## Calling a transport
-
-  # The receive side dispatches on the `:transport` in the subscription's own
-  # options; the send side takes the module as an argument, because a sink is a
-  # `Plug.Conn` or a bare pid and cannot carry one.
-
   @doc "Starts the reader named by `opts`. See `c:start_reader/1`."
   @spec start_reader(keyword()) :: pid()
   def start_reader(opts), do: Keyword.fetch!(opts, :transport).start_reader(opts)
-
-  @doc "Sends one read's rows. See `c:write/2`."
-  @spec write(module(), sink(), [DMEx.Storage.row()]) :: {:ok, sink(), map()} | {:error, term()}
-  def write(transport, sink, rows), do: transport.write(sink, rows)
-
-  @doc "Signals liveness on an idle stream. See `c:heartbeat/1`."
-  @spec heartbeat(module(), sink()) :: {:ok, sink()} | {:error, term()}
-  def heartbeat(transport, sink), do: transport.heartbeat(sink)
 
   @doc """
   Hands one read's rows to the subscription, and waits for it to run them.

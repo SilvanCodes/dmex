@@ -322,6 +322,6 @@ for {storage, repo, log, tag} <- [
       end
     end
 
-    defp storage, do: @log.__dmex__().storage
+    defp storage, do: @log.__dmex_log__().storage
   end
 end

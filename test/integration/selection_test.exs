@@ -47,7 +47,7 @@ defmodule DMEx.Integration.SelectionTest do
     test "a selective subscription requests the blob in the path", ctx do
       # The whole scheme in one assertion: what the handler's clauses declare is
       # what the URL says, with nothing declared anywhere in between.
-      %{fingerprint: fingerprint} = Handlers.Echo.__dmex__()
+      %{fingerprint: fingerprint} = Handlers.Echo.__dmex_handler__()
 
       assert {200, headers, _body} = connect(ctx, "/stream/" <> fingerprint)
 
@@ -110,7 +110,7 @@ defmodule DMEx.Integration.SelectionTest do
       for n <- 1..20, do: {:ok, _} = Log.append(%OrderShipped{order_id: n, carrier: "dhl"})
       {:ok, _} = Log.append(%OrderPlaced{order_id: 99})
 
-      %{fingerprint: fingerprint} = Handlers.Echo.__dmex__()
+      %{fingerprint: fingerprint} = Handlers.Echo.__dmex_handler__()
 
       body = read_frames(ctx, "/stream/" <> fingerprint)
 

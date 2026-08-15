@@ -6,8 +6,8 @@ defmodule DMEx.Log.Dispatcher do
   `DMEx.Notifier` and runs a poll timer; on either signal it broadcasts a bare
   `:wakeup` across `DMEx.Log.Streams`, reading no rows and fanning out no data —
   each stream reads for itself. The notifier gives latency and the poll makes
-  dispatch *robust*, so a notifier that is down, or `:unsupported`, needs no
-  separate code path here: the poll runs alone.
+  dispatch *robust*, so a notifier that is down needs no separate code path
+  here: the poll runs alone.
 
   **The poll must not wake connections for nothing.** Unconditional broadcast
   re-creates a thundering herd: a thousand connections at a one-second interval
@@ -46,7 +46,7 @@ defmodule DMEx.Log.Dispatcher do
 
   @impl GenServer
   def init(log) do
-    %{storage: storage, notifier: notifier, config: config} = log.__dmex__()
+    %{storage: storage, notifier: notifier, config: config} = log.__dmex_log__()
 
     state = %{
       log: log,
@@ -82,8 +82,6 @@ defmodule DMEx.Log.Dispatcher do
 
   @impl GenServer
   def handle_info(:poll, state) do
-    schedule_poll(state)
-
     # The poll doubles as the retry for LISTEN, so no second timer is needed and
     # a notifier that starts late or restarts is picked up within one interval.
     state = ensure_listening(state)
@@ -91,10 +89,20 @@ defmodule DMEx.Log.Dispatcher do
     # `c:DMEx.Storage.appended_since/2` answers strictly past the cursor it is
     # handed, and that cursor is `polled_through`, so there is no third case: a
     # non-nil `max_id` has moved by construction.
-    case appended_since(state) do
-      {nil, _types} -> {:noreply, state}
-      {max_id, types} -> {:noreply, broadcast(%{state | polled_through: max_id}, types)}
-    end
+    state =
+      case appended_since(state) do
+        {nil, _types} -> state
+        {max_id, types} -> broadcast(%{state | polled_through: max_id}, types)
+      end
+
+    # Fixed delay rather than fixed rate: arming the next poll only now means a
+    # pool that cannot answer this query never accumulates `:poll` messages that
+    # each issue their own as the mailbox drains, amplifying load on a log whose
+    # streams are already stalling. The trade is a worst-case wakeup latency of
+    # `poll_interval` plus one query instead of `poll_interval`.
+    schedule_poll(state)
+
+    {:noreply, state}
   end
 
   @impl GenServer
@@ -119,11 +127,6 @@ defmodule DMEx.Log.Dispatcher do
     case Notifier.listen(state.notifier) do
       {:ok, pid} ->
         %{state | notifier_ref: Process.monitor(pid), warned_listen?: false}
-
-      # No notification mechanism at all, so polling-only is the design rather
-      # than a degradation. Nothing to warn about.
-      :unsupported ->
-        state
 
       {:error, _reason} ->
         warn_listen(state)

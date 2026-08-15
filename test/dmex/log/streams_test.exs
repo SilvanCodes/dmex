@@ -6,7 +6,7 @@ defmodule DMEx.Log.StreamsTest do
 
   defmodule FakeLog do
     @moduledoc false
-    def __dmex__, do: %{storage: %{adapter: DMEx.Storage.Postgres}}
+    def __dmex_log__, do: %{storage: %{adapter: DMEx.Storage.Postgres}}
   end
 
   setup do

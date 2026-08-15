@@ -119,7 +119,7 @@ defmodule DMEx.Log.SendLoop do
   @spec start(module(), keyword()) :: {:ok, state()} | {:error, term()}
   def start(log, opts) do
     selection = Keyword.get(opts, :selection, :all)
-    %{storage: storage, config: config} = log.__dmex__()
+    %{storage: storage, config: config} = DMEx.Log.declaration!(log)
 
     {:ok, status} = Streams.register(log, config.stall_timeout, selection)
 
@@ -210,7 +210,7 @@ defmodule DMEx.Log.SendLoop do
   defp maybe_heartbeat(conn, state, true) do
     arm(state)
 
-    case Transport.heartbeat(state.transport, conn) do
+    case state.transport.heartbeat(conn) do
       {:ok, conn} ->
         :telemetry.execute([:dmex, :stream, :heartbeat], %{}, %{log: state.log})
 
@@ -249,7 +249,7 @@ defmodule DMEx.Log.SendLoop do
   defp write(conn, state, rows) do
     arm(state)
 
-    Transport.write(state.transport, conn, rows)
+    state.transport.write(conn, rows)
   end
 
   defp arm(state), do: Status.arm(state.status, state.config.stall_timeout)

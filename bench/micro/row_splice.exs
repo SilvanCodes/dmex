@@ -14,6 +14,19 @@
 # If the gap turns out to be small, the invariant is buying less than the design
 # says it does — which is worth knowing, because it constrains the storage
 # adapter contract (`data::text`) in a way that is otherwise inconvenient.
+#
+# Last measured — 2026-08-15, 28-core i7-14700K, Elixir 1.20.2/OTP 29:
+#
+#   * 500 rows splice in 20.7 us at 256 B, 0.0354 ms at 1 KB and 0.0407 ms at
+#     16 KB; decode-and-re-encode takes 654 us, 1.17 ms and 8.00 ms — 32x, 33x
+#     and 197x;
+#   * 0.0801 MB against 1.07 MB of heap per 500 rows, 13x, because the control
+#     materializes every payload as a map before re-serializing it.
+#
+# The gap is per connection, so 1 KB rows cost the alternative 1.14 ms of CPU
+# per 500 rows per connection — 0.23 s across the 200 connections
+# `bench/e2e/fanout_reads.exs` fans out to. That is what `data::text` in the
+# storage contract buys, and it is worth the inconvenience.
 
 alias DMEx.BenchHelper, as: Helper
 alias DMEx.Transport.SSE.Frame

@@ -16,7 +16,7 @@ defmodule DMEx.Log.AppendTest do
   end
 
   setup do
-    %{opts: Log.__dmex__().storage}
+    %{opts: Log.__dmex_log__().storage}
   end
 
   describe "append/2" do

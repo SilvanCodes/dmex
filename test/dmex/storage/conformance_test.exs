@@ -59,6 +59,13 @@ for {storage, repo, tag} <- [
 
         assert %{metadata: "{}"} = fetch!(id, opts)
       end
+
+      # The one write that answers with a tuple rather than raising — see *How a
+      # write fails* in `DMEx.Storage`. Invalid JSON is the rejection both engines
+      # share: Postgres's `jsonb` cast refuses it, SQLite's `json_valid` CHECK does.
+      test "a payload the database refuses comes back as an error", %{opts: opts} do
+        assert {:error, _reason} = @storage.append("A", "not json", "{}", opts)
+      end
     end
 
     describe "read/5" do

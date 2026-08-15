@@ -16,8 +16,8 @@ defmodule DMEx.Notifier do
 
   **Nothing here is load-bearing for correctness.** A notification is a hint
   carrying a message type and no data, and `DMEx.Log.Dispatcher`'s poll is what
-  makes dispatch robust: a notifier that is down, slow, or `:unsupported` costs
-  latency and never a stuck consumer.
+  makes dispatch robust: a notifier that is down or slow costs latency and never
+  a stuck consumer.
   """
 
   @typedoc """
@@ -66,12 +66,11 @@ defmodule DMEx.Notifier do
   subscriber — which `:pg` and `Postgrex.Notifications` both clean up. A second
   subscriber per log would need one.
 
-  Returns the pid to monitor. `:unsupported` is the answer where the mechanism
-  does not exist, and the dispatcher then polls without warning.
+  Returns the pid to monitor.
 
   Best-effort by contract: a notifier must not raise or exit here.
   """
-  @callback listen(opts()) :: {:ok, pid()} | :unsupported | {:error, term()}
+  @callback listen(opts()) :: {:ok, pid()} | {:error, term()}
 
   @doc """
   Announces one append, by message type.
@@ -99,7 +98,7 @@ defmodule DMEx.Notifier do
   def child_specs(%{adapter: adapter} = notifier), do: adapter.child_specs(notifier)
 
   @doc "Subscribes the calling process to this log's appends. See `c:listen/1`."
-  @spec listen(opts()) :: {:ok, pid()} | :unsupported | {:error, term()}
+  @spec listen(opts()) :: {:ok, pid()} | {:error, term()}
   def listen(%{adapter: adapter} = notifier), do: adapter.listen(notifier)
 
   @doc "Announces an append. See `c:notify/2`."

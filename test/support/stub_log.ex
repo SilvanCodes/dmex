@@ -4,7 +4,7 @@ defmodule DMEx.Test.StubLog do
 
   `use DMEx.Log` builds its configuration at compile time, which is exactly
   right in production and useless for a test that wants a fresh in-memory log
-  per case. This module implements the same `__dmex__/0` contract but reads the
+  per case. This module implements the same `__dmex_log__/0` contract but reads the
   stub's opts out of the calling process's dictionary, so every test gets its
   own log and the suite stays `async: true`.
 
@@ -36,7 +36,7 @@ defmodule DMEx.Test.StubLog do
   end
 
   @doc false
-  def __dmex__ do
+  def __dmex_log__ do
     {storage, config} = Process.get(@key)
 
     %{

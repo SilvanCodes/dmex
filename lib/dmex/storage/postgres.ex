@@ -101,9 +101,12 @@ defmodule DMEx.Storage.Postgres do
       # anything shorter reintroduces silent id gaps.
       lock!(repo, opts)
 
-      %{rows: [[id]]} = Adapter.query!(repo, sql, [type, data, metadata])
-
-      id
+      # `query/3` rather than `query!/3`: `c:DMEx.Storage.append/4` answers with a
+      # tuple, and `rollback/1` is what turns a row the database refused into one.
+      case Adapter.query(repo, sql, [type, data, metadata]) do
+        {:ok, %{rows: [[id]]}} -> id
+        {:error, reason} -> repo.rollback(reason)
+      end
     end)
   end
 

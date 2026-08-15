@@ -70,14 +70,9 @@ defmodule DMEx.Transport.SSE.Decoder do
 
   @type error :: :frame_too_large | Frame.error()
 
-  @doc """
-  Builds a decoder buffering at most `max_bytes` of an unterminated frame.
-
-  The default is `DMEx.Config`'s, for the tests and benchmarks with no config to
-  hand.
-  """
+  @doc "Builds a decoder buffering at most `max_bytes` of an unterminated frame."
   @spec new(pos_integer()) :: t()
-  def new(max_bytes \\ DMEx.Config.defaults().handler[:max_frame_bytes]) when is_integer(max_bytes) and max_bytes > 0 do
+  def new(max_bytes) when is_integer(max_bytes) and max_bytes > 0 do
     %__MODULE__{max_bytes: max_bytes}
   end
 

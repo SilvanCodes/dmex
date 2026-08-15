@@ -4,14 +4,14 @@ defmodule DMEx.LogTest do
   alias DMEx.Test.Log
   alias DMEx.Test.Repo
 
-  describe "__dmex__/0" do
+  describe "__dmex_log__/0" do
     test "resolves everything the append and stream paths need" do
       assert %{
                log: Log,
                config: %{max_batch_frequency: 100},
                storage: storage,
                notifier: notifier
-             } = Log.__dmex__()
+             } = Log.__dmex_log__()
 
       # Each handle carries its own adapter; storage carries nothing about
       # notification and no second copy of the log module.
@@ -49,7 +49,7 @@ defmodule DMEx.LogTest do
     end
 
     test "is a compile-time constant rather than rebuilt per call" do
-      assert :erts_debug.same(Log.__dmex__(), Log.__dmex__())
+      assert :erts_debug.same(Log.__dmex_log__(), Log.__dmex_log__())
     end
   end
 
@@ -120,7 +120,7 @@ defmodule DMEx.LogTest do
     end
 
     test "fits in the signed 32-bit ints pg_advisory_xact_lock takes" do
-      {classid, objid} = Log.__dmex__().storage.lock
+      {classid, objid} = Log.__dmex_log__().storage.lock
 
       assert classid in 0..2_147_483_647
       assert objid in 0..2_147_483_647
@@ -219,6 +219,6 @@ defmodule DMEx.LogTest do
       end
       """)
 
-    module.__dmex__()
+    module.__dmex_log__()
   end
 end

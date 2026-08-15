@@ -6,9 +6,11 @@ defmodule DMEx.Transport.SSE.DecoderTest do
   alias DMEx.Transport.SSE.Decoder
   alias DMEx.Transport.SSE.Frame
 
+  @max_bytes DMEx.Config.defaults().handler[:max_frame_bytes]
+
   describe "whole rows" do
     test "a frame arriving in one chunk yields one row" do
-      {:ok, [row], _} = push(Decoder.new(), frame_bytes(1..1))
+      {:ok, [row], _} = push(Decoder.new(@max_bytes), frame_bytes(1..1))
 
       assert row["id"] == 1
       assert row["type"] == "order_placed"
@@ -16,7 +18,7 @@ defmodule DMEx.Transport.SSE.DecoderTest do
     end
 
     test "several frames in one chunk yield all of them, in order" do
-      {:ok, rows, _} = push(Decoder.new(), frame_bytes(1..3))
+      {:ok, rows, _} = push(Decoder.new(@max_bytes), frame_bytes(1..3))
 
       assert Enum.map(rows, & &1["id"]) == [1, 2, 3]
     end
@@ -27,7 +29,7 @@ defmodule DMEx.Transport.SSE.DecoderTest do
       bytes = frame_bytes(1..1)
       {head, tail} = String.split_at(bytes, div(byte_size(bytes), 2))
 
-      {:ok, [], decoder} = push(Decoder.new(), head)
+      {:ok, [], decoder} = push(Decoder.new(@max_bytes), head)
       {:ok, [row], _} = push(decoder, tail)
 
       assert row["id"] == 1
@@ -38,7 +40,7 @@ defmodule DMEx.Transport.SSE.DecoderTest do
         1..1
         |> frame_bytes()
         |> chunks_of(1)
-        |> Enum.reduce({[], Decoder.new()}, fn chunk, {acc, decoder} ->
+        |> Enum.reduce({[], Decoder.new(@max_bytes)}, fn chunk, {acc, decoder} ->
           {:ok, rows, decoder} = push(decoder, chunk)
           {acc ++ rows, decoder}
         end)
@@ -51,7 +53,7 @@ defmodule DMEx.Transport.SSE.DecoderTest do
       cut = byte_size(frame_bytes(1..1)) + 10
       {head, tail} = String.split_at(bytes, cut)
 
-      {:ok, [first], decoder} = push(Decoder.new(), head)
+      {:ok, [first], decoder} = push(Decoder.new(@max_bytes), head)
       assert first["id"] == 1
 
       {:ok, [second], _} = push(decoder, tail)
@@ -64,7 +66,7 @@ defmodule DMEx.Transport.SSE.DecoderTest do
       body = ~s(id: 1\nevent: T\ndata: {"data":{},"metadata":{}})
 
       for delimiter <- ["\n\n", "\r\n\r\n", "\r\r"] do
-        assert {:ok, [%{"id" => 1}], _} = push(Decoder.new(), body <> delimiter)
+        assert {:ok, [%{"id" => 1}], _} = push(Decoder.new(@max_bytes), body <> delimiter)
       end
     end
 
@@ -74,7 +76,7 @@ defmodule DMEx.Transport.SSE.DecoderTest do
       body = ~s(id: 1\nevent: T\ndata: {"data":{},"metadata":{}})
 
       for delimiter <- ["\r\r\n", "\n\r\n", "\r\n\r", "\r\n\n", "\n\r"] do
-        assert {:ok, [%{"id" => 1}], _} = push(Decoder.new(), body <> delimiter)
+        assert {:ok, [%{"id" => 1}], _} = push(Decoder.new(@max_bytes), body <> delimiter)
       end
     end
 
@@ -83,7 +85,7 @@ defmodule DMEx.Transport.SSE.DecoderTest do
     test "a single CRLF does not end a frame" do
       body = ~s(id: 1\nevent: T\ndata: {"data":{},"metadata":{}})
 
-      assert {:ok, [], _} = push(Decoder.new(), body <> "\r\n")
+      assert {:ok, [], _} = push(Decoder.new(@max_bytes), body <> "\r\n")
     end
 
     # "\r\n\r" starts at the same byte as "\r\n\r\n"; the longer one has to win,
@@ -92,21 +94,21 @@ defmodule DMEx.Transport.SSE.DecoderTest do
       bytes =
         ~s(id: 1\nevent: T\ndata: {"data":{},"metadata":{}}\r\n\r\nid: 2\nevent: T\ndata: {"data":{},"metadata":{}}\r\n\r\n)
 
-      assert {:ok, [%{"id" => 1}, %{"id" => 2}], _} = push(Decoder.new(), bytes)
+      assert {:ok, [%{"id" => 1}, %{"id" => 2}], _} = push(Decoder.new(@max_bytes), bytes)
     end
   end
 
   describe "frames that are not delivery events" do
     test "a lone retry: frame yields nothing but is remembered" do
       {:ok, rows, decoder} =
-        push(Decoder.new(), IO.iodata_to_binary(Frame.encode_retry(15_200)))
+        push(Decoder.new(@max_bytes), IO.iodata_to_binary(Frame.encode_retry(15_200)))
 
       assert rows == []
       assert Decoder.retry(decoder) == 15_200
     end
 
     test "a heartbeat comment yields nothing" do
-      {:ok, rows, _} = push(Decoder.new(), IO.iodata_to_binary(Frame.encode_heartbeat()))
+      {:ok, rows, _} = push(Decoder.new(@max_bytes), IO.iodata_to_binary(Frame.encode_heartbeat()))
 
       assert rows == []
     end
@@ -114,7 +116,7 @@ defmodule DMEx.Transport.SSE.DecoderTest do
     test "a retry: frame ahead of data does not swallow the data" do
       bytes = IO.iodata_to_binary(Frame.encode_retry(15_200)) <> frame_bytes(1..1)
 
-      {:ok, [row], decoder} = push(Decoder.new(), bytes)
+      {:ok, [row], decoder} = push(Decoder.new(@max_bytes), bytes)
 
       assert Decoder.retry(decoder) == 15_200
       assert row["id"] == 1
@@ -124,7 +126,7 @@ defmodule DMEx.Transport.SSE.DecoderTest do
       hb = IO.iodata_to_binary(Frame.encode_heartbeat())
       bytes = hb <> frame_bytes(1..1) <> hb <> hb <> frame_bytes(2..2) <> hb
 
-      {:ok, rows, _} = push(Decoder.new(), bytes)
+      {:ok, rows, _} = push(Decoder.new(@max_bytes), bytes)
 
       assert Enum.map(rows, & &1["id"]) == [1, 2]
     end
@@ -137,7 +139,7 @@ defmodule DMEx.Transport.SSE.DecoderTest do
     @bom <<0xEF, 0xBB, 0xBF>>
 
     test "a leading mark does not swallow the first frame" do
-      {:ok, [row], _} = push(Decoder.new(), @bom <> frame_bytes(1..1))
+      {:ok, [row], _} = push(Decoder.new(@max_bytes), @bom <> frame_bytes(1..1))
 
       assert row["id"] == 1
     end
@@ -145,7 +147,7 @@ defmodule DMEx.Transport.SSE.DecoderTest do
     test "a leading mark does not swallow the retry: advertisement" do
       bytes = @bom <> IO.iodata_to_binary(Frame.encode_retry(15_200))
 
-      {:ok, [], decoder} = push(Decoder.new(), bytes)
+      {:ok, [], decoder} = push(Decoder.new(@max_bytes), bytes)
 
       assert Decoder.retry(decoder) == 15_200
     end
@@ -154,7 +156,7 @@ defmodule DMEx.Transport.SSE.DecoderTest do
       {rows, _decoder} =
         (@bom <> frame_bytes(1..1))
         |> chunks_of(1)
-        |> Enum.reduce({[], Decoder.new()}, fn chunk, {acc, decoder} ->
+        |> Enum.reduce({[], Decoder.new(@max_bytes)}, fn chunk, {acc, decoder} ->
           {:ok, rows, decoder} = push(decoder, chunk)
           {acc ++ rows, decoder}
         end)
@@ -167,7 +169,7 @@ defmodule DMEx.Transport.SSE.DecoderTest do
     test "the same bytes inside a later frame are left alone" do
       body = ~s(id: 1\nevent: T\ndata: {"data":{"note":"#{@bom}x"},"metadata":{}}\n\n)
 
-      {:ok, [row], _} = push(Decoder.new(), body)
+      {:ok, [row], _} = push(Decoder.new(@max_bytes), body)
 
       assert row["data"]["note"] == @bom <> "x"
     end
@@ -178,7 +180,7 @@ defmodule DMEx.Transport.SSE.DecoderTest do
     # when it is exactly the two bytes that make the frame behind it
     # unparseable — eating them would be a decoder inventing a repair.
     test "a partial mark that turns out not to be one is not swallowed" do
-      {:ok, [], decoder} = push(Decoder.new(), <<0xEF, 0xBB>>)
+      {:ok, [], decoder} = push(Decoder.new(@max_bytes), <<0xEF, 0xBB>>)
       {:ok, rows, _} = push(decoder, frame_bytes(1..1))
 
       assert rows == []
@@ -223,17 +225,17 @@ defmodule DMEx.Transport.SSE.DecoderTest do
   describe "malformed input" do
     test "invalid JSON in a data field is reported" do
       assert {:error, {:invalid_json, _}, _} =
-               push(Decoder.new(), "id: 1\nevent: T\ndata: {not json}\n\n")
+               push(Decoder.new(@max_bytes), "id: 1\nevent: T\ndata: {not json}\n\n")
     end
 
     test "a data payload that is not a row is reported" do
       assert {:error, {:invalid_data_shape, _}, _} =
-               push(Decoder.new(), "id: 1\nevent: T\ndata: [1,2,3]\n\n")
+               push(Decoder.new(@max_bytes), "id: 1\nevent: T\ndata: [1,2,3]\n\n")
     end
 
     test "an error leaves the decoder returnable rather than raising" do
       assert {:error, _reason, %Decoder{}} =
-               push(Decoder.new(), "id: 1\nevent: T\ndata: {oops\n\n")
+               push(Decoder.new(@max_bytes), "id: 1\nevent: T\ndata: {oops\n\n")
     end
   end
 
@@ -248,7 +250,7 @@ defmodule DMEx.Transport.SSE.DecoderTest do
         1..count
         |> frame_bytes()
         |> chunks_of(chunk_size)
-        |> Enum.reduce({[], Decoder.new()}, fn chunk, {acc, decoder} ->
+        |> Enum.reduce({[], Decoder.new(@max_bytes)}, fn chunk, {acc, decoder} ->
           {:ok, rows, decoder} = push(decoder, chunk)
           {acc ++ rows, decoder}
         end)

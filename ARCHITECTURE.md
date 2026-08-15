@@ -89,7 +89,7 @@ the producer's naming taste — and `mix bench.fingerprint` measures the bytes p
 type it rests on.
 
 The blob is built at compile time and is a pure function of the message set, so it
-is a constant on `__dmex__/0` and the same handler compiles to the same URL
+is a constant on `__dmex_handler__/0` and the same handler compiles to the same URL
 everywhere. `guides/fingerprint-spec.md` is the normative encoding;
 `DMEx.Handler.Fingerprint` implements it.
 
@@ -562,6 +562,25 @@ nothing regenerates them.
   `bench/e2e/catchup_drain.exs`. A log of entirely handled messages replays two
   orders of magnitude slower than a mostly-skipped one, and that is the figure
   "arbitrarily replayable" should be quoted with.
+- **An idle stream is woken immediately, and a busy one waits half a batch
+  interval** — `bench/e2e/end_to_end_latency.exs`. It is also the only place two
+  otherwise silent defects show: a latency near the poll interval means the
+  notification path is dead and the poller is quietly covering for it, and one
+  near a whole batch interval means the throttle is timed from the wrong instant.
+- **Framing a row is flat in payload bytes** — `bench/micro/frame_encode.exs`.
+  The payload is copied once, when the socket flattens the iodata, so the id and
+  the timestamp are the log's whole per-row cost.
+- **A consumer's decode ceiling is orders of magnitude above what its per-row
+  commit allows** — `bench/micro/frame_decode.exs`, which also shows the SSE
+  framing scan, not the payload's JSON, to be the larger half of it.
+- **Splicing stored JSON text beats decoding and re-encoding it by enough to pay
+  for `data::text` in the storage contract** — `bench/micro/row_splice.exs`. The
+  gap is paid once per connection, which is what makes it worth a contract.
+- **Precomputed field-name strings are not worth generating** —
+  `bench/micro/message_cast.exs`, against `DMEx.Message.cast_default/2`'s
+  `Atom.to_string/1` per field per row.
+- **The decoder's cost is flat in chunk size** — `bench/micro/sse_decode.exs`,
+  where the naive `buffer <> chunk` it exists to avoid is not.
 - **The selection filter behaves as the design assumes** — `mix bench.fingerprint`
   sweeps 86 set sizes over 1–2000 and checks no false negatives, a
   false-positive rate near 2⁻¹⁶, and the bytes per type the sizing argument

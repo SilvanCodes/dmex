@@ -1,6 +1,7 @@
 defmodule DMEx.Handler.PipelineTest do
   use DMEx.Case, async: true, database: true
 
+  alias DMEx.Handler
   alias DMEx.Handler.Pipeline
   alias DMEx.Storage.Postgres
   alias DMEx.Test.Handlers
@@ -356,9 +357,18 @@ defmodule DMEx.Handler.PipelineTest do
   end
 
   describe "build/1" do
+    # Built here rather than through `state/2`, so the rejection is `new/1`'s: the
+    # helper derives its `subscription:` through `DMEx.Handler.subscription_id!/2`,
+    # which refuses a non-handler first.
     test "rejects a module that is not a handler", ctx do
       assert_raise ArgumentError, ~r/is not a DMEx handler.*use DMEx.Handler/s, fn ->
-        state(ctx, handler: Handlers.NotAHandler)
+        Pipeline.new(
+          storage: ctx.storage,
+          handler: Handlers.NotAHandler,
+          subscription: "test/not_a_handler",
+          origin: @url,
+          config: DMEx.Config.handler!([])
+        )
       end
     end
 
@@ -422,9 +432,12 @@ defmodule DMEx.Handler.PipelineTest do
   # a poison message — the terminal action is `DMEx.Handler.PipelineFailureTest`'s
   # subject, and the default is `:dead_message`.
   defp state(ctx, opts) do
+    handler = Keyword.fetch!(opts, :handler)
+
     Pipeline.new(
       storage: ctx.storage,
-      handler: Keyword.fetch!(opts, :handler),
+      handler: handler,
+      subscription: Handler.subscription_id!(handler, :test),
       origin: @url,
       cursor: Keyword.get(opts, :cursor, 0),
       config: DMEx.Config.handler!(on_failure: :crash)

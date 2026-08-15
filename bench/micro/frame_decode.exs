@@ -9,6 +9,21 @@
 # than decoding all the way into structs: `Frame.decode/1` yields a string-keyed
 # row whose `data` is still a plain map, and casting happens later, per row, in
 # the pipeline.
+#
+# Last measured — 2026-08-15, 28-core i7-14700K, Elixir 1.20.2/OTP 29:
+#
+#   * `Frame.decode/1` runs at 2.17 us per 128 B row, 3.92 us at 1 KB and
+#     29.3 us at 16 KB — a ceiling of 460 K, 255 K and 34 K rows/s per
+#     connection with a free handler;
+#   * the row's own `JSON.decode!/1` is 0.83, 1.19 and 7.42 us, so framing
+#     costs 1.6-2.9x the JSON and grows with the block because `split_lines/1`
+#     scans it.
+#
+# The ceiling is three orders of magnitude above the ~265 rows/s a handled row
+# commits at (`bench/e2e/catchup_drain.exs`), so a consumer that cannot keep up
+# is not being held there by the decode. The one-level-deep parse is not what
+# would have to give if it ever were: the framing scan costs more than the
+# payload's JSON at every size measured.
 
 alias DMEx.BenchHelper, as: Helper
 alias DMEx.Transport.SSE.Frame

@@ -61,7 +61,7 @@ Nothing worth having is on the other side of it:
   and hand-written operator queries survive.
 - **The name is also the application-internal name.** `bindings:` on
   `DMEx.Supervisor` narrows to name → URL only. Local logs are
-  discovered the way handlers already are — a log module answers `__dmex__/0`,
+  discovered the way handlers already are — a log module answers `__dmex_log__/0`,
   and `DMEx.Handler.discover/1` is the pattern — so adding a log module is the
   whole of adding a log. `transport!/3` stops sniffing `is_atom(target)`: the
   transport follows from which source a name resolved out of.
@@ -78,7 +78,7 @@ Nothing worth having is on the other side of it:
   `up(log: MyApp.Log)` for the producer, `up(tables: [:cursors, :dead_messages])`
   for the consumer. `log:` implies both halves of what it replaces — a log module
   is the producer side, so the tables are `[:messages]` and the schema is the
-  one `__dmex__/0` already carries. Passing `log:` with `tables:` or `prefix:`
+  one `__dmex_log__/0` already carries. Passing `log:` with `tables:` or `prefix:`
   raises rather than being reconciled, which keeps the schema derived in exactly
   one place and a migration unable to drift from the log it migrates.
 

@@ -132,7 +132,9 @@ end
 ## (a) Log side only: read, encode, wire.
 started = System.monotonic_time(:microsecond)
 {:ok, conn} = Mint.HTTP.connect(:http, "127.0.0.1", port, mode: :active)
-{:ok, conn, ref} = Mint.HTTP.request(conn, "GET", "/stream", [], nil)
+# `last-event-id: 0` is what makes this a replay at all: an absent one means the
+# log's tip, so every seeded row would already be in the past.
+{:ok, conn, ref} = Mint.HTTP.request(conn, "GET", "/stream", [{"last-event-id", "0"}], nil)
 
 # One per row frame, and nothing else on the wire carries it: a heartbeat is a
 # comment and the `retry:` frame has no `data:` line. The row's id travels in
@@ -203,7 +205,10 @@ Helper.start_supervisor!(Bench.Supervisor, url)
 
 started = System.monotonic_time(:microsecond)
 
-{:ok, _} = DMEx.Supervisor.subscribe(Bench.CountingHandler, supervisor: Bench.Supervisor)
+# `last_seen: 0` for the reason stage (a) sends `last-event-id: 0`: the default is
+# "from now on", which against a pre-seeded log drains nothing.
+{:ok, _} =
+  DMEx.Supervisor.subscribe(Bench.CountingHandler, supervisor: Bench.Supervisor, last_seen: 0)
 
 drained = await.(counter, backlog, "(b)")
 report.("(b) end to end, no-op handler", drained, System.monotonic_time(:microsecond) - started)
@@ -261,7 +266,8 @@ checkpoints = :counters.new(1, [:write_concurrency])
 
 started = System.monotonic_time(:microsecond)
 
-{:ok, _} = DMEx.Supervisor.subscribe(Bench.SkippingHandler, supervisor: Bench.Supervisor)
+{:ok, _} =
+  DMEx.Supervisor.subscribe(Bench.SkippingHandler, supervisor: Bench.Supervisor, last_seen: 0)
 
 skipped = await.(skips, skip_backlog, "(c)")
 

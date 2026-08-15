@@ -19,6 +19,18 @@
 # The busy case should then average about half a batch interval and peak at one
 # whole window, because a message waits for the next frame boundary and those
 # are uniformly distributed relative to appends.
+#
+# Last measured — 2026-08-15, 28-core i7-14700K, Elixir 1.20.2/OTP 29, Postgres
+# in a sibling container on the same host, `max_batch_frequency` at its 100/s
+# default:
+#
+#   * quiet, 50 appends one per 200 ms: p50 7.6 ms, p95 11.8 ms, p99 12.9 ms;
+#   * busy, 150 appends at 50/s: p50 5.3 ms, p95 6.0 ms, p99 9.5 ms.
+#
+# Both readings are what the design predicts. Quiet is two orders of magnitude
+# under the 1 s poll interval, so the wakeup is the NOTIFY and not the poller
+# covering for it; busy sits on half the 10 ms window, so a message waits for
+# the next frame boundary and nothing charges it a whole one.
 
 alias DMEx.BenchHelper, as: Helper
 alias DMEx.IntegrationCase

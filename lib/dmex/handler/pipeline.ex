@@ -205,16 +205,20 @@ defmodule DMEx.Handler.Pipeline do
     {:ok, %{state | pending: false}}
   end
 
-  @doc "Builds pipeline state from the handler's declaration, once per subscription."
+  @doc "Builds pipeline state from a subscription's options, once per subscription."
   @spec new(keyword()) :: t()
   def new(opts) do
     handler = Keyword.fetch!(opts, :handler)
-    declaration = Handler.declaration!(handler)
+
+    # Called for its check alone: nothing here reads the declaration, and a
+    # non-handler has to be refused where the pipeline is built rather than at
+    # first delivery.
+    Handler.declaration!(handler)
 
     %{
       storage: Keyword.fetch!(opts, :storage),
       handler: handler,
-      subscription: Keyword.get_lazy(opts, :subscription, fn -> subscription!(declaration) end),
+      subscription: Keyword.fetch!(opts, :subscription),
       origin: Keyword.fetch!(opts, :origin),
       cursor: Keyword.get(opts, :cursor, 0),
       pending: false,
@@ -223,20 +227,6 @@ defmodule DMEx.Handler.Pipeline do
   end
 
   ## Internals
-
-  # Only for a caller that omitted `subscription:` — a test. `DMEx.Handler.Subscription`
-  # and `DMEx.Handler.DeadMessages` always name theirs, since a handler may read several
-  # logs, and the answer is rendered through `Handler.subscription_id!/2` rather than
-  # concatenated here.
-  defp subscription!(%{logs: [only], handler: handler}) do
-    Handler.subscription_id!(handler, only)
-  end
-
-  defp subscription!(%{logs: logs, handler: handler}) do
-    raise ArgumentError,
-          "#{inspect(handler)} reads #{length(logs)} logs (#{Enum.join(logs, ", ")}), so a " <>
-            "pipeline for it has to be built with the `subscription:` it is running."
-  end
 
   defp attempt(state, delivery, commit, attempt) do
     telemetry = %{
