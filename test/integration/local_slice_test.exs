@@ -36,7 +36,7 @@ defmodule DMEx.Integration.LocalSliceTest do
 
     # Nothing was waiting when the reader connected, so this is the wakeup path:
     # the append commits, `NOTIFY` fires, the parked loop reads.
-    {:ok, id} = Log.append(%OrderPlaced{order_id: 7, total: 1999}, metadata: %{"who" => "me"})
+    {:ok, id} = Log.append(%OrderPlaced{order_id: 7, total: 1999}, %{"who" => "me"})
 
     assert_receive {:handled, message, metadata}, 5_000
 

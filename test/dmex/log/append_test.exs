@@ -45,7 +45,7 @@ defmodule DMEx.Log.AppendTest do
       # No log, no origin, no timestamp — so a publisher has no reserved
       # key names to avoid. The type string already identifies the appending
       # application, which is why nothing needs recording here.
-      {:ok, id} = Log.append(%OrderPlaced{order_id: 7}, metadata: %{a: 1})
+      {:ok, id} = Log.append(%OrderPlaced{order_id: 7}, %{a: 1})
 
       assert %{metadata: metadata} = fetch!(id, opts)
       assert JSON.decode!(metadata) == %{"a" => 1}
@@ -83,8 +83,8 @@ defmodule DMEx.Log.AppendTest do
     test "writes the same row a literal call does", %{opts: opts} do
       log = Log
 
-      assert {:ok, _} = Log.append(%OrderPlaced{order_id: 7}, metadata: %{a: 1})
-      assert {:ok, _} = log.append(%OrderPlaced{order_id: 7}, metadata: %{a: 1})
+      assert {:ok, _} = Log.append(%OrderPlaced{order_id: 7}, %{a: 1})
+      assert {:ok, _} = log.append(%OrderPlaced{order_id: 7}, %{a: 1})
 
       assert {:ok, [first, second]} = Postgres.read(0, 10, 1_048_576, :all, opts)
 
@@ -124,8 +124,10 @@ defmodule DMEx.Log.AppendTest do
       end
     end
 
-    test "an unknown option is rejected rather than ignored" do
-      assert_raise ArgumentError, ~r/unknown append option\(s\): \[:priority\]/, fn ->
+    # The keyword form this replaced would encode to valid JSON and then read as
+    # a malformed row on the wire, where an object is required.
+    test "metadata that is not a map is refused at the door" do
+      assert_raise ArgumentError, ~r/metadata must be a map, got: \[priority: :high\]/, fn ->
         Log.append(%OrderPlaced{order_id: 7}, priority: :high)
       end
     end

@@ -74,8 +74,7 @@ defmodule DMEx.Integration.VerticalSliceTest do
   test "preserves publisher metadata verbatim", _ctx do
     subscribe!(Handlers.Echo)
 
-    {:ok, _} =
-      Log.append(%OrderPlaced{order_id: 1}, metadata: %{trace_id: "abc", retry: 2})
+    {:ok, _} = Log.append(%OrderPlaced{order_id: 1}, %{trace_id: "abc", retry: 2})
 
     assert_receive {:handled, _, metadata}, 5_000
     assert metadata == %{"trace_id" => "abc", "retry" => 2}

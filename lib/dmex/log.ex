@@ -115,16 +115,14 @@ defmodule DMEx.Log do
       @doc """
       Appends `message` to this log and returns its assigned id.
 
-      ## Options
+      `metadata` is a map stored alongside the message and delivered to the
+      consumer's handler verbatim.
 
-        * `:metadata` — a map stored alongside the message and delivered to the
-          consumer's handler verbatim. Defaults to `%{}`.
-
-      Raises `ArgumentError` if `message` is not a struct built with
-      `use DMEx.Message`.
+      Raises `ArgumentError` unless `message` is a struct built with
+      `use DMEx.Message` and `metadata` is a map.
       """
-      @spec append(struct(), keyword()) :: {:ok, pos_integer()} | {:error, term()}
-      def append(message, opts \\ []), do: DMEx.Log.__append__(__MODULE__, message, opts)
+      @spec append(struct(), map()) :: {:ok, pos_integer()} | {:error, term()}
+      def append(message, metadata \\ %{}), do: DMEx.Log.__append__(__MODULE__, message, metadata)
 
       @doc false
       def child_spec(_opts), do: DMEx.Log.child_spec(__MODULE__)
@@ -326,15 +324,13 @@ defmodule DMEx.Log do
   # The body of every `MyApp.Log.append/2`, kept here so `use DMEx.Log` injects
   # a one-line call and nothing else.
   @doc false
-  @spec __append__(module(), struct(), keyword()) :: {:ok, pos_integer()} | {:error, term()}
-  def __append__(log, message, opts) when is_atom(log) do
-    validate_append_opts!(opts)
-
+  @spec __append__(module(), struct(), map()) :: {:ok, pos_integer()} | {:error, term()}
+  def __append__(log, message, metadata) when is_atom(log) do
     %{storage: storage, notifier: notifier} = declaration!(log)
 
     type = type!(message)
     data = JSON.encode!(message)
-    metadata = opts |> Keyword.get(:metadata, %{}) |> JSON.encode!()
+    metadata = metadata!(metadata)
 
     :telemetry.span(
       [:dmex, :append],
@@ -377,11 +373,16 @@ defmodule DMEx.Log do
             "so it cannot be appended."
   end
 
-  defp validate_append_opts!(opts) do
-    case Enum.reject(Keyword.keys(opts), &(&1 == :metadata)) do
-      [] -> :ok
-      unknown -> raise ArgumentError, "unknown append option(s): #{inspect(unknown)}"
-    end
+  # The second argument *is* the metadata, so this is where its shape is
+  # established. A non-map encodes to perfectly valid JSON and then reads as a
+  # *malformed row* at a remote consumer, since `DMEx.Transport.SSE.Frame`
+  # requires an object — and as itself at a local one, which is worse for being
+  # inconsistent. So it is refused here, in the same words `type!/1` refuses a
+  # non-message.
+  defp metadata!(metadata) when is_map(metadata), do: JSON.encode!(metadata)
+
+  defp metadata!(other) do
+    raise ArgumentError, "metadata must be a map, got: #{inspect(other)}"
   end
 
   defp repo!(_module, repo) when is_atom(repo) and not is_nil(repo), do: repo

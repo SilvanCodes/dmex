@@ -30,7 +30,7 @@ defmodule DMEx.Transport.LocalTest do
     # sandbox — nothing commits — which is exactly why reading before waiting is
     # the shape the loop has.
     test "runs an appended message through the handler, with no wire in between" do
-      {:ok, id} = Log.append(%OrderPlaced{order_id: 7, total: 1999}, metadata: %{"who" => "me"})
+      {:ok, id} = Log.append(%OrderPlaced{order_id: 7, total: 1999}, %{"who" => "me"})
 
       subscribe(Handlers.Echo)
 
