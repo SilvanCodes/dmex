@@ -64,13 +64,19 @@ defmodule DMEx.Query do
     storage = DMEx.Supervisor.storage!(opts)
 
     with {:ok, rows} <- Storage.select(storage, filters!(message, opts)) do
-      {:ok, Enum.map(rows, &message.cast(JSON.decode!(&1.data)))}
+      # `decode/2`, not `decode/1`: the module is in hand — it is what the type
+      # filter was built from — so resolving the row's type through the node's
+      # index would add a dependency on that index being current for nothing.
+      {:ok,
+       Enum.map(rows, fn row ->
+         {:ok, cast, _metadata} = DMEx.Message.decode(row, message)
+         cast
+       end)}
     end
   end
 
-  # Both halves of a message module's identity, because a retired type names rows
-  # this module still answers for — see `DMEx.Message`. The current type first,
-  # since that is the one a live log is filling.
+  # `declared/1` rather than the two calls behind it, because a retired type names
+  # rows this module still answers for and `DMEx.Message` owns that pairing.
   defp filters!(message, opts) do
     if !DMEx.Message.message?(message) do
       raise ArgumentError,
@@ -79,7 +85,7 @@ defmodule DMEx.Query do
     end
 
     %{
-      types: [message.type() | message.retired()],
+      types: DMEx.Message.declared(message),
       after_id: bound!(opts, :after_id, &(is_integer(&1) and &1 >= 0), "a non-negative integer") || 0,
       order: bound!(opts, :order, &(&1 in [:asc, :desc]), "either :asc or :desc") || :asc,
       limit: bound!(opts, :limit, &(is_integer(&1) and &1 > 0), "a positive integer") || @default_limit

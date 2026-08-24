@@ -328,9 +328,7 @@ defmodule DMEx.Log do
   def __append__(log, message, metadata) when is_atom(log) do
     %{storage: storage, notifier: notifier} = declaration!(log)
 
-    type = type!(message)
-    data = JSON.encode!(message)
-    metadata = metadata!(metadata)
+    {type, data, metadata} = DMEx.Message.encode!(message, metadata)
 
     :telemetry.span(
       [:dmex, :append],
@@ -350,39 +348,6 @@ defmodule DMEx.Log do
         {result, %{log: log, type: type}}
       end
     )
-  end
-
-  # `DMEx.Message.message?/1` rather than `function_exported?(module, :type, 0)`:
-  # exporting `type/0` is a shape a struct can have by coincidence, and one that
-  # gets past this dies further in, inside `JSON.encode!/1`.
-  defp type!(%module{} = message) do
-    if DMEx.Message.message?(module) do
-      module.type()
-    else
-      raise ArgumentError,
-            "#{inspect(module)} is not a DMEx message module, so #{inspect(message)} " <>
-              "cannot be appended. Add `use DMEx.Message` to #{inspect(module)}."
-    end
-  end
-
-  # A non-struct gets the same `ArgumentError` the generated `append/2` promises,
-  # rather than a `FunctionClauseError` from a guard.
-  defp type!(other) do
-    raise ArgumentError,
-          "#{inspect(other)} is not a struct built with `use DMEx.Message`, " <>
-            "so it cannot be appended."
-  end
-
-  # The second argument *is* the metadata, so this is where its shape is
-  # established. A non-map encodes to perfectly valid JSON and then reads as a
-  # *malformed row* at a remote consumer, since `DMEx.Transport.SSE.Frame`
-  # requires an object — and as itself at a local one, which is worse for being
-  # inconsistent. So it is refused here, in the same words `type!/1` refuses a
-  # non-message.
-  defp metadata!(metadata) when is_map(metadata), do: JSON.encode!(metadata)
-
-  defp metadata!(other) do
-    raise ArgumentError, "metadata must be a map, got: #{inspect(other)}"
   end
 
   defp repo!(_module, repo) when is_atom(repo) and not is_nil(repo), do: repo

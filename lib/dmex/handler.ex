@@ -400,13 +400,11 @@ defmodule DMEx.Handler do
   defp last_cast_clause(%{fingerprint: nil}) do
     quote do
       def __dmex_cast__(type, data, metadata) do
-        case DMEx.Message.for_type(type) do
-          nil ->
+        case DMEx.Message.decode(%{type: type, data: data, metadata: metadata}) do
+          :unknown ->
             nil
 
-          module ->
-            message = module.cast(data)
-
+          {:ok, message, metadata} ->
             if __dmex_match__(message, metadata), do: message
         end
       end

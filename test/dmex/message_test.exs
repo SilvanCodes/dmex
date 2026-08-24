@@ -183,6 +183,89 @@ defmodule DMEx.MessageTest do
     end
   end
 
+  describe "encode!/2 and decode/1" do
+    test "encode! answers the three columns a row is made of" do
+      assert {"order_placed", data, metadata} =
+               DMEx.Message.encode!(%OrderPlaced{order_id: 7}, %{"trace_id" => "abc"})
+
+      assert JSON.decode!(data) == %{"order_id" => 7, "customer_id" => nil, "total" => nil}
+      assert JSON.decode!(metadata) == %{"trace_id" => "abc"}
+    end
+
+    test "encode! defaults metadata to an empty object" do
+      assert {_type, _data, "{}"} = DMEx.Message.encode!(%OrderPlaced{order_id: 7})
+    end
+
+    test "the type comes off the module, never from the caller" do
+      assert {"orders.placed", _data, _metadata} = DMEx.Message.encode!(%Renamed{order_id: 7})
+    end
+
+    test "decode resolves the module from the row's own type" do
+      {type, data, metadata} = DMEx.Message.encode!(%OrderPlaced{order_id: 7}, %{"who" => "me"})
+
+      assert {:ok, %OrderPlaced{order_id: 7}, %{"who" => "me"}} =
+               DMEx.Message.decode(%{type: type, data: data, metadata: metadata})
+    end
+
+    # A storage row is atom-keyed and a transport's is string-keyed, and both
+    # arrive here.
+    test "decode takes either key shape" do
+      assert {:ok, %OrderPlaced{order_id: 7}, %{}} =
+               DMEx.Message.decode(%{"type" => "order_placed", "data" => ~s({"order_id":7}), "metadata" => "{}"})
+    end
+
+    # A transport has already decoded one level; storage has not.
+    test "decode takes payloads as text or as maps" do
+      assert {:ok, %OrderPlaced{order_id: 7}, %{"a" => 1}} =
+               DMEx.Message.decode(%{type: "order_placed", data: %{"order_id" => 7}, metadata: %{"a" => 1}})
+    end
+
+    test "decode answers :unknown for a type no module declares" do
+      assert DMEx.Message.decode(%{type: "nobody.declares.this", data: "{}", metadata: "{}"}) ==
+               :unknown
+    end
+
+    # The retired type resolves to the module that retired it, which is the whole
+    # point of `retired:` — see `declared/1`.
+    test "decode resolves a retired type" do
+      assert {:ok, %Renamed{order_id: 1}, %{}} =
+               DMEx.Message.decode(%{type: "order_placed_legacy", data: ~s({"order_id":1}), metadata: "{}"})
+    end
+
+    # The point of the second arity: a caller holding the module needs no index,
+    # so a type the node has never heard of still decodes through it.
+    test "decode/2 skips the registry entirely" do
+      assert {:ok, %OrderPlaced{order_id: 7}, %{}} =
+               DMEx.Message.decode(
+                 %{type: "nobody.declares.this", data: ~s({"order_id":7}), metadata: "{}"},
+                 OrderPlaced
+               )
+    end
+
+    test "decode runs the module's own cast/1" do
+      assert {:ok, %WithCustomCast{placed_at: %DateTime{}}, %{}} =
+               DMEx.Message.decode(%{
+                 type: "with_custom_cast",
+                 data: ~s({"order_id":7,"placed_at":"2026-07-27T10:31:04Z"}),
+                 metadata: "{}"
+               })
+    end
+
+    test "encode! refuses a struct that is not a message, and a non-map metadata" do
+      assert_raise ArgumentError, ~r/is not a DMEx message module/, fn ->
+        DMEx.Message.encode!(%URI{})
+      end
+
+      assert_raise ArgumentError, ~r/is not a struct built with `use DMEx.Message`/, fn ->
+        DMEx.Message.encode!(%{order_id: 1})
+      end
+
+      assert_raise ArgumentError, ~r/metadata must be a map/, fn ->
+        DMEx.Message.encode!(%OrderPlaced{order_id: 7}, priority: :high)
+      end
+    end
+  end
+
   describe "encoding" do
     test "a field must hold something JSON.Encoder already encodes" do
       # The invariant the moduledoc states. `URI` stands in for any struct that

@@ -258,6 +258,90 @@ defmodule DMEx.Message do
   end
 
   @doc """
+  The three columns an append writes: the type, and `data` and `metadata` as JSON
+  text.
+
+  The one place a message becomes a row, as `decode/1` is the one place a row
+  becomes a message. `DMEx.Log` holds neither `JSON` call, which is what keeps
+  the encoding and the `@derive JSON.Encoder` that makes it possible in one
+  module.
+
+  The type comes off `message`'s own module, never from a caller — see the
+  moduledoc. `metadata` must be a map: anything else encodes to valid JSON and
+  then reads as a malformed row at a consumer, where
+  `DMEx.Transport.SSE.Frame.decode/1` requires an object.
+  """
+  @spec encode!(struct(), map()) :: {String.t(), binary(), binary()}
+  def encode!(message, metadata \\ %{})
+
+  def encode!(%module{} = message, metadata) when is_map(metadata) do
+    if !message?(module) do
+      raise ArgumentError,
+            "#{inspect(module)} is not a DMEx message module, so #{inspect(message)} cannot be " <>
+              "appended. Add `use DMEx.Message` to #{inspect(module)}."
+    end
+
+    {module.type(), JSON.encode!(message), JSON.encode!(metadata)}
+  end
+
+  def encode!(%_module{}, metadata) do
+    raise ArgumentError, "metadata must be a map, got: #{inspect(metadata)}"
+  end
+
+  # A non-struct gets the same `ArgumentError` `MyApp.Log.append/2` promises,
+  # rather than a `FunctionClauseError` from the head above.
+  def encode!(other, _metadata) do
+    raise ArgumentError,
+          "#{inspect(other)} is not a struct built with `use DMEx.Message`, " <>
+            "so it cannot be appended."
+  end
+
+  @doc """
+  A row's message and its metadata, or `:unknown` for a type this node has no
+  module for.
+
+  The inverse of `encode!/2`, and the reason a row needs nothing but itself to be
+  read: `type` resolves through `for_type/1`, so the caller supplies no module.
+  An unresolvable type is an answer rather than an error — a consumer legitimately
+  reads a log wider than its own message modules.
+
+  Takes `data` and `metadata` as JSON text, the shape `t:DMEx.Storage.row/0`
+  carries, or as already-decoded maps, the shape a transport yields.
+  """
+  @spec decode(map()) :: {:ok, struct(), map()} | :unknown
+  def decode(row) do
+    {type, data, metadata} = columns(row)
+
+    case for_type(type) do
+      nil -> :unknown
+      module -> {:ok, module.cast(payload(data)), payload(metadata)}
+    end
+  end
+
+  @doc """
+  The same, for a caller that already holds the module.
+
+  `DMEx.Query` does: it built its type filter out of `module` in the first place,
+  so resolving the row's type through the node's index would be a second answer
+  to a question it had already answered — and one that needs the index to be
+  current, where this needs nothing. It cannot fail to resolve, so there is no
+  `:unknown`.
+  """
+  @spec decode(map(), module()) :: {:ok, struct(), map()}
+  def decode(row, module) when is_atom(module) do
+    {_type, data, metadata} = columns(row)
+
+    {:ok, module.cast(payload(data)), payload(metadata)}
+  end
+
+  defp columns(%{type: type, data: data, metadata: metadata}), do: {type, data, metadata}
+
+  defp columns(%{"type" => type, "data" => data, "metadata" => metadata}), do: {type, data, metadata}
+
+  defp payload(json) when is_binary(json), do: JSON.decode!(json)
+  defp payload(map) when is_map(map), do: map
+
+  @doc """
   Returns whether `module` was built with `use DMEx.Message`.
 
   The mirror of `DMEx.Handler.handler?/1`. Tested by the `@dmex_message`
