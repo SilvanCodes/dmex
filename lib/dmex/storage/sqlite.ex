@@ -76,7 +76,7 @@ defmodule DMEx.Storage.SQLite do
       timestamp: &datetime!/1,
       # No array type, so a selection is N placeholders binding N parameters. The
       # varying arity costs nothing: exqlite prepares every statement anyway.
-      selection: &{"AND type IN (#{placeholders(&1)})", &1}
+      selection: &{"AND type IN (#{placeholders(&1, &2)})", &1}
     }
   end
 
@@ -169,6 +169,7 @@ defmodule DMEx.Storage.SQLite do
   @impl DMEx.Storage
   def migration, do: DMEx.Storage.SQLite.Migration
 
-  # `?4` onward: `?1` to `?3` are the parameters every read binds.
-  defp placeholders(types), do: Enum.map_join(4..(3 + length(types))//1, ",", &"?#{&1}")
+  # From `first` onward: a read binds three parameters before its selection, an
+  # ad-hoc select none.
+  defp placeholders(types, first), do: Enum.map_join(first..(first + length(types) - 1)//1, ",", &"?#{&1}")
 end

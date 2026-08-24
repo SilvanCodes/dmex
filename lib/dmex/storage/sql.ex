@@ -48,9 +48,11 @@ defmodule DMEx.Storage.SQL do
     * `:timestamp` — how a stored timestamp becomes the `%DateTime{}`
       `t:DMEx.Storage.row/0` promises. Postgres's driver already returns one.
     * `:selection` — how a list of types becomes a predicate and the parameters
-      it binds. Postgres has an array type and binds one `= ANY($4)`; SQLite has
-      neither and renders N placeholders. Why that is a separate statement
-      rather than a nullable predicate is on `read/6`.
+      it binds, given the number the first of them takes. Postgres has an array
+      type and binds one `= ANY($n)`; SQLite has neither and renders N
+      placeholders. The index is passed rather than fixed because two statements
+      bind a selection at different offsets. Why a selection is a separate
+      statement rather than a nullable predicate is on `read/6`.
 
   `:text`, `:json` and `:bytes` are per-column functions rather than finished
   expressions, and that is the point of the split: *which* columns are measured,
@@ -86,7 +88,7 @@ defmodule DMEx.Storage.SQL do
           type_agg: String.t(),
           types: (term() -> [String.t()]),
           timestamp: (term() -> DateTime.t()),
-          selection: ([String.t()] -> {String.t(), [term()]})
+          selection: ([String.t()], pos_integer() -> {String.t(), [term()]})
         }
 
   @doc """
@@ -136,6 +138,9 @@ defmodule DMEx.Storage.SQL do
       @impl DMEx.Storage
       def delete_dead_message(subscription, id, opts),
         do: DMEx.Storage.SQL.delete_dead_message(dialect(opts), opts, subscription, id)
+
+      @impl DMEx.Storage
+      def select(filters, opts), do: DMEx.Storage.SQL.select(dialect(opts), opts, filters)
 
       # The one statement a test wants to EXPLAIN. One arity for both engines.
       @doc false
@@ -246,10 +251,51 @@ defmodule DMEx.Storage.SQL do
   end
 
   def read(%{selection: selection} = dialect, opts, cursor, max_rows, max_bytes, types) when is_list(types) do
-    {predicate, params} = selection.(types)
+    {predicate, params} = selection.(types, 4)
 
     rows(dialect, opts, read_sql(dialect, predicate), [cursor, max_rows, max_bytes | params])
   end
+
+  @doc """
+  See `c:DMEx.Storage.select/2`.
+
+  A plain filtered scan, deliberately unlike `read/6`: no byte bound and no
+  window functions, because the caller is a person with a `limit:` rather than a
+  send loop with a socket. The selection comes first so that `(type, id)` serves
+  it, and `id` is the only orderable column — `inserted_at` is observability and
+  never an ordering key (`DMEx.Storage.Postgres.Migration` says why).
+
+  `:after_id` is the leading predicate rather than an optional one, exactly as the
+  cursor is in `read_sql/2`: it defaults to 0 and every id is positive, so one
+  clause is always there and the selection appends itself at a known offset.
+  `:desc` reads the same index backwards, so `LIMIT` with it is the newest rows
+  for one seek rather than a sort.
+
+  The direction is rendered here rather than through the dialect: `ASC` and `DESC`
+  are spelled the same by every engine, and the dialect is for what is not.
+  """
+  @spec select(dialect(), DMEx.Storage.opts(), DMEx.Storage.filters()) ::
+          {:ok, [DMEx.Storage.row()]} | {:error, term()}
+  def select(%{messages: table, param: param, text: text, selection: selection} = dialect, opts, filters) do
+    {predicate, types} = selection.(filters.types, 2)
+    params = [filters.after_id | types]
+
+    sql = """
+    SELECT id, type, #{projected(text, "data")}, #{projected(text, "metadata")}, inserted_at
+      FROM #{table}
+     WHERE id > #{param}1 #{predicate}
+     ORDER BY id #{direction(filters.order)}
+     LIMIT #{param}#{length(params) + 1}
+    """
+
+    rows(dialect, opts, sql, params ++ [filters.limit])
+  end
+
+  # Rendered from the atom the behaviour already constrains, never interpolated
+  # from a caller's string: this is the one place in a statement where a value
+  # cannot be a parameter.
+  defp direction(:asc), do: "ASC"
+  defp direction(:desc), do: "DESC"
 
   @doc "See `c:DMEx.Storage.max_id/1`."
   @spec max_id(dialect(), DMEx.Storage.opts()) :: {:ok, non_neg_integer()} | {:error, term()}

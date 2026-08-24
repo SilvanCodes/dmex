@@ -103,6 +103,7 @@ defmodule DMEx.MixProject do
         Declaring: [DMEx.Log, DMEx.Message, DMEx.Handler, DMEx.Supervisor],
         Operating: [
           DMEx.Config,
+          DMEx.Query,
           DMEx.Handler.Cursors,
           DMEx.Handler.DeadMessages,
           DMEx.Storage.Migration,

@@ -193,6 +193,87 @@ for {storage, repo, tag} <- [
       end
     end
 
+    # `DMEx.Query`'s statement. Every assertion here is about the *contract* —
+    # what the filters mean — and the two engines answer it through genuinely
+    # different SQL: one array parameter against N placeholders.
+    describe "select/2" do
+      test "returns only the named types, oldest first", %{opts: opts} do
+        {:ok, a1} = append("A", %{n: 1}, opts)
+        {:ok, _b} = append("B", %{n: 2}, opts)
+        {:ok, a2} = append("A", %{n: 3}, opts)
+
+        assert {:ok, rows} = @storage.select(filters(types: ["A"]), opts)
+        assert Enum.map(rows, & &1.id) == [a1, a2]
+      end
+
+      # A retired type is why `:types` is a list at all: one module answers for
+      # every string it ever appended under.
+      test "admits every named type", %{opts: opts} do
+        {:ok, old} = append("A.v1", %{n: 1}, opts)
+        {:ok, new} = append("A", %{n: 2}, opts)
+        {:ok, _other} = append("B", %{n: 3}, opts)
+
+        assert {:ok, rows} = @storage.select(filters(types: ["A", "A.v1"]), opts)
+        assert Enum.map(rows, & &1.id) == [old, new]
+      end
+
+      test "honours the limit against the oldest rows", %{opts: opts} do
+        ids = for n <- 1..5, do: elem(append("A", %{n: n}, opts), 1)
+
+        assert {:ok, rows} = @storage.select(filters(types: ["A"], limit: 2), opts)
+        assert Enum.map(rows, & &1.id) == Enum.take(ids, 2)
+      end
+
+      test "after_id is exclusive", %{opts: opts} do
+        [first, second, third] = for n <- 1..3, do: elem(append("A", %{n: n}, opts), 1)
+
+        assert {:ok, rows} = @storage.select(filters(types: ["A"], after_id: first), opts)
+        assert Enum.map(rows, & &1.id) == [second, third]
+      end
+
+      test "order: :desc reads newest first", %{opts: opts} do
+        appended = for n <- 1..3, do: elem(append("A", %{n: n}, opts), 1)
+
+        assert {:ok, ^appended} = ids(filters(types: ["A"]), opts)
+        assert {:ok, reversed} = ids(filters(types: ["A"], order: :desc), opts)
+        assert reversed == Enum.reverse(appended)
+      end
+
+      # The combination worth pinning: `:desc` with a limit is "the newest N",
+      # which is the whole point of having a direction at all.
+      test "a descending limit takes the newest rows", %{opts: opts} do
+        appended = for n <- 1..5, do: elem(append("A", %{n: n}, opts), 1)
+        newest = appended |> Enum.reverse() |> Enum.take(2)
+
+        assert {:ok, ^newest} = ids(filters(types: ["A"], order: :desc, limit: 2), opts)
+      end
+
+      # `:after_id` is a lower bound on the id whichever way the rows come back,
+      # so the two compose rather than one reinterpreting the other.
+      test "after_id stays a lower bound when descending", %{opts: opts} do
+        [first, second, third] = for n <- 1..3, do: elem(append("A", %{n: n}, opts), 1)
+
+        assert {:ok, [^third, ^second]} = ids(filters(types: ["A"], order: :desc, after_id: first), opts)
+      end
+
+      test "returns data and metadata as JSON text, like every other read", %{opts: opts} do
+        {:ok, _} = append("A", %{order_id: 7}, %{trace_id: "abc"}, opts)
+
+        assert {:ok, [row]} = @storage.select(filters(types: ["A"]), opts)
+
+        assert is_binary(row.data)
+        assert is_binary(row.metadata)
+        assert JSON.decode!(row.data) == %{"order_id" => 7}
+        assert %DateTime{} = row.inserted_at
+      end
+
+      test "a type nothing was appended under reads empty", %{opts: opts} do
+        {:ok, _} = append("A", %{n: 1}, opts)
+
+        assert {:ok, []} = @storage.select(filters(types: ["Z"]), opts)
+      end
+    end
+
     # The bound that makes the log's "memory per connection is one batch" claim
     # true in bytes and not only in rows. It has to hold *in the query*: a read
     # that returns `limit` rows and lets the caller trim them has already spent
@@ -521,6 +602,16 @@ for {storage, repo, tag} <- [
 
     defp append(type, data, metadata \\ %{}, opts) do
       @storage.append(type, JSON.encode!(data), JSON.encode!(metadata), opts)
+    end
+
+    # The full filter map `c:DMEx.Storage.select/2` takes, so a test names only
+    # the axis it is about.
+    defp filters(overrides) do
+      Map.merge(%{types: ["A"], after_id: 0, order: :asc, limit: 100}, Map.new(overrides))
+    end
+
+    defp ids(filters, opts) do
+      with {:ok, rows} <- @storage.select(filters, opts), do: {:ok, Enum.map(rows, & &1.id)}
     end
 
     defp fetch!(id, opts) do

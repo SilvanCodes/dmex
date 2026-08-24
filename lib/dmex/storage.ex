@@ -353,7 +353,37 @@ defmodule DMEx.Storage do
   """
   @callback validate!(opts()) :: :ok
 
-  @optional_callbacks default_notifier: 0, migration: 0, validate!: 1
+  @typedoc """
+  What `c:select/2` narrows a read to.
+
+  Every key is present. `:after_id` is a cursor with 0 for "from the start", the
+  same shape `c:read/5` takes, and `:order` is the direction of the one column an
+  ad-hoc read may order by. `:types` is never empty — `DMEx.Query` builds it from
+  a message module, which always answers for at least its current type.
+  """
+  @type filters :: %{
+          types: [String.t()],
+          after_id: non_neg_integer(),
+          order: :asc | :desc,
+          limit: pos_integer()
+        }
+
+  @doc """
+  Reads the rows matching `filters`, oldest first, for an ad-hoc query.
+
+  `DMEx.Query`'s door, and nothing on the streaming path calls it: `c:read/5` is
+  the reader's statement and pays for the byte bound and the window functions
+  that buy it, where this one is a plain filtered scan with a row limit. Two
+  statements because they answer different questions — "the next batch a
+  subscription can afford" against "the rows a human asked about".
+
+  Optional, and the one optional callback whose absence stops a caller rather
+  than defaulting it: a store with no filtered read cannot serve `DMEx.Query`,
+  which says so and names the adapter. `use DMEx.Storage.SQL` generates it.
+  """
+  @callback select(filters(), opts()) :: {:ok, [row()]} | {:error, term()}
+
+  @optional_callbacks default_notifier: 0, migration: 0, validate!: 1, select: 2
 
   # The shipped adapter for each Ecto adapter, and the only place that mapping
   # lives. A default, not the selection axis — that is `storage:`.
@@ -439,6 +469,26 @@ defmodule DMEx.Storage do
 
   def read(%{adapter: adapter} = storage, cursor, max_rows, max_bytes, types),
     do: adapter.read(cursor, max_rows, max_bytes, types, storage)
+
+  @doc """
+  Reads the rows matching `filters`. See `c:select/2`.
+
+  Raises for an adapter that does not implement it — the one optional callback
+  with no sensible default, since there is nothing to fall back to and reading
+  the whole log to filter it here is not that.
+  """
+  @spec select(opts(), filters()) :: {:ok, [row()]} | {:error, term()}
+  def select(%{adapter: adapter} = storage, filters) do
+    case optional(adapter, :select, [filters, storage]) do
+      {:ok, result} ->
+        result
+
+      :none ->
+        raise ArgumentError,
+              "#{inspect(adapter)} implements no `c:DMEx.Storage.select/2`, so `DMEx.Query` " <>
+                "cannot read through it. A SQL adapter gets one from `use DMEx.Storage.SQL`."
+    end
+  end
 
   @doc "The log's current highest id. See `c:max_id/1`."
   @spec max_id(opts()) :: {:ok, non_neg_integer()} | {:error, term()}

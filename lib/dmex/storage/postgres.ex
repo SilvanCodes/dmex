@@ -61,7 +61,7 @@ defmodule DMEx.Storage.Postgres do
       types: &Function.identity/1,
       timestamp: &Function.identity/1,
       # One array parameter, whatever the selection's size.
-      selection: &{"AND type = ANY($4)", [&1]}
+      selection: &{"AND type = ANY($#{&2})", [&1]}
     }
   end
 
