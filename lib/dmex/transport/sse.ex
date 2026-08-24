@@ -30,6 +30,11 @@ defmodule DMEx.Transport.SSE do
 
   require Logger
 
+  # Mint and Plug are optional dependencies: an append-only host carries no Mint
+  # and never reaches the receive side, a pure consumer no Plug and never the
+  # send side. See `DMEx.Log.Plug` for the same declaration on the HTTP door.
+  @compile {:no_warn_undefined, [Mint.HTTP, Plug.Conn]}
+
   # Only used before a log has advertised its own interval, which in practice is
   # the first chunk of the first response.
   @assumed_retry 60_000

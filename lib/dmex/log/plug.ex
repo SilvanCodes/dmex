@@ -76,6 +76,13 @@ defmodule DMEx.Log.Plug do
 
   require Logger
 
+  # Plug is an optional dependency, so a host that serves no log — a pure
+  # consumer — compiles this module without it. Nothing here may *expand* a Plug
+  # construct for that to hold, which is why `call/2` matches a bare map below
+  # rather than `%Plug.Conn{}`: a struct pattern needs the module at compile time
+  # where a remote call only needs it at runtime.
+  @compile {:no_warn_undefined, [Plug, Plug.Conn]}
+
   @matched "dmex-matched-types"
 
   @impl Plug
@@ -96,7 +103,7 @@ defmodule DMEx.Log.Plug do
 
   # Anything but GET is a `405` with the `allow` header RFC 9110 requires.
   @impl Plug
-  def call(%Plug.Conn{method: method} = conn, _opts) when method != "GET" do
+  def call(%{method: method} = conn, _opts) when method != "GET" do
     conn
     |> Plug.Conn.put_resp_header("allow", "GET")
     |> respond(405, "only GET is supported on a DMEx stream")

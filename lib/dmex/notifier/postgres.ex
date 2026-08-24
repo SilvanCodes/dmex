@@ -20,6 +20,11 @@ defmodule DMEx.Notifier.Postgres do
 
   alias Ecto.Adapters.SQL
 
+  # Postgrex is an optional dependency, so a SQLite-only host compiles this
+  # module without it. The module is only ever reached through
+  # `DMEx.Storage.Postgres`'s default notifier, which that host never selects.
+  @compile {:no_warn_undefined, Postgrex.Notifications}
+
   @impl DMEx.Notifier
   def child_specs(opts) do
     name = name(opts)
