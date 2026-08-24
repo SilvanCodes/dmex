@@ -1,8 +1,16 @@
 defmodule DMEx.LogTest do
   use DMEx.Case, async: true
 
+  alias DMEx.Notifier.Beam
+  alias DMEx.Storage.Postgres
   alias DMEx.Test.Log
   alias DMEx.Test.Repo
+
+  defmodule TdsRepo do
+    @moduledoc false
+    # An engine DMEx ships no adapter for. `__adapter__/0` is all inference reads.
+    def __adapter__, do: Ecto.Adapters.Tds
+  end
 
   describe "__dmex_log__/0" do
     test "resolves everything the append and stream paths need" do
@@ -16,7 +24,7 @@ defmodule DMEx.LogTest do
       # Each handle carries its own adapter; storage carries nothing about
       # notification and no second copy of the log module.
       assert %{
-               adapter: DMEx.Storage.Postgres,
+               adapter: Postgres,
                repo: Repo,
                lock: {classid, objid},
                prefix: nil
@@ -45,7 +53,26 @@ defmodule DMEx.LogTest do
       assert define!(
                "NotifierExplicit",
                "repo: DMEx.Test.Repo, notifier: DMEx.Notifier.Beam"
-             ).notifier.adapter == DMEx.Notifier.Beam
+             ).notifier.adapter == Beam
+    end
+
+    test "the repo's engine chooses the storage adapter, and a log may override it" do
+      inferred = define!("StorageInferred", "repo: DMEx.Test.SQLiteRepo")
+
+      assert inferred.storage.adapter == DMEx.Storage.SQLite
+      # And the notifier follows the adapter, so a SQLite log states neither.
+      assert inferred.notifier.adapter == Beam
+
+      assert define!(
+               "StorageExplicit",
+               "repo: DMEx.Test.SQLiteRepo, storage: DMEx.Storage.Postgres"
+             ).storage.adapter == Postgres
+    end
+
+    test "refuses a repo whose engine DMEx ships no adapter for" do
+      assert_raise ArgumentError, ~r/ships no storage adapter for Ecto.Adapters.Tds/, fn ->
+        define!("StorageUnshipped", "repo: DMEx.LogTest.TdsRepo")
+      end
     end
 
     test "is a compile-time constant rather than rebuilt per call" do

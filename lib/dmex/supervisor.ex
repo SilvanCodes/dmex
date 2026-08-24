@@ -40,8 +40,8 @@ defmodule DMEx.Supervisor do
       application owning an owned log is scanned too — this one only, for a
       single-app host.
     * `:repo` — the Ecto repo holding `dmex_cursors`.
-    * `:storage` — the `DMEx.Storage` adapter; defaults to `DMEx.Storage.Postgres`.
-      `DMEx.Storage.SQLite` is the other shipped one.
+    * `:storage` — the `DMEx.Storage` adapter; defaults to the shipped one for
+      `repo:`'s engine, as the log side does, so both halves agree by construction.
     * `:prefix` — Postgres schema for the DMEx tables. SQLite has none and
       raises on it.
     * `:name` — names this supervisor, so an application can run more than one.

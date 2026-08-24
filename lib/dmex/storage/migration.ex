@@ -82,31 +82,6 @@ defmodule DMEx.Storage.Migration do
     end
   end
 
-  # A migration holds the Ecto repo and nothing else: `use DMEx.Log, storage:` is
-  # out of reach from here, and DMEx reads no global application config. So the
-  # two shipped adapters have to be named somewhere, and this is the least-bad
-  # somewhere. It is a *default*, not the selection axis — that is
-  # `c:DMEx.Storage.migration/0`, and `storage:` is how anything else gets in.
-  @shipped %{
-    Ecto.Adapters.Postgres => DMEx.Storage.Postgres,
-    Ecto.Adapters.SQLite3 => DMEx.Storage.SQLite
-  }
-
-  # `repo/0` reads the migrator's process dictionary, and that is this process:
-  # the host's `up/0` calls straight through to here.
-  defp default_storage! do
-    adapter = repo().__adapter__()
-
-    Map.get_lazy(@shipped, adapter, fn ->
-      raise ArgumentError, """
-      DMEx ships no storage adapter for #{inspect(adapter)}, so a migration on it \
-      has to name the one to use:
-
-          DMEx.Storage.Migration.up(storage: MyApp.Storage)
-      """
-    end)
-  end
-
   defp validate!(opts) do
     tables = Keyword.get(opts, :tables, @tables)
 
@@ -119,7 +94,9 @@ defmodule DMEx.Storage.Migration do
     %{
       tables: tables,
       prefix: Keyword.get(opts, :prefix),
-      storage: Keyword.get_lazy(opts, :storage, &default_storage!/0)
+      # `repo/0` reads the migrator's process dictionary, which is this process:
+      # the host's `up/0` calls straight through to here.
+      storage: Keyword.get_lazy(opts, :storage, fn -> DMEx.Storage.default_adapter(repo()) end)
     }
   end
 end

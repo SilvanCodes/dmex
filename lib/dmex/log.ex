@@ -28,8 +28,8 @@ defmodule DMEx.Log do
     * `:repo` — the Ecto repo owning `dmex_messages`. Defaults to the
       application's `:ecto_repos` when that names exactly one, so a single-repo
       application omits it; required otherwise.
-    * `:storage` — the `DMEx.Storage` adapter. Defaults to
-      `DMEx.Storage.Postgres`.
+    * `:storage` — the `DMEx.Storage` adapter. Defaults to the shipped one for
+      the repo's engine: `DMEx.Storage.Postgres` or `DMEx.Storage.SQLite`.
     * `:notifier` — the `DMEx.Notifier`. Defaults to whatever the storage
       adapter names, which is `DMEx.Notifier.Postgres` for the Postgres one.
     * `:prefix` — a Postgres schema the DMEx tables live in, which is also what

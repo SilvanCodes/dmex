@@ -47,9 +47,7 @@ defmodule DMEx.Test.SQLiteLog do
   unsandboxed writes here cannot reach the unit suite's.
   """
 
-  use DMEx.Log,
-    repo: DMEx.Test.SQLiteIntegrationRepo,
-    storage: DMEx.Storage.SQLite
+  use DMEx.Log, repo: DMEx.Test.SQLiteIntegrationRepo
 end
 
 defmodule DMEx.Test.StallLog do

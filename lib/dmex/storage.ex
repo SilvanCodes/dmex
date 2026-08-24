@@ -69,7 +69,9 @@ defmodule DMEx.Storage do
 
   `:adapter` is the module implementing this behaviour, so this map is the whole
   handle rather than half of a `{module, opts}` pair — see *Calling an adapter*.
-  `:repo` is the only other universally-required key. `:lock` is log-side and
+  `:repo` is the only other universally-required key, and `:adapter` is derived
+  from it unless `storage:` names one — so it is `nil` only when `:repo` is.
+  `:lock` is log-side and
   `DMEx.Log` is its only writer;
   `:prefix` is the optional schema both sides may live in. Nothing about
   notification is here — that is `t:DMEx.Notifier.opts/0`.
@@ -79,7 +81,7 @@ defmodule DMEx.Storage do
   them, which is what reading its own keys rather than matching on them buys.
   """
   @type opts :: %{
-          required(:adapter) => module(),
+          required(:adapter) => module() | nil,
           required(:repo) => module(),
           optional(:lock) => {integer(), integer()},
           optional(:prefix) => String.t() | nil,
@@ -353,15 +355,45 @@ defmodule DMEx.Storage do
 
   @optional_callbacks default_notifier: 0, migration: 0, validate!: 1
 
-  @doc """
-  The adapter a log or a supervisor gets when it names none.
+  # The shipped adapter for each Ecto adapter, and the only place that mapping
+  # lives. A default, not the selection axis — that is `storage:`.
+  @shipped %{
+    Ecto.Adapters.Postgres => DMEx.Storage.Postgres,
+    Ecto.Adapters.SQLite3 => DMEx.Storage.SQLite
+  }
 
-  One owner. `DMEx.Log` and `DMEx.Supervisor` both default `storage:`, and a
-  mismatch between them would be silent: an owned log would serve from one adapter
-  while its subscription's cursor was written through another.
+  @doc """
+  The shipped adapter for `repo`'s engine, for a caller that names none.
+
+  One owner, and one *source*: a log, a supervisor and a migration all derive it
+  from the repo they already hold, so none of them can disagree with another.
+  Two independent defaults could, silently — an owned log would serve from one
+  adapter while its subscription's cursor was written through a second.
   """
-  @spec default_adapter() :: module()
-  def default_adapter, do: DMEx.Storage.Postgres
+  @spec default_adapter(module()) :: module()
+  def default_adapter(repo) when is_atom(repo) do
+    ecto = ecto_adapter!(repo)
+
+    Map.get_lazy(@shipped, ecto, fn ->
+      raise ArgumentError,
+            "DMEx ships no storage adapter for #{inspect(ecto)}, so #{inspect(repo)} has to " <>
+              "name the one to use, e.g. `storage: MyApp.Storage`."
+    end)
+  end
+
+  # `Code.ensure_compiled/1` for the reason `optional/3` gives: `DMEx.Log`
+  # resolves this at compile time, from inside a compilation that may still be
+  # building the repo.
+  defp ecto_adapter!(repo) do
+    if match?({:module, _}, Code.ensure_compiled(repo)) and
+         function_exported?(repo, :__adapter__, 0) do
+      repo.__adapter__()
+    else
+      raise ArgumentError,
+            "#{inspect(repo)} is not an Ecto repo, so DMEx cannot derive a storage adapter " <>
+              "from it. Pass one built with `use Ecto.Repo`, or name the adapter with `storage:`."
+    end
+  end
 
   @doc """
   Builds a `t:opts/0` from `storage:`, `repo:` and `prefix:`.
@@ -369,15 +401,18 @@ defmodule DMEx.Storage do
   The one place those three become a handle, so the log side and the consumer side
   cannot disagree about the keys. `:repo` may be `nil` here — a supervisor started
   with no default is legal, and it is `DMEx.Supervisor.init/1` that seeds whatever
-  it got as the registry metadata a later `subscribe/2` falls back to.
+  it got as the registry metadata a later `subscribe/2` falls back to. There is
+  nothing to derive an adapter from in that case, so `:adapter` is `nil` with it.
 
   `DMEx.Log` adds `:lock`, which is the one key only an appender needs.
   """
   @spec opts(keyword()) :: opts()
   def opts(opts) when is_list(opts) do
+    repo = Keyword.get(opts, :repo)
+
     %{
-      adapter: Keyword.get(opts, :storage, default_adapter()),
-      repo: Keyword.get(opts, :repo),
+      adapter: Keyword.get_lazy(opts, :storage, fn -> if repo, do: default_adapter(repo) end),
+      repo: repo,
       prefix: Keyword.get(opts, :prefix)
     }
   end

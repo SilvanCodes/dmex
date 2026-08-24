@@ -3,3 +3,4 @@
 - I believe it is worth spending a significant amount of time on finding a simple, understandable solution.
 - I believe it is worth working thorough and at a steady pace.
 - I believe that documenting the process from the start creates long term value.
+- I believe José Valim and Chris McCord should have reason to love this project
