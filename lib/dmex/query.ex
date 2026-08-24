@@ -17,8 +17,8 @@ defmodule DMEx.Query do
 
   ## Options
 
-    * `:repo` — required, plus optional `:storage` and `:prefix`. See
-      `DMEx.Supervisor.storage!/1`.
+    * `:repo` — required unless `config :dmex, repo:` names one, plus optional
+      `:storage` and `:prefix`. See `DMEx.Supervisor.storage!/1`.
     * `:limit` — how many rows at most. Defaults to `default_limit/0`, because an
       unbounded read of an append-only log is a memory incident waiting for the
       log to grow.

@@ -426,19 +426,34 @@ defmodule DMEx.Storage do
   end
 
   @doc """
+  The repo every door falls back to: `config :dmex, repo: MyApp.Repo`.
+
+  One key for the single-repo application, which is nearly all of them, so a
+  console read, a cursor move and a supervisor child spec need not each name the
+  same repo. Under `:dmex` rather than under the host's own application because
+  at runtime there is nothing to derive the host's name from — a console holds a
+  message module at best, and `DMEx.Handler.Cursors.rename!/3` holds two
+  subscription id strings and no module at all.
+  """
+  @spec default_repo() :: module() | nil
+  def default_repo, do: Application.get_env(:dmex, :repo)
+
+  @doc """
   Builds a `t:opts/0` from `storage:`, `repo:` and `prefix:`.
 
   The one place those three become a handle, so the log side and the consumer side
-  cannot disagree about the keys. `:repo` may be `nil` here — a supervisor started
-  with no default is legal, and it is `DMEx.Supervisor.init/1` that seeds whatever
-  it got as the registry metadata a later `subscribe/2` falls back to. There is
-  nothing to derive an adapter from in that case, so `:adapter` is `nil` with it.
+  cannot disagree about the keys. `:repo` falls back to `default_repo/0`, and is
+  `nil` only when neither the options nor the configuration names one — which a
+  supervisor is allowed to be, since it is `DMEx.Supervisor.init/1` that seeds
+  whatever it got as the registry metadata a later `subscribe/2` falls back to.
+  There is nothing to derive an adapter from in that case, so `:adapter` is `nil`
+  with it.
 
   `DMEx.Log` adds `:lock`, which is the one key only an appender needs.
   """
   @spec opts(keyword()) :: opts()
   def opts(opts) when is_list(opts) do
-    repo = Keyword.get(opts, :repo)
+    repo = Keyword.get_lazy(opts, :repo, &default_repo/0)
 
     %{
       adapter: Keyword.get_lazy(opts, :storage, fn -> if repo, do: default_adapter(repo) end),

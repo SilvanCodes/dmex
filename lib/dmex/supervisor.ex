@@ -39,7 +39,8 @@ defmodule DMEx.Supervisor do
       reached without it, and `otp_app: nil` scans nothing beyond that. Each
       application owning an owned log is scanned too — this one only, for a
       single-app host.
-    * `:repo` — the Ecto repo holding `dmex_cursors`.
+    * `:repo` — the Ecto repo holding `dmex_cursors`. Defaults to
+      `config :dmex, repo: MyApp.Repo`, as the log side does.
     * `:storage` — the `DMEx.Storage` adapter; defaults to the shipped one for
       `repo:`'s engine, as the log side does, so both halves agree by construction.
     * `:prefix` — Postgres schema for the DMEx tables. SQLite has none and
@@ -54,8 +55,9 @@ defmodule DMEx.Supervisor do
 
   `repo:` (and optionally `storage:` / `prefix:`) is the default for every
   subscription under this supervisor. A `subscribe/2` call may override it, or
-  resolve it from the supervisor named by `supervisor:`; with neither it raises
-  and names both fixes. `bindings:` resolves the same way.
+  resolve it from the supervisor named by `supervisor:`; with neither, and no
+  `config :dmex, repo:`, it raises and names every fix. `bindings:` resolves the
+  same way.
 
   **Two subscriptions cannot share one identity** — `DMEx.Handler` covers the
   `{log, id}` pair. Checked across every discovered handler before any child
@@ -337,9 +339,10 @@ defmodule DMEx.Supervisor do
   adapter and lands on `:adapter`, which is what makes the result one value
   rather than a pair.
 
-  Insists on a `repo:`. What the operator-facing modules use, since there is
-  nothing running to fall back to when one is called from a migration or a
-  console — where `subscribe/2` has the supervisor's default underneath it.
+  Insists on a repo, from `repo:` or from `config :dmex, repo:` — what the
+  operator-facing modules use, since there is nothing running to fall back to
+  when one is called from a migration or a console, where `subscribe/2` has the
+  supervisor's default underneath it.
   """
   @spec storage!(keyword()) :: DMEx.Storage.opts()
   def storage!(opts), do: resolve_storage!(opts, nil)
@@ -376,7 +379,9 @@ defmodule DMEx.Supervisor do
     storage =
       case DMEx.Storage.opts(opts) do
         %{repo: nil} when is_nil(supervisor) ->
-          raise ArgumentError, "a `repo:` is required, e.g. `repo: MyApp.Repo`"
+          raise ArgumentError,
+                "a `repo:` is required: pass one, e.g. `repo: MyApp.Repo`, or configure the " <>
+                  "application's default with `config :dmex, repo: MyApp.Repo`"
 
         %{repo: nil} ->
           seeded_storage!(supervisor)
@@ -406,6 +411,7 @@ defmodule DMEx.Supervisor do
     raise ArgumentError,
           "DMEx.Supervisor.subscribe/2 has nowhere to write this subscription's cursor. Pass a " <>
             "`repo:` on the call, or start #{inspect(supervisor)} with a default: " <>
-            "`{DMEx.Supervisor, repo: MyApp.Repo, bindings: [...]}`."
+            "`{DMEx.Supervisor, repo: MyApp.Repo, bindings: [...]}`, or configure the " <>
+            "application's default with `config :dmex, repo: MyApp.Repo`."
   end
 end

@@ -25,9 +25,9 @@ defmodule DMEx.Log do
 
   ## Options
 
-    * `:repo` — the Ecto repo owning `dmex_messages`. Defaults to the
-      application's `:ecto_repos` when that names exactly one, so a single-repo
-      application omits it; required otherwise.
+    * `:repo` — the Ecto repo owning `dmex_messages`. Defaults to
+      `config :dmex, repo: MyApp.Repo` (see `DMEx.Storage.default_repo/0`), so a
+      single-repo application omits it; required otherwise.
     * `:storage` — the `DMEx.Storage` adapter. Defaults to the shipped one for
       the repo's engine: `DMEx.Storage.Postgres` or `DMEx.Storage.SQLite`.
     * `:notifier` — the `DMEx.Notifier`. Defaults to whatever the storage
@@ -95,15 +95,15 @@ defmodule DMEx.Log do
   @classid rem(:erlang.crc32("dmex"), 2_147_483_648)
 
   defmacro __using__(opts) do
-    # `Application.compile_env/3` has to be expanded *here*, in the module doing
+    # `Application.compile_env/2` has to be expanded *here*, in the module doing
     # the `use`, for the compiler to record the read and recompile this log when
-    # `:ecto_repos` changes. Reading it inside `__config__/3` would be an
-    # untracked `get_env` against DMEx's own application instead.
-    app = if Code.ensure_loaded?(Mix.Project), do: Mix.Project.config()[:app]
-    ecto_repos = quote(do: Application.compile_env(unquote(app), :ecto_repos, []))
+    # `config :dmex, :repo` changes. Reading it inside `__config__/3` would be an
+    # untracked `get_env` — and this config is resolved at compile time either
+    # way, since `__dmex_log__/0` bakes the repo in.
+    default_repo = quote(do: Application.compile_env(:dmex, :repo))
 
-    quote bind_quoted: [opts: opts, ecto_repos: ecto_repos] do
-      @dmex DMEx.Log.__config__(__MODULE__, opts, ecto_repos)
+    quote bind_quoted: [opts: opts, default_repo: default_repo] do
+      @dmex DMEx.Log.__config__(__MODULE__, opts, default_repo)
 
       @doc """
       This log's resolved configuration, built at compile time so an append costs
@@ -152,8 +152,8 @@ defmodule DMEx.Log do
         }
 
   @doc false
-  @spec __config__(module(), keyword(), [module()]) :: config()
-  def __config__(module, opts, ecto_repos \\ []) do
+  @spec __config__(module(), keyword(), module() | nil) :: config()
+  def __config__(module, opts, default_repo \\ nil) do
     Config.keys!(
       opts,
       @log_opts ++ Config.log_keys(),
@@ -161,7 +161,7 @@ defmodule DMEx.Log do
       " A log module is `use DMEx.Log, repo: MyApp.Repo`."
     )
 
-    repo = repo!(module, Keyword.get_lazy(opts, :repo, fn -> default_repo!(module, ecto_repos) end))
+    repo = repo!(module, Keyword.get(opts, :repo) || default_repo)
     prefix = Keyword.get(opts, :prefix)
 
     scope = scope!(module, prefix)
@@ -352,22 +352,19 @@ defmodule DMEx.Log do
 
   defp repo!(_module, repo) when is_atom(repo) and not is_nil(repo), do: repo
 
+  # Neither the `use` nor the configuration named one. Two fixes, so the message
+  # names both: the option is the specific answer and the config key is the
+  # single-repo application's.
+  defp repo!(module, nil) do
+    raise ArgumentError,
+          "`use DMEx.Log` in #{inspect(module)} requires :repo: neither the option nor " <>
+            "`config :dmex, repo: MyApp.Repo` names one, and guessing would bind the log to " <>
+            "a database silently. A log module is `use DMEx.Log, repo: MyApp.Repo`."
+  end
+
   defp repo!(module, other) do
     raise ArgumentError,
           "`:repo` in #{inspect(module)} must be an Ecto repo module, got: #{inspect(other)}. " <>
-            "A log module is `use DMEx.Log, repo: MyApp.Repo`."
-  end
-
-  # The application's own `:ecto_repos` — what `mix ecto.migrate` reads — so the
-  # single-repo application, which is nearly all of them, says nothing here. One
-  # entry is an answer; none or several is not, and guessing either would bind
-  # the log to a database silently.
-  defp default_repo!(_module, [repo]), do: repo
-
-  defp default_repo!(module, repos) do
-    raise ArgumentError,
-          "`use DMEx.Log` in #{inspect(module)} requires :repo: the application's " <>
-            "`:ecto_repos` is #{inspect(repos)}, which names no single repo to default to. " <>
             "A log module is `use DMEx.Log, repo: MyApp.Repo`."
   end
 

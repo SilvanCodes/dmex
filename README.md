@@ -60,6 +60,10 @@ end
  ]}
 ```
 
+A single-repo application can name its repo once instead — `config :dmex, repo:
+MyApp.Repo` — and omit `repo:` from `use DMEx.Log`, the supervisor, and the
+operator-facing reads below.
+
 Handler modules are never listed: every one compiled into an application that
 depends on `:dmex` is discovered and started — one subscription per log in its
 `logs:`, each with its own cursor — and one naming a log that `bindings:` does not
