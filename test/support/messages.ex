@@ -41,6 +41,25 @@ defmodule DMEx.Test.Messages do
     end
   end
 
+  # The entity axis. Two types concerning one order, so a cross-type entity query
+  # has something to find, and three shapes of declared field between them: a
+  # plain identifier, one that is often unset, and a list that fans out.
+  defmodule EntityPlaced do
+    @moduledoc false
+    use DMEx.Message,
+      type: "entity.placed",
+      fields: [:order_id, :customer_id],
+      entities: [:order_id, :customer_id]
+  end
+
+  defmodule EntityShipped do
+    @moduledoc false
+    use DMEx.Message,
+      type: "entity.shipped",
+      fields: [:order_id, :line_item_ids],
+      entities: [:order_id, :line_item_ids]
+  end
+
   # A type that has been through an expand-contract rename: rows exist in the log
   # under both strings, and this module answers for both.
   defmodule Renamed do

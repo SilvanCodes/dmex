@@ -1,6 +1,8 @@
 defmodule DMEx.MessageTest do
   use DMEx.Case, async: true
 
+  alias DMEx.Test.Messages.EntityPlaced
+  alias DMEx.Test.Messages.EntityShipped
   alias DMEx.Test.Messages.OrderPlaced
   alias DMEx.Test.Messages.OrderShipped
   alias DMEx.Test.Messages.Renamed
@@ -184,8 +186,8 @@ defmodule DMEx.MessageTest do
   end
 
   describe "encode!/2 and decode/1" do
-    test "encode! answers the three columns a row is made of" do
-      assert {"order_placed", data, metadata} =
+    test "encode! answers what an append writes" do
+      assert {"order_placed", data, metadata, []} =
                DMEx.Message.encode!(%OrderPlaced{order_id: 7}, %{"trace_id" => "abc"})
 
       assert JSON.decode!(data) == %{"order_id" => 7, "customer_id" => nil, "total" => nil}
@@ -193,15 +195,15 @@ defmodule DMEx.MessageTest do
     end
 
     test "encode! defaults metadata to an empty object" do
-      assert {_type, _data, "{}"} = DMEx.Message.encode!(%OrderPlaced{order_id: 7})
+      assert {_type, _data, "{}", []} = DMEx.Message.encode!(%OrderPlaced{order_id: 7})
     end
 
     test "the type comes off the module, never from the caller" do
-      assert {"orders.placed", _data, _metadata} = DMEx.Message.encode!(%Renamed{order_id: 7})
+      assert {"orders.placed", _data, _metadata, []} = DMEx.Message.encode!(%Renamed{order_id: 7})
     end
 
     test "decode resolves the module from the row's own type" do
-      {type, data, metadata} = DMEx.Message.encode!(%OrderPlaced{order_id: 7}, %{"who" => "me"})
+      {type, data, metadata, []} = DMEx.Message.encode!(%OrderPlaced{order_id: 7}, %{"who" => "me"})
 
       assert {:ok, %OrderPlaced{order_id: 7}, %{"who" => "me"}} =
                DMEx.Message.decode(%{type: type, data: data, metadata: metadata})
@@ -427,6 +429,107 @@ defmodule DMEx.MessageTest do
       assert_raise ArgumentError, ~r/in the shape defstruct takes them/, fn ->
         compile_message(~s|type: "bad", fields: [:order_id, "carrier"]|)
       end
+    end
+  end
+
+  describe "use DMEx.Message entities" do
+    test "entities/1 is the values of the declared fields, in declaration order" do
+      message = %EntityPlaced{order_id: "o1", customer_id: "c1"}
+
+      assert EntityPlaced.entities(message) == ["o1", "c1"]
+    end
+
+    test "a module declaring none has no entities" do
+      assert OrderPlaced.entities(%OrderPlaced{order_id: 7}) == []
+    end
+
+    # The field is checked against `fields:` at compile time, so an absent value
+    # can only be data — which is why it is skipped rather than refused.
+    test "a declared field holding nil is skipped" do
+      assert EntityPlaced.entities(%EntityPlaced{order_id: "o1"}) == ["o1"]
+      assert EntityPlaced.entities(%EntityPlaced{}) == []
+    end
+
+    test "a list field contributes each element" do
+      message = %EntityShipped{order_id: "o1", line_item_ids: ["l1", "l2"]}
+
+      assert EntityShipped.entities(message) == ["o1", "l1", "l2"]
+    end
+
+    test "a nil inside a list is skipped, like one standing alone" do
+      message = %EntityShipped{order_id: "o1", line_item_ids: ["l1", nil]}
+
+      assert EntityShipped.entities(message) == ["o1", "l1"]
+    end
+
+    # Unlike a repeat in the *declaration*, this is data: two fields can
+    # coincidentally hold one identifier, and refusing it would be an append that
+    # fails on its own payload.
+    test "two fields holding one identifier index it once" do
+      assert EntityPlaced.entities(%EntityPlaced{order_id: "x", customer_id: "x"}) == ["x"]
+    end
+
+    test "an identifier that is not a non-empty string raises" do
+      assert_raise ArgumentError, ~r/must be a non-empty string/, fn ->
+        EntityPlaced.entities(%EntityPlaced{order_id: 7})
+      end
+
+      assert_raise ArgumentError, ~r/must be a non-empty string/, fn ->
+        EntityPlaced.entities(%EntityPlaced{order_id: ""})
+      end
+    end
+
+    # One identifier and a list of them reach `entity!/3` through the same
+    # `List.wrap/1`, so neither shape can carry a value the other would refuse.
+    test "a scalar field and a list element are checked the same way" do
+      assert_raise ArgumentError, ~r/must be a non-empty string/, fn ->
+        EntityShipped.entities(%EntityShipped{order_id: 7})
+      end
+
+      assert_raise ArgumentError, ~r/must be a non-empty string/, fn ->
+        EntityShipped.entities(%EntityShipped{order_id: "o1", line_item_ids: [7]})
+      end
+    end
+
+    test "naming a field the message does not declare is a compile error" do
+      assert_raise ArgumentError, ~r/is not one of its fields/, fn ->
+        compile_message(~s|type: "e", fields: [:order_id], entities: [:odrer_id]|)
+      end
+    end
+
+    test "repeating a field is a compile error, since it says nothing twice" do
+      assert_raise ArgumentError, ~r/repeats a field/, fn ->
+        compile_message(~s|type: "e", fields: [:order_id], entities: [:order_id, :order_id]|)
+      end
+    end
+
+    test "entities: takes a list of atoms and nothing else" do
+      assert_raise ArgumentError, ~r/as a list of atoms/, fn ->
+        compile_message(~s|type: "e", fields: [:order_id], entities: :order_id|)
+      end
+
+      assert_raise ArgumentError, ~r/as a list of atoms/, fn ->
+        compile_message(~s|type: "e", fields: [:order_id], entities: ["order_id"]|)
+      end
+    end
+
+    # The one property the entity index rests on: `entities/1` is a projection of
+    # the struct's own fields, so any node holding the module can recompute the
+    # set from the row. A body free to return something else would make the table
+    # a second source of truth — so there is no `defoverridable`, and the
+    # generated clause comes first and matches this module's own struct.
+    test "a clause written after the generated one cannot answer for the struct" do
+      module =
+        compile_message(~s|type: "e", fields: [:order_id], entities: [:order_id]|, """
+        def entities(_message), do: ["something else"]
+        """)
+
+      assert module.entities(struct(module, order_id: "o1")) == ["o1"]
+    end
+
+    test "encode! carries the entities the append will index" do
+      assert {"entity.placed", _data, _metadata, ["o1", "c1"]} =
+               DMEx.Message.encode!(%EntityPlaced{order_id: "o1", customer_id: "c1"})
     end
   end
 

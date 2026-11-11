@@ -89,6 +89,43 @@ reorganise their message modules on their own schedules.
 Start with the `DMEx` moduledoc, then `DMEx.Config` for every default and why it
 has the value it does.
 
+## Querying
+
+Reading without subscribing — a console, an operator script, a backfill:
+
+```elixir
+DMEx.Query.all(MyApp.Messages.OrderPlaced, repo: MyApp.Repo)
+#=> {:ok, [%MyApp.Messages.OrderPlaced{order_id: "0191f3c8-…"}]}
+```
+
+A message can also declare which of its fields hold **entity identifiers**,
+which are indexed as it is appended:
+
+```elixir
+defmodule MyApp.Messages.OrderShipped do
+  use DMEx.Message,
+    type: "order_shipped",
+    fields: [:order_id, :carrier],
+    entities: [:order_id]
+end
+
+# one entity's history, across every type that mentions it
+DMEx.Query.all(:all, entities: [order_id])
+
+# the same, lazily, for a history longer than memory
+DMEx.Query.stream(:all, entities: [order_id], limit: 500)
+```
+
+An identifier is stored exactly as the message declared it — DMEx composes
+nothing into it and parses nothing out — which is what lets two message types
+join on one, and why identifiers are strings with a UUID as the expected shape.
+`entities/1` is generated and cannot be overridden, so the index stays a
+projection of the message's own fields and is rebuildable from the log.
+
+This is not a consumption path: no cursor is read or written and nothing is
+retried. The entity axis is storage-side only and never reaches the wire —
+[ARCHITECTURE.md](ARCHITECTURE.md) has the four reasons.
+
 ## Failure handling
 
 A handler that raises is retried in process up to `max_attempts` (3) with

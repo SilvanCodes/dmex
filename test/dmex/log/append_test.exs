@@ -143,11 +143,15 @@ defmodule DMEx.Log.AppendTest do
 
       {:ok, _} = Log.append(%OrderPlaced{order_id: 7})
 
-      assert_received {[:dmex, :append, :start], ^ref, _measurements, metadata}
+      # The type is in the *pattern*, not asserted after the fact: a
+      # `:telemetry_test` handler is attached VM-wide, so any other async test
+      # appending concurrently delivers here too, and taking whatever arrived
+      # first is a flake. Matching selects this append's own events out of the
+      # mailbox.
+      assert_received {[:dmex, :append, :start], ^ref, _measurements, %{type: "order_placed"} = metadata}
       assert metadata.log == Log
-      assert metadata.type == "order_placed"
 
-      assert_received {[:dmex, :append, :stop], ^ref, %{duration: duration}, _metadata}
+      assert_received {[:dmex, :append, :stop], ^ref, %{duration: duration}, %{type: "order_placed"}}
       assert is_integer(duration)
     end
   end

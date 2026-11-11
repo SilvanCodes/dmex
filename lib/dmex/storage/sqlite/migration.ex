@@ -62,6 +62,7 @@ defmodule DMEx.Storage.SQLite.Migration do
   # From the behaviour, not restated: see `DMEx.Storage.__table__/1`. The same
   # three names `DMEx.Storage.SQLite` writes its queries against.
   @messages DMEx.Storage.__table__(:messages)
+  @message_entities DMEx.Storage.__table__(:message_entities)
   @cursors DMEx.Storage.__table__(:cursors)
   @dead_messages DMEx.Storage.__table__(:dead_messages)
 
@@ -72,7 +73,11 @@ defmodule DMEx.Storage.SQLite.Migration do
   def up(tables, prefix) do
     SQLite.__refuse_prefix__(prefix)
 
-    if :messages in tables, do: up_messages()
+    if :messages in tables do
+      up_messages()
+      up_message_entities()
+    end
+
     if :cursors in tables, do: up_cursors()
     if :dead_messages in tables, do: up_dead_messages()
 
@@ -86,7 +91,11 @@ defmodule DMEx.Storage.SQLite.Migration do
 
     if :dead_messages in tables, do: execute("DROP TABLE IF EXISTS #{@dead_messages}")
     if :cursors in tables, do: execute("DROP TABLE IF EXISTS #{@cursors}")
-    if :messages in tables, do: execute("DROP TABLE IF EXISTS #{@messages}")
+
+    if :messages in tables do
+      execute("DROP TABLE IF EXISTS #{@message_entities}")
+      execute("DROP TABLE IF EXISTS #{@messages}")
+    end
 
     :ok
   end
@@ -110,6 +119,25 @@ defmodule DMEx.Storage.SQLite.Migration do
     execute("""
     CREATE INDEX IF NOT EXISTS #{@messages}_type_id_index
         ON #{@messages} (type, id)
+    """)
+  end
+
+  # The same table the Postgres migration creates, and that file carries the
+  # reasoning: created with `:messages` because entities exist only where messages
+  # do, `(entity, id)` is the whole table, no second index, and no foreign key.
+  #
+  # `WITHOUT ROWID` because this is an index and nothing else — a rowid table
+  # would store every pair twice, once in the hidden rowid heap and once in the
+  # index enforcing the primary key. `NOT NULL` spelled out for the reason
+  # `dmex_cursors` spells it out: a rowid table's declared PRIMARY KEY may hold
+  # NULL, and `WITHOUT ROWID` forbidding it is not a thing to depend on silently.
+  defp up_message_entities do
+    execute("""
+    CREATE TABLE IF NOT EXISTS #{@message_entities} (
+      entity  TEXT NOT NULL,
+      id      INTEGER NOT NULL,
+      PRIMARY KEY (entity, id)
+    ) WITHOUT ROWID
     """)
   end
 

@@ -22,10 +22,24 @@
 #
 # So append concurrency buys an application nothing, and the advice is to batch
 # work into fewer, larger messages.
+#
+# The entity arms answer a second question: what does the extra statement inside
+# the lock cost a message that declares `entities:`? Last measured, at
+# concurrency 1 where it is visible at all — 248 appends/s with none, 235 with
+# one entity (+0.23 ms), 223 with eight (+0.46 ms). Eight times the entities for
+# twice the added cost, which is the one multi-row INSERT doing its job; a
+# per-entity statement would be linear here. From concurrency 8 up the difference
+# is inside the lock's own contention noise and the arms reorder run to run.
+#
+# The claim to defend is therefore the *shape*: entity count is close to free,
+# and declaring entities at all costs a fraction of what the lock already does.
+# A linear cost in entity count means `entities_sql/2` has stopped being one
+# statement.
 
 alias DMEx.BenchHelper, as: Helper
 alias DMEx.IntegrationCase
 alias DMEx.Test.IntegrationLog, as: Log
+alias DMEx.Test.Messages.EntityShipped
 alias DMEx.Test.Messages.OrderPlaced
 alias Ecto.Adapters.SQL
 
@@ -36,6 +50,15 @@ Helper.start_log!()
 
 message = %OrderPlaced{order_id: 1, customer_id: 2, total: 1999}
 data = JSON.encode!(message)
+
+# A message declaring entities costs one more statement inside the lock, and the
+# count rides in that one statement rather than adding more. Both arms below are
+# the same lock, so the difference is the index write and nothing else.
+entity = fn n ->
+  id = fn -> "e-#{System.unique_integer([:positive])}" end
+
+  %EntityShipped{order_id: id.(), line_item_ids: Enum.map(2..n//1, fn _ -> id.() end)}
+end
 
 # The same insert without the advisory lock, as the control. Deliberately not
 # routed through `append/2`, because the point is to isolate the lock.
@@ -57,6 +80,8 @@ for concurrency <- [1, 2, 8, 32] do
   Benchee.run(
     %{
       "append (advisory-locked)" => fn -> {:ok, _} = Log.append(message) end,
+      "append + 1 entity" => fn -> {:ok, _} = Log.append(entity.(1)) end,
+      "append + 8 entities" => fn -> {:ok, _} = Log.append(entity.(8)) end,
       "raw insert (no lock)" => fn -> unlocked.() end
     },
     Helper.opts(parallel: concurrency, memory_time: 0)

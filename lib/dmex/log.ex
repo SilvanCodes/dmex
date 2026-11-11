@@ -18,7 +18,9 @@ defmodule DMEx.Log do
   `log.append(message)` — so there is no second form to keep in step.
 
   **Appending is just writing a row.** No RPC, no broker call, no network hop: the
-  insert plus the notification that wakes live streams is the entire story. The
+  insert, the entity rows it earns if the message declares any — one more
+  statement in the same transaction, none at all otherwise — and the notification
+  that wakes live streams is the entire story. The
   wire type comes from the message's **own module** (`c:DMEx.Message.type/0`),
   never from a call argument, so it cannot disagree with the struct it describes,
   and nothing records which log appended a message — see `DMEx.Message`.
@@ -328,13 +330,13 @@ defmodule DMEx.Log do
   def __append__(log, message, metadata) when is_atom(log) do
     %{storage: storage, notifier: notifier} = declaration!(log)
 
-    {type, data, metadata} = DMEx.Message.encode!(message, metadata)
+    {type, data, metadata, entities} = DMEx.Message.encode!(message, metadata)
 
     :telemetry.span(
       [:dmex, :append],
       %{log: log, type: type},
       fn ->
-        result = Storage.append(storage, type, data, metadata)
+        result = Storage.append(storage, type, data, metadata, entities)
 
         # Here rather than inside the adapter's transaction, because which
         # mechanism announces an append is not the storage engine's business —

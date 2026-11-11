@@ -5,7 +5,7 @@ defmodule DMEx.Storage.Postgres do
   Raw SQL through `Ecto.Adapters.SQL` rather than Ecto schemas: the `data::text`
   that `c:DMEx.Storage.read/5` requires cannot be expressed as a schema load.
 
-  Three things here are Postgres's own — `c:DMEx.Storage.SQL.dialect/1`, `c:DMEx.Storage.append/4`,
+  Three things here are Postgres's own — `c:DMEx.Storage.SQL.dialect/1`, `c:DMEx.Storage.append/5`,
   which serializes itself, and `c:DMEx.Storage.validate!/1`. Every statement comes
   from `DMEx.Storage.SQL`, which says why.
 
@@ -31,6 +31,7 @@ defmodule DMEx.Storage.Postgres do
 
   # From the behaviour, not restated: see `DMEx.Storage.__table__/1`.
   @messages DMEx.Storage.__table__(:messages)
+  @message_entities DMEx.Storage.__table__(:message_entities)
   @cursors DMEx.Storage.__table__(:cursors)
   @dead_messages DMEx.Storage.__table__(:dead_messages)
 
@@ -50,6 +51,7 @@ defmodule DMEx.Storage.Postgres do
   def dialect(opts) do
     %{
       messages: table(@messages, opts),
+      message_entities: table(@message_entities, opts),
       cursors: table(@cursors, opts),
       dead_messages: table(@dead_messages, opts),
       param: "$",
@@ -60,8 +62,8 @@ defmodule DMEx.Storage.Postgres do
       type_agg: "array_agg(DISTINCT type)",
       types: &Function.identity/1,
       timestamp: &Function.identity/1,
-      # One array parameter, whatever the selection's size.
-      selection: &{"AND type = ANY($#{&2})", [&1]}
+      # One array parameter, whatever the selection's size, on whichever column.
+      selection: &{"#{&1} = ANY($#{&3})", [&2]}
     }
   end
 
@@ -92,22 +94,35 @@ defmodule DMEx.Storage.Postgres do
   ## Appending
 
   @impl DMEx.Storage
-  def append(type, data, metadata, opts) when is_binary(type) and is_binary(data) and is_binary(metadata) do
+  def append(type, data, metadata, entities, opts)
+      when is_binary(type) and is_binary(data) and is_binary(metadata) and is_list(entities) do
     repo = Map.fetch!(opts, :repo)
-    sql = SQL.append_sql(dialect(opts))
+    dialect = dialect(opts)
 
     repo.transaction(fn ->
-      # First, and released only by COMMIT — `c:DMEx.Storage.append/4` says why
-      # anything shorter reintroduces silent id gaps.
+      # First, and released only by COMMIT — `c:DMEx.Storage.append/5` says why
+      # anything shorter reintroduces silent id gaps. The entity rows below are
+      # inside it for a second reason: they have to commit with the message.
       lock!(repo, opts)
 
-      # `query/3` rather than `query!/3`: `c:DMEx.Storage.append/4` answers with a
+      # `query/3` rather than `query!/3`: `c:DMEx.Storage.append/5` answers with a
       # tuple, and `rollback/1` is what turns a row the database refused into one.
-      case Adapter.query(repo, sql, [type, data, metadata]) do
-        {:ok, %{rows: [[id]]}} -> id
+      case Adapter.query(repo, SQL.append_sql(dialect), [type, data, metadata]) do
+        {:ok, %{rows: [[id]]}} -> index!(repo, dialect, id, entities)
         {:error, reason} -> repo.rollback(reason)
       end
     end)
+  end
+
+  # A message with no entities issues no second statement at all, which is what
+  # keeps the common append exactly as cheap as it was.
+  defp index!(_repo, _dialect, id, []), do: id
+
+  defp index!(repo, dialect, id, entities) do
+    case Adapter.query(repo, SQL.entities_sql(dialect, length(entities)), [id | entities]) do
+      {:ok, _result} -> id
+      {:error, reason} -> repo.rollback(reason)
+    end
   end
 
   defp lock!(repo, opts) do

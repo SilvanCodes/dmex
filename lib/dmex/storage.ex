@@ -3,8 +3,8 @@ defmodule DMEx.Storage do
   The behaviour both halves of DMEx read and write through.
 
   One behaviour covers both sides deliberately. A log appends to and reads from
-  `dmex_messages`; a consumer reads and writes its own `dmex_cursors` and
-  `dmex_dead_messages`. Different tables serving different roles, but the same
+  `dmex_messages` and the `dmex_message_entities` index beside it; a consumer
+  reads and writes its own `dmex_cursors` and `dmex_dead_messages`. Different tables serving different roles, but the same
   *kind* of thing — a few keyed statements against an ordinary SQL database — so
   a second abstraction for the consumer's half would double the surface an
   engine has to implement for no gain.
@@ -29,12 +29,13 @@ defmodule DMEx.Storage do
   which is what keeps this a behaviour rather than a SQL template — and is why the
   dialect is `DMEx.Storage.SQL`'s callback and not one of these.
 
-  ## Three contracts that are correctness, not style
+  ## Four contracts that are correctness, not style
 
   Each is easy to implement *almost* right, and each is stated on the callback
-  it constrains: `c:append/4` must make id assignment order equal commit order,
-  `c:read/5` must return `data` and `metadata` as JSON *text*, and
-  `c:last_seen/2` must distinguish "no cursor" from "cursor at 0".
+  it constrains: `c:append/5` must make id assignment order equal commit order
+  **and commit a message with its entity rows**, `c:read/5` must return `data`
+  and `metadata` as JSON *text*, and `c:last_seen/2` must distinguish "no
+  cursor" from "cursor at 0".
 
   The first is the one the conformance suite cannot pin — the Ecto sandbox is
   one connection, so nothing inside it can append concurrently — so it lives in
@@ -44,7 +45,7 @@ defmodule DMEx.Storage do
   ## How a write fails
 
   **A read returns `{:error, reason}`; a write returns `:ok` or raises** — except
-  `c:append/4`, which answers `{:ok, id}` or `{:error, reason}`, because a row can
+  `c:append/5`, which answers `{:ok, id}` or `{:error, reason}`, because a row can
   be refused on its own merits where a cursor advance can only fail with its
   connection. Reads have callers with somewhere to go — `DMEx.Log.SendLoop` closes
   the connection, `DMEx.Log.Plug` answers `503`,
@@ -124,13 +125,30 @@ defmodule DMEx.Storage do
   `data` and `metadata` arrive as already-encoded JSON binaries, handed to the
   database without decoding, and nothing DMEx owns is merged into `metadata`.
 
+  **A message and its entity rows must commit together.** `entities` is what
+  `DMEx.Message.encode!/2` extracted from the message's `entities:` fields, to be
+  written to `dmex_message_entities` keyed by the id this call assigns. A row that
+  commits without them is invisibly absent from every entity query, forever — and
+  in an append-only log there is no later write that would notice. An empty list
+  writes nothing at all, which is the common case and must stay as cheap as it is
+  today.
+
+  The cost of the extra statement is paid *inside* whatever serializes the append,
+  so it is append throughput for the whole application — see
+  `bench/e2e/append_throughput.exs`. One multi-row INSERT, never one per entity.
+
   A caller already inside a transaction holds whichever of those two an adapter
   uses — the advisory lock, the write transaction — for the enclosing
   transaction's lifetime, serializing every other append to that table for its
   duration. A documented consequence, not a bug.
   """
-  @callback append(type :: String.t(), data :: binary(), metadata :: binary(), opts()) ::
-              {:ok, pos_integer()} | {:error, term()}
+  @callback append(
+              type :: String.t(),
+              data :: binary(),
+              metadata :: binary(),
+              entities :: [String.t()],
+              opts()
+            ) :: {:ok, pos_integer()} | {:error, term()}
 
   @doc """
   Reads rows with `id > cursor` in ascending id order, bounded by **both** a row
@@ -358,11 +376,20 @@ defmodule DMEx.Storage do
 
   Every key is present. `:after_id` is a cursor with 0 for "from the start", the
   same shape `c:read/5` takes, and `:order` is the direction of the one column an
-  ad-hoc read may order by. `:types` is never empty — `DMEx.Query` builds it from
-  a message module, which always answers for at least its current type.
+  ad-hoc read may order by.
+
+  `:types` is `:all` for a query over every type, or a list, which is never empty
+  — `DMEx.Query` builds it from a message module, which always answers for at
+  least its current type. `:entities` is the same two-shape vocabulary and for the
+  same reason `c:read/5` gives for `types`: a nullable predicate is a correct
+  query and a ruinous plan, so each shape is its own statement. A list of
+  entities admits a row carrying **any** of them, and an empty list on either
+  axis admits nothing — answered by `select/2` here without reaching an adapter,
+  so no engine needs a statement for the empty case.
   """
   @type filters :: %{
-          types: [String.t()],
+          types: :all | [String.t()],
+          entities: :all | [String.t()],
           after_id: non_neg_integer(),
           order: :asc | :desc,
           limit: pos_integer()
@@ -469,9 +496,11 @@ defmodule DMEx.Storage do
   # the module for a notifier while it is still building the map, and a migration
   # runs in the host's `Ecto.Migration` with only the repo to hand.
 
-  @doc "Appends one message. See `c:append/4`."
-  @spec append(opts(), String.t(), binary(), binary()) :: {:ok, pos_integer()} | {:error, term()}
-  def append(%{adapter: adapter} = storage, type, data, metadata), do: adapter.append(type, data, metadata, storage)
+  @doc "Appends one message. See `c:append/5`."
+  @spec append(opts(), String.t(), binary(), binary(), [String.t()]) ::
+          {:ok, pos_integer()} | {:error, term()}
+  def append(%{adapter: adapter} = storage, type, data, metadata, entities),
+    do: adapter.append(type, data, metadata, entities, storage)
 
   @doc "Reads a bounded batch of rows past `cursor`. See `c:read/5`."
   @spec read(opts(), non_neg_integer(), pos_integer(), pos_integer(), :all | [String.t()]) ::
@@ -493,6 +522,11 @@ defmodule DMEx.Storage do
   the whole log to filter it here is not that.
   """
   @spec select(opts(), filters()) :: {:ok, [row()]} | {:error, term()}
+  # An empty selection admits nothing, on either axis, for the reason `read/5`'s
+  # own empty clause gives: it is a property of the call rather than of an engine.
+  def select(_storage, %{types: []}), do: {:ok, []}
+  def select(_storage, %{entities: []}), do: {:ok, []}
+
   def select(%{adapter: adapter} = storage, filters) do
     case optional(adapter, :select, [filters, storage]) do
       {:ok, result} ->
@@ -597,7 +631,7 @@ defmodule DMEx.Storage do
 
   ## Table names
 
-  # The three table names, stated once: both adapters' SQL and both migrations'
+  # The four table names, stated once: both adapters' SQL and both migrations'
   # DDL render these rather than repeating the literals. Here rather than on an
   # adapter because the names are the *behaviour's* — an engine implements these
   # tables, it does not get to pick what they are called.
@@ -605,8 +639,9 @@ defmodule DMEx.Storage do
   # Atoms, because `Ecto.Migration.table/2` wants one and every other site
   # interpolates, where an atom renders as its own name.
   @doc false
-  @spec __table__(:messages | :cursors | :dead_messages) :: atom()
+  @spec __table__(:messages | :message_entities | :cursors | :dead_messages) :: atom()
   def __table__(:messages), do: :dmex_messages
+  def __table__(:message_entities), do: :dmex_message_entities
   def __table__(:cursors), do: :dmex_cursors
   def __table__(:dead_messages), do: :dmex_dead_messages
 end

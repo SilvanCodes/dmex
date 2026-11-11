@@ -63,6 +63,44 @@ defmodule DMEx.Message do
   And it collides node-wide like any other type: two modules cannot both answer
   for one string, whether either claims it as current or retired.
 
+  ## `entities:` — what the message is about
+
+  `entities: [:order_id, :customer_id]` declares which of this message's fields
+  hold entity identifiers. Each one is indexed at append time, which is what makes
+  "every message concerning this order" a query — and a query across message
+  types, since DMEx composes nothing into the identifier it stores.
+
+  `c:entities/1` is generated and **not overridable**, which is the whole point of
+  it: it is a projection of the struct's own fields and nothing else, so the entity
+  set of any row is recomputable *from the row*. A body free to return a derived
+  value, a clock or a service call would make the index a second source of truth
+  rather than a materialized one.
+
+  There is no `defoverridable`, and that is the enforcement: the generated clause
+  matches this module's own struct and is defined first, so a clause written
+  afterwards is unreachable for every message of this type. Elixir warns about
+  the ungrouped clauses; nothing else has to.
+
+  Three rules, and they are the whole of it:
+
+    * A **list** value contributes each element, so one message can concern many
+      entities of one kind.
+    * A `nil` is **skipped**. Several declared fields with some of them unset is
+      ordinary, and the field is already known to exist — so this is the
+      publisher's data rather than a typo.
+    * Anything else that is not a non-empty string **raises**. An identifier is
+      stored verbatim and never namespaced by DMEx: a UUID is already unique, and
+      whatever namespacing a publisher wants lives *inside* the value. That is what
+      lets two message types join on one identifier, and a non-string id cannot
+      offer it.
+
+  What the declaration cannot express is deliberate — a value nested below the
+  struct's own fields, and a constant tag, which is not an entity at all. Both are
+  data.
+
+  Entities are an index on the log and never part of a message: none of this
+  reaches the wire, and a handler is never given one.
+
   ## `c:cast/1` — the read-side inverse
 
   `cast_default/2` is the generated default, and it is **overridable**: that is
@@ -88,7 +126,7 @@ defmodule DMEx.Message do
 
   alias DMEx.Config
 
-  @message_opts [:type, :fields, :retired]
+  @message_opts [:type, :fields, :retired, :entities]
   # Dot-separated segments rather than "the dot is a legal character", so the
   # degenerate namespaces — `"."`, `".foo"`, `"foo."` — are illegal by
   # construction rather than merely never written.
@@ -118,6 +156,15 @@ defmodule DMEx.Message do
   """
   @callback retired() :: [String.t()]
 
+  @doc """
+  The entity identifiers this message carries — the values of its `entities:` fields.
+
+  Generated at compile time by `use DMEx.Message` and **not overridable**: see the
+  moduledoc for why a projection of the struct's own fields is the only thing this
+  may be.
+  """
+  @callback entities(message :: struct()) :: [String.t()]
+
   defmacro __using__(opts) do
     module = __CALLER__.module
 
@@ -134,6 +181,7 @@ defmodule DMEx.Message do
     type = type!(module, Keyword.fetch!(opts, :type))
     fields = opts |> Keyword.get(:fields, []) |> validate_fields!()
     retired = retired!(module, type, Keyword.get(opts, :retired, []))
+    entities = entities!(module, fields, Keyword.get(opts, :entities, []))
 
     quote do
       @behaviour DMEx.Message
@@ -154,6 +202,13 @@ defmodule DMEx.Message do
 
       @impl true
       def retired, do: unquote(retired)
+
+      # No `defoverridable`, which is what makes this unoverridable rather than
+      # merely undocumented: this clause matches `%__MODULE__{}` and comes first,
+      # so a clause added below it never answers for this message. The moduledoc
+      # has the argument for why nothing else may.
+      @impl true
+      def entities(%__MODULE__{} = message), do: DMEx.Message.__entities__(message, unquote(entities))
 
       @impl true
       def cast(data) when is_map(data), do: DMEx.Message.cast_default(__MODULE__, data)
@@ -202,6 +257,47 @@ defmodule DMEx.Message do
     raise ArgumentError,
           ":retired in #{inspect(module)} takes the types this module used to append under, " <>
             "as a list of atoms or strings. Got: #{inspect(other)}"
+  end
+
+  # The fields are checked against `fields:` here so that `entities: [:odrer_id]` is
+  # a compile error naming the typo, rather than a `KeyError` from the generated
+  # body at the first append. It is also what makes a `nil` at append unambiguous:
+  # the field certainly exists, so an absent value is data.
+  defp entities!(module, fields, values) when is_list(values) do
+    names =
+      Enum.map(fields, fn
+        {field, _default} -> field
+        field -> field
+      end)
+
+    Enum.each(values, fn
+      field when is_atom(field) ->
+        if field not in names do
+          raise ArgumentError,
+                ":entities in #{inspect(module)} names #{inspect(field)}, which is not one of " <>
+                  "its fields: #{inspect(names)}. An entity is the value of a field the message " <>
+                  "declares, so `fields:` has to carry it."
+        end
+
+      other ->
+        raise ArgumentError,
+              ":entities in #{inspect(module)} takes the fields holding this message's entity " <>
+                "identifiers, as a list of atoms. Got: #{inspect(other)}"
+    end)
+
+    if values != Enum.uniq(values) do
+      raise ArgumentError,
+            ":entities in #{inspect(module)} repeats a field: #{inspect(values)}. Each one is " <>
+              "indexed once, so a repeat says nothing twice."
+    end
+
+    values
+  end
+
+  defp entities!(module, _fields, other) do
+    raise ArgumentError,
+          ":entities in #{inspect(module)} takes the fields holding this message's entity " <>
+            "identifiers, as a list of atoms. Got: #{inspect(other)}"
   end
 
   defp raise_type(module, value) do
@@ -258,9 +354,39 @@ defmodule DMEx.Message do
     end)
   end
 
+  @doc false
+  # The body of every generated `entities/1`. `List.wrap/1` is the whole of the
+  # three rules at once: it drops a `nil`, passes a list through, and wraps a
+  # scalar. The `reject` catches a `nil` *inside* a list, which the wrap cannot.
+  @spec __entities__(struct(), [atom()]) :: [String.t()]
+  def __entities__(%module{} = message, fields) when is_list(fields) do
+    fields
+    |> Enum.flat_map(fn field ->
+      message
+      |> Map.fetch!(field)
+      |> List.wrap()
+      |> Enum.reject(&is_nil/1)
+      |> Enum.map(&entity!(module, field, &1))
+    end)
+    # Two fields can hold one identifier, which is data rather than a mistake —
+    # unlike a repeat in the *declaration*, which `entities!/3` refuses.
+    |> Enum.uniq()
+  end
+
+  defp entity!(_module, _field, value) when is_binary(value) and value != "", do: value
+
+  defp entity!(module, field, value) do
+    raise ArgumentError,
+          "`entities:` in #{inspect(module)} names #{inspect(field)}, which holds " <>
+            "#{inspect(value)}. An entity identifier must be a non-empty string: it is stored " <>
+            "verbatim and never namespaced by DMEx, which is what lets two message types join " <>
+            "on one. Hold it as a string, or leave the field out of `entities:` and let it be " <>
+            "ordinary data."
+  end
+
   @doc """
-  The three columns an append writes: the type, and `data` and `metadata` as JSON
-  text.
+  What an append writes: the type, `data` and `metadata` as JSON text, and the
+  entities to index the row under.
 
   The one place a message becomes a row, as `decode/1` is the one place a row
   becomes a message. `DMEx.Log` holds neither `JSON` call, which is what keeps
@@ -272,7 +398,7 @@ defmodule DMEx.Message do
   then reads as a malformed row at a consumer, where
   `DMEx.Transport.SSE.Frame.decode/1` requires an object.
   """
-  @spec encode!(struct(), map()) :: {String.t(), binary(), binary()}
+  @spec encode!(struct(), map()) :: {String.t(), binary(), binary(), [String.t()]}
   def encode!(message, metadata \\ %{})
 
   def encode!(%module{} = message, metadata) when is_map(metadata) do
@@ -282,7 +408,7 @@ defmodule DMEx.Message do
               "appended. Add `use DMEx.Message` to #{inspect(module)}."
     end
 
-    {module.type(), JSON.encode!(message), JSON.encode!(metadata)}
+    {module.type(), JSON.encode!(message), JSON.encode!(metadata), module.entities(message)}
   end
 
   def encode!(%_module{}, metadata) do

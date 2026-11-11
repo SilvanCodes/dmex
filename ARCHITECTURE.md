@@ -22,7 +22,8 @@ type over an append-only Postgres log.
 ## The log
 
 One append-only log per application: a totally-ordered stream of every message
-it appended, in one table. `DMEx.Storage.Migration` runs it from a host
+it appended, in one table — plus a second table indexing the entities a message
+declares, which is an index on that log rather than part of it. `DMEx.Storage.Migration` runs it from a host
 migration; the DDL itself is the adapter's, and `DMEx.Storage.Postgres.Migration`
 is the authoritative column-by-column account — every type, default and
 constraint, with the reasoning beside it. `DMEx.Storage.SQLite.Migration` is the
@@ -42,17 +43,35 @@ What belongs here is what the columns *mean*:
   receives.
 - **`inserted_at` is never an ordering key** — `id` is, and nothing in DMEx reads
   this column. It is observability, never delivered.
+- **`dmex_message_entities` is what a message is *about***, beside the log rather
+  than in it: one row per `(entity, id)` pair, so a message concerning an order
+  and a customer is indexed under both. The identifiers are the values of the
+  `entities:` fields the appending module declared, stored verbatim — DMEx
+  composes nothing into them and parses nothing out, which is what lets two
+  message types join on one. Written in the same transaction as the message, and
+  never returned by a read: it is a filter axis, not part of a message, so no
+  handler and no frame ever carries one. `DMEx.Message` owns the declaration.
 
 **Two indexes, one per read shape.** The primary key serves a whole-log
 `id > cursor` range scan; `(type, id)` serves a selective one, and the
 planner takes whichever is cheaper — `DMEx.Storage.Postgres.Migration` records
-the `EXPLAIN` session that measured the crossover.
+the `EXPLAIN` session that measured the crossover. The entity index is a third
+shape and its own table, where `(entity, id)` is the whole of it: seek an
+entity, take its ids already ascending.
 
-**A row says what a message *is*, never who might want it.** A grouping stamped
-in at append time would be immutable with the table: fixed message by message,
-unable to apply to history or to follow readers as they change. So
-`type` is the only classification a row carries, and who wants what is
-resolved at read time.
+**A row says what a message *is* and what it is *about*, never who might want
+it.** That line is the whole of what a row may carry, and the thing it excludes
+is an *audience*: a grouping stamped in at append time to say who should read
+this would be immutable with the table — fixed message by message, unable to
+apply to history or to follow readers as they change. So who wants what is
+resolved at read time, by the reader, always.
+
+What a message **is** is its `type`. What it is **about** is its entities. Both
+are the publisher's own facts about the message and neither is anybody's claim
+about a reader, which is what makes them two halves of one rule rather than an
+exception to it. They differ in every other respect: a type is declared, bounded
+by the compiled module set, and goes on the wire; an entity is a value out of the
+payload, unbounded, and stays in the producer's database.
 
 ## Message-type selection
 
@@ -513,6 +532,27 @@ of scope.
   resolving to one `{repo, prefix}` is currently representable and buys only that
   override; making it unrepresentable is
   [One Log, One Table](ROADMAP.md#one-log-one-table).
+- **No selecting a subscription by entity** — the entity axis is storage and
+  query only ([the log](#the-log)), and four things stand in the way of it
+  reaching the wire. A selection is compile-time *identity* here, which is what
+  makes the URL stable and the filter a constant; an entity is runtime data that
+  changes per subscription and over its life. `appended_since/2` routes wakeups
+  by the distinct *types* in a poll window, bounded by the compiled module set,
+  where distinct entities are unbounded. `dmex_cursors` holds one row per
+  declared subscription, and a per-entity subscriber would mint one per entity
+  forever. And the empty-expansion `404` works only against a finite known set —
+  for an entity, "no such entity" and "nothing appended yet" are
+  indistinguishable, which is a false negative in the one direction
+  [selection](#message-type-selection) must never produce one.
+
+  A consumer wanting an entity index builds it in its handler's own transaction,
+  which is exactly-once for local repo writes ([delivery semantics](#delivery-semantics)) and needs
+  nothing from DMEx: `c:DMEx.Message.entities/1` is a projection of the struct's
+  own fields, so any node holding the module recomputes the set from the message
+  it was given. What that rests on is holding the same module, which is the open
+  question under [sharing message modules](#open-questions) — a polyglot consumer
+  has neither the module nor the entity on the wire, and that is the argument
+  that would reopen this, rather than any query convenience.
 - **No compression** — a stream is an ordinary chunked HTTP response, so
   compressing it is the web server's to negotiate and configure. DMEx neither
   asks for it on the consumer side nor does it on the producer side.

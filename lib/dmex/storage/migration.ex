@@ -27,8 +27,13 @@ defmodule DMEx.Storage.Migration do
   ## Options
 
     * `:tables` — any of `[:messages, :cursors, :dead_messages]`, named for the
-      tables they create (default all three). A pure producer needs `:messages`
+      role each plays (default all three). A pure producer needs `:messages`
       alone; a pure consumer needs the other two.
+
+      `:messages` creates two tables: the log, and the `dmex_message_entities`
+      index beside it. One name rather than two, because entities exist only
+      where messages do — a producer asking for its log must not end up with
+      half a schema, and `c:DMEx.Storage.append/5` writes both or neither.
     * `:prefix` — a Postgres schema to create the tables in, created if absent.
       SQLite has no schemas and raises on it.
     * `:storage` — the `DMEx.Storage` adapter whose DDL to run. Defaults to the

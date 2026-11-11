@@ -15,6 +15,7 @@ defmodule DMEx.Test.Storage do
   @behaviour DMEx.Storage
 
   defstruct rows: [],
+            entities: %{},
             reads: [],
             read_bytes: [],
             cursors: %{},
@@ -114,14 +115,29 @@ defmodule DMEx.Test.Storage do
   ## DMEx.Storage
 
   @impl DMEx.Storage
-  def append(type, data, metadata, opts) do
+  def append(type, data, metadata, entities, opts) do
     Agent.get_and_update(store(opts), fn state ->
       id = length(state.rows) + 1
       row = row(id, type: type, data: data, metadata: metadata)
 
-      {{:ok, id}, %{state | rows: state.rows ++ [row]}}
+      state = %{
+        state
+        | rows: state.rows ++ [row],
+          entities: Map.put(state.entities, id, entities)
+      }
+
+      {{:ok, id}, state}
     end)
   end
+
+  @doc """
+  The entities `append/5` was handed for `id`.
+
+  Kept beside the row rather than inside it, because a row does not carry its
+  entities — see `t:DMEx.Storage.row/0`, which this stub answers with unchanged.
+  """
+  @spec entities(pos_integer(), DMEx.Storage.opts()) :: [String.t()]
+  def entities(id, opts), do: opts |> get() |> Map.fetch!(:entities) |> Map.get(id, [])
 
   @impl DMEx.Storage
   def read(cursor, max_rows, max_bytes, types, opts) do

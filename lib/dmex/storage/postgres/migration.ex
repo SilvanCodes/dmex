@@ -14,6 +14,7 @@ defmodule DMEx.Storage.Postgres.Migration do
 
   # From the behaviour, not restated: see `DMEx.Storage.__table__/1`.
   @messages DMEx.Storage.__table__(:messages)
+  @message_entities DMEx.Storage.__table__(:message_entities)
   @cursors DMEx.Storage.__table__(:cursors)
   @dead_messages DMEx.Storage.__table__(:dead_messages)
 
@@ -34,7 +35,11 @@ defmodule DMEx.Storage.Postgres.Migration do
   def down(tables, prefix) do
     if :dead_messages in tables, do: drop_if_exists(table(@dead_messages, prefix: prefix))
     if :cursors in tables, do: drop_if_exists(table(@cursors, prefix: prefix))
-    if :messages in tables, do: drop_if_exists(table(@messages, prefix: prefix))
+
+    if :messages in tables do
+      drop_if_exists(table(@message_entities, prefix: prefix))
+      drop_if_exists(table(@messages, prefix: prefix))
+    end
 
     :ok
   end
@@ -45,10 +50,12 @@ defmodule DMEx.Storage.Postgres.Migration do
       # consumer cursor in the network is denominated in this column.
       add(:id, :bigserial, primary_key: true)
 
-      # The only classification a row carries, and the only one it ever will: it
-      # describes what the message *is*, never who might want to read it. Who
-      # wants what is resolved at read time, by the reader. Constrained below,
-      # because it goes on the wire as an unescaped SSE `event:` line.
+      # What the message *is* — never who might want to read it. One of the two
+      # classifications a row carries, the other being what it is *about*, in
+      # `dmex_message_entities` below; who wants what is still resolved at read
+      # time, by the reader, and no column here will ever say otherwise.
+      # Constrained below, because this one goes on the wire as an unescaped SSE
+      # `event:` line — which the entity axis never does, and so is not.
       add(:type, :text, null: false)
 
       # jsonb so operators can query inside payloads directly. The accepted cost
@@ -115,6 +122,65 @@ defmodule DMEx.Storage.Postgres.Migration do
     EXCEPTION WHEN duplicate_object THEN NULL;
     END $$;
     """)
+
+    up_message_entities(prefix)
+  end
+
+  # What a message is *about*, as opposed to what it is: the second
+  # classification a row carries, and the one `type` is deliberately not. Created
+  # with `:messages` rather than as a role of its own, because entities exist only
+  # where messages do and a producer asking for the log must not get half a schema.
+  #
+  # The second half of the invariant the log's `type` column states: a row says
+  # what it is and what it is about, never who wants it. Both are the publisher's
+  # own facts about the message, resolved against readers only at read time.
+  defp up_message_entities(prefix) do
+    create_if_not_exists table(@message_entities, primary_key: false, prefix: prefix) do
+      # The identifier as the appending message gave it, uninterpreted: DMEx
+      # composes nothing into it and parses nothing out. `DMEx.Message` has the
+      # argument — an identifier that is already unique needs no namespace, and
+      # one a publisher wants namespaced carries that inside the value. No charset
+      # constraint, because unlike `type` this never reaches an SSE `event:` line.
+      add(:entity, :text, primary_key: true)
+
+      # bigint to match `dmex_messages.id`, which every cursor in the network is
+      # also denominated in.
+      add(:id, :bigint, primary_key: true)
+    end
+
+    # No index beyond the primary key, and none wanted. `(entity, id)` *is* this
+    # table, and nothing asks the reverse question: entities never come back on a
+    # read — they are a filter axis, not part of a message, and
+    # `t:DMEx.Storage.row/0` is unchanged by their existence.
+    #
+    # Measured once, on a 500k-row log where one entity carries 1 row, one carries
+    # 1 000, and one carries 250 000. The planner picks between two shapes, the
+    # same way the `(type, id)` crossover above works:
+    #
+    #   * **Selective entity** — `Bitmap Index Scan on
+    #     dmex_message_entities_pkey`, a `HashAggregate` that collapses a row
+    #     carrying several of the selected entities, then one
+    #     `dmex_messages_pkey` lookup each. The `ORDER BY id` is a **top-N
+    #     heapsort** over that bounded set: the index hands back ids in
+    #     `(entity, id)` order, but the bitmap scan does not preserve it, so the
+    #     ordering is not free — it is merely cheap, because `LIMIT` caps what is
+    #     sorted.
+    #   * **Broad entity** — the plan inverts: `Index Scan using
+    #     dmex_messages_pkey` walking the log forward, with an `Index Only Scan`
+    #     semi-join probe into this table per row. No sort at all, and it stops at
+    #     `LIMIT` — for the 250k-row entity it touched 200 log rows to return 100.
+    #
+    # Both are bounded by the `LIMIT`, which is why `DMEx.Query` insists on one.
+    # The entity predicate is left plain for the planner to choose between them,
+    # for the same reason `type = ANY($1)` is.
+    #
+    # No foreign key either, deliberately. `c:DMEx.Storage.append/5` writes these
+    # rows inside the transaction that inserts the message, so an orphan is
+    # unrepresentable on the write path, and every statement inside the append's
+    # serialized region costs throughput for every appender in the application
+    # (`bench/e2e/append_throughput.exs`). What that gives up is `ON DELETE
+    # CASCADE` for an operator pruning the log's tail — which is the retention
+    # question ARCHITECTURE.md keeps open, and is the right place to decide it.
   end
 
   defp up_cursors(prefix) do

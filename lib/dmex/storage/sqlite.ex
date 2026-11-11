@@ -7,20 +7,29 @@ defmodule DMEx.Storage.SQLite do
   that costs nothing at all: the columns *are* text.
 
   Three things here are SQLite's own — `c:DMEx.Storage.SQL.dialect/1`,
-  `c:DMEx.Storage.append/4`, which needs no lock, and
+  `c:DMEx.Storage.append/5`, which needs no lock, and
   `c:DMEx.Storage.validate!/1`. Every statement comes from `DMEx.Storage.SQL`,
   which says why.
 
-  ## `append/4` takes no lock, because the engine is the lock
+  ## `append/5` takes no lock, because the engine is the lock
 
-  `c:DMEx.Storage.append/4` covers why id assignment order must equal commit
+  `c:DMEx.Storage.append/5` covers why id assignment order must equal commit
   order. SQLite has one writer database-wide, so a second writer cannot execute
   its INSERT — cannot draw a rowid — until the first has committed, and the
   interleaving the Postgres adapter guards against is unrepresentable.
+  `opts.lock` is unused either way.
 
-  So an append is one statement, `INSERT ... RETURNING id`, which is its own
-  implicit write transaction. Wrapping it in `repo.transaction/1` would
-  introduce the problem below rather than solve one. `opts.lock` is unused.
+  So a message with no entities is **one statement**, `INSERT ... RETURNING id`,
+  which is its own implicit write transaction and needs nothing further.
+
+  A message *with* entities is two, and the fourth contract on
+  `c:DMEx.Storage.append/5` requires them to commit together — so that case takes
+  an explicit transaction. It is the one below that makes this safe rather than a
+  `SQLITE_BUSY_SNAPSHOT` waiting to happen: `:immediate` takes the write lock at
+  `BEGIN`, so there is no read snapshot to promote, and `validate!/1` refuses a
+  repo configured any other way. Both paths are kept, rather than one explicit
+  transaction for everything, because the no-entity append is the common one and
+  there is nothing for a transaction to buy it.
 
   ## The repo must be `default_transaction_mode: :immediate`
 
@@ -42,10 +51,15 @@ defmodule DMEx.Storage.SQLite do
   alias DMEx.Storage.SQL
   alias Ecto.Adapters.SQL, as: Adapter
 
-  # From the behaviour, not restated: see `DMEx.Storage.__table__/1`.
-  @messages DMEx.Storage.__table__(:messages)
-  @cursors DMEx.Storage.__table__(:cursors)
-  @dead_messages DMEx.Storage.__table__(:dead_messages)
+  # From the behaviour, not restated: see `DMEx.Storage.__table__/1`. Rendered to
+  # strings here rather than left as the atoms that function answers with — an
+  # atom interpolates to the same SQL, but `t:DMEx.Storage.SQL.dialect/0` says a
+  # table entry is already-rendered SQL, and the Postgres adapter's quoting makes
+  # that true on its side.
+  @messages to_string(DMEx.Storage.__table__(:messages))
+  @message_entities to_string(DMEx.Storage.__table__(:message_entities))
+  @cursors to_string(DMEx.Storage.__table__(:cursors))
+  @dead_messages to_string(DMEx.Storage.__table__(:dead_messages))
 
   # `strftime('%f')` renders `SS.SSS`, so every stored value is fixed-width and
   # comparable as bytes, which is what makes `updated_at` orderable at all —
@@ -64,6 +78,7 @@ defmodule DMEx.Storage.SQLite do
   def dialect(_opts) do
     %{
       messages: @messages,
+      message_entities: @message_entities,
       cursors: @cursors,
       dead_messages: @dead_messages,
       param: "?",
@@ -74,9 +89,10 @@ defmodule DMEx.Storage.SQLite do
       type_agg: "group_concat(DISTINCT type)",
       types: &String.split(&1, ","),
       timestamp: &datetime!/1,
-      # No array type, so a selection is N placeholders binding N parameters. The
-      # varying arity costs nothing: exqlite prepares every statement anyway.
-      selection: &{"AND type IN (#{placeholders(&1, &2)})", &1}
+      # No array type, so a selection is N placeholders binding N parameters, on
+      # whichever column. The varying arity costs nothing: exqlite prepares every
+      # statement anyway.
+      selection: &{"#{&1} IN (#{placeholders(&2, &3)})", &2}
     }
   end
 
@@ -144,7 +160,7 @@ defmodule DMEx.Storage.SQLite do
   ## Appending
 
   @impl DMEx.Storage
-  def append(type, data, metadata, opts) when is_binary(type) and is_binary(data) and is_binary(metadata) do
+  def append(type, data, metadata, [], opts) when is_binary(type) and is_binary(data) and is_binary(metadata) do
     sql = SQL.append_sql(dialect(opts))
 
     # One statement, so SQLite wraps it in an implicit write transaction of its
@@ -153,6 +169,29 @@ defmodule DMEx.Storage.SQLite do
       {:ok, %{rows: [[id]]}} -> {:ok, id}
       {:error, reason} -> {:error, reason}
     end
+  end
+
+  def append(type, data, metadata, entities, opts)
+      when is_binary(type) and is_binary(data) and is_binary(metadata) and is_list(entities) do
+    repo = Map.fetch!(opts, :repo)
+    dialect = dialect(opts)
+
+    # Two statements, so the implicit transaction is no longer the whole story:
+    # the entity rows have to commit with the message. `:immediate` is what keeps
+    # the explicit one safe — see the module documentation.
+    repo.transaction(
+      fn ->
+        with {:ok, %{rows: [[id]]}} <-
+               Adapter.query(repo, SQL.append_sql(dialect), [type, data, metadata]),
+             {:ok, _result} <-
+               Adapter.query(repo, SQL.entities_sql(dialect, length(entities)), [id | entities]) do
+          id
+        else
+          {:error, reason} -> repo.rollback(reason)
+        end
+      end,
+      mode: :immediate
+    )
   end
 
   @impl DMEx.Storage

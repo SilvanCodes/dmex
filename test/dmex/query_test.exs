@@ -4,6 +4,8 @@ defmodule DMEx.QueryTest do
   alias DMEx.Query
   alias DMEx.Storage.Postgres
   alias DMEx.Test.Log
+  alias DMEx.Test.Messages.EntityPlaced
+  alias DMEx.Test.Messages.EntityShipped
   alias DMEx.Test.Messages.OrderPlaced
   alias DMEx.Test.Messages.OrderShipped
   alias DMEx.Test.Messages.Renamed
@@ -146,11 +148,177 @@ defmodule DMEx.QueryTest do
     end
   end
 
+  describe "the first argument" do
+    test "a list of modules unions their types", ctx do
+      {:ok, _} = Log.append(%OrderPlaced{order_id: 1})
+      {:ok, _} = Log.append(%OrderShipped{order_id: 2, carrier: "dhl"})
+      {:ok, _} = Log.append(%WithCustomCast{order_id: 3, placed_at: DateTime.utc_now()})
+
+      assert {:ok, [%OrderPlaced{}, %OrderShipped{}]} =
+               Query.all([OrderPlaced, OrderShipped], ctx.opts)
+    end
+
+    test ":all reads every type, resolving each row's module from its own type", ctx do
+      {:ok, _} = Log.append(%OrderPlaced{order_id: 1})
+      {:ok, _} = Log.append(%OrderShipped{order_id: 2, carrier: "dhl"})
+
+      assert {:ok, [%OrderPlaced{order_id: 1}, %OrderShipped{order_id: 2}]} =
+               Query.all(:all, ctx.opts)
+    end
+
+    # The stance `DMEx.Message.decode/1` already takes: a reader legitimately sees
+    # a log wider than its own message modules.
+    test ":all skips a type this node has no module for", ctx do
+      {:ok, _} = append_raw(ctx.storage, "nobody.declares.this", %{n: 1})
+      {:ok, _} = Log.append(%OrderPlaced{order_id: 7})
+
+      assert {:ok, [%OrderPlaced{order_id: 7}]} = Query.all(:all, ctx.opts)
+    end
+
+    test "an empty module list is refused rather than answered with nothing", ctx do
+      assert_raise ArgumentError, ~r/empty list of message modules/, fn ->
+        Query.all([], ctx.opts)
+      end
+    end
+
+    test "a module that is not a message names itself", ctx do
+      assert_raise ArgumentError, ~r/is not a DMEx message module/, fn ->
+        Query.all([OrderPlaced, URI], ctx.opts)
+      end
+    end
+  end
+
+  describe "entities" do
+    test "one entity's history crosses message types", ctx do
+      order = entity()
+
+      {:ok, _} = Log.append(%EntityPlaced{order_id: order, customer_id: entity()})
+      {:ok, _} = Log.append(%EntityShipped{order_id: order, line_item_ids: [entity()]})
+      {:ok, _} = Log.append(%EntityPlaced{order_id: entity()})
+
+      assert {:ok, [%EntityPlaced{order_id: ^order}, %EntityShipped{order_id: ^order}]} =
+               Query.all(:all, ctx.opts ++ [entities: [order]])
+    end
+
+    test "the entity and type axes narrow together", ctx do
+      order = entity()
+
+      {:ok, _} = Log.append(%EntityPlaced{order_id: order})
+      {:ok, _} = Log.append(%EntityShipped{order_id: order})
+
+      assert {:ok, [%EntityShipped{}]} = Query.all(EntityShipped, ctx.opts ++ [entities: [order]])
+    end
+
+    test "a list field is indexed per element", ctx do
+      [one, two] = [entity(), entity()]
+
+      {:ok, _} = Log.append(%EntityShipped{order_id: entity(), line_item_ids: [one, two]})
+
+      assert {:ok, [%EntityShipped{}]} = Query.all(:all, ctx.opts ++ [entities: [two]])
+    end
+
+    test "a list of entities admits a row carrying any of them, once", ctx do
+      [a, b] = [entity(), entity()]
+
+      {:ok, _} = Log.append(%EntityPlaced{order_id: a, customer_id: b})
+
+      assert {:ok, [%EntityPlaced{}]} = Query.all(:all, ctx.opts ++ [entities: [a, b]])
+    end
+
+    test "an unset entity field indexes nothing", ctx do
+      customer = entity()
+
+      {:ok, _} = Log.append(%EntityPlaced{order_id: entity(), customer_id: nil})
+
+      assert {:ok, []} = Query.all(:all, ctx.opts ++ [entities: [customer]])
+    end
+
+    test "a single entity needs no list", ctx do
+      order = entity()
+      {:ok, _} = Log.append(%EntityPlaced{order_id: order})
+
+      assert {:ok, [%EntityPlaced{}]} = Query.all(:all, ctx.opts ++ [entities: order])
+    end
+
+    # The opposite of an unnarrowed axis, and answered without a statement —
+    # see `DMEx.Storage.select/2`.
+    test "an empty entity list admits nothing", ctx do
+      {:ok, _} = Log.append(%EntityPlaced{order_id: entity()})
+
+      assert {:ok, []} = Query.all(:all, ctx.opts ++ [entities: []])
+    end
+
+    test "an identifier that is not a non-empty string names itself", ctx do
+      assert_raise ArgumentError, ~r/as non-empty strings/, fn ->
+        Query.all(:all, ctx.opts ++ [entities: [7]])
+      end
+
+      assert_raise ArgumentError, ~r/as non-empty strings/, fn ->
+        Query.all(:all, ctx.opts ++ [entities: %{}])
+      end
+    end
+
+    # The bare and the listed form go through one check, so neither shape can
+    # carry an identifier the other would refuse.
+    test "one identifier is checked exactly as a list of them is", ctx do
+      for bad <- ["", 7] do
+        assert_raise ArgumentError, ~r/as non-empty strings/, fn ->
+          Query.all(:all, ctx.opts ++ [entities: bad])
+        end
+
+        assert_raise ArgumentError, ~r/as non-empty strings/, fn ->
+          Query.all(:all, ctx.opts ++ [entities: [bad]])
+        end
+      end
+    end
+  end
+
+  describe "stream/2" do
+    test "pages past the limit, which is one page rather than a total", ctx do
+      order = entity()
+      for _ <- 1..5, do: {:ok, _} = Log.append(%EntityPlaced{order_id: order})
+
+      streamed = :all |> Query.stream(ctx.opts ++ [entities: [order], limit: 2]) |> Enum.to_list()
+
+      assert length(streamed) == 5
+      assert Enum.all?(streamed, &match?(%EntityPlaced{order_id: ^order}, &1))
+    end
+
+    test "is lazy: taking one row does not read the whole history", ctx do
+      order = entity()
+      for _ <- 1..5, do: {:ok, _} = Log.append(%EntityPlaced{order_id: order})
+
+      assert [%EntityPlaced{}] = :all |> Query.stream(ctx.opts ++ [entities: [order], limit: 2]) |> Enum.take(1)
+    end
+
+    test "an empty log streams nothing", ctx do
+      assert [] = :all |> Query.stream(ctx.opts) |> Enum.to_list()
+    end
+
+    # A skipped unknown type must still advance the page, or the stream reads the
+    # same rows forever.
+    test "a page of nothing but unknown types still terminates", ctx do
+      for n <- 1..3, do: {:ok, _} = append_raw(ctx.storage, "nobody.declares.this", %{n: n})
+
+      assert [] = :all |> Query.stream(ctx.opts ++ [limit: 1]) |> Enum.to_list()
+    end
+
+    test "refuses :desc, which it could not page into", ctx do
+      assert_raise ArgumentError, ~r/reads oldest first/, fn ->
+        Query.stream(:all, ctx.opts ++ [order: :desc])
+      end
+    end
+  end
+
   ## Helpers
+
+  # Entity identifiers are compared as strings and never coerced, so a test that
+  # needs a fresh one needs it to be a string.
+  defp entity, do: "e-#{System.unique_integer([:positive])}"
 
   # A row under a type no message module currently declares — the only way to
   # write one, since `c:DMEx.Message.type/0` is always the current type.
   defp append_raw(storage, type, data) do
-    Postgres.append(type, JSON.encode!(data), "{}", storage)
+    Postgres.append(type, JSON.encode!(data), "{}", [], storage)
   end
 end

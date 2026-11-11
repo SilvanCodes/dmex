@@ -8,6 +8,7 @@ defmodule DMEx.Storage.PostgresTest do
   alias DMEx.Storage.Postgres
   alias Ecto.Adapters.SQL
 
+  @adapter Postgres
   setup do
     %{opts: %{repo: Repo, lock: {1_701, 4_242}, prefix: nil}}
   end
@@ -58,7 +59,7 @@ defmodule DMEx.Storage.PostgresTest do
       # produce a duplicate key. This is the documented cost of the jsonb
       # column: stored bytes are not the publisher's bytes. `DMEx.Storage.SQLite`
       # stores text and does not pay it — see its inverse of this test.
-      {:ok, id} = Postgres.append("A", ~s({"a":1,"a":2}), "{}", opts)
+      {:ok, id} = Postgres.append("A", ~s({"a":1,"a":2}), "{}", [], opts)
 
       assert {:ok, [row]} = Postgres.read(id - 1, 1, 1_048_576, :all, opts)
       assert JSON.decode!(row.data) == %{"a" => 2}
@@ -91,8 +92,42 @@ defmodule DMEx.Storage.PostgresTest do
 
   ## Helpers
 
+  # The fourth contract on `c:DMEx.Storage.append/5`. The ordering that matters is
+  # message-first: a NULL entity is refused by the column, so the *second*
+  # statement fails after the first succeeded — which is the only way a row could
+  # ever commit without its entities. In an append-only log that row would be
+  # invisibly absent from every entity query, forever, with no later write to
+  # notice.
+  describe "a message and its entities commit together" do
+    test "a refused entity row takes the message with it", %{opts: opts} do
+      assert {:error, _reason} = @adapter.append("A", ~s({"n":1}), "{}", [nil], opts)
+
+      assert count("dmex_messages") == 0
+      assert count("dmex_message_entities") == 0
+    end
+
+    test "entity rows land under the id the append assigned", %{opts: opts} do
+      {:ok, id} = @adapter.append("A", ~s({"n":1}), "{}", ["e1", "e2"], opts)
+
+      assert entities(id) == ["e1", "e2"]
+    end
+  end
+
+  defp count(table) do
+    %{rows: [[count]]} = SQL.query!(Repo, "SELECT count(*) FROM #{table}", [])
+
+    count
+  end
+
+  defp entities(id) do
+    %{rows: rows} =
+      SQL.query!(Repo, "SELECT entity FROM dmex_message_entities WHERE id = #{id} ORDER BY entity", [])
+
+    List.flatten(rows)
+  end
+
   defp append(type, data, metadata \\ %{}, opts) do
-    Postgres.append(type, JSON.encode!(data), JSON.encode!(metadata), opts)
+    Postgres.append(type, JSON.encode!(data), JSON.encode!(metadata), [], opts)
   end
 
   defp raw(sql, %{repo: repo}), do: SQL.query!(repo, sql, []).rows

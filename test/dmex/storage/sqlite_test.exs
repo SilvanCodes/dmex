@@ -8,6 +8,7 @@ defmodule DMEx.Storage.SQLiteTest do
   alias DMEx.Storage.SQLite
   alias Ecto.Adapters.SQL
 
+  @adapter SQLite
   @megabyte 1_048_576
 
   setup do
@@ -22,20 +23,20 @@ defmodule DMEx.Storage.SQLiteTest do
     test "duplicate keys and key order survive, byte for byte", %{opts: opts} do
       written = ~s({"z":1,"a":2,"z":3})
 
-      {:ok, id} = SQLite.append("A", written, "{}", opts)
+      {:ok, id} = SQLite.append("A", written, "{}", [], opts)
 
       assert {:ok, [row]} = SQLite.read(id - 1, 1, @megabyte, :all, opts)
       assert row.data == written
     end
 
     test "a payload that is not JSON is refused by the column", %{opts: opts} do
-      assert {:error, _reason} = SQLite.append("A", "not json", "{}", opts)
+      assert {:error, _reason} = SQLite.append("A", "not json", "{}", [], opts)
     end
   end
 
   describe "the read plan" do
     setup %{opts: opts} do
-      for n <- 1..20, do: SQLite.append("A", ~s({"n":#{n}}), "{}", opts)
+      for n <- 1..20, do: SQLite.append("A", ~s({"n":#{n}}), "{}", [], opts)
 
       :ok
     end
@@ -114,5 +115,40 @@ defmodule DMEx.Storage.SQLiteTest do
     |> SQL.query!("EXPLAIN QUERY PLAN " <> sql, params)
     |> Map.fetch!(:rows)
     |> Enum.map_join("\n", &List.last/1)
+  end
+
+  # The fourth contract on `c:DMEx.Storage.append/5`. The ordering that matters is
+  # message-first: a NULL entity is refused by the column, so the *second*
+  # statement fails after the first succeeded — which is the only way a row could
+  # ever commit without its entities. In an append-only log that row would be
+  # invisibly absent from every entity query, forever, with no later write to
+  # notice. On SQLite this is also the path that needs an explicit `:immediate`
+  # transaction — the single-statement append cannot express it.
+  describe "a message and its entities commit together" do
+    test "a refused entity row takes the message with it", %{opts: opts} do
+      assert {:error, _reason} = @adapter.append("A", ~s({"n":1}), "{}", [nil], opts)
+
+      assert count("dmex_messages") == 0
+      assert count("dmex_message_entities") == 0
+    end
+
+    test "entity rows land under the id the append assigned", %{opts: opts} do
+      {:ok, id} = @adapter.append("A", ~s({"n":1}), "{}", ["e1", "e2"], opts)
+
+      assert entities(id) == ["e1", "e2"]
+    end
+  end
+
+  defp count(table) do
+    %{rows: [[count]]} = SQL.query!(Repo, "SELECT count(*) FROM #{table}", [])
+
+    count
+  end
+
+  defp entities(id) do
+    %{rows: rows} =
+      SQL.query!(Repo, "SELECT entity FROM dmex_message_entities WHERE id = #{id} ORDER BY entity", [])
+
+    List.flatten(rows)
   end
 end

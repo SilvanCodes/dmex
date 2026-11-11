@@ -21,8 +21,8 @@ defmodule DMEx.Storage.SQL do
 
   Everything the two engines disagree about, and nothing else:
 
-    * `:messages`, `:cursors`, `:dead_messages` — the tables, rendered as that
-      engine renders them. Postgres quotes and schema-qualifies through
+    * `:messages`, `:message_entities`, `:cursors`, `:dead_messages` — the tables,
+      rendered as that engine renders them. Postgres quotes and schema-qualifies through
       `DMEx.Storage.Postgres.__table__/2`; SQLite has no schemas and interpolates
       the bare name.
     * `:param` — the sigil a numbered placeholder starts with, `"$"` or `"?"`.
@@ -47,11 +47,18 @@ defmodule DMEx.Storage.SQL do
       lossless because the `type` CHECK forbids one inside a type.
     * `:timestamp` — how a stored timestamp becomes the `%DateTime{}`
       `t:DMEx.Storage.row/0` promises. Postgres's driver already returns one.
-    * `:selection` — how a list of types becomes a predicate and the parameters
-      it binds, given the number the first of them takes. Postgres has an array
-      type and binds one `= ANY($n)`; SQLite has neither and renders N
-      placeholders. The index is passed rather than fixed because two statements
-      bind a selection at different offsets. Why a selection is a separate
+    * `:selection` — how a list of values becomes a predicate on a **named
+      column** and the parameters it binds, given the number the first of them
+      takes. Postgres has an array type and binds one `= ANY($n)`; SQLite has
+      neither and renders N placeholders. The index is passed rather than fixed
+      because the statements bind a selection at different offsets, and the column
+      is passed because two axes narrow this way — `type` on the log, `entity`
+      inside the sub-select that `select/3` builds. One closure rather than one
+      per axis, so an engine cannot spell set membership two ways.
+
+      It renders the **bare predicate**, with no leading connective: `select/3`
+      needs one of them as a sub-select's `WHERE`. `conjoin/1` is what puts the
+      `AND` back where a call site wants it. Why a selection is a separate
       statement rather than a nullable predicate is on `read/6`.
 
   `:text`, `:json` and `:bytes` are per-column functions rather than finished
@@ -78,6 +85,7 @@ defmodule DMEx.Storage.SQL do
   @typedoc "What one engine spells differently. See the module documentation."
   @type dialect :: %{
           messages: String.t(),
+          message_entities: String.t(),
           cursors: String.t(),
           dead_messages: String.t(),
           param: String.t(),
@@ -88,7 +96,7 @@ defmodule DMEx.Storage.SQL do
           type_agg: String.t(),
           types: (term() -> [String.t()]),
           timestamp: (term() -> DateTime.t()),
-          selection: ([String.t()], pos_integer() -> {String.t(), [term()]})
+          selection: (String.t(), [String.t()], pos_integer() -> {String.t(), [term()]})
         }
 
   @doc """
@@ -167,6 +175,28 @@ defmodule DMEx.Storage.SQL do
          VALUES (#{param}1, #{json.("#{param}2")}, #{json.("#{param}3")})
       RETURNING id
     """
+  end
+
+  @doc """
+  Renders the insert for one message's entity rows — **one** statement, whatever
+  the count.
+
+  `c:DMEx.Storage.append/5` requires this to commit with the message, so it runs
+  inside whatever serializes the append: the Postgres adapter's lock transaction,
+  or an explicit immediate transaction on SQLite. That is why it is one multi-row
+  INSERT rather than one per entity — the statement count there is append
+  throughput for the whole application.
+
+  The row id takes parameter 1 and the entities follow, so the id is bound once
+  and repeated by number. Postgres could fold the whole append into a single
+  data-modifying CTE; SQLite has no DML in a CTE, so two statements is the shape
+  both engines share.
+  """
+  @spec entities_sql(dialect(), pos_integer()) :: String.t()
+  def entities_sql(%{message_entities: table, param: param}, count) when count > 0 do
+    values = Enum.map_join(2..(count + 1)//1, ", ", &"(#{param}#{&1}, #{param}1)")
+
+    "INSERT INTO #{table} (entity, id) VALUES #{values}"
   end
 
   ## Reading the log
@@ -251,9 +281,9 @@ defmodule DMEx.Storage.SQL do
   end
 
   def read(%{selection: selection} = dialect, opts, cursor, max_rows, max_bytes, types) when is_list(types) do
-    {predicate, params} = selection.(types, 4)
+    {predicate, params} = selection.("type", types, 4)
 
-    rows(dialect, opts, read_sql(dialect, predicate), [cursor, max_rows, max_bytes | params])
+    rows(dialect, opts, read_sql(dialect, conjoin(predicate)), [cursor, max_rows, max_bytes | params])
   end
 
   @doc """
@@ -261,35 +291,74 @@ defmodule DMEx.Storage.SQL do
 
   A plain filtered scan, deliberately unlike `read/6`: no byte bound and no
   window functions, because the caller is a person with a `limit:` rather than a
-  send loop with a socket. The selection comes first so that `(type, id)` serves
-  it, and `id` is the only orderable column — `inserted_at` is observability and
-  never an ordering key (`DMEx.Storage.Postgres.Migration` says why).
+  send loop with a socket. The type selection comes first so that `(type, id)`
+  serves it, and `id` is the only orderable column — `inserted_at` is
+  observability and never an ordering key
+  (`DMEx.Storage.Postgres.Migration` says why).
 
   `:after_id` is the leading predicate rather than an optional one, exactly as the
   cursor is in `read_sql/2`: it defaults to 0 and every id is positive, so one
-  clause is always there and the selection appends itself at a known offset.
+  clause is always there and each narrowing appends its own parameters at a known
+  offset — entities, then types, then the limit, with nothing renumbering.
   `:desc` reads the same index backwards, so `LIMIT` with it is the newest rows
   for one seek rather than a sort.
+
+  **The entity narrowing is a sub-select on `(entity, id)`**, which is the whole
+  of `dmex_message_entities`: seek the entities, and let the outer `id > ?` and
+  type predicate filter what comes back. `IN` rather than a join, because a row
+  carrying two of the selected entities must come back **once**, and a semi-join
+  is what says that in SQL — Postgres satisfies it with a `HashAggregate` rather
+  than the sort an explicit `DISTINCT` over a plain join would ask for.
+
+  Which plan that becomes depends on how much of the log the entity carries, and
+  `DMEx.Storage.Postgres.Migration` records the `EXPLAIN` session: a selective
+  entity seeks this table and sorts the bounded result, a broad one inverts into
+  walking the log's primary key and probing this table per row. Both stop at the
+  `LIMIT`, which is why there always is one.
+
+  Each axis is absent from the statement entirely when it is `:all`, rather than
+  present as a predicate that matches everything: `c:DMEx.Storage.read/5` has the
+  argument, and it is about the plan rather than the syntax.
 
   The direction is rendered here rather than through the dialect: `ASC` and `DESC`
   are spelled the same by every engine, and the dialect is for what is not.
   """
   @spec select(dialect(), DMEx.Storage.opts(), DMEx.Storage.filters()) ::
           {:ok, [DMEx.Storage.row()]} | {:error, term()}
-  def select(%{messages: table, param: param, text: text, selection: selection} = dialect, opts, filters) do
-    {predicate, types} = selection.(filters.types, 2)
-    params = [filters.after_id | types]
+  def select(%{messages: table, param: param, text: text} = dialect, opts, filters) do
+    {entity_predicate, entity_params} = entity_narrowing(dialect, filters.entities, 2)
+    {type_predicate, type_params} = narrowing(dialect, "type", filters.types, 2 + length(entity_params))
+
+    params = [filters.after_id] ++ entity_params ++ type_params
 
     sql = """
     SELECT id, type, #{projected(text, "data")}, #{projected(text, "metadata")}, inserted_at
       FROM #{table}
-     WHERE id > #{param}1 #{predicate}
+     WHERE id > #{param}1 #{entity_predicate} #{conjoin(type_predicate)}
      ORDER BY id #{direction(filters.order)}
      LIMIT #{param}#{length(params) + 1}
     """
 
     rows(dialect, opts, sql, params ++ [filters.limit])
   end
+
+  # `:all` is the absence of a predicate rather than one that admits everything.
+  defp narrowing(_dialect, _column, :all, _first), do: {"", []}
+
+  defp narrowing(%{selection: selection}, column, values, first), do: selection.(column, values, first)
+
+  defp entity_narrowing(_dialect, :all, _first), do: {"", []}
+
+  defp entity_narrowing(%{message_entities: table} = dialect, entities, first) do
+    {predicate, params} = narrowing(dialect, "entity", entities, first)
+
+    {"AND id IN (SELECT id FROM #{table} WHERE #{predicate})", params}
+  end
+
+  # The selection closure renders a bare predicate, since one call site needs it
+  # as a sub-select's `WHERE`. This puts the connective back for the others.
+  defp conjoin(""), do: ""
+  defp conjoin(predicate), do: "AND " <> predicate
 
   # Rendered from the atom the behaviour already constrains, never interpolated
   # from a caller's string: this is the one place in a statement where a value

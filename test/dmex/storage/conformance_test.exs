@@ -38,7 +38,7 @@ for {storage, repo, tag} <- [
       %{opts: %{repo: @repo, lock: {1_701, 4_242}, prefix: nil}}
     end
 
-    describe "append/4" do
+    describe "append/5" do
       test "returns the assigned id, increasing", %{opts: opts} do
         assert {:ok, first} = append("A", %{n: 1}, opts)
         assert {:ok, second} = append("A", %{n: 2}, opts)
@@ -64,7 +64,7 @@ for {storage, repo, tag} <- [
       # write fails* in `DMEx.Storage`. Invalid JSON is the rejection both engines
       # share: Postgres's `jsonb` cast refuses it, SQLite's `json_valid` CHECK does.
       test "a payload the database refuses comes back as an error", %{opts: opts} do
-        assert {:error, _reason} = @storage.append("A", "not json", "{}", opts)
+        assert {:error, _reason} = @storage.append("A", "not json", "{}", [], opts)
       end
     end
 
@@ -271,6 +271,55 @@ for {storage, repo, tag} <- [
         {:ok, _} = append("A", %{n: 1}, opts)
 
         assert {:ok, []} = @storage.select(filters(types: ["Z"]), opts)
+      end
+
+      test "an entity admits the rows carrying it and no others", %{opts: opts} do
+        {:ok, mine} = append_entities("A", ["e1"], opts)
+        {:ok, _theirs} = append_entities("A", ["e2"], opts)
+        {:ok, _none} = append_entities("A", [], opts)
+
+        assert {:ok, [^mine]} = ids(filters(entities: ["e1"]), opts)
+      end
+
+      # Why the predicate is `IN (SELECT …)` and not a join: a row carrying two
+      # of the selected entities matches twice in the index and must still come
+      # back once.
+      test "a row carrying two selected entities comes back once", %{opts: opts} do
+        {:ok, id} = append_entities("A", ["e1", "e2"], opts)
+
+        assert {:ok, [^id]} = ids(filters(entities: ["e1", "e2"]), opts)
+      end
+
+      test "an entity nothing carries reads empty", %{opts: opts} do
+        {:ok, _} = append_entities("A", ["e1"], opts)
+
+        assert {:ok, []} = @storage.select(filters(entities: ["nobody"]), opts)
+      end
+
+      # The question `DMEx.Query.all(:all, entities: […])` asks: one entity's
+      # history, which is only an answer if it crosses types.
+      test "an entity spans types when the type axis is open", %{opts: opts} do
+        {:ok, a} = append_entities("A", ["e1"], opts)
+        {:ok, b} = append_entities("B", ["e1"], opts)
+
+        assert {:ok, [^a, ^b]} = ids(filters(types: :all, entities: ["e1"]), opts)
+      end
+
+      test "the two axes narrow together", %{opts: opts} do
+        {:ok, _a} = append_entities("A", ["e1"], opts)
+        {:ok, b} = append_entities("B", ["e1"], opts)
+
+        assert {:ok, [^b]} = ids(filters(types: ["B"], entities: ["e1"]), opts)
+      end
+
+      test "an entity filter still pages and orders", %{opts: opts} do
+        ids = for _ <- 1..3, do: elem(append_entities("A", ["e1"], opts), 1)
+        [first | _] = ids
+
+        assert {:ok, ^ids} = ids(filters(entities: ["e1"]), opts)
+        assert {:ok, reversed} = ids(filters(entities: ["e1"], order: :desc), opts)
+        assert reversed == Enum.reverse(ids)
+        assert {:ok, [_, _]} = ids(filters(entities: ["e1"], after_id: first), opts)
       end
     end
 
@@ -601,13 +650,23 @@ for {storage, repo, tag} <- [
     ## Helpers
 
     defp append(type, data, metadata \\ %{}, opts) do
-      @storage.append(type, JSON.encode!(data), JSON.encode!(metadata), opts)
+      @storage.append(type, JSON.encode!(data), JSON.encode!(metadata), [], opts)
+    end
+
+    # The entity half of an append, where the payload is beside the point.
+    defp append_entities(type, entities, opts) do
+      @storage.append(type, JSON.encode!(%{}), "{}", entities, opts)
     end
 
     # The full filter map `c:DMEx.Storage.select/2` takes, so a test names only
-    # the axis it is about.
+    # the axis it is about. `entities: :all` is the unnarrowed default, which is
+    # not the same thing as `[]` — that one admits nothing and is answered above
+    # the adapter, so it never arrives here.
     defp filters(overrides) do
-      Map.merge(%{types: ["A"], after_id: 0, order: :asc, limit: 100}, Map.new(overrides))
+      Map.merge(
+        %{types: ["A"], entities: :all, after_id: 0, order: :asc, limit: 100},
+        Map.new(overrides)
+      )
     end
 
     defp ids(filters, opts) do
