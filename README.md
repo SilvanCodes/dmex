@@ -114,7 +114,15 @@ DMEx.Query.all(:all, entities: [order_id])
 
 # the same, lazily, for a history longer than memory
 DMEx.Query.stream(:all, entities: [order_id], limit: 500)
+
+# newest first, and `limit:` is the page rather than a total
+DMEx.Query.stream(:all, order: :desc, limit: 500)
 ```
+
+`after_id:` and `before_id:` are exclusive bounds on `id` and neither depends on
+`order:`, so together they are a window and `order:` only says which end of it
+you read from. For `stream/2` that is the direction of travel, and both
+directions are one statement.
 
 An identifier is stored exactly as the message declared it — DMEx composes
 nothing into it and parses nothing out — which is what lets two message types

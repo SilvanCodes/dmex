@@ -280,8 +280,8 @@ defmodule DMEx.Storage.SQL do
     rows(dialect, opts, read_sql(dialect, ""), [cursor, max_rows, max_bytes])
   end
 
-  def read(%{selection: selection} = dialect, opts, cursor, max_rows, max_bytes, types) when is_list(types) do
-    {predicate, params} = selection.("type", types, 4)
+  def read(dialect, opts, cursor, max_rows, max_bytes, types) when is_list(types) do
+    {predicate, params} = narrowing(dialect, :type, types, 4)
 
     rows(dialect, opts, read_sql(dialect, conjoin(predicate)), [cursor, max_rows, max_bytes | params])
   end
@@ -296,10 +296,17 @@ defmodule DMEx.Storage.SQL do
   observability and never an ordering key
   (`DMEx.Storage.Postgres.Migration` says why).
 
-  `:after_id` is the leading predicate rather than an optional one, exactly as the
-  cursor is in `read_sql/2`: it defaults to 0 and every id is positive, so one
-  clause is always there and each narrowing appends its own parameters at a known
-  offset — entities, then types, then the limit, with nothing renumbering.
+  **Every narrowing is optional and rendered the same way.** Four of them, in the
+  order their parameters bind: the floor and the ceiling through `bound/4` under
+  one rule, then `narrowing/4` once per axis, each clause rendering its own from
+  the dialect's `:selection` closure. `where/1` joins whatever
+  survived, and every offset is threaded from the one before rather than assumed,
+  so no narrowing knows what the others rendered. A statement with no narrowing
+  at all has no `WHERE`.
+
+  Both bounds are exclusive and neither depends on `:order`: together they are a
+  window on `id`, and `:order` only says which end of it the `LIMIT` takes. That
+  is what makes a backwards page the same statement as a forwards one, and
   `:desc` reads the same index backwards, so `LIMIT` with it is the newest rows
   for one seek rather than a sort.
 
@@ -326,15 +333,19 @@ defmodule DMEx.Storage.SQL do
   @spec select(dialect(), DMEx.Storage.opts(), DMEx.Storage.filters()) ::
           {:ok, [DMEx.Storage.row()]} | {:error, term()}
   def select(%{messages: table, param: param, text: text} = dialect, opts, filters) do
-    {entity_predicate, entity_params} = entity_narrowing(dialect, filters.entities, 2)
-    {type_predicate, type_params} = narrowing(dialect, "type", filters.types, 2 + length(entity_params))
+    {lower, lower_params} = bound(dialect, ">", filters.after_id, 1)
+    {upper, upper_params} = bound(dialect, "<", filters.before_id, 1 + length(lower_params))
 
-    params = [filters.after_id] ++ entity_params ++ type_params
+    first = 1 + length(lower_params) + length(upper_params)
+    {entities, entity_params} = narrowing(dialect, :entity, filters.entities, first)
+    {types, type_params} = narrowing(dialect, :type, filters.types, first + length(entity_params))
+
+    params = lower_params ++ upper_params ++ entity_params ++ type_params
 
     sql = """
     SELECT id, type, #{projected(text, "data")}, #{projected(text, "metadata")}, inserted_at
       FROM #{table}
-     WHERE id > #{param}1 #{entity_predicate} #{conjoin(type_predicate)}
+    #{where([lower, upper, entities, types])}
      ORDER BY id #{direction(filters.order)}
      LIMIT #{param}#{length(params) + 1}
     """
@@ -342,21 +353,66 @@ defmodule DMEx.Storage.SQL do
     rows(dialect, opts, sql, params ++ [filters.limit])
   end
 
-  # `:all` is the absence of a predicate rather than one that admits everything.
-  defp narrowing(_dialect, _column, :all, _first), do: {"", []}
+  # Both bounds, one function, one rule: a value renders a clause and `nil` does
+  # not. `t:DMEx.Storage.filters/0` calls them a symmetric pair, and this is the
+  # place that has to be true — a lower bound spelled as the always-present
+  # leading predicate and an upper one spelled as an optional extra is two kinds
+  # of thing wearing one name, and it puts the parameter numbering of everything
+  # downstream in two different places.
+  #
+  # The alternative was rendering both unconditionally, with the ceiling
+  # defaulting to a sentinel. It has to be rejected on correctness rather than on
+  # cost: the only candidate is the largest id a `bigint` can hold, and that value
+  # *is* a possible id, so `id < sentinel` would hide the last row either engine
+  # can ever assign. There is no integer strictly above every id, where 0 is
+  # strictly below every one of them — the asymmetry is in the values, not in the
+  # code. It is not a performance trade either: the session recorded in
+  # `DMEx.Storage.Postgres.Migration` measured the floor present, absent, and
+  # against a sentinel, and all three produce the same plan, the same row
+  # estimates and the same rows touched.
+  #
+  # `:after_id` still arrives as 0 rather than `nil` for "from the start", because
+  # 0 is a real position in DMEx's one position vocabulary. So the common forwards
+  # query renders `id > $1` exactly as it always did.
+  defp bound(_dialect, _operator, nil, _first), do: {"", []}
 
-  defp narrowing(%{selection: selection}, column, values, first), do: selection.(column, values, first)
+  defp bound(%{param: param}, operator, id, first), do: {"id #{operator} #{param}#{first}", [id]}
 
-  defp entity_narrowing(_dialect, :all, _first), do: {"", []}
-
-  defp entity_narrowing(%{message_entities: table} = dialect, entities, first) do
-    {predicate, params} = narrowing(dialect, "entity", entities, first)
-
-    {"AND id IN (SELECT id FROM #{table} WHERE #{predicate})", params}
+  # Every narrowing is optional, so the keyword appears only if one survived, and
+  # the `AND`s are joined here rather than carried by each predicate. One line and
+  # single spaces throughout: this statement is flat enough not to want the
+  # alignment `read_sql/2` is padded into, and that padding is what used to leave
+  # a blank line behind when nothing narrowed.
+  defp where(predicates) do
+    case Enum.reject(predicates, &(&1 == "")) do
+      [] -> ""
+      predicates -> "WHERE " <> Enum.join(predicates, " AND ")
+    end
   end
 
-  # The selection closure renders a bare predicate, since one call site needs it
-  # as a sub-select's `WHERE`. This puts the connective back for the others.
+  # The set-membership narrowings: one function, one clause per axis, and the
+  # axis named rather than described. Each clause renders its own SQL in full —
+  # a type predicates the column directly, an entity predicates it inside a
+  # sub-select on `dmex_message_entities` — so the half that differs is on the
+  # page instead of behind an argument, while `:all` is answered once for both.
+  #
+  # The dialect's `:selection` closure stays the only thing that renders set
+  # membership, so an engine cannot spell it one way for a query and another for
+  # a reader.
+  defp narrowing(_dialect, _axis, :all, _first), do: {"", []}
+
+  defp narrowing(%{selection: selection}, :type, types, first), do: selection.("type", types, first)
+
+  defp narrowing(%{message_entities: table, selection: selection}, :entity, entities, first) do
+    {predicate, params} = selection.("entity", entities, first)
+
+    {"id IN (SELECT id FROM #{table} WHERE #{predicate})", params}
+  end
+
+  # The selection closure renders a bare predicate, since `select/3` needs one of
+  # them as a sub-select's `WHERE` and joins the rest itself. `read_sql/2` splices
+  # its predicate in after a `WHERE` that is always there, so it needs the
+  # connective put back.
   defp conjoin(""), do: ""
   defp conjoin(predicate), do: "AND " <> predicate
 

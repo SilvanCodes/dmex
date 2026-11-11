@@ -273,6 +273,39 @@ for {storage, repo, tag} <- [
         assert {:ok, []} = @storage.select(filters(types: ["Z"]), opts)
       end
 
+      # The statement with nothing narrowing it but the floor, which is what an
+      # operator looking at a log for the first time issues.
+      test "reads the whole log when neither axis narrows", %{opts: opts} do
+        {:ok, a} = append("A", %{n: 1}, opts)
+        {:ok, b} = append("B", %{n: 2}, opts)
+
+        assert {:ok, [^a, ^b]} = ids(filters(types: :all), opts)
+      end
+
+      test "before_id is an exclusive upper bound", %{opts: opts} do
+        [first, second, third] = for n <- 1..3, do: elem(append("A", %{n: n}, opts), 1)
+
+        assert {:ok, [^first, ^second]} = ids(filters(types: ["A"], before_id: third), opts)
+      end
+
+      # The two bounds are a window, and `:order` only says which end of it the
+      # rows come back from — so neither bound changes meaning when it flips.
+      test "the two bounds compose into a window, in both directions", %{opts: opts} do
+        [first, second, third, fourth] = for n <- 1..4, do: elem(append("A", %{n: n}, opts), 1)
+
+        window = filters(types: ["A"], after_id: first, before_id: fourth)
+
+        assert {:ok, [^second, ^third]} = ids(window, opts)
+        assert {:ok, [^third, ^second]} = ids(Map.put(window, :order, :desc), opts)
+      end
+
+      test "a descending limit below a ceiling is the page before it", %{opts: opts} do
+        [_first, second, third, fourth] = for n <- 1..4, do: elem(append("A", %{n: n}, opts), 1)
+
+        assert {:ok, [^third, ^second]} =
+                 ids(filters(types: ["A"], before_id: fourth, order: :desc, limit: 2), opts)
+      end
+
       test "an entity admits the rows carrying it and no others", %{opts: opts} do
         {:ok, mine} = append_entities("A", ["e1"], opts)
         {:ok, _theirs} = append_entities("A", ["e2"], opts)
@@ -664,7 +697,7 @@ for {storage, repo, tag} <- [
     # the adapter, so it never arrives here.
     defp filters(overrides) do
       Map.merge(
-        %{types: ["A"], entities: :all, after_id: 0, order: :asc, limit: 100},
+        %{types: ["A"], entities: :all, after_id: 0, before_id: nil, order: :asc, limit: 100},
         Map.new(overrides)
       )
     end

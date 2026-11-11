@@ -46,17 +46,25 @@ defmodule DMEx.Query do
     * `:order` — `:asc` (default) for oldest first, `:desc` for newest first.
       Ordering is on `id` and only on `id`: it is the only column that is dense,
       unique and ascending with commit order, which is what makes a page stable.
-    * `:after_id` — exclusive lower bound on `id`, whichever way `:order` points.
-      With `:desc` and no `:after_id` you get the newest rows, which is the
-      common case; paging *backwards* through history would need a `:before_id`
-      that does not exist yet.
+      For `stream/2` it is also the direction of travel.
+    * `:after_id` / `:before_id` — **exclusive bounds on `id`, neither of which
+      depends on `:order`**: a lower and an upper, composing into a window.
+      `:order` only says which end of that window you read from. So `:desc` alone
+      is the newest rows, `:desc` with `:before_id` is the page below it, and the
+      two bounds together are "the rows between these ids" in either direction.
+
+      `:after_id` defaults to 0, which is a real position in DMEx's one position
+      vocabulary. `:before_id` defaults to absent, because there is no integer
+      that means "the tip" — and `before_id: 0` is refused rather than read as
+      one, since the same number on the other bound means *everything* and here
+      would mean nothing.
   """
 
   alias DMEx.Config
   alias DMEx.Message
   alias DMEx.Storage
 
-  @query_opts [:limit, :order, :after_id, :entities]
+  @query_opts [:limit, :order, :after_id, :before_id, :entities]
   @storage_opts [:repo, :storage, :prefix]
 
   # Not a `DMEx.Config` setting: that vocabulary is a log's and a handler's, and
@@ -101,8 +109,23 @@ defmodule DMEx.Query do
   ended at, so it costs one index seek per page and cannot skip or repeat a row
   the way an `OFFSET` can.
 
-  `:asc` only. Paging backwards needs the `:before_id` that does not exist, and
-  a `:desc` stream would otherwise walk forwards while claiming to walk back.
+  **`:order` is the direction of travel**, and both directions are the same
+  statement: `:asc` moves `:after_id` up from the window's floor, `:desc` moves
+  `:before_id` down from its ceiling. Which is why the bounds do not depend on
+  `:order` — if they did, a backwards stream would need its own statement and
+  its own off-by-one.
+
+  Either direction honours the *other* bound as its stopping line, so
+  `order: :desc, after_id: n` walks back to `n` and stops, and an unbounded
+  `:desc` stream starts at the log's tip and ends at its first row.
+
+  **A backwards stream is stable under concurrent appends and a forwards one is
+  not**, which follows from the log being append-only rather than from anything
+  here: every new row takes an id above the ceiling a backwards stream has
+  already dropped below, so it reads a window that cannot grow. A forwards
+  stream chases a tip that moves, and on a busy log may not terminate — which is
+  the right behaviour for draining a backlog and the wrong one for taking a
+  snapshot. Bound it with `:before_id` when the distinction matters.
 
   A storage failure **raises** rather than answering `{:error, reason}`: a stream
   already in flight has nowhere to put a tuple. Use `all/2` where the error is
@@ -115,28 +138,28 @@ defmodule DMEx.Query do
     storage = DMEx.Supervisor.storage!(opts)
     filters = filters!(messages, opts)
 
-    if filters.order == :desc do
-      raise ArgumentError,
-            "`DMEx.Query.stream/2` reads oldest first, so `order: :desc` has nothing to page " <>
-              "into: a backwards page needs a `:before_id` bound DMEx does not have. Use " <>
-              "`all/2` with `order: :desc` for the newest rows."
-    end
-
-    Stream.resource(
-      fn -> filters.after_id end,
-      &page(storage, filters, messages, &1),
-      & &1
-    )
+    Stream.resource(fn -> seed(filters) end, &page(storage, filters, messages, &1), & &1)
   end
 
-  defp page(storage, filters, messages, after_id) do
-    case Storage.select(storage, %{filters | after_id: after_id}) do
+  # The end a stream starts from is the bound it does *not* move: an ascending
+  # one walks up from the floor, a descending one walks down from the ceiling —
+  # which is `nil` for a stream starting at the tip, and renders no clause.
+  defp seed(%{order: :asc, after_id: after_id}), do: after_id
+  defp seed(%{order: :desc, before_id: before_id}), do: before_id
+
+  defp advance(%{order: :asc} = filters, cursor), do: %{filters | after_id: cursor}
+  defp advance(%{order: :desc} = filters, cursor), do: %{filters | before_id: cursor}
+
+  defp page(storage, filters, messages, cursor) do
+    case Storage.select(storage, advance(filters, cursor)) do
       {:ok, []} ->
-        {:halt, after_id}
+        {:halt, cursor}
 
       {:ok, rows} ->
-        # The last row's id, not the last *cast struct* — a skipped unknown type
-        # must still advance the page, or the stream repeats it forever.
+        # The last *row's* id, not the last cast struct: a skipped unknown type
+        # must still advance the page, or the stream repeats it forever. It is
+        # the right id in both directions — the page is ordered, so its last row
+        # is the furthest one travelled in whichever direction that is.
         {cast(rows, messages), List.last(rows).id}
 
       {:error, reason} ->
@@ -169,6 +192,7 @@ defmodule DMEx.Query do
       types: types!(messages),
       entities: entities!(opts),
       after_id: bound!(opts, :after_id, &(is_integer(&1) and &1 >= 0), "a non-negative integer") || 0,
+      before_id: before_id!(opts),
       order: bound!(opts, :order, &(&1 in [:asc, :desc]), "either :asc or :desc") || :asc,
       limit: bound!(opts, :limit, &(is_integer(&1) and &1 > 0), "a positive integer") || @default_limit
     }
@@ -237,6 +261,29 @@ defmodule DMEx.Query do
           "`entities:` takes an entity identifier or a list of them, as non-empty strings, " <>
             "got: #{inspect(value)}. An identifier is stored exactly as the appending message " <>
             "declared it, so it is compared as a string and never coerced."
+  end
+
+  # `0` is refused rather than defaulted, because it is the one value a caller
+  # could plausibly mean the opposite by: `after_id: 0` admits everything, and the
+  # same number here would admit nothing. Absence is how "no ceiling" is spelled.
+  defp before_id!(opts) do
+    case Keyword.fetch(opts, :before_id) do
+      :error ->
+        nil
+
+      {:ok, 0} ->
+        raise ArgumentError,
+              "`before_id: 0` admits nothing, since it is exclusive and every id is positive. " <>
+                "Unlike `after_id: 0`, which admits everything, there is no integer here meaning " <>
+                "\"the tip\" — omit `before_id:` for that."
+
+      {:ok, value} ->
+        if is_integer(value) and value > 0 do
+          value
+        else
+          raise_bound(:before_id, value, "a positive integer")
+        end
+    end
   end
 
   # Checked here rather than left to the driver: `:order` reaches a statement as

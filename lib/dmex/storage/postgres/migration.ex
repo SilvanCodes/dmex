@@ -153,9 +153,16 @@ defmodule DMEx.Storage.Postgres.Migration do
     # read — they are a filter axis, not part of a message, and
     # `t:DMEx.Storage.row/0` is unchanged by their existence.
     #
-    # Measured once, on a 500k-row log where one entity carries 1 row, one carries
-    # 1 000, and one carries 250 000. The planner picks between two shapes, the
-    # same way the `(type, id)` crossover above works:
+    # Measured on a 500k-row log where one entity carries 1 row, one carries
+    # 1 000, and one carries 250 000. The planner has **more than two** plans
+    # here and picks on the entity table's own statistics: a second seeding, with
+    # the same log but a different spread of entities across it, moved the
+    # selective case to a `Merge Semi Join` that walks 49 503 log rows to return
+    # 100. So read the shapes below as what this index makes *available*, not as
+    # what is guaranteed — the `(type, id)` crossover above is a two-way choice
+    # and this is not.
+    #
+    # The two that the first seeding produced:
     #
     #   * **Selective entity** — `Bitmap Index Scan on
     #     dmex_message_entities_pkey`, a `HashAggregate` that collapses a row
@@ -170,9 +177,21 @@ defmodule DMEx.Storage.Postgres.Migration do
     #     semi-join probe into this table per row. No sort at all, and it stops at
     #     `LIMIT` — for the 250k-row entity it touched 200 log rows to return 100.
     #
-    # Both are bounded by the `LIMIT`, which is why `DMEx.Query` insists on one.
+    # All of them are bounded by the `LIMIT`, which is why `DMEx.Query` insists on
+    # one, and is what keeps the worst plan here merely slower rather than
+    # unbounded.
     # The entity predicate is left plain for the planner to choose between them,
     # for the same reason `type = ANY($1)` is.
+    #
+    # **Direction costs nothing, and neither does the shape of the bounds.** The
+    # same session with `ORDER BY id DESC` produces whatever plan the ascending
+    # one did, with `Index Scan Backward using dmex_messages_pkey` in place of the
+    # forward scan — 199 log rows for 100 returned in the broad case either way.
+    # And rendering the floor, omitting it, or replacing the ceiling with a
+    # max-`bigint` sentinel are all plan-identical, down to the row estimates and
+    # the rows actually touched. So neither a backwards page nor an absent bound
+    # is a second query shape to reason about, which is what lets
+    # `DMEx.Storage.SQL.bound/4` render both bounds under one rule.
     #
     # No foreign key either, deliberately. `c:DMEx.Storage.append/5` writes these
     # rows inside the transaction that inserts the message, so an orphan is

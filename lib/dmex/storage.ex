@@ -374,9 +374,21 @@ defmodule DMEx.Storage do
   @typedoc """
   What `c:select/2` narrows a read to.
 
-  Every key is present. `:after_id` is a cursor with 0 for "from the start", the
-  same shape `c:read/5` takes, and `:order` is the direction of the one column an
-  ad-hoc read may order by.
+  Every key is present.
+
+  `:after_id` and `:before_id` are **exclusive bounds on `id`, both independent
+  of `:order`** — a lower and an upper, composing into a window. `:order` picks
+  which end of that window the rows come back from and nothing else, so neither
+  bound changes meaning when it flips.
+
+  Their defaults are spelled differently because their vocabularies are. 0 is a
+  real position in DMEx — the same "from the start" `c:read/5` and a
+  `Last-Event-ID` take — so `:after_id` defaults to it. There is no integer
+  meaning "the tip", and absence is how DMEx already spells that (see the
+  `Last-Event-ID` header, whose absence is the only tip token there is), so
+  `:before_id` defaults to `nil` and renders no clause at all.
+
+  `:order` is the direction of the one column an ad-hoc read may order by.
 
   `:types` is `:all` for a query over every type, or a list, which is never empty
   — `DMEx.Query` builds it from a message module, which always answers for at
@@ -391,6 +403,7 @@ defmodule DMEx.Storage do
           types: :all | [String.t()],
           entities: :all | [String.t()],
           after_id: non_neg_integer(),
+          before_id: pos_integer() | nil,
           order: :asc | :desc,
           limit: pos_integer()
         }

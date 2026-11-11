@@ -302,11 +302,138 @@ defmodule DMEx.QueryTest do
 
       assert [] = :all |> Query.stream(ctx.opts ++ [limit: 1]) |> Enum.to_list()
     end
+  end
 
-    test "refuses :desc, which it could not page into", ctx do
-      assert_raise ArgumentError, ~r/reads oldest first/, fn ->
-        Query.stream(:all, ctx.opts ++ [order: :desc])
+  describe "before_id" do
+    test "is an exclusive upper bound", ctx do
+      [_first, _second, third] = for n <- 1..3, do: elem(Log.append(%OrderPlaced{order_id: n}), 1)
+
+      assert {:ok, [%OrderPlaced{order_id: 1}, %OrderPlaced{order_id: 2}]} =
+               Query.all(OrderPlaced, ctx.opts ++ [before_id: third])
+    end
+
+    test "composes with after_id into a window", ctx do
+      [first, _second, _third, fourth] =
+        for n <- 1..4, do: elem(Log.append(%OrderPlaced{order_id: n}), 1)
+
+      assert {:ok, [%OrderPlaced{order_id: 2}, %OrderPlaced{order_id: 3}]} =
+               Query.all(OrderPlaced, ctx.opts ++ [after_id: first, before_id: fourth])
+    end
+
+    # The one value a caller could plausibly mean the opposite by.
+    test "0 is refused rather than read as the tip", ctx do
+      assert_raise ArgumentError, ~r/`before_id: 0` admits nothing/, fn ->
+        Query.all(OrderPlaced, ctx.opts ++ [before_id: 0])
       end
+    end
+
+    test "anything else out of shape names the option", ctx do
+      assert_raise ArgumentError, ~r/`before_id:` must be a positive integer/, fn ->
+        Query.all(OrderPlaced, ctx.opts ++ [before_id: -1])
+      end
+
+      assert_raise ArgumentError, ~r/`before_id:` must be a positive integer/, fn ->
+        Query.all(OrderPlaced, ctx.opts ++ [before_id: "7"])
+      end
+    end
+  end
+
+  describe "stream/2 backwards" do
+    test "walks back from the tip, paging past the limit", ctx do
+      for n <- 1..5, do: {:ok, _} = Log.append(%OrderPlaced{order_id: n})
+
+      streamed = :all |> Query.stream(ctx.opts ++ [order: :desc, limit: 2]) |> Enum.to_list()
+
+      assert Enum.map(streamed, & &1.order_id) == [5, 4, 3, 2, 1]
+    end
+
+    test "starts below before_id", ctx do
+      ids = for n <- 1..5, do: elem(Log.append(%OrderPlaced{order_id: n}), 1)
+      third = Enum.at(ids, 2)
+
+      streamed =
+        :all
+        |> Query.stream(ctx.opts ++ [order: :desc, before_id: third, limit: 2])
+        |> Enum.to_list()
+
+      assert Enum.map(streamed, & &1.order_id) == [2, 1]
+    end
+
+    # The other bound is the stopping line, which is what makes a window
+    # streamable from either end.
+    test "stops at after_id", ctx do
+      ids = for n <- 1..5, do: elem(Log.append(%OrderPlaced{order_id: n}), 1)
+      second = Enum.at(ids, 1)
+
+      streamed =
+        :all
+        |> Query.stream(ctx.opts ++ [order: :desc, after_id: second, limit: 2])
+        |> Enum.to_list()
+
+      assert Enum.map(streamed, & &1.order_id) == [5, 4, 3]
+    end
+
+    test "is lazy: the newest row costs one page", ctx do
+      for n <- 1..5, do: {:ok, _} = Log.append(%OrderPlaced{order_id: n})
+
+      assert [%OrderPlaced{order_id: 5}] =
+               :all |> Query.stream(ctx.opts ++ [order: :desc, limit: 2]) |> Enum.take(1)
+    end
+
+    test "the two directions see exactly the same rows", ctx do
+      for n <- 1..7, do: {:ok, _} = Log.append(%OrderPlaced{order_id: n})
+
+      forwards = :all |> Query.stream(ctx.opts ++ [limit: 3]) |> Enum.to_list()
+      backwards = :all |> Query.stream(ctx.opts ++ [order: :desc, limit: 3]) |> Enum.to_list()
+
+      assert forwards == Enum.reverse(backwards)
+    end
+
+    test "an entity's history reads backwards too", ctx do
+      order = entity()
+      for _ <- 1..4, do: {:ok, _} = Log.append(%EntityPlaced{order_id: order})
+      {:ok, _} = Log.append(%EntityPlaced{order_id: entity()})
+
+      streamed =
+        :all
+        |> Query.stream(ctx.opts ++ [entities: [order], order: :desc, limit: 2])
+        |> Enum.to_list()
+
+      assert length(streamed) == 4
+      assert Enum.all?(streamed, &match?(%EntityPlaced{order_id: ^order}, &1))
+    end
+
+    # Follows from the log being append-only: every new row takes an id above the
+    # ceiling a backwards stream has already dropped below, so it reads a window
+    # that cannot grow. A forwards stream chases a tip that moves, and the
+    # contrast is the whole reason the property is worth having.
+    test "does not see rows appended after it started, where a forwards one does", ctx do
+      for n <- 1..4, do: {:ok, _} = Log.append(%OrderPlaced{order_id: n})
+
+      # The append fires while the first page is being consumed, so the next page
+      # is read after the log has grown.
+      drain = fn stream ->
+        stream
+        |> Enum.reduce([], fn message, seen ->
+          if seen == [], do: {:ok, _} = Log.append(%OrderPlaced{order_id: 99})
+
+          [message.order_id | seen]
+        end)
+        |> Enum.reverse()
+      end
+
+      backwards = drain.(Query.stream(:all, ctx.opts ++ [order: :desc, limit: 2]))
+
+      assert backwards == [4, 3, 2, 1]
+      refute 99 in backwards
+
+      # The forwards stream reaches the row appended during its own run, which it
+      # can only do because the tip moved under it.
+      assert List.last(drain.(Query.stream(:all, ctx.opts ++ [limit: 2]))) == 99
+    end
+
+    test "an empty log streams nothing backwards either", ctx do
+      assert [] = :all |> Query.stream(ctx.opts ++ [order: :desc]) |> Enum.to_list()
     end
   end
 
