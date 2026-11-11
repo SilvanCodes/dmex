@@ -41,9 +41,28 @@ defmodule DMEx.Storage.SQLite do
   `BEGIN`, leaving only the retryable case. `validate!/1` refuses a repo without
   it at boot, and `transaction/2` passes the mode itself.
 
-  ## No `:prefix`
+  ## No `:prefix`, so the file is the unit
 
   SQLite has no schemas. `validate!/1` raises rather than ignoring one.
+
+  That removes one of the two axes a log is identified by. A `dmex_messages`
+  table is `{repo, prefix}`, and with the prefix gone the repo is the whole of it
+  — so **an application declaring several logs on this engine gives each one its
+  own repo, which is its own database file.** Each of those repos needs its own
+  `DMEx.Storage.Migration.up()`, and its own `:immediate` transaction mode, which
+  `validate!/1` checks per log as its tree starts.
+
+  A file each is also the better shape for writes rather than merely the
+  available one, since the write lock above is per database: two logs in one file
+  serialize every append against each other, where two files do not.
+
+  Two `use DMEx.Log` modules naming **one** repo are therefore not two logs here.
+  They are one table under two names, nothing catches it — see
+  [ROADMAP](ROADMAP.md) — and on Postgres a `:prefix` is what would have
+  separated them, where here there is nothing to reach for. The degradation is
+  quiet rather than loud: `DMEx.Notifier.Beam` scopes per log *module*, so an
+  append through one never wakes the other's dispatcher and every cross-log
+  append waits out a poll interval instead.
   """
 
   use DMEx.Storage.SQL
@@ -183,8 +202,8 @@ defmodule DMEx.Storage.SQLite do
       fn ->
         with {:ok, %{rows: [[id]]}} <-
                Adapter.query(repo, SQL.append_sql(dialect), [type, data, metadata]),
-             {:ok, _result} <-
-               Adapter.query(repo, SQL.entities_sql(dialect, length(entities)), [id | entities]) do
+             {sql, params} = SQL.entities_sql(dialect, [{id, entities}]),
+             {:ok, _result} <- Adapter.query(repo, sql, params) do
           id
         else
           {:error, reason} -> repo.rollback(reason)

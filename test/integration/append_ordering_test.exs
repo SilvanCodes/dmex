@@ -285,7 +285,7 @@ for {storage, repo, log, tag} <- [
       # clearing it is what makes the next test's ids start at 1 — the equivalent
       # of Postgres's RESTART IDENTITY.
       defp truncate_all! do
-        for table <- ~w(dmex_messages dmex_cursors dmex_dead_messages) do
+        for table <- ~w(dmex_message_entities dmex_messages dmex_cursors dmex_dead_messages) do
           SQL.query!(@repo, "DELETE FROM #{table}", [])
         end
 

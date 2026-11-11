@@ -202,6 +202,21 @@ defmodule DMEx.Storage.Postgres.Migration do
     # question ARCHITECTURE.md keeps open, and is the right place to decide it.
   end
 
+  @doc false
+  # Drops the entity index and builds it again empty, for
+  # `DMEx.Storage.Migration.reindex_entities/1`. The creation is `up_messages/1`'s
+  # own, so the rebuilt table cannot differ from the one a fresh migration makes.
+  #
+  # The log itself is never touched: this table holds nothing that is not derived
+  # from it, which is the whole reason dropping it is a safe thing to offer.
+  @spec reset_entities(String.t() | nil) :: :ok
+  def reset_entities(prefix) do
+    drop_if_exists(table(@message_entities, prefix: prefix))
+    up_message_entities(prefix)
+
+    :ok
+  end
+
   defp up_cursors(prefix) do
     create_if_not_exists table(@cursors, primary_key: false, prefix: prefix) do
       # The `log/id` pair a handler declares, as the key rather than a surrogate

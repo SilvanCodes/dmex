@@ -356,6 +356,43 @@ for {storage, repo, tag} <- [
       end
     end
 
+    # The write half of the entity index, and the only one that touches a message
+    # already in the log: `DMEx.Storage.Migration.reindex_entities/1`'s statement.
+    describe "index_entities/2" do
+      test "indexes a batch of already-appended messages", %{opts: opts} do
+        {:ok, a} = append_entities("A", [], opts)
+        {:ok, b} = append_entities("A", [], opts)
+
+        assert :ok = @storage.index_entities([{a, ["e1", "e2"]}, {b, ["e2"]}], opts)
+
+        assert {:ok, [^a, ^b]} = ids(filters(entities: ["e2"]), opts)
+        assert {:ok, [^a]} = ids(filters(entities: ["e1"]), opts)
+      end
+
+      test "an entry carrying no entities writes nothing", %{opts: opts} do
+        {:ok, a} = append_entities("A", [], opts)
+
+        assert :ok = @storage.index_entities([{a, []}], opts)
+        assert {:ok, []} = @storage.select(filters(entities: ["anything"]), opts)
+      end
+
+      # The batch is one statement, so the empty case has to be answered without
+      # rendering an `INSERT ... VALUES` with nothing in it.
+      test "an empty batch is a no-op", %{opts: opts} do
+        assert :ok = @storage.index_entities([], opts)
+      end
+
+      # Why `reindex_entities/1` clears the table rather than topping it up: the
+      # key refuses a pair that is already there, so indexing over a live index
+      # fails rather than quietly double-counting. `catch_error/1` because the
+      # two drivers raise their own structs and this is about the key, not them.
+      test "a message indexed twice under one entity is refused by the key", %{opts: opts} do
+        {:ok, a} = append_entities("A", ["e1"], opts)
+
+        assert catch_error(@storage.index_entities([{a, ["e1"]}], opts))
+      end
+    end
+
     # The bound that makes the log's "memory per connection is one batch" claim
     # true in bytes and not only in rows. It has to hold *in the query*: a read
     # that returns `limit` rows and lets the caller trim them has already spent

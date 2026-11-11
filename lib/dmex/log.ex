@@ -36,7 +36,8 @@ defmodule DMEx.Log do
       adapter names, which is `DMEx.Notifier.Postgres` for the Postgres one.
     * `:prefix` — a Postgres schema the DMEx tables live in, which is also what
       scopes the lock and the channel (see below). `DMEx.Storage.SQLite` raises
-      on it, since SQLite has no schemas.
+      on it, since SQLite has no schemas: there a second log means a second repo,
+      and so a second database file.
     * any `DMEx.Config` log setting.
 
   An unrecognised option raises at compile time rather than being ignored.
@@ -64,7 +65,9 @@ defmodule DMEx.Log do
 
   What it costs is that logs sharing a table share a channel, so each
   dispatcher wakes for the others' appends and spends a read finding nothing it
-  routes. Separate schemas with `:prefix` keep co-tenants apart.
+  routes. Separate schemas with `:prefix` keep co-tenants apart — or, on an
+  engine that has no schemas, separate databases: `DMEx.Storage.SQLite` has what
+  that means there.
 
   ## Why appends are serialized
 

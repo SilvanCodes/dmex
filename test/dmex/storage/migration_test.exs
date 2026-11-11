@@ -100,6 +100,48 @@ defmodule DMEx.Storage.MigrationTest do
     end
   end
 
+  describe "dmex_message_entities" do
+    test "the key is the whole table: (entity, id), in that order" do
+      # Entity first is what makes a seek by entity hand back ids already
+      # ascending, which is the only read shape there is.
+      assert primary_key("dmex_message_entities") == ["entity", "id"]
+    end
+
+    test "both columns are required, and id matches the log's" do
+      assert %{"data_type" => "text", "is_nullable" => "NO"} =
+               column("dmex_message_entities", "entity")
+
+      assert %{"data_type" => "bigint", "is_nullable" => "NO"} =
+               column("dmex_message_entities", "id")
+    end
+
+    test "nothing else is indexed, and nothing else is stored" do
+      # One index, the primary key's. A reverse lookup by id is not a question
+      # anything asks: entities never come back on a read.
+      assert indexes("dmex_message_entities") == ["dmex_message_entities_pkey"]
+
+      for absent <- ~w(type data metadata inserted_at) do
+        assert column_missing?("dmex_message_entities", absent)
+      end
+    end
+
+    # No `ON DELETE CASCADE`, deliberately — the append writes these rows in the
+    # message's own transaction, so an orphan is unrepresentable on the write
+    # path, and the migration records why the key is not paid for.
+    test "there is no foreign key to the log" do
+      %{rows: rows} =
+        query(
+          """
+          SELECT 1 FROM information_schema.table_constraints
+           WHERE table_name = $1 AND constraint_type = 'FOREIGN KEY'
+          """,
+          ["dmex_message_entities"]
+        )
+
+      assert rows == []
+    end
+  end
+
   describe "dmex_cursors" do
     test "the declared subscription identifier is the primary key" do
       # The `log/id` pair a handler declares *is* the subscription's

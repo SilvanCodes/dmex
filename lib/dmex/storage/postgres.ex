@@ -119,7 +119,9 @@ defmodule DMEx.Storage.Postgres do
   defp index!(_repo, _dialect, id, []), do: id
 
   defp index!(repo, dialect, id, entities) do
-    case Adapter.query(repo, SQL.entities_sql(dialect, length(entities)), [id | entities]) do
+    {sql, params} = SQL.entities_sql(dialect, [{id, entities}])
+
+    case Adapter.query(repo, sql, params) do
       {:ok, _result} -> id
       {:error, reason} -> repo.rollback(reason)
     end

@@ -81,6 +81,12 @@ defmodule DMEx.Message do
   afterwards is unreachable for every message of this type. Elixir warns about
   the ungrouped clauses; nothing else has to.
 
+  Which is what makes the index **rebuildable rather than migratable**:
+  `DMEx.Storage.Migration.reindex_entities/1` throws the table away and recomputes
+  it from the log. Changing an `entities:` declaration only reaches messages
+  appended after it — the rows already in the log keep whatever was indexed at the
+  time — so that migration is how the change is applied to history.
+
   Three rules, and they are the whole of it:
 
     * A **list** value contributes each element, so one message can concern many

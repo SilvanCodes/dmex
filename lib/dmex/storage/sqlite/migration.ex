@@ -141,6 +141,19 @@ defmodule DMEx.Storage.SQLite.Migration do
     """)
   end
 
+  @doc false
+  # The SQLite half of the same thing — `DMEx.Storage.Postgres.Migration` carries
+  # the reasoning.
+  @spec reset_entities(String.t() | nil) :: :ok
+  def reset_entities(prefix) do
+    SQLite.__refuse_prefix__(prefix)
+
+    execute("DROP TABLE IF EXISTS #{@message_entities}")
+    up_message_entities()
+
+    :ok
+  end
+
   defp up_cursors do
     # `NOT NULL` spelled out: SQLite lets a rowid table's declared PRIMARY KEY
     # hold NULL, for backwards compatibility with a long-ago bug.

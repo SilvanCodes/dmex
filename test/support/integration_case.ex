@@ -148,7 +148,7 @@ defmodule DMEx.IntegrationCase do
   """
   @spec truncate_all!() :: :ok
   def truncate_all! do
-    tables = ~w(dmex_messages dmex_cursors dmex_dead_messages)
+    tables = ~w(dmex_messages dmex_message_entities dmex_cursors dmex_dead_messages)
 
     existing =
       Enum.filter(tables, fn table ->

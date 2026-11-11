@@ -423,7 +423,29 @@ defmodule DMEx.Storage do
   """
   @callback select(filters(), opts()) :: {:ok, [row()]} | {:error, term()}
 
-  @optional_callbacks default_notifier: 0, migration: 0, validate!: 1, select: 2
+  @doc """
+  Writes the entity rows for a batch of already-appended messages.
+
+  `entries` is `{id, entities}` per message, and the entities are what
+  `c:DMEx.Message.entities/1` answered for the row with that id. Nothing here
+  reads the log or decodes anything: the caller holds the modules, so the caller
+  computes.
+
+  **Not the append path.** `c:append/5` writes a message's entity rows with the
+  message, in one transaction, and that is the only way a live append indexes
+  itself. This exists for `DMEx.Storage.Migration.reindex_entities/1`, which
+  rebuilds the whole index after an `entities:` declaration changed — the one
+  operation that writes entity rows for a message that is already in the log.
+
+  One statement per batch, like the append's, because the batches are large and
+  the alternative is a statement per entity.
+
+  Optional, and absent it stops a reindex rather than defaulting: there is
+  nothing to fall back to. `use DMEx.Storage.SQL` generates it.
+  """
+  @callback index_entities(entries :: [{pos_integer(), [String.t()]}], opts()) :: :ok
+
+  @optional_callbacks default_notifier: 0, migration: 0, validate!: 1, select: 2, index_entities: 2
 
   # The shipped adapter for each Ecto adapter, and the only place that mapping
   # lives. A default, not the selection axis — that is `storage:`.
@@ -549,6 +571,29 @@ defmodule DMEx.Storage do
         raise ArgumentError,
               "#{inspect(adapter)} implements no `c:DMEx.Storage.select/2`, so `DMEx.Query` " <>
                 "cannot read through it. A SQL adapter gets one from `use DMEx.Storage.SQL`."
+    end
+  end
+
+  @doc """
+  Writes entity rows for a batch of messages. See `c:index_entities/2`.
+
+  Raises for an adapter that does not implement it, the way `select/2` does and
+  for the same reason: a store that cannot write this index cannot have it
+  rebuilt, and reading the whole log to discard the result is not a fallback.
+  """
+  @spec index_entities(opts(), [{pos_integer(), [String.t()]}]) :: :ok
+  def index_entities(_storage, []), do: :ok
+
+  def index_entities(%{adapter: adapter} = storage, entries) do
+    case optional(adapter, :index_entities, [entries, storage]) do
+      {:ok, :ok} ->
+        :ok
+
+      :none ->
+        raise ArgumentError,
+              "#{inspect(adapter)} implements no `c:DMEx.Storage.index_entities/2`, so the " <>
+                "entity index cannot be rebuilt through it. A SQL adapter gets one from " <>
+                "`use DMEx.Storage.SQL`."
     end
   end
 

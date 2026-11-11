@@ -150,6 +150,9 @@ defmodule DMEx.Storage.SQL do
       @impl DMEx.Storage
       def select(filters, opts), do: DMEx.Storage.SQL.select(dialect(opts), opts, filters)
 
+      @impl DMEx.Storage
+      def index_entities(entries, opts), do: DMEx.Storage.SQL.index_entities(dialect(opts), opts, entries)
+
       # The one statement a test wants to EXPLAIN. One arity for both engines.
       @doc false
       def __read_sql__(predicate, opts), do: DMEx.Storage.SQL.read_sql(dialect(opts), predicate)
@@ -178,25 +181,62 @@ defmodule DMEx.Storage.SQL do
   end
 
   @doc """
-  Renders the insert for one message's entity rows — **one** statement, whatever
-  the count.
+  Renders the insert for message entity rows and the parameters it binds — **one**
+  statement, whatever the number of messages or entities in it.
 
-  `c:DMEx.Storage.append/5` requires this to commit with the message, so it runs
-  inside whatever serializes the append: the Postgres adapter's lock transaction,
-  or an explicit immediate transaction on SQLite. That is why it is one multi-row
-  INSERT rather than one per entity — the statement count there is append
-  throughput for the whole application.
+  Two callers, and one renderer so a rebuilt row and an appended one cannot be
+  written differently. `c:DMEx.Storage.append/5` passes a single `{id, entities}`
+  and requires it to commit with the message, so it runs inside whatever
+  serializes the append: the Postgres adapter's lock transaction, or an explicit
+  immediate transaction on SQLite. That is why the count never costs a statement —
+  the statement count inside that region is append throughput for the whole
+  application. `c:DMEx.Storage.index_entities/2` passes many, outside any lock.
 
-  The row id takes parameter 1 and the entities follow, so the id is bound once
-  and repeated by number. Postgres could fold the whole append into a single
-  data-modifying CTE; SQLite has no DML in a CTE, so two statements is the shape
-  both engines share.
+  Postgres could fold an append into a single data-modifying CTE; SQLite has no
+  DML in a CTE, so two statements is the shape both engines share.
+
+  Every entry must carry at least one entity: a message with none writes nothing
+  at all, which its caller is what decides.
   """
-  @spec entities_sql(dialect(), pos_integer()) :: String.t()
-  def entities_sql(%{message_entities: table, param: param}, count) when count > 0 do
-    values = Enum.map_join(2..(count + 1)//1, ", ", &"(#{param}#{&1}, #{param}1)")
+  @spec entities_sql(dialect(), [{pos_integer(), [String.t()]}]) :: {String.t(), [term()]}
+  def entities_sql(%{message_entities: table, param: param}, [_ | _] = entries) do
+    {values, params, _next} =
+      Enum.reduce(entries, {[], [], 1}, fn {id, [_ | _] = entities}, {values, params, next} ->
+        # The id takes `next` and its entities the numbers after it, so each entry
+        # binds the id once however many entities point at it.
+        tuples = for i <- 1..length(entities)//1, do: "(#{param}#{next + i}, #{param}#{next})"
 
-    "INSERT INTO #{table} (entity, id) VALUES #{values}"
+        {values ++ tuples, params ++ [id | entities], next + 1 + length(entities)}
+      end)
+
+    {"INSERT INTO #{table} (entity, id) VALUES #{Enum.join(values, ", ")}", params}
+  end
+
+  @doc """
+  See `c:DMEx.Storage.index_entities/2`.
+
+  The same insert `append/5` issues, over many messages instead of one —
+  `entities_sql/2` renders both, so a rebuilt row and an appended one cannot be
+  written differently.
+
+  Unlike the append's, this runs outside any lock: every pair it writes belongs to
+  a message already committed, so there is no ordering to protect. What it does
+  need is that the ids it was handed are not being indexed by anything else at the
+  same time, which is `DMEx.Storage.Migration.reindex_entities/1`'s business.
+  """
+  @spec index_entities(dialect(), DMEx.Storage.opts(), [{pos_integer(), [String.t()]}]) :: :ok
+  def index_entities(dialect, opts, entries) do
+    # A message with no entities contributes no row, so it is dropped here rather
+    # than rendered as an empty `VALUES ()`.
+    case Enum.reject(entries, fn {_id, entities} -> entities == [] end) do
+      [] ->
+        :ok
+
+      entries ->
+        {sql, params} = entities_sql(dialect, entries)
+
+        write(dialect, opts, sql, params)
+    end
   end
 
   ## Reading the log

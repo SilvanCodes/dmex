@@ -78,6 +78,37 @@ defmodule DMEx.Storage.SQLiteMigrationTest do
     end
   end
 
+  describe "dmex_message_entities" do
+    test "the key is the whole table and the table is WITHOUT ROWID" do
+      [[sql]] =
+        query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'dmex_message_entities'")
+
+      # `WITHOUT ROWID` because this is an index and nothing else: a rowid table
+      # would store every pair twice, in the hidden heap and in the index
+      # enforcing the key.
+      assert sql =~ "WITHOUT ROWID"
+      assert sql =~ "PRIMARY KEY (entity, id)"
+    end
+
+    test "a rowid really is absent, not merely undeclared" do
+      # The observable proof rather than a match on DDL text: a WITHOUT ROWID
+      # table has no rowid column to select.
+      assert catch_error(query("SELECT rowid FROM dmex_message_entities"))
+    end
+
+    test "both columns are required" do
+      # Spelled out in the DDL rather than implied by the key, because a rowid
+      # table lets a declared PRIMARY KEY hold NULL — see the module docs.
+      for column <- ~w(entity id) do
+        assert [[1]] =
+                 query(
+                   "SELECT \"notnull\" FROM pragma_table_info('dmex_message_entities') " <>
+                     "WHERE name = '#{column}'"
+                 )
+      end
+    end
+  end
+
   describe "dmex_cursors and dmex_dead_messages" do
     test "the declared subscription identifier is the primary key" do
       assert %{notnull: 1, pk: 1} = table_info("dmex_cursors")["subscription"]
