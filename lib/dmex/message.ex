@@ -154,6 +154,7 @@ defmodule DMEx.Message do
 
       @impl true
       def retired, do: unquote(retired)
+
       @impl true
       def cast(data) when is_map(data), do: DMEx.Message.cast_default(__MODULE__, data)
 
